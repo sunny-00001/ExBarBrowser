@@ -172,6 +172,20 @@ UNIQUE = [
          allow={"view_modes.h"},
          why="唯一来源是 view_modes.h 的 viewmode::kModes；下标是命令 arg 契约，不能有第二份"),
 
+    # ---- 「再点即收」状态机（2026-11-21）----
+    # 弹层是模态的：点第二下时旧弹层被 WA_INACTIVE 关掉（PostMessage(WM_CLOSE)），
+    # 紧接着同一次点击的 WM_LBUTTONDOWN 又调一次 Show* —— 而 WM_CLOSE 还在队列里，
+    # 于是重入建出第二个菜单。用户看到"点了两下，菜单一直在，收不掉"。
+    #
+    # 修法是一份全局单槽记录（popup_toggle.cpp）。这条规则守的是"不要另写一份"：
+    # 各栏自己记一个 lastOpenTick_ 是很容易想到的本地方案，但那样每个栏一套窗口期、
+    # 一套清记录时机，"有的地方能收起、有的地方收不掉"就是这么来的。
+    dict(name="再点即收的状态机", pat=r"\bWasJustOpened\s*\(|\bNoteOpened\s*\(",
+         allow={"popup_toggle.cpp", "popup_toggle.h", "popup_list.cpp",
+                "nav_bar_actions.cpp"},
+         why="唯一实现在 popup_toggle.cpp；各栏不要自己记 lastOpenTick_，"
+             "经由 Show* 的 toggleKey 参数接入即可"),
+
     # ---- 取视图接口（2026-11-20 收编）----
     # `IShellView*` → `IFolderView2` 的 QI 模板以前只在 shell_ops.cpp 的匿名
     # 命名空间里，外部拿不到，于是 shell_view.cpp / view_stats.cpp 各自手写。
@@ -191,6 +205,16 @@ UNIQUE = [
          allow={"ui_draw.cpp"},
          why="统一用 ui::DrawTextRow(hdc, font, text, rc, color, fmt)；"
              "它保证字体一定被还原，不会让后续绘制串体"),
+
+    # ---- 日志/审计的"追加 + 按大小轮转"（2026-11-20 收编）----
+    # log.cpp（4MB/500 行，UTF-16 LE）与 CommandBus::Audit（2MB/200 行，UTF-8）
+    # 的轮转段逐字相同：GetFileAttributesExW + 判 hi/lo + MoveFileEx(.1)。
+    # 编码不同是需求（调试日志 UTF-16 便于 Get-Content 直读，审计 UTF-8 便于 grep），
+    # 现已收进 tf::AppendLine。规则守的是轮转那一段，不是编码。
+    dict(name="日志轮转", pat=r"MoveFileExW?\([^;]*\.1",
+         allow={"text_file.cpp"},
+         why="统一用 tf::AppendLine(path, bytes, rotateAtBytes, checkEveryN)；"
+             "编码由调用方给，轮转逻辑只一份"),
 ]
 
 # ---------------------------------------------------------------------------

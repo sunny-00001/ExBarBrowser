@@ -557,25 +557,9 @@ void CommandBus::Audit(const CommandDef& def, const std::wstring& argDesc, const
     swprintf(line, 512, L"%04d-%02d-%02dT%02d:%02d:%02d %ls %ls arg=%ls ok=%d\r\n", st.wYear, st.wMonth,
              st.wDay, st.wHour, st.wMinute, st.wSecond, actor ? actor : L"?", def.name,
              argDesc.empty() ? L"-" : argDesc.c_str(), ok ? 1 : 0);
-    std::wstring path = tf::Join(Config::Get().Dir(), L"audit.log");
+    const std::wstring path = tf::Join(Config::Get().Dir(), L"audit.log");
 
-    // 轮转：每 200 条检查一次大小，超过 2 MB 就重命名为 audit.log.1（只保留一份）
-    static int sinceCheck = 0;
-    if (++sinceCheck >= 200) {
-        sinceCheck = 0;
-        WIN32_FILE_ATTRIBUTE_DATA fad{};
-        if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
-            fad.nFileSizeHigh == 0 && fad.nFileSizeLow > (2u << 20)) {
-            std::wstring old = path + L".1";
-            MoveFileExW(path.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING);
-        }
-    }
-
-    HANDLE h = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    std::string utf8 = tf::ToUtf8(line);
-    DWORD written = 0;
-    WriteFile(h, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
-    CloseHandle(h);
+    // 轮转（每 200 条查一次、超 2 MB 改名 .1）与调试日志共用 tf::AppendLine；
+    // 这里只负责编码 —— 审计用 UTF-8（脚本 grep 方便），调试日志用 UTF-16 LE。
+    tf::AppendLine(path, tf::ToUtf8(line), 2ull << 20, 200);
 }

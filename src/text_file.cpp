@@ -123,6 +123,38 @@ bool WriteText(const std::wstring& path, const std::wstring& text) {
     return true;
 }
 
+
+bool AppendLine(const std::wstring& path, const std::string& bytes,
+                unsigned long long rotateAtBytes, int checkEveryN) {
+    // 轮转：每 checkEveryN 次调用查一次大小，超阈值改名为 <path>.1（只留一份）。
+    //
+    // 用函数内 static 计数（不是成员）：本函数是纯 IO 工具，不知道调用方是谁；
+    // 每个 path 各自的"查了几次"并不重要 —— 差几次不影响正确性，只是检查频率。
+    static int sinceCheck = 0;
+    if (checkEveryN > 0 && ++sinceCheck >= checkEveryN) {
+        sinceCheck = 0;
+        WIN32_FILE_ATTRIBUTE_DATA fad{};
+        if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
+            ((static_cast<unsigned long long>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow) >
+                rotateAtBytes) {
+            const std::wstring old = path + L".1";
+            MoveFileExW(path.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING);
+        }
+    }
+
+    HANDLE h = CreateFileW(path.c_str(), FILE_APPEND_DATA,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    const bool ok = bytes.empty() ||
+                    (WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &written,
+                               nullptr) != FALSE &&
+                     written == bytes.size());
+    CloseHandle(h);
+    return ok;
+}
+
 bool Exists(const std::wstring& path) {
     return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
 }

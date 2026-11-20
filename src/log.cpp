@@ -1,6 +1,8 @@
 // 诊断日志实现（唯一，架构规则 R7）。见 log.h。
 #include "log.h"
 
+#include "text_file.h"
+
 #include <windows.h>
 
 #include <cstdarg>
@@ -14,30 +16,18 @@
 namespace {
 
 // 追加一行到 %TEMP%\ExBarBrowser.log（UTF-16 LE），并按大小轮转。
+//
+// 轮转逻辑（stat + 改名成 .1）与审计日志共用 tf::AppendLine；**编码不同是刻意的**
+// —— 调试日志用 UTF-16 LE（Get-Content -Encoding Unicode 直接可读），
+// 审计日志用 UTF-8（脚本 grep 方便）。所以这里只把编码结果与阈值传进去。
 void AppendLine(const wchar_t* buf) {
-    wchar_t path[MAX_PATH] = L"";
-    if (!GetTempPathW(MAX_PATH, path)) return;
-    lstrcatW(path, id::kLogFileName);
+    wchar_t dir[MAX_PATH] = L"";
+    if (!GetTempPathW(MAX_PATH, dir)) return;
+    const std::wstring path = std::wstring(dir) + id::kLogFileName;
 
-    // 轮转：每 500 行检查一次，超过 4 MB 重命名为 .1（只保留一份）。
-    static int sinceCheck = 0;
-    if (++sinceCheck >= 500) {
-        sinceCheck = 0;
-        WIN32_FILE_ATTRIBUTE_DATA fad{};
-        if (GetFileAttributesExW(path, GetFileExInfoStandard, &fad) && fad.nFileSizeHigh == 0 &&
-            fad.nFileSizeLow > (4u << 20)) {
-            const std::wstring old = std::wstring(path) + L".1";
-            MoveFileExW(path, old.c_str(), MOVEFILE_REPLACE_EXISTING);
-        }
-    }
-
-    HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    DWORD written = 0;
-    WriteFile(h, buf, static_cast<DWORD>(wcslen(buf) * sizeof(wchar_t)), &written, nullptr);
-    WriteFile(h, L"\r\n", 4, &written, nullptr);
-    CloseHandle(h);
+    std::string bytes(reinterpret_cast<const char*>(buf), wcslen(buf) * sizeof(wchar_t));
+    bytes.append("\r\n", 2);   // 与 WriteFile(L"\r\n", 4) 等价：2 个 wchar_t 的字节
+    tf::AppendLine(path, bytes, 4ull << 20, 500);
 }
 
 void LogV(const wchar_t* fmt, va_list ap) {
