@@ -40,11 +40,22 @@ inline void DrawGlyph(HDC hdc, ico::IconId id, RECT rc, int px, COLORREF clr,
 void DrawChevron(HDC hdc, int cx, int cy, int px, COLORREF clr, int dir = 1);
 
 HICON StockIcon(int siid, bool small);
-void DrawIconCentered(HDC hdc, HICON hIcon, RECT rc, int size);
-void DrawIconVCentered(HDC hdc, HICON hIcon, int x, int top, int bottom, int size);
-// 在 slot 见方的槽里居中画图标，但**按图标自身真实像素**画（SHGFI_SMALLICON 给的
-// 可能小于槽位，强行拉伸会发虚）。以前 4 处各写一遍 IconPx + 手算居中偏移。
-void DrawIconFit(HDC hdc, HICON hIcon, const RECT& slot, int slotPx);
+// ---- 图标绘制：落笔尺寸 = 图标真实像素，槽只决定位置与上限 ----
+// ico::Resolve 返回的是系统给的既有位图（SM_CXSMICON 像素，随 DPI 变 16/20/24…），
+// 不是矢量。以前这里有**三个**原语、**两套**缩放规则：
+//    DrawIconCentered / DrawIconVCentered -> 按调用方给的 size 拉伸
+//    DrawIconFit(已删)                    -> 按 IconPx(icon) 真实像素
+// 后果不是"糊"，而是**同一枚图标画出来的尺寸不同**：在 120 DPI 下源图标 20px，
+// 导航栏 14dp 槽（18px）走 Centered 被压成 18px，弹层 16dp 槽（20px）走 Fit 保持 20px。
+// 用户看到的是"两个地方的图标不一样大"，而代码里两处读的都是同一个常量。
+// （实测补充：DrawIconEx 缩放图标**不做插值** —— 20px 硬边图标画成 18px 时中间 alpha
+//   为 0 个，所以"发虚"这个理由站不住；真正的问题是尺寸不一致，别再用糊边当论据。）
+//
+// 现在只剩一套规则：槽宽只是**上限**，不放大；槽比图标小（真的放不下）时才缩到槽宽。
+// 于是"传进去的槽"和"画出来多大"的关系是确定的，不再取决于调用的是哪个函数。
+void DrawIconCentered(HDC hdc, HICON hIcon, const RECT& rc, int slotPx);
+// 左对齐版（前导图标：x 固定，垂直居中）。同一套规则。
+void DrawIconVCentered(HDC hdc, HICON hIcon, int x, int top, int bottom, int slotPx);
 
 // 注：这里曾有 FontPx / Scale / IconSize 三个"DPI 换算"入口，全部零调用 ——
 // 真实缩放一律走 Theme::S()（它对 dpi 的默认值处理在同一处）。三个入口已于
@@ -67,6 +78,21 @@ void DrawSeparator(HDC hdc, const RECT& rc, bool vertical, COLORREF color, int t
 // 以前 6 个文件各写一遍同样的 8 行，且各自忘记还原导致后续绘制串体。
 // len < 0 表示按 NUL 结尾计算。
 int MeasureText(HDC hdc, HFONT font, const wchar_t* text, int len = -1);
+
+// 画一行文本（选字体 + 设颜色 + DrawTextW + 还原的合并版）。
+//
+// 【为什么需要它】MeasureText 只收了"量"，没收"画"。结果 7 个文件里 11 处
+// 各写一遍这个四步序列：
+//     HGDIOBJ old = SelectObject(dc, font);
+//     SetTextColor(dc, color);
+//     DrawTextW(dc, text, -1, &rc, fmt);
+//     SelectObject(dc, old);
+// 每一处都是一个"忘记还原就串体"的机会，且字体必须由调用方自己知道该用哪个。
+//
+// fmt 由调用方给（DT_END_ELLIPSIS / DT_PATH_ELLIPSIS / DT_CENTER 等差异是真实需求，
+// 不该被这个函数吃掉）；这里只统一"选字体-设色-还原"这三步与字符串长度处理。
+void DrawTextRow(HDC hdc, HFONT font, const std::wstring& text, const RECT& rc, COLORREF color,
+                 UINT fmt);
 inline int MeasureText(HDC hdc, HFONT font, const std::wstring& text) {
     return MeasureText(hdc, font, text.c_str(), static_cast<int>(text.size()));
 }

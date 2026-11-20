@@ -92,26 +92,26 @@ HICON StockIcon(int siid, bool small) {
     return nullptr;
 }
 
-void DrawIconCentered(HDC hdc, HICON hIcon, RECT rc, int size) {
-    if (!hIcon) return;
-    DrawIconEx(hdc, rc.left + ((rc.right - rc.left) - size) / 2,
-               rc.top + ((rc.bottom - rc.top) - size) / 2, hIcon, size, size, 0, nullptr,
-               DI_NORMAL);
-}
-
-void DrawIconVCentered(HDC hdc, HICON hIcon, int x, int top, int bottom, int size) {
-    if (!hIcon) return;
-    DrawIconEx(hdc, x, top + ((bottom - top) - size) / 2, hIcon, size, size, 0, nullptr,
-               DI_NORMAL);
-}
-
-void DrawIconFit(HDC hdc, HICON hIcon, const RECT& slot, int slotPx) {
-    if (!hIcon) return;
-    // 按图标真实像素画：16px 图标塞进 20px 槽位时不要拉伸（SHGFI 给的就是既有位图）
+// 图标的落笔尺寸：真实像素与槽宽取小者。
+// 理由见 ui_draw.h 的注释：ico::Resolve 给的是位图，放大只会糊；
+// 只有"槽比图标还小"（真的放不下）时才缩，且缩到正好塞进槽。
+static int IconDrawPx(HICON hIcon, int slotPx) {
     const int real = IconPx(hIcon, slotPx);
-    const int cy = slot.top + ((slot.bottom - slot.top) - real) / 2;
-    const int cx = slot.left + (slotPx - real) / 2;
-    DrawIconEx(hdc, cx, cy, hIcon, real, real, 0, nullptr, DI_NORMAL);
+    if (slotPx <= 0) return real;
+    return real <= slotPx ? real : slotPx;
+}
+
+void DrawIconCentered(HDC hdc, HICON hIcon, const RECT& rc, int slotPx) {
+    if (!hIcon) return;
+    const int px = IconDrawPx(hIcon, slotPx);
+    DrawIconEx(hdc, rc.left + ((rc.right - rc.left) - px) / 2,
+               rc.top + ((rc.bottom - rc.top) - px) / 2, hIcon, px, px, 0, nullptr, DI_NORMAL);
+}
+
+void DrawIconVCentered(HDC hdc, HICON hIcon, int x, int top, int bottom, int slotPx) {
+    if (!hIcon) return;
+    const int px = IconDrawPx(hIcon, slotPx);
+    DrawIconEx(hdc, x, top + ((bottom - top) - px) / 2, hIcon, px, px, 0, nullptr, DI_NORMAL);
 }
 
 void FillRectColor(HDC hdc, const RECT& rc, COLORREF color) {
@@ -167,6 +167,19 @@ int MeasureText(HDC hdc, HFONT font, const wchar_t* text, int len) {
                                          &sz);
     if (old) SelectObject(hdc, old);
     return ok ? static_cast<int>(sz.cx) : 0;
+}
+
+void DrawTextRow(HDC hdc, HFONT font, const std::wstring& text, const RECT& rc, COLORREF color,
+                 UINT fmt) {
+    if (!hdc) return;
+    // 选字体（可能为空：调用方只想要默认字体色），并在返回前**无条件**还原。
+    // 不还原的后果不是"这一行画错"，而是同一次 WM_PAINT 里后续所有绘制都串体 ——
+    // 这类 bug 看起来像"随机的字体错乱"，很难定位到具体那一行。
+    HGDIOBJ old = font ? SelectObject(hdc, font) : nullptr;
+    SetTextColor(hdc, color);
+    RECT r = rc;   // DrawTextW 会改 rc（DT_CALCRECT/居中时会写回），不能传调用方的
+    DrawTextW(hdc, text.c_str(), static_cast<int>(text.size()), &r, fmt);
+    if (old) SelectObject(hdc, old);
 }
 
 // CurrentMods 已移到输入端（mouse_rules.h）：它读 GetKeyState，属输入状态。

@@ -303,21 +303,18 @@ void StatusBar::Paint(HWND h) {
             int x = l.rc.left;
             if (l.glyph) {
                 RECT gr{x, l.rc.top, x + glyphW, l.rc.bottom};
-                ui::DrawGlyph(mem, l.glyphCh, gr, theme_->S(12), theme_->sub);
+                ui::DrawGlyph(mem, l.glyphCh, gr, theme_->iconGlyph(), theme_->sub);
                 x += glyphW + gap;
             }
             RECT tr = l.rc;
             tr.left = x;
             tr.right = l.rc.right;
-            HGDIOBJ of = SelectObject(mem, theme_->font);
-            SetTextColor(mem, l.seg == Seg_Path ? theme_->text : theme_->sub);
             UINT fmt = DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX;
-            if (l.seg == Seg_Path)
-                fmt |= DT_PATH_ELLIPSIS;
-            else
-                fmt |= DT_END_ELLIPSIS;
-            DrawTextW(mem, model_.text[l.seg].c_str(), -1, &tr, fmt);
-            SelectObject(mem, of);
+            // 路径段用 PATH_ELLIPSIS（从中间省略，保住盘符与末级目录），
+            // 其余段用 END_ELLIPSIS。
+            fmt |= (l.seg == Seg_Path) ? DT_PATH_ELLIPSIS : DT_END_ELLIPSIS;
+            ui::DrawTextRow(mem, theme_->font, model_.text[l.seg], tr,
+                            l.seg == Seg_Path ? theme_->text : theme_->sub, fmt);
         }
 
         // 顶部 1px 分隔线

@@ -1,6 +1,7 @@
 #include "popup_list.h"
 
 #include "platform_win.h"
+#include "popup_toggle.h"
 
 #include "ui_draw.h"
 
@@ -31,6 +32,12 @@ struct PopupState {
     std::wstring treePicked;        // 树模式选中的 path（空=取消）
     int hotExpander = -1;           // 悬停在展开器上的 visible 行号
     int curSel = -1;                // 键盘选择（visible 行号）
+
+    // 「再点即收」的锚点键（见 popup_toggle.h）。空 = 不参与判定。
+    std::wstring toggleKey;
+    // 用户主动结束（选中 / Esc / Enter）→ 关掉时要清掉连点记录。外部点击关闭不清，
+    // 那条记录正是给紧随其后的重入 Show* 判"这一下是收起"用的。
+    bool deliberateClose = false;
 };
 
 // ---------- 树模式辅助（对齐 Exbar.cpp 18371-19312） ----------
@@ -191,6 +198,7 @@ static void PickRow(PopupState* st, HWND hList, int vi) {
         if (RowInert(st, vi)) return;
         st->picked = vi;
     }
+    st->deliberateClose = true;   // 选中 = 主动结束，关掉时清连点记录
     st->done = true;
     PostMessageW(st->self, WM_CLOSE, 0, 0);
 }
@@ -275,6 +283,7 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
     case WM_KEYDOWN: {
         int count = RowCount(st);
         if (w == VK_ESCAPE) {
+            st->deliberateClose = true;
             st->done = true;
             PostMessageW(st->self, WM_CLOSE, 0, 0);
             return 0;
@@ -307,6 +316,7 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
         if (w == VK_RETURN || w == VK_SPACE) {
             if (st->curSel >= 0) PickRow(st, h, st->curSel);
             else {
+                st->deliberateClose = true;
                 st->done = true;
                 PostMessageW(st->self, WM_CLOSE, 0, 0);
             }
@@ -420,15 +430,12 @@ LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             const int indent = rc.left + st->theme->S(6) + n.depth * st->theme->S(16);
             if (n.icon) {
                 RECT ir{indent, rc.top, indent + st->iconS, rc.bottom};
-                ui::DrawIconFit(dc, n.icon, ir, st->iconS);
+                ui::DrawIconCentered(dc, n.icon, ir, st->iconS);
             }
-            HGDIOBJ oldFont = SelectObject(dc, st->theme->font);
-            SetTextColor(dc, st->theme->text);
-            RECT tr{indent + st->iconS + st->theme->S(4), rc.top,
-                    rc.right - st->theme->S(26), rc.bottom};
-            DrawTextW(dc, n.label.c_str(), -1, &tr,
-                      DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-            SelectObject(dc, oldFont);
+            const RECT tr{indent + st->iconS + st->theme->S(4), rc.top,
+                          rc.right - st->theme->S(26), rc.bottom};
+            ui::DrawTextRow(dc, st->theme->font, n.label, tr, st->theme->text,
+                            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
             if (n.hasChildren) {
                 RECT er = ExpanderRect(rc, *st->theme);
@@ -437,7 +444,7 @@ LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 bool expHot = static_cast<int>(dis->itemID) == st->hotExpander;
                 COLORREF clr = expHot ? st->theme->text : st->theme->chevron;
                 // 与地址栏分隔符完全同一个原语：展开 down(dir=1)，收起 left(dir=0)
-                ui::DrawChevron(dc, cx, cy, st->theme->S(10), clr, n.expanded ? 1 : 0);
+                ui::DrawChevron(dc, cx, cy, st->theme->iconChevron(), clr, n.expanded ? 1 : 0);
             }
             return TRUE;
         }
@@ -467,22 +474,20 @@ LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         int x = rc.left + st->theme->S(8);
         if (row.icon) {
             RECT ir{x, rc.top, x + st->iconS, rc.bottom};
-            ui::DrawIconFit(dc, row.icon, ir, st->iconS);
+            ui::DrawIconCentered(dc, row.icon, ir, st->iconS);
         }
         x += st->iconS + st->theme->S(8);
 
-        HGDIOBJ oldFont = SelectObject(dc, st->theme->font);
-        SetTextColor(dc, row.disabled ? st->theme->disabled : st->theme->text);
-        RECT tr{x, rc.top, rc.right - st->theme->S(row.folder ? 26 : 10), rc.bottom};
-        DrawTextW(dc, row.label.c_str(), -1, &tr,
-                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-        SelectObject(dc, oldFont);
+        const RECT tr{x, rc.top, rc.right - st->theme->S(row.folder ? 26 : 10), rc.bottom};
+        ui::DrawTextRow(dc, st->theme->font, row.label, tr,
+                        row.disabled ? st->theme->disabled : st->theme->text,
+                        DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
         if (row.folder) {
             int cx = rc.right - st->theme->S(16);
             int cy = (rc.top + rc.bottom) / 2;
             // 与地址栏分隔符共用通用原语 DrawChevron；rest 同形态，选中提亮
-            ui::DrawChevron(dc, cx, cy, st->theme->S(10),
+            ui::DrawChevron(dc, cx, cy, st->theme->iconChevron(),
                             hot || sel ? st->theme->text : st->theme->chevron, 0);
         }
         return TRUE;
@@ -622,6 +627,10 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
     SetForegroundWindow(st.self);
     SetFocus(st.list);
 
+    // 窗口真的建起来了才记"这一锚点刚开过" —— 记在建窗前会在创建失败时留下
+    // 脏记录，让用户下一次点击白白被吃掉。
+    popup::NoteOpened(st.toggleKey.c_str());
+
     // 对齐 mod 19298-19301：GetMessage 返回 -1 是错误（不能继续循环），
     // 返回 0 是 WM_QUIT（必须原样 PostQuitMessage 交还宿主）。
     MSG msg;
@@ -634,6 +643,11 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
 
     RemoveWindowSubclass(st.list, ListSubclass, 1);
     if (IsWindow(st.self)) DestroyWindow(st.self);
+
+    // 主动结束（选中 / Esc / Enter）要清掉连点记录：否则"Esc 关掉、马上又想看"
+    // 会被下一次 WasJustOpened 误判成连点，第一下没反应。
+    // 外部点击关闭不清 —— 那条记录正是留给紧随其后的重入 Show* 判"这一下是收起"的。
+    if (st.deliberateClose) popup::NoteClosedDeliberate(st.toggleKey.c_str());
 }
 
 void FreeTree(std::vector<TreeNode>& tree) {
@@ -645,19 +659,27 @@ void FreeTree(std::vector<TreeNode>& tree) {
 }  // namespace
 
 int ShowPopupList(HWND owner, const Theme& theme, POINT screen,
-                  const std::vector<PopupRow>& rows, int minWidthPx, bool exactWidth) {
+                  const std::vector<PopupRow>& rows, int minWidthPx, bool exactWidth,
+                  int maxRows, const wchar_t* toggleKey) {
     if (rows.empty()) return -1;
+
+    // 「再点即收」：连点第二下直接当"取消"返回，不建窗口、不改任何状态。
+    // 判定必须在这里（建窗口之前），见 popup_toggle.h 关于消息顺序的说明。
+    if (popup::WasJustOpened(toggleKey)) return -1;
+
     EnsureClass();
 
     PopupState st;
+    st.toggleKey = toggleKey ? toggleKey : L"";
     st.rows = &rows;
     st.theme = &theme;
     st.itemH = theme.S(24);
     st.sepPx = std::max(1, theme.S(2));   // 分隔线行高：2px（DPI 缩放下不为 0）
-    st.iconS = theme.S(16);
+    st.iconS = theme.iconSmall();
 
     int width = MeasureWidth(owner, theme, &rows, nullptr, st.iconS, exactWidth, minWidthPx);
-    const int maxRows = 20;
+    // 上限至少 1 行：调用方传 0/负数时不能算出 0 高窗口（那样一个弹层都看不见）。
+    if (maxRows < 1) maxRows = 1;
     int visible = std::min<int>(static_cast<int>(rows.size()), maxRows);
     int height = TotalHeight(&st, visible) + 2;
 
@@ -667,17 +689,24 @@ int ShowPopupList(HWND owner, const Theme& theme, POINT screen,
 
 std::wstring ShowFolderTree(HWND owner, const Theme& theme, POINT screen,
                             std::vector<TreeNode> topNodes, TreeChildrenFn children,
-                            int minWidthPx) {
+                            int minWidthPx, const wchar_t* toggleKey) {
     if (topNodes.empty()) return std::wstring();
+    if (popup::WasJustOpened(toggleKey)) {
+        // 收起路径也要释放调用方移交的 icon，否则每次"再点收起"漏一批 HICON。
+        FreeTree(topNodes);
+        return std::wstring();
+    }
+
     EnsureClass();
 
     PopupState st;
+    st.toggleKey = toggleKey ? toggleKey : L"";
     st.theme = &theme;
     st.treeMode = true;
     st.tree = std::move(topNodes);
     st.treeChildren = std::move(children);
     st.itemH = theme.S(24);
-    st.iconS = theme.S(16);
+    st.iconS = theme.iconSmall();
 
     int width = MeasureWidth(owner, theme, nullptr, &st.tree, st.iconS, false, minWidthPx);
     int topCount = 0;

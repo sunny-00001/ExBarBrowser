@@ -101,22 +101,20 @@ void SequenceHint::Paint(HWND h) {
 
         // 前缀行：g
         RECT head{pad, y, rc.right - pad, y + rowH};
-        SetTextColor(mem, theme_->accent);
-        DrawTextW(mem, prefix_.empty() ? L"序列" : prefix_.c_str(), -1, &head,
-                  DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+        ui::DrawTextRow(mem, nullptr, prefix_.empty() ? L"序列" : prefix_, head, theme_->accent,
+                        DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
         y += rowH;
 
         for (const auto& kv : items_) {
             RECT r{pad, y, rc.right - pad, y + rowH};
             RECT rt = r;
             rt.right = r.left + theme_->S(28);
-            SetTextColor(mem, theme_->text);
-            DrawTextW(mem, kv.first.c_str(), -1, &rt, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            ui::DrawTextRow(mem, nullptr, kv.first, rt, theme_->text,
+                            DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
             rt = r;
             rt.left = r.left + theme_->S(28);
-            SetTextColor(mem, theme_->sub);
-            DrawTextW(mem, kv.second.c_str(), -1, &rt,
-                      DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            ui::DrawTextRow(mem, nullptr, kv.second, rt, theme_->sub,
+                            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
             y += rowH;
         }
 

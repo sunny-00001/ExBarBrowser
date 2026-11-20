@@ -359,9 +359,8 @@ void BookmarkBar::Paint(HWND h) {
             }
             x += iconPx + theme_->S(6);
             RECT tr{x, it.rc.top, it.rc.right - padX - (it.folder ? theme_->S(14) : 0), it.rc.bottom};
-            SetTextColor(mem, draggingThis ? theme_->sub : theme_->text);
-            DrawTextW(mem, it.label.c_str(), -1, &tr,
-                      DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            ui::DrawTextRow(mem, nullptr, it.label, tr, draggingThis ? theme_->sub : theme_->text,
+                            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
             if (it.folder) {
                 // 与导航栏/标签栏同一个箭头原语：用 chevron 字形 + 主题色，
                 // 而不是自绘折线（DPI 下尺寸写死、深色下也不跟随文字色）。
@@ -600,7 +599,9 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
     rows.push_back({L"撤销删除", L"", nullptr, false, false, !store.CanUndo(), 7});
     rows.push_back({L"清除全部书签", L"", nullptr, false, false, false, 8});
 
-    int pick = ShowPopupList(hwnd_, *theme_, screen, rows, 0);
+    // 右键菜单属于某一项：键带上 id，不同项的右键菜单互不当成连点。
+    const std::wstring toggleKey = L"bmk-menu:" + it.id;
+    int pick = ShowPopupList(hwnd_, *theme_, screen, rows, 0, false, 20, toggleKey.c_str());
     if (pick < 0) return;
     int action = rows[static_cast<size_t>(pick)].data;
     switch (action) {
@@ -687,7 +688,7 @@ void BookmarkBar::ShowEmptyMenu(POINT screen) {
     rows.push_back({L"清除全部书签", L"", nullptr, false, false, false, 9});
     rows.push_back({L"隐藏书签栏", L"", nullptr, false, false, false, 5});
 
-    int pick = ShowPopupList(hwnd_, *theme_, screen, rows, 0);
+    int pick = ShowPopupList(hwnd_, *theme_, screen, rows, 0, false, 20, L"bmk.empty");
     if (pick < 0) return;
     int action = rows[static_cast<size_t>(pick)].data;
     switch (action) {

@@ -10,11 +10,10 @@
 namespace {
 
 // = DrawCrumbSep：面包屑分隔符用 Fluent 字形（不是 1px 折线，折线在深色下发锯齿）
-void DrawSep(HDC dc, const RECT& zone, COLORREF color, wchar_t glyph) {
-    // 与其他栏的 chevron 统一：按 DPI 字号取，而不是用"区高比例"反推
-    // （不同栏高下字形大小会漂移，标签栏/弹层的 chevron 都是 S(10)）。
-    int em = MulDiv(12, zone.bottom - zone.top, 24);
-    ui::DrawGlyph(dc, glyph, zone, em, color, DT_CENTER | DT_VCENTER);
+void DrawSep(HDC dc, const RECT& zone, const Theme& th, COLORREF color, wchar_t glyph) {
+    // 走尺寸令牌，不按"区高比例"反推：这里原来是 MulDiv(12, 区高, 24)，
+    // 于是同一套 chevron 在面包屑里随栏高漂移、在标签栏/弹层里固定 —— 三套观感。
+    ui::DrawGlyph(dc, glyph, zone, th.iconChevron(), color, DT_CENTER | DT_VCENTER);
 }
 
 }  // namespace
@@ -31,7 +30,7 @@ void NavBar::DrawButton(HDC dc, const Btn& b, bool hover, bool down) {
 
     int arrowW = b.hasArrow ? theme_->S(kArrow96) : 0;
     RECT box{b.rc.left, b.rc.top, b.rc.right - arrowW, b.rc.bottom};
-    int isz = theme_->S(kIcon96);
+    const int isz = theme_->iconCompact();
     COLORREF color = b.enabled ? theme_->text : theme_->disabled;
     if (b.icon) {
         ui::DrawIconCentered(dc, b.icon, box, isz);
@@ -43,8 +42,10 @@ void NavBar::DrawButton(HDC dc, const Btn& b, bool hover, bool down) {
         int divX = b.rc.right - arrowW;
         RECT vr{divX, b.rc.top + theme_->S(6), divX, b.rc.bottom - theme_->S(6)};
         ui::DrawSeparator(dc, vr, true, theme_->line);
-        ui::DrawChevron(dc, divX + arrowW / 2, (b.rc.top + b.rc.bottom) / 2, theme_->S(4), color,
-                        1);
+        // 分裂箭头曾经传 S(4)，被 DrawGlyph 的 8px 下限静默抬成 8px：96%~168% DPI
+        // 区间里按钮从 24px 长到 42px，箭头却一动不动（见 theme.h iconChevron96 注释）。
+        ui::DrawChevron(dc, divX + arrowW / 2, (b.rc.top + b.rc.bottom) / 2, theme_->iconChevron(),
+                        color, 1);
     }
 }
 
@@ -59,7 +60,7 @@ void NavBar::DrawBreadcrumb(HDC dc, const RECT& rc) {
 
     // 前导图标：当前文件夹的 shell 图标（与 mod 同尺寸 iconSize）
     if (leadIcon_) {
-        ui::DrawIconVCentered(dc, leadIcon_, cx, rc.top, rc.bottom, theme_->S(kIcon96));
+        ui::DrawIconVCentered(dc, leadIcon_, cx, rc.top, rc.bottom, theme_->iconCompact());
     }
     cx += theme_->S(kLead96);
 
@@ -72,7 +73,8 @@ void NavBar::DrawBreadcrumb(HDC dc, const RECT& rc) {
             RECT hr{zone.left - theme_->S(3), rc.top, zone.right + theme_->S(3), rc.bottom};
             ui::FillRectColor(dc, hr, theme_->hover);
         }
-        DrawSep(dc, zone, hot ? theme_->text : theme_->chevron, ico::Glyph(ico::IconId::ChevronLeft));
+        DrawSep(dc, zone, *theme_, hot ? theme_->text : theme_->chevron,
+                ico::Glyph(ico::IconId::ChevronLeft));
     }
     cx += theme_->S(kSep96);
 
@@ -86,12 +88,9 @@ void NavBar::DrawBreadcrumb(HDC dc, const RECT& rc) {
                     rc.bottom};
             ui::FillRectColor(dc, hr, theme_->hover);
         }
-        HGDIOBJ old = SelectObject(dc, theme_->font);
-        SetTextColor(dc, part.ghost ? theme_->disabled : theme_->text);
-        RECT tr = segRects_[k];
-        DrawTextW(dc, part.label.c_str(), -1, &tr,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-        SelectObject(dc, old);
+        ui::DrawTextRow(dc, theme_->font, part.label, segRects_[k],
+                        part.ghost ? theme_->disabled : theme_->text,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
         // 每级分隔符：复用通用 DrawChevron，rest 保持原来的箭头形态，
         // 仅点开菜单那一级切到 down（dir>0）体现展开态。与弹层 folder 行同一原语、同一尺寸。
@@ -106,7 +105,7 @@ void NavBar::DrawBreadcrumb(HDC dc, const RECT& rc) {
         }
         int cx = (zone.left + zone.right) / 2;
         int cy = (zone.top + zone.bottom) / 2;
-        ui::DrawChevron(dc, cx, cy, theme_->S(10),
+        ui::DrawChevron(dc, cx, cy, theme_->iconChevron(),
                         chevHot ? theme_->text : theme_->chevron, chevOpen ? 1 : 0);
     }
     RestoreDC(dc, save);
@@ -130,11 +129,8 @@ void NavBar::Paint(HWND h) {
 
         // 字段内下拉箭头：hover 高亮整格，箭头本身用向下字形
         if (hotDrop_) ui::FillRectColor(mem, dropRc_, theme_->hover);
-        {
-            int gh = (dropRc_.bottom - dropRc_.top) * 2 / 5;
-            ui::DrawChevron(mem, (dropRc_.left + dropRc_.right) / 2,
-                            (dropRc_.top + dropRc_.bottom) / 2, gh, theme_->text, 1);
-        }
+        ui::DrawChevron(mem, (dropRc_.left + dropRc_.right) / 2,
+                        (dropRc_.top + dropRc_.bottom) / 2, theme_->iconChevron(), theme_->text, 1);
 
         // 边框最后描（否则被框内填充盖掉）
         ui::FrameRectColor(mem, fieldRc_, theme_->editBorder);

@@ -1,6 +1,7 @@
 #include "prompt.h"
 
 #include "platform_win.h"
+#include "ui_draw.h"
 
 namespace {
 
@@ -90,19 +91,18 @@ LRESULT CALLBACK PromptProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             FillRect(dc, &rc, st->theme->brBar);
             if (!st->label.empty()) {
                 SetBkMode(dc, TRANSPARENT);
-                SetTextColor(dc, st->theme->sub);
-                HGDIOBJ of = SelectObject(dc, st->theme->font);
-                RECT tr{st->theme->S(16), st->theme->S(18), rc.right - st->theme->S(16),
-                        st->theme->S(42)};
-                DrawTextW(dc, st->label.c_str(), -1, &tr,
-                          DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+                // 两个 label 各调一次原语（它自己选字体并还原），不再共用一个 of ——
+                // 共用时任何一条分支提前 return 都会把字体留在 DC 上。
+                const RECT tr{st->theme->S(16), st->theme->S(18), rc.right - st->theme->S(16),
+                              st->theme->S(42)};
+                ui::DrawTextRow(dc, st->theme->font, st->label, tr, st->theme->sub,
+                                DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
                 if (!st->label2.empty()) {
-                    RECT tr2{st->theme->S(16), st->theme->S(76), rc.right - st->theme->S(16),
-                             st->theme->S(100)};
-                    DrawTextW(dc, st->label2.c_str(), -1, &tr2,
-                              DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+                    const RECT tr2{st->theme->S(16), st->theme->S(76),
+                                   rc.right - st->theme->S(16), st->theme->S(100)};
+                    ui::DrawTextRow(dc, st->theme->font, st->label2, tr2, st->theme->sub,
+                                    DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
                 }
-                SelectObject(dc, of);
             }
         }
         EndPaint(h, &ps);

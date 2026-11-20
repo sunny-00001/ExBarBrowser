@@ -181,6 +181,16 @@ UNIQUE = [
          allow={"shell_ops.cpp"},
          why="统一用 shellops::FolderView2(view) / ShellFolder(fv2)；"
              "手写 QI 容易漏掉 ComPtr 的 Reset 语义而造成引用泄漏"),
+
+    # ---- 画一行文本（2026-11-20 收编）----
+    # MeasureText 只收了"量"，没收"画"，于是 7 个文件 11 处各写一遍
+    # SelectObject + SetTextColor + DrawTextW + 还原。每处都是一个"忘记还原就
+    # 让后续绘制串体"的机会。规则只守**直接调 DrawTextW** 的写法；
+    # DrawGlyph 内部那一次（画单个字形码位）是 ui_draw.cpp 自己，白名单覆盖。
+    dict(name="画一行文本", pat=r"\bDrawTextW\s*\(",
+         allow={"ui_draw.cpp"},
+         why="统一用 ui::DrawTextRow(hdc, font, text, rc, color, fmt)；"
+             "它保证字体一定被还原，不会让后续绘制串体"),
 ]
 
 # ---------------------------------------------------------------------------
