@@ -508,7 +508,11 @@ void BookmarkBar::ShowChildTree(int index) {
             onNavigate_(it.path);
         return;
     }
-    std::wstring picked = folder_tree::Show(hwnd_, *theme_, at, std::move(top));
+    // toggleKey 用书签 id（不是下标）：重排之后同一个书签的下标会变，用下标会让
+    // "连点两下"在重排过的栏上判成两个不同锚点。带前缀与面包屑的键区分开。
+    const std::wstring toggleKey = L"bmk-icon:" + it.id;
+    std::wstring picked =
+        folder_tree::Show(hwnd_, *theme_, at, std::move(top), 0, toggleKey.c_str());
 
     // 弹层是模态的，回来时"光标下高亮"已经不成立，清掉避免残留
     hoverIcon_ = -1;
@@ -538,7 +542,9 @@ void BookmarkBar::ShowFolderMenu(int index, POINT screen) {
     walk(node->children, 0);
     if (rows.empty()) return;
 
-    int pick = ShowPopupList(hwnd_, *theme_, screen, rows, 0);
+    // 锚点键用书签 id：与图标树同一理由（重排后下标会变），加前缀区分两种下拉。
+    const std::wstring toggleKey = L"bmk-folder:" + items_[static_cast<size_t>(index)].id;
+    int pick = ShowPopupList(hwnd_, *theme_, screen, rows, 0, false, 20, toggleKey.c_str());
     if (pick < 0 || pick >= static_cast<int>(rows.size())) return;
     const PopupRow& r = rows[static_cast<size_t>(pick)];
     if (!r.path.empty() && onNavigate_) onNavigate_(r.path);
@@ -567,7 +573,7 @@ void BookmarkBar::ShowOverflowMenu(POINT screen) {
         rows.push_back({items_[i].label, items_[i].path, items_[i].icon, items_[i].folder, false,
                         false, static_cast<int>(i)});
     }
-    int pick = ShowPopupList(hwnd_, *theme_, screen, rows, 0);
+    int pick = ShowPopupList(hwnd_, *theme_, screen, rows, 0, false, 20, L"bmk.overflow");
     if (pick < 0) return;
     int idx = rows[static_cast<size_t>(pick)].data;
     if (idx < 0) return;

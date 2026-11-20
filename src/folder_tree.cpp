@@ -25,10 +25,10 @@ std::vector<TreeNode> Children(const std::wstring& folder) {
 }
 
 std::wstring Show(HWND owner, const Theme& theme, POINT at, std::vector<TreeNode> top,
-                  int minWidthPx) {
+                  int minWidthPx, const wchar_t* toggleKey) {
     if (top.empty()) return std::wstring();
     // 懒加载回调 = Children 本身：点 chevron 就地展开，与地址栏分隔符同一行为。
-    return ShowFolderTree(owner, theme, at, std::move(top), Children, minWidthPx);
+    return ShowFolderTree(owner, theme, at, std::move(top), Children, minWidthPx, toggleKey);
 }
 
 }  // namespace folder_tree

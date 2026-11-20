@@ -22,7 +22,11 @@ std::vector<TreeNode> Children(const std::wstring& folder);
 // top 为空时不弹窗，直接返回空 —— 与地址栏分隔符"没有子目录就不弹"同口径。
 // 只做"建树 / 弹层"两段：空目录要不要退化成直接进入，由调用方按语境决定
 // （书签栏进入该目录，面包屑什么都不做），本层不替调用方猜。
+//
+// toggleKey：「再点即收」的锚点键（见 popup_toggle.h）。同一个书签/
+// 同一级面包屑必须传同一个串，否则"连点两下"会被判成两个不同锚点、开出两个菜单。
+// 为空 = 不参与判定。
 std::wstring Show(HWND owner, const Theme& theme, POINT at, std::vector<TreeNode> top,
-                  int minWidthPx = 0);
+                  int minWidthPx = 0, const wchar_t* toggleKey = nullptr);
 
 }  // namespace folder_tree
