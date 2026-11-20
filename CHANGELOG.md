@@ -35,8 +35,9 @@
 - **`E:\ExBarBrowser` 成为独立 git 仓库**（分支 `main`）。此前它靠 `D:\Windhawk` 根
   `.gitignore` §8 的白名单放行，寄生在主仓里：改一个分片要在别人的仓库里 `git add ExBarBrowser/`，
   提交历史与 ExBar mod 的 7.7 万行混在一条时间线上，两边互不相关的改动互相干扰。
-  迁到 E 盘后工作区已不在主仓路径下（主仓 `git status` 是 92 条 `D`），继续寄生只会留下
-  一堆"已删除"的幻影，因此改为独立仓库。
+  迁到 E 盘后工作区已不在主仓路径下（主仓 `git status` 因此变成 95 条 `D`），继续寄生只会留下
+  一堆"已删除"的幻影，因此改为独立仓库。主仓里那 95 条删除由操作者自行决定何时清理 ——
+  本仓库不引用主仓，主仓也不引用本仓库，先清后清都不影响这边。
 - **入库范围不变，但语义变了**：以前"不入库"是为了不给主仓添产物噪音；现在"不入库"意味着
   **克隆即可构建、构建不产生提交**。`data/` 整目录仍不入库（书签/键位/窗口几何是个人数据），
   新克隆首次启动会走内置默认表 + 空书签树，`settings.json` 首次保存时自动创建。
@@ -475,6 +476,7 @@
   `*.exe` / `*.obj` / `*.d` / `*.gch` / `*.log` / `shot*.png` / `out*.png` 与 `*.bak` 类
   编辑备份一律不入库；提交沿用主仓约定式提交，见 [README](README.md) §3.4 与
   [CONTRIBUTING](CONTRIBUTING.md) §2.3。
+
   *（同日晚工作区迁到 `E:\ExBarBrowser` 后已改为独立仓库，见本版首节；此条保留为当时的事实记录。）*
 - **复制到 / 移动到文件夹**（`CopyToFolder` / `MoveToFolder`）：`IFileOpenDialog(FOS_PICKFOLDERS)`
   + `IFileOperation::CopyItems/MoveItems`，撤销与冲突交给系统。
