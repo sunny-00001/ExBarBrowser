@@ -150,9 +150,31 @@ bool CopyPaths(const std::vector<std::wstring>& paths, bool cut) {
             // 多个：SHCreateDataObject 收的是"父目录的绝对 PIDL + 子 PIDL 数组"。
             // 走这条路而不是自己拼 CF_HDROP —— 后者只表达文件名列表，
             // 会丢掉"来自哪个命名空间"（回收站项、库项），粘贴到某些目标会失败。
+            //
+            // 【必须全部同父】SHELLIDLIST 的语义是"父 PIDL + **相对该父**的 child"。
+            // 原实现只取 paths[0] 的父目录，其余路径的 ILFindLastID 被硬当成同一个
+            // 父的子项 —— 跨目录时构造出的是**不存在的项**。而 FsCopy/FsCut 只校验
+            // 每个路径存在，完全不校验同父，于是 AI 传
+            // ["C:\\a\\x.txt","C:\\b\\y.txt"] 会得到"粘贴时要么失败要么粘错东西"，
+            // 且命令返回成功。这比崩溃更难发现。
+            //
+            // 跨目录的副本得用 IDataObject 逐项聚合，那是另一套写法；在没实现它之前，
+            // 明确拒绝并留日志，好过静默做错。
+            const std::wstring parent0 = ParentOf(paths[0]);
+            for (size_t i = 1; i < paths.size(); ++i) {
+                const std::wstring pi = ParentOf(paths[i]);
+                // CompareStringOrdinal + 忽略大小写：与 SamePath（本文件后部）同口径，
+                // 这里不能用 _wcsicmp —— 它依赖 locale，土耳其语等区域会把 i/I 判错。
+                if (CompareStringOrdinal(pi.c_str(), -1, parent0.c_str(), -1, TRUE) != CSTR_EQUAL) {
+                    LogDbg(L"[shell] CopyPaths: 跨目录多选不支持（%s 与 %s 不同父）",
+                           paths[0].c_str(), paths[i].c_str());
+                    return false;
+                }
+            }
+
             PIDLIST_ABSOLUTE dirAbs = nullptr;
             SFGAOF attr = 0;
-            if (FAILED(SHParseDisplayName(ParentOf(paths[0]).c_str(), nullptr, &dirAbs, 0, &attr)) ||
+            if (FAILED(SHParseDisplayName(parent0.c_str(), nullptr, &dirAbs, 0, &attr)) ||
                 !dirAbs)
                 return false;
 

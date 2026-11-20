@@ -68,11 +68,24 @@ void Config::Load() {
     tf::EnsureDir(Dir());
 
     std::wstring text;
-    if (!tf::ReadText(SettingsPath(), &text)) return;
+    if (!tf::ReadText(SettingsPath(), &text)) {
+        // 读不到：文件不存在（首次运行，正常）或读不出（异常）。
+        // 只有"存在但读不出"才需要禁止写盘。
+        parseFailed_ = tf::Exists(SettingsPath());
+        if (parseFailed_) LogDbg(L"[config] settings.json 存在但读不出，已禁止本次会话覆盖写");
+        return;
+    }
     json::Value root;
     std::wstring err;
     if (!json::Parse(text, root, &err) || !root.IsObject()) {
-        LogDbg(L"[config] settings.json 解析失败：%s", err.c_str());
+        // 【禁止后续 Save 覆盖】保留默认值继续运行（不能因为配置坏了就打不开程序），
+        // 但绝不能把"只有默认值的 JSON"写回去 —— 那会抹掉用户的
+        // recentPaths / sessionPaths / lockedPaths / closedTabs / hotkeyOverrides。
+        // 原来的实现只写一行日志就 return，于是任何一次 Save（13 处调用点，
+        // 包括"点一下显示/隐藏书签栏"）都会销毁用户的配置文件。
+        parseFailed_ = true;
+        LogDbg(L"[config] settings.json 解析失败：%s（已禁止覆盖写，修好或删除该文件后重启）",
+               err.c_str());
         return;
     }
 
@@ -142,6 +155,12 @@ void Config::Load() {
 }
 
 void Config::Save() {
+    // 加载时解析失败过就别写 —— 内存里只有默认值，写回去等于销毁用户配置。
+    // 这条与 BookmarkStore::Save 的同名护栏是同一个道理：宁可不保存。
+    if (parseFailed_) {
+        LogDbg(L"[config] 拒绝写盘：settings.json 上次解析失败（覆盖会丢失最近访问/会话/键位）");
+        return;
+    }
     json::Value root = json::Value::MakeObject();
     root.Set(L"version", json::Value::MakeInt(1));
     root.Set(L"tab", json::Value::MakeBool(s_.showTab));

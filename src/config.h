@@ -111,4 +111,8 @@ private:
     mutable std::wstring dir_;
     Settings s_;
     bool loaded_ = false;
+    // settings.json 存在但解析失败 → 禁止 Save 覆盖（否则用户手改打错一个逗号，
+    // 下次任何一次 Save 都会把 recentPaths / sessionPaths / lockedPaths / closedTabs /
+    // hotkeyOverrides 全部抹掉）。见 config.cpp Load() 的注释。
+    bool parseFailed_ = false;
 };

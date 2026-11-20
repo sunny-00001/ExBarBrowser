@@ -66,12 +66,12 @@ const std::vector<CommandDef> kTable = {
     {CmdId::NavHome, L"nav.home", L"Nav", L"导航栏", L"回到主文件夹", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
     {CmdId::NavViewMenu, L"nav.viewmenu", L"Nav", L"导航栏", L"视图菜单", true, Effects{0, 0, 0, 1, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
     // ---- Path ----
-    {CmdId::PathCopy, L"path.copy", L"Path", L"导航栏", L"复制完整路径", true, Effects{0, 0, 1, 1, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelection}},
-    {CmdId::PathCopyName, L"path.copy.name", L"Path", L"导航栏", L"复制文件名", true, Effects{0, 0, 1, 1, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelection}},
-    {CmdId::PathCopyDir, L"path.copy.dir", L"Path", L"导航栏", L"复制当前目录", true, Effects{0, 0, 1, 1, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::PathCopyUnc, L"path.copy.unc", L"Path", L"导航栏", L"复制 UNC 路径", true, Effects{0, 0, 1, 1, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true},
-    {CmdId::PathCopyExt, L"path.copy.ext", L"Path", L"导航栏", L"复制扩展名", true, Effects{0, 0, 1, 1, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true},
-    {CmdId::PathCopyTab, L"path.copy.tab", L"Path", L"导航栏", L"复制所有标签路径", true, Effects{0, 0, 1, 1, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
+    {CmdId::PathCopy, L"path.copy", L"Path", L"导航栏", L"复制完整路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelection}},
+    {CmdId::PathCopyName, L"path.copy.name", L"Path", L"导航栏", L"复制文件名", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelection}},
+    {CmdId::PathCopyDir, L"path.copy.dir", L"Path", L"导航栏", L"复制当前目录", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
+    {CmdId::PathCopyUnc, L"path.copy.unc", L"Path", L"导航栏", L"复制 UNC 路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true},
+    {CmdId::PathCopyExt, L"path.copy.ext", L"Path", L"导航栏", L"复制扩展名", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true},
+    {CmdId::PathCopyTab, L"path.copy.tab", L"Path", L"导航栏", L"复制所有标签路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
     {CmdId::PathCopyLink, L"path.copy.link", L"Path", L"导航栏", L"复制为快捷方式", false, Effects{0, 1, 0, 1, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
     // ---- File ----
     {CmdId::CmdNewTextFile, L"file.new.text", L"File", L"文件视图", L"新建文本文件", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
@@ -82,7 +82,12 @@ const std::vector<CommandDef> kTable = {
     {CmdId::CmdPaste, L"file.paste", L"File", L"文件操作", L"粘贴", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasClipboard}},
     {CmdId::CmdDelete, L"file.delete", L"File", L"文件操作", L"删除", true, Effects{0, 1, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelection}},
     {CmdId::CmdRename, L"file.rename", L"File", L"文件操作", L"重命名", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelection}},
-    {CmdId::CmdProps, L"file.properties", L"File", L"文件操作", L"属性", true, Effects{1, 0, 1, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelectionSingle}},
+    // 【Effects 必须按物理后果声明，不按"这个命令看起来像什么"】
+    // 打开属性对话框**能改东西**：只读位、隐藏属性、时间戳。所以 readOnly 必须是 0，
+    // 与同义的 fs.properties 保持同一口径（那一行本来就是 0）。
+    // 以前这里标 readOnly=1，而 AI 客户端正是按 annotations 决定"要不要先弹确认" ——
+    // 两套口径等于契约不可信。
+    {CmdId::CmdProps, L"file.properties", L"File", L"文件操作", L"属性", true, Effects{0, 0, 1, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelectionSingle}},
     {CmdId::CmdUndo, L"file.undo", L"File", L"文件操作", L"撤销", false, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
     {CmdId::CmdSelectAll, L"file.select.all", L"File", L"文件操作", L"全选", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
     {CmdId::CmdOpen, L"file.open", L"File", L"文件操作", L"打开", true, Effects{0, 0, 0, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true},
