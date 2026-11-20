@@ -65,8 +65,19 @@ bool SumSubtree(const std::wstring& dir, const Options& opt, Clock::time_point d
         }
         ++*dirs;
 
+        unsigned innerCount = 0;
         do {
             if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+
+            // 【内层也要查 deadline】原来只在每个目录的入口检查一次，于是单个
+            // 含几十万文件的目录（WinSxS、node_modules）会让 FindNextFileW
+            // 一路跑完 —— budgetMs=1500 形同虚设，UI 线程直接卡死。
+            // 每 1024 项查一次时钟：开销可忽略，粒度足够。
+            if ((++innerCount & 0x3FF) == 0 && Clock::now() > deadline) {
+                FindClose(h);
+                if (deniedOut) *deniedOut = denied;
+                return false;
+            }
 
             const bool isDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
             if (isDir) {

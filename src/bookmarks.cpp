@@ -269,6 +269,7 @@ bool BookmarkStore::Load(const std::wstring& path) {
     undo_.clear();
     loadFailed_ = false;
     fileStamp_ = LastWriteOf(path);  // 记录基线，供外部变更检测
+    fileStampSize_ = SizeOf(path);
     return true;
 }
 
@@ -297,6 +298,7 @@ bool BookmarkStore::Save() {
     if (ok) {
         dirty_ = false;
         fileStamp_ = LastWriteOf(file_);  // 原子替换后取新时间戳，别把自家写入当外部变更
+        fileStampSize_ = SizeOf(file_);
     }
     return ok;
 }
@@ -453,12 +455,41 @@ FILETIME BookmarkStore::LastWriteOf(const std::wstring& path) const {
     return ft;
 }
 
+unsigned long long BookmarkStore::SizeOf(const std::wstring& path) const {
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (!GetFileAttributesExW(tf::ToExtended(path).c_str(), GetFileExInfoStandard, &fad)) return 0;
+    return (static_cast<unsigned long long>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+}
+
 bool BookmarkStore::FileChanged() const {
     if (file_.empty()) return false;
     FILETIME cur = LastWriteOf(file_);
-    if (cur.dwHighDateTime == 0 && cur.dwLowDateTime == 0) return false;
+
+    // 【打不开 = 视野不明 = 当作已变更】
+    //
+    // 原实现是 `if (cur 是零) return false;` —— 即"读不到就算没变"。
+    // 而"读不到"最常见的成因恰恰是**另一个进程正独占着这个文件**
+    // （编辑器保存中、同步工具写入中），那正是最该拒绝覆盖的时刻。
+    // 守卫在最需要的场景放行，等于没有守卫。
+    if (cur.dwHighDateTime == 0 && cur.dwLowDateTime == 0) return true;
+
+    // 基线未知（尚未 Load 成功过）：保守认为"有变化"。
     if (fileStamp_.dwHighDateTime == 0 && fileStamp_.dwLowDateTime == 0) return true;
-    return CompareFileTime(&cur, &fileStamp_) != 0;
+
+    if (CompareFileTime(&cur, &fileStamp_) != 0) return true;
+
+    // mtime 相同不代表内容相同：FAT/网络共享的时间戳粒度可达 2 秒，
+    // CopyFile 会保留时间戳，SetFileTime 可以回拨。同一窗口内改两次、
+    // 或工具"保留时间戳"复制覆盖，都只有大小会变。
+    //
+    // 代价：每次检查多一次 stat。FileChanged 只在导入/保存前的守卫里调用，
+    // 不是热路径。
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (!GetFileAttributesExW(tf::ToExtended(file_).c_str(), GetFileExInfoStandard, &fad))
+        return true;   // 同上的理由：看不到就算有变
+    const unsigned long long size =
+        (static_cast<unsigned long long>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+    return size != fileStampSize_;
 }
 
 std::vector<std::pair<std::wstring, std::wstring>> BookmarkStore::Flatten() const {

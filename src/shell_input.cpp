@@ -94,13 +94,30 @@ void Unsubclass(HWND h) {
 
 IUIAutomation* Uia() {
     static IUIAutomation* uia = nullptr;
-    static bool tried = false;
-    if (!tried) {
-        tried = true;
-        CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_IUIAutomation,
-                         reinterpret_cast<void**>(&uia));
+    static ULONGLONG retryAt = 0;   // 0 = 还没试过
+    if (uia) return uia;
+
+    // 【必须可重试】UIAutomation 服务是**惰性启动**的，首次 CoCreateInstance
+    // 偶发失败是已知现象（本文件其它地方的注释也提到）。原实现用 `static bool tried`
+    // 做一次性闩锁：失败后 tried 永真、uia 永为 nullptr，于是整个进程生命周期内
+    // 所有 shell 视图的鼠标规则（双击空白上一级、单击项、滚轮）全部退化，
+    // 只能重启恢复。
+    //
+    // 而 DetectViaUia 里那套"失败 → 冷却 2000ms → 再试"只对 ElementFromPoint
+    // 失败有效，对**初始化**失败完全无效 —— 这是一条断掉的重试链。
+    const ULONGLONG now = GetTickCount64();
+    if (retryAt != 0 && now < retryAt) return nullptr;   // 冷却中
+
+    if (SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_IUIAutomation, reinterpret_cast<void**>(&uia))) &&
+        uia) {
+        retryAt = 0;
+        return uia;
     }
-    return uia;
+    uia = nullptr;
+    retryAt = now + 5000;   // 5s 后再试：足够跨过服务启动期，又不会频繁重试拖慢输入
+    LogDbg(L"[uia] CoCreateInstance 失败，%d ms 后重试", 5000);
+    return nullptr;
 }
 
 struct BStr {

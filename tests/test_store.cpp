@@ -109,6 +109,48 @@ int main() {
     store.Save();
     CHECK(!store.FileChanged(), "no false positive after Save");
 
+    // ---- FileChanged 的两种漏判 ----
+    printf("\n外部变更检测不得漏判（mtime 相同 / 文件打不开）\n");
+    {
+        // ① 只改大小、不动 mtime：FAT/网络共享的粒度可达 2 秒，
+        //    CopyFile 保留时间戳，SetFileTime 可回拨 —— 这些场景 mtime 都不变。
+        HANDLE h = CreateFileW(file.c_str(), GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0,
+                               nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            FILETIME keep{};
+            GetFileTime(h, nullptr, nullptr, &keep);
+            SetFilePointer(h, 0, nullptr, FILE_END);
+            const char extra[] = "<DT><A HREF=\"file:///Z:/\">Z</A>\r\n";
+            DWORD w = 0;
+            WriteFile(h, extra, sizeof(extra) - 1, &w, nullptr);   // 变大，mtime 变了
+            SetFileTime(h, nullptr, nullptr, &keep);               // 再把 mtime 改回去
+            CloseHandle(h);
+            CHECK(store.FileChanged(), "mtime 相同但大小变了 -> 检出");
+        } else {
+            printf("skip 无法打开文件做大小测试\n");
+        }
+
+        // ② 文件"看不到"时必须保守判为有变化。
+        //
+        //    旧实现 `if (cur 是零) return false` 把"读不到"当成"没变"。
+        //    而读不到最常见的原因恰恰是**另一进程正独占着它**（编辑器保存中、
+        //    同步工具写入中），那正是最该拒绝覆盖的时刻。
+        //
+        //    离线单测没法让另一个进程持续持句柄，但"文件消失"走的是同一条
+        //    失败分支（LastWriteOf 返回零值），足以验证语义。
+        store.Save();   // 基线刷干净
+        CHECK(!store.FileChanged(), "基线干净时不误报");
+        DeleteFileW(file.c_str());
+        CHECK(store.FileChanged(), "文件不可见（已删除）-> 保守判为有变化");
+
+        // 复原，后续用例继续用
+        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/\" >D</A>\r\n</DL><p>\r\n");
+        store.Load(file);
+        CHECK(!store.FileChanged(), "重新加载后基线恢复正常");
+    }
+
     // ---- 数据丢失护栏：读不懂的文件不许被覆盖 ----
     //
     // 这是全模块唯一的数据丢失链：Load 失败 → 书签栏空白 → 用户加一个书签 →

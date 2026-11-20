@@ -84,6 +84,7 @@ private:
     void Touch() { dirty_ = true; }
     void PushUndo();
     FILETIME LastWriteOf(const std::wstring& path) const;
+    unsigned long long SizeOf(const std::wstring& path) const;
 
     BookmarkList roots_;
     std::wstring file_;
@@ -93,6 +94,9 @@ private:
     int seq_ = 1;
     std::vector<BookmarkList> undo_;      // 删除/重排前快照（≤20）
     FILETIME fileStamp_{};                // Load/Save 时的文件时间，用于外部变更检测
+    // 与 fileStamp_ 配套的**文件大小**。单看 mtime 会漏判：FAT/网络共享时间戳
+    // 粒度可达 2 秒、CopyFile 保留时间戳、SetFileTime 可回拨。
+    unsigned long long fileStampSize_ = 0;
 };
 
 // HTML 与路径互转（供拖放/复制路径复用）
