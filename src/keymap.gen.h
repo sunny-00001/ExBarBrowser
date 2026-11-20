@@ -1,0 +1,135 @@
+// 由 tools/gen_keymap.py 从 data/keymap.json 生成 —— 不要手改本文件。
+// 改默认键：编辑 data/keymap.json，再跑 python tools/gen_keymap.py。
+// --check 会在 CI 里校验两者一致（过期即失败）。
+
+#pragma once
+
+namespace keymap_gen {
+
+// setting / command / 默认组合键（空串 = 用系统原生键，不占组合键）
+struct DefHotkey {
+    const wchar_t* setting;
+    const wchar_t* command;
+    const wchar_t* key;
+};
+
+inline constexpr DefHotkey kHotkeys[] = {
+    {L"hotkeyOpenFolderOptions", L"FolderOptions", L"Alt+O"},
+    {L"hotkeyMapNetworkDrive", L"MapDrive", L"Ctrl+Shift+I"},
+    {L"hotkeyDisconnectNetworkDrive", L"UnmapDrive", L"Ctrl+Alt+I"},
+    {L"hotkeyOpenWith", L"CmdOpenWith", L"Ctrl+O"},
+    {L"hotkeyCopyPath", L"PathCopy", L"Ctrl+Shift+C"},
+    {L"hotkeyCopyFilename", L"PathCopyName", L"Ctrl+Alt+C"},
+    {L"hotkeyCopyCurrentDirPath", L"PathCopyDir", L"Ctrl+Alt+Shift+C"},
+    {L"hotkeyOpenTerminal", L"OpenTerminal", L"Ctrl+M"},
+    {L"hotkeyOpenTerminalAdmin", L"OpenTerminalAdmin", L"Ctrl+Shift+M"},
+    {L"hotkeyNewTextFile", L"CmdNewTextFile", L"Ctrl+Alt+N"},
+    {L"hotkeyCloneTab", L"TabClone", L"Ctrl+K"},
+    {L"hotkeyReopenClosedTab", L"TabReopenClosed", L"Ctrl+Shift+T"},
+    {L"hotkeyNewWindow", L"NewWindow", L""},
+    {L"hotkeyCloseLeftTabs", L"TabCloseLeft", L"Ctrl+Shift+Left"},
+    {L"hotkeyCloseRightTabs", L"TabCloseRight", L"Ctrl+Shift+Right"},
+    {L"hotkeyQuitExplorer", L"QuitExplorer", L"Ctrl+Q"},
+    {L"hotkeyCloseOtherTabs", L"TabCloseOther", L"Ctrl+Shift+W"},
+    {L"hotkeyToggleHidden", L"ToggleHidden", L"Ctrl+H"},
+    {L"hotkeyToggleSystemFiles", L"ToggleSystemFiles", L"Ctrl+Shift+H"},
+    {L"hotkeyToggleExtensions", L"ToggleExtensions", L"Ctrl+Alt+E"},
+    {L"hotkeyTogglePreviewPane", L"TogglePreviewPane", L"Ctrl+Alt+P"},
+    {L"hotkeyToggleNavPane", L"ToggleNavPane", L"Ctrl+Shift+L"},
+    {L"hotkeyOpenDownloads", L"GoDownloads", L"Ctrl+Shift+J"},
+    {L"hotkeyOpenDesktop", L"GoDesktop", L"Ctrl+Shift+D"},
+    {L"hotkeyOpenDocuments", L"GoDocuments", L"Ctrl+Shift+O"},
+    {L"hotkeyMergeAllWindows", L"TabMergeAll", L"Ctrl+Alt+W"},
+    {L"hotkeyToggleCheckboxes", L"ToggleCheckboxes", L"Ctrl+Alt+M"},
+    {L"hotkeyAddBookmark", L"BmkAddCurrent", L"Ctrl+D"},
+    {L"hotkeyToggleBookmarkBar", L"BmkToggleBar", L"Ctrl+Shift+B"},
+    {L"hotkeySelectInvert", L"SelectInvert", L"Ctrl+I"},
+    {L"hotkeySelectFiles", L"SelectFiles", L"Ctrl+Shift+F"},
+    {L"hotkeySelectFolders", L"SelectFolders", L"Ctrl+Alt+D"},
+    {L"hotkeyCopyToFolder", L"CopyToFolder", L"Ctrl+Shift+A"},
+    {L"hotkeyMoveToFolder", L"MoveToFolder", L"Ctrl+Shift+X"},
+    {L"hotkeyBatchRename", L"BatchRename", L"Ctrl+Shift+R"},
+    {L"hotkeySelectByPattern", L"SelectByPattern", L"Ctrl+Shift+K"},
+    {L"hotkeyNavBack", L"NavBack", L""},
+    {L"hotkeyNavForward", L"NavForward", L""},
+    {L"hotkeyNavUp", L"NavUp", L""},
+    {L"hotkeyNavRefresh", L"NavRefresh", L""},
+    {L"hotkeyGoHome", L"GoHome", L"Alt+Home"},
+    {L"hotkeyTabNew", L"TabNew", L""},
+    {L"hotkeyTabClose", L"TabClose", L""},
+    {L"hotkeyTabNext", L"TabNext", L""},
+    {L"hotkeyTabPrev", L"TabPrev", L""},
+    {L"hotkeyTabMoveLeft", L"TabMoveLeft", L"Shift+Left"},
+    {L"hotkeyTabMoveRight", L"TabMoveRight", L"Shift+Right"},
+    {L"hotkeyTabMoveFirst", L"TabMoveFirst", L"Shift+Home"},
+    {L"hotkeyTabMoveLast", L"TabMoveLast", L"Shift+End"},
+    {L"hotkeyCmdCopy", L"CmdCopy", L""},
+    {L"hotkeyCmdCut", L"CmdCut", L""},
+    {L"hotkeyCmdPaste", L"CmdPaste", L""},
+    {L"hotkeyCmdDelete", L"CmdDelete", L""},
+    {L"hotkeyCmdUndo", L"CmdUndo", L""},
+    {L"hotkeyCmdSelectAll", L"CmdSelectAll", L""},
+    {L"hotkeyCmdNewFolder", L"CmdNewFolder", L""},
+    {L"hotkeyViewNext", L"ViewNext", L"Ctrl+Shift+Down"},
+    {L"hotkeyViewPrev", L"ViewPrev", L"Ctrl+Shift+Up"},
+    {L"hotkeyBmkHideBar", L"BmkHideBar", L"Ctrl+Alt+B"},
+    {L"hotkeyBmkShowBar", L"BmkShowBar", L"Ctrl+Alt+S"},
+    {L"hotkeyCommandPalette", L"CommandPalette", L"Ctrl+Shift+P"},
+    {L"hotkeyHotkeyManager", L"HotkeyManager", L"Alt+K"},
+    {L"hotkeyFocusAddress", L"FocusAddress", L"F4"},
+    {L"hotkeyFocusSearch", L"FocusSearch", L"Ctrl+F"},
+    {L"hotkeyDupFinder", L"DupFinder", L"Ctrl+Shift+Y"},
+    {L"hotkeyFileHash", L"FileHash", L""},
+    {L"hotkeyFolderCompare", L"FolderCompare", L""},
+    {L"hotkeySessionSave", L"SessionSave", L""},
+    {L"hotkeySessionRestore", L"SessionRestore", L""},
+    {L"hotkeyAiTogglePanel", L"AiTogglePanel", L"Ctrl+Alt+A"},
+};
+
+struct DefSeq {
+    const wchar_t* seq;
+    const wchar_t* command;
+};
+
+inline constexpr DefSeq kSeqs[] = {
+    {L"g g", L"FileFocusTop"},
+    {L"g l", L"GoLocalAppData"},
+    {L"g u", L"NavUp"},
+    {L"g b", L"TabPrevTab"},
+    {L"g f", L"NavForward"},
+    {L"g h", L"GoTab1"},
+    {L"g q", L"GoHome"},
+    {L"g r", L"GoStartFolder"},
+    {L"g t", L"TabNew"},
+    {L"g c", L"OpenTerminal"},
+    {L"g d", L"GoDownloads"},
+    {L"g x", L"GoDownloads"},
+    {L"g e", L"TabLast"},
+    {L"g k", L"HotkeyManager"},
+    {L"g p", L"CommandPalette"},
+    {L"g i", L"GoConfigPath"},
+    {L"g m", L"GoControlPanel"},
+    {L"g s", L"GoPowerShell"},
+    {L"g 1", L"GoTab1"},
+    {L"g 2", L"GoTab2"},
+    {L"g 3", L"GoTab3"},
+    {L"g 4", L"GoTab4"},
+    {L"g 5", L"GoTab5"},
+    {L"g 6", L"GoTab6"},
+    {L"g 7", L"GoTab7"},
+    {L"g 8", L"GoTab8"},
+    {L"g 9", L"GoTab9"},
+    {L"x l", L"CloseLeftOne"},
+    {L"x l a", L"TabCloseLeft"},
+    {L"x r", L"CloseRightOne"},
+    {L"x r a", L"TabCloseRight"},
+    {L"x x", L"TabCloseOther"},
+    {L"y c", L"PathCopyUnc"},
+    {L"y e", L"PathCopyExt"},
+    {L"y f", L"CmdCopy"},
+    {L"y n", L"PathCopyName"},
+    {L"y p", L"PathCopy"},
+    {L"y t", L"PathCopyTab"},
+};
+
+}  // namespace keymap_gen

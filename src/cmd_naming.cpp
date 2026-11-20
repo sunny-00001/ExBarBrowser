@@ -1,0 +1,247 @@
+// 命令的命名空间别名表（说明见 cmd_naming.h）。
+//
+// 命名规则：
+//   · 全小写，点分，两段（域.动作）。两段够用：131 条命令按域分组后每组最多 28 条，
+//     再加一段会变成 tab.close.other.left 这种读起来吃力的名字。
+//   · 域取自 CommandDef::group（小写）—— 不另造分类，否则两套"分组"迟早不一致。
+//   · 动作优先用现有名字去掉历史前缀后的部分（NavBack -> back），
+//     而不是重新起名 —— 减少"同一个概念两个词"的混乱。
+//
+// 少数偏离 group 的例外在注释里说明理由。
+#include "cmd_naming.h"
+
+#include <unordered_map>
+
+namespace cmdnaming {
+namespace {
+
+struct Alias {
+    const wchar_t* legacy;
+    const wchar_t* dotted;
+};
+
+// ---- 别名表 ----
+// 未列出的命令走推导规则（group 小写 + 原名小写），见 Derive()。
+const Alias kAliases[] = {
+    // --- Tab（group=Tab）---
+    {L"TabNew",          L"tab.new"},
+    {L"TabClose",        L"tab.close"},
+    {L"TabCloseOther",   L"tab.close.others"},
+    {L"TabCloseLeft",    L"tab.close.left"},
+    {L"TabCloseRight",   L"tab.close.right"},
+    {L"TabClone",        L"tab.clone"},
+    {L"TabReopenClosed", L"tab.reopen"},
+    {L"TabMoveLeft",     L"tab.move.left"},
+    {L"TabMoveRight",    L"tab.move.right"},
+    {L"TabMoveFirst",    L"tab.move.first"},
+    {L"TabMoveLast",     L"tab.move.last"},
+    {L"TabPrevTab",      L"tab.activate.mru"},   // MRU 上一个：与位置切换区分
+    {L"TabLast",         L"tab.activate.last"},
+    {L"TabActivate",     L"tab.activate"},
+    {L"TabNext",         L"tab.next"},
+    {L"TabPrev",         L"tab.prev"},
+    {L"TabMergeAll",     L"tab.merge"},
+    {L"CloseLeftOne",    L"tab.close.prev"},     // 关掉左边"一个"：与 close.left 不同
+    {L"CloseRightOne",   L"tab.close.next"},
+    {L"GoTab1",          L"tab.goto.1"},
+    {L"GoTab2",          L"tab.goto.2"},
+    {L"GoTab3",          L"tab.goto.3"},
+    {L"GoTab4",          L"tab.goto.4"},
+    {L"GoTab5",          L"tab.goto.5"},
+    {L"GoTab6",          L"tab.goto.6"},
+    {L"GoTab7",          L"tab.goto.7"},
+    {L"GoTab8",          L"tab.goto.8"},
+    {L"GoTab9",          L"tab.goto.9"},
+
+    // --- Go（group=Go）：跳转到已知位置 ---
+    {L"GoHome",          L"go.home"},
+    {L"GoDesktop",       L"go.desktop"},
+    {L"GoDownloads",     L"go.downloads"},
+    {L"GoDocuments",     L"go.documents"},
+    {L"GoConfigPath",    L"go.config"},
+    {L"GoLocalAppData",  L"go.localappdata"},
+    {L"GoControlPanel",  L"go.controlpanel"},
+    {L"GoStartFolder",   L"go.startfolder"},
+    {L"GoThisPC",        L"go.thispc"},
+    {L"GoPowerShell",    L"go.powershell"},
+
+    // --- Nav（group=Nav）---
+    {L"NavBack",         L"nav.back"},
+    {L"NavForward",      L"nav.forward"},
+    {L"NavUp",           L"nav.up"},
+    {L"NavRefresh",      L"nav.refresh"},
+    {L"NavHome",         L"nav.home"},
+    {L"NavViewMenu",     L"nav.viewmenu"},
+
+    // --- Path（group=Path）：写剪贴板 ---
+    {L"PathCopy",        L"path.copy"},
+    {L"PathCopyName",    L"path.copy.name"},
+    {L"PathCopyDir",     L"path.copy.dir"},
+    {L"PathCopyUnc",     L"path.copy.unc"},
+    {L"PathCopyExt",     L"path.copy.ext"},
+    {L"PathCopyTab",     L"path.copy.tab"},
+    {L"PathCopyLink",    L"path.copy.link"},
+
+    // --- File（group=File）：交互式沿用 file.*，确定式用 fs.* ---
+    // 为什么确定式单开 fs.*：它们的语义是"对指定路径做文件系统操作"，
+    // 与"对当前选中做点什么"的交互式命令不是同一件事。名字上就该分开。
+    {L"CmdNewTextFile",    L"file.new.text"},
+    {L"CmdOpenWith",       L"file.open.with"},
+    {L"CmdNewFolder",      L"file.new.folder"},
+    {L"CmdCopy",           L"file.copy"},
+    {L"CmdCut",            L"file.cut"},
+    {L"CmdPaste",          L"file.paste"},
+    {L"CmdDelete",         L"file.delete"},
+    {L"CmdRename",         L"file.rename"},
+    {L"CmdProps",          L"file.properties"},
+    {L"CmdUndo",           L"file.undo"},
+    {L"CmdSelectAll",      L"file.select.all"},
+    {L"CmdOpen",           L"file.open"},
+    {L"CmdOpenInNewTab",   L"file.open.tab"},
+    {L"CmdOpenInNewWindow", L"file.open.window"},
+    {L"CmdRefresh",        L"file.refresh"},
+    {L"SelectInvert",      L"file.select.invert"},
+    {L"SelectFiles",       L"file.select.files"},
+    {L"SelectFolders",     L"file.select.folders"},
+    {L"SelectByType",      L"file.select.type"},
+    {L"SelectByPattern",   L"file.select.pattern"},
+    {L"CopyToFolder",      L"file.copy.to"},
+    {L"MoveToFolder",      L"file.move.to"},
+    {L"BatchRename",       L"file.rename.batch"},
+    {L"FileFocusTop",      L"file.focus.top"},
+    {L"FileFocusBottom",   L"file.focus.bottom"},
+    // 确定式（第 4 步）：目标由参数点名
+    {L"FsRename",          L"fs.rename"},
+    {L"FsDelete",          L"fs.delete"},
+    {L"FsCopyTo",          L"fs.copy"},
+    {L"FsMoveTo",          L"fs.move"},
+    {L"FsOpen",            L"fs.open"},
+    {L"FsOpenInNewTab",    L"fs.open.tab"},
+    {L"FsOpenInNewWindow", L"fs.open.window"},
+    {L"FsCopy",            L"fs.copy.toclip"},
+    {L"FsCut",             L"fs.cut.toclip"},
+    {L"FsProperties",      L"fs.properties"},
+
+    // --- View（group=View）---
+    {L"ViewMode",          L"view.mode"},
+    {L"ViewSort",          L"view.sort"},
+    {L"ViewGroup",         L"view.group"},
+    {L"ViewNext",          L"view.next"},
+    {L"ViewPrev",          L"view.prev"},
+    {L"ToggleHidden",      L"view.toggle.hidden"},
+    {L"ToggleSystemFiles", L"view.toggle.system"},
+    {L"ToggleExtensions",  L"view.toggle.extensions"},
+    {L"TogglePreviewPane", L"view.toggle.preview"},
+    {L"ToggleNavPane",     L"view.toggle.nav"},
+    {L"ToggleCheckboxes",  L"view.toggle.checkboxes"},
+    {L"CycleHiddenSeg",    L"view.cycle.hidden"},
+
+    // --- Window（group=Window）---
+    {L"NewWindow",         L"win.new"},
+    {L"QuitExplorer",      L"win.quit"},
+    {L"FolderOptions",     L"win.folderoptions"},
+    {L"MapDrive",          L"win.mapdrive"},
+    {L"UnmapDrive",        L"win.unmapdrive"},
+    {L"CommandPalette",    L"win.palette"},
+    {L"HotkeyManager",     L"win.hotkeys"},
+    {L"FocusAddress",      L"win.focus.address"},
+    {L"FocusSearch",       L"win.focus.search"},
+    {L"Preferences",       L"win.preferences"},
+
+    // --- External（group=External）---
+    {L"OpenTerminal",      L"ext.terminal"},
+    {L"OpenTerminalAdmin", L"ext.terminal.admin"},
+    {L"RunCommand",        L"ext.run"},
+    {L"SendKeys",          L"ext.sendkeys"},
+
+    // --- Bookmark（group=Bookmark）---
+    {L"BmkAddCurrent",     L"bmk.add"},
+    {L"BmkShowBar",        L"bmk.show"},
+    {L"BmkHideBar",        L"bmk.hide"},
+    {L"BmkToggleBar",      L"bmk.toggle"},
+
+    // --- Session（group=Session）---
+    {L"SessionSave",       L"session.save"},
+    {L"SessionRestore",    L"session.restore"},
+    {L"SessionDelete",     L"session.delete"},
+    {L"SessionList",       L"session.list"},
+
+    // --- Tool（group=Tool）---
+    {L"DupFinder",         L"tool.dupfinder"},
+    {L"FileHash",          L"tool.hash"},
+    {L"FolderCompare",     L"tool.compare"},
+    {L"OpListDir",         L"tool.list"},
+    {L"OpStat",            L"tool.stat"},
+    {L"OpTopN",            L"tool.topn"},
+    {L"OpDiskUsage",       L"tool.diskusage"},
+    {L"OpReadText",        L"tool.readtext"},
+    {L"OpNavigate",        L"tool.navigate"},
+    {L"OpReveal",          L"tool.reveal"},
+    {L"OpSelect",          L"tool.select"},
+    {L"OpOpen",            L"tool.open"},
+    {L"OpListCurrentView", L"tool.listview"},
+    // AI 面板是窗口级 UI（group=Window），不是"工具"——它开/关的是窗口里的一块区域。
+    {L"AiTogglePanel",     L"win.ai.toggle"},
+    {L"AiStop",            L"win.ai.stop"},
+
+    // --- Search（group=Search）---
+    {L"SearchEverything",  L"search.everything"},
+    {L"OpSearch",          L"search.find"},
+};
+
+const std::unordered_map<std::wstring, std::wstring>& LegacyToDotted() {
+    static const std::unordered_map<std::wstring, std::wstring> m = [] {
+        std::unordered_map<std::wstring, std::wstring> out;
+        for (const auto& a : kAliases) out.emplace(a.legacy, a.dotted);
+        return out;
+    }();
+    return m;
+}
+
+const std::unordered_map<std::wstring, std::wstring>& DottedToLegacy() {
+    static const std::unordered_map<std::wstring, std::wstring> m = [] {
+        std::unordered_map<std::wstring, std::wstring> out;
+        for (const auto& a : kAliases) out.emplace(a.dotted, a.legacy);
+        return out;
+    }();
+    return m;
+}
+
+}  // namespace
+
+namespace {
+
+// 点分名统一按小写查表。理由：旧名查找走 _wcsicmp（大小写不敏感），
+// 如果点分名偏偏敏感，就会出现"NavBack 和 navback 都能用，但 NAV.BACK 不行"
+// 这种半吊子行为 —— 对人来说难以预测，且容易写成难查的 bug。
+std::wstring Lower(const std::wstring& s) {
+    std::wstring out = s;
+    for (auto& c : out)
+        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+    return out;
+}
+
+}  // namespace
+
+std::wstring AliasOf(const std::wstring& legacyName) {
+    const auto& m = LegacyToDotted();
+    auto it = m.find(legacyName);
+    return it == m.end() ? std::wstring() : it->second;
+}
+
+std::wstring LegacyOf(const std::wstring& dottedName) {
+    const auto& m = DottedToLegacy();
+    auto it = m.find(Lower(dottedName));
+    return it == m.end() ? std::wstring() : it->second;
+}
+
+bool LooksDotted(const std::wstring& name) { return name.find(L'.') != std::wstring::npos; }
+
+std::wstring CanonicalName(const std::wstring& anyName) {
+    // 点分名原样返回（它已经是规范形式）；旧名转成点分名。
+    if (LooksDotted(anyName)) return anyName;
+    const std::wstring a = AliasOf(anyName);
+    return a.empty() ? anyName : a;
+}
+
+}  // namespace cmdnaming

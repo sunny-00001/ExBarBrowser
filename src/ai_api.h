@@ -1,0 +1,109 @@
+// AI 操作接口：让 AI 成为命令总线的第二个发起者（架构规则 R17–R20）。
+//
+// 设计基线（docs/ARCHITECTURE-RULES.md §5 + R18/R19/R20）：
+//   · 人机等价（R20）：AI 能做的每件事，人也能通过鼠标/键盘/命令面板做到；
+//     不存在"只有 AI 能触发"的命令。
+//   · 唯一入口：AI 不走单独的写实现，全部落到同一个 CommandBus —— 否则
+//     "工具栏删除"和"AI 删除"迟早行为分叉。
+//   · 元数据驱动（R18）：命令表里 aiExposed/risk/argsSchema 是唯一真源；
+//     本层只做"读表 + 校验 + 派发 + 审计"，不硬编码任何命令知识。
+//   · 只读观察（R19）：GetState 返回与 UI 同源的状态快照，不额外缓存。
+//
+// 与 mod 的差别：mod 在 explorer 进程内、由 helper 进程（B）驱动；
+// ExBarBrowser 是独立进程，因此对外的"B"就是**任意本地客户端**
+// （AI 宿主、脚本、MCP 服务器都行）。通道是命名管道，JSON 进 / JSON 出。
+//
+// 安全边界（fail-closed）：
+//   · 未列出的命令 → 拒绝，不猜。
+//   · 参数不满足 argsSchema 的必填项 → 拒绝，不做默认值兜底。
+//   · Risk::Danger 的命令默认拒绝，除非 Process 显式带 approve=true
+//     （调用方必须先向人类要到确认）。
+#pragma once
+#include <functional>
+#include <string>
+#include <vector>
+
+#include "commands.h"
+#include "json.h"
+
+namespace ai {
+
+// 工具描述：把 CommandDef 的 AI 元数据投影成 tools/list 的一项。
+//
+// 用 Effects 而非单个 risk：调用方需要区分"幂等的写"（可安全重试）与
+// "不可逆的写"（必须先确认），单轴表达不了。
+struct ToolSpec {
+    // 规范名（点分，如 nav.back）。这是给机器的稳定标识（业界 P7）。
+    std::wstring name;
+    // 旧名（如 NavBack）。保留给审计日志与既有脚本对照；新客户端用 name。
+    std::wstring legacyName;
+    std::wstring title;        // 中文显示名
+    std::wstring group;        // 分组（Tab/Go/Nav/...）
+    std::wstring argsSchema;   // JSON Schema 文本（原样来自命令表）
+    std::wstring outputSchema; // 结果 schema；空 = 该命令只回报成败
+    Effects effects;
+    bool needsSelection = false;
+};
+
+// 列出所有可暴露给 AI 的命令（aiExposed && implemented）。
+// 顺序稳定（按命令表顺序），便于客户端做 diff。
+std::vector<ToolSpec> ListTools();
+
+// 按名查一项；找不到返回 false。
+bool FindTool(const std::wstring& name, ToolSpec* out);
+
+// 派发一次 AI 调用。所有副作用都经 CommandBus，actor 固定为 "ai"。
+//
+// args: 命令参数对象，**原样**交给命令（不再压平成字符串）。
+//       校验依据是该命令自己的 argsSchema：
+//         · 缺必填项 / 未知键 / 类型不符 / 枚举或范围越界 → 拒绝
+//         · 无参数命令收到任何键 → 拒绝（静默忽略参数最难查）
+//
+// approve: 对**不可逆**（effects.destructive）的命令必须为 true，否则拒绝
+//          （返回 ok=false，error 里给出 need_approval）。
+//          非破坏性命令忽略此字段 —— 幂等的写不需要批准。
+//
+// 返回的 result 结构（调用方序列化成 JSON）：
+//   { "ok": bool, "command": "...", "effects": {...}, "error": "..." }
+struct CallResult {
+    bool ok = false;
+    std::wstring command;
+    std::wstring risk;    // 兼容字段：read / write / danger（由 effects 推导）
+    std::wstring error;   // 失败原因（ok=false 时必填）
+    // 结构化结果（P6）。命令有 outputSchema 且执行成功时填入；
+    // 其余情况为空对象 —— 不编造返回值。
+    json::Value result = json::Value::MakeObject();
+    bool hasResult = false;
+};
+
+// 按 JSON Schema 校验参数。返回 false 时 err 给出人可读原因。
+//
+// 单独暴露的原因：它是"参数是否合法"的唯一判定，UI 预校验（灰掉提交按钮
+// 并显示原因）和单测都该走同一个实现，而不是各写一套。
+// 注意它**不做权限判断** —— 那是 Call 的事。
+bool ValidateAgainstSchema(const json::Value& schema, const json::Value& args,
+                           std::wstring* err);
+
+// 执行一次调用（已含校验 + 审计）。
+CallResult Call(const std::wstring& command, const json::Value& args, bool approve);
+
+// 状态快照（只读，R19：与 UI 同源，不另存副本）。
+// 由 App 注册的回调填充，避免 ai 层反向依赖 App。
+struct StateSnapshot {
+    std::wstring activePath;              // 当前标签路径
+    std::vector<std::wstring> tabPaths;   // 所有标签路径（按标签栏顺序）
+    int activeTab = -1;                   // 激活标签序号（0 起）
+    unsigned itemCount = 0;               // 当前目录项目数
+    int viewMode = -1;                    // 当前视图模式（FVM_*），-1 = 未知
+};
+using StateFn = std::function<StateSnapshot()>;
+void SetStateProvider(StateFn fn);
+StateSnapshot GetState();
+
+// 把结果转成 JSON 文本（管道响应 / 脚本消费）。
+std::wstring ResultToJson(const CallResult& r);
+std::wstring StateToJson(const StateSnapshot& s);
+// tools/list 的 JSON（{"tools":[...]}，符合 MCP tools/list 形状）。
+std::wstring ToolsToJson();
+
+}  // namespace ai

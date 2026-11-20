@@ -1,0 +1,73 @@
+# ExBarBrowser 本地构建产物与临时文件
+# 注：仓库根的 .gitignore 已排除 ExBarBrowser/*.exe|png|log 与 backup/，
+#     这里再列一遍是为了本目录被单独取用（或作为子模块）时也成立。
+
+# 构建产物
+*.exe
+*.dll
+*.obj
+*.o
+*.map
+*.pdb
+*.ilk
+
+# 运行期 / 开发期产物
+*.log
+backup/
+.takeover
+shot*.png
+out*.png
+
+# 编辑器 / 系统
+.vs/
+.vscode/
+*.swp
+Thumbs.db
+desktop.ini
+
+# 迁移期归档（旧构建产物）
+.old/
+*.running.exe
+
+# 增量构建中间产物：obj/（以及多会话隔离目录 obj.*/、obj_*/）下的依赖文件(.d)、
+# 预编译头(.gch)、签名(.build_sig) 以及 src/common.h.gch —— 这些由 build_fast.py
+# 生成，clean 后应可全部消失
+obj*/
+*.d
+*.gch
+
+# 编辑期临时备份：app.cpp.bak / app.cpp.iconbak / nav_bar.cpp.fixbak /
+# bookmark_bar.cpp.bak2 / popup_list.cpp.scrollbak / build_fast.py.iconbak …
+*bak
+*bak[0-9]
+
+# ---------------------------------------------------------------------------
+# 便携模式的用户数据：data\ 里全是**真实配置**，没有种子/默认值之分
+#
+# 这些文件因人而异（书签、最近访问、窗口几何、键位习惯），提交会把个人数据带进仓库，
+# 因此整个 data\ 下的运行期文件都不入库。
+#
+#   浏览器设置    data\settings.json
+#   书签          data\bookmarks.html
+#   键位          data\keymap.json
+#   鼠标规则      data\mouse.json
+#   审计日志      data\audit.log
+# ---------------------------------------------------------------------------
+data/settings.json
+data/settings.json.tmp
+data/settings.json.bak
+data/bookmarks.html
+data/keymap.json
+data/mouse.json
+data/audit.log
+data/audit.log.1
+data/ai-token.txt
+data/ai-pipe.txt
+data/.write-probe
+
+# 已废弃的旧命名（曾用 browser- 前缀，已合并进 keymap.json / mouse.json）
+data/browser.json
+data/browser-keymap.json
+data/browser-mouse.json
+data/bookmarks.default.html
+data/*.from-appdata
