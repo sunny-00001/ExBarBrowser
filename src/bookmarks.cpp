@@ -8,6 +8,7 @@
 #include "text_file.h"
 
 #include <algorithm>
+#include <functional>   // std::function：Merge 的递归 lambda
 #include <cwctype>
 
 namespace {
@@ -393,19 +394,63 @@ void BookmarkStore::ReplaceAll(BookmarkList&& replacement) {
 }
 
 size_t BookmarkStore::Merge(BookmarkList&& incoming) {
+    // 【递归合并，不是"整棵子树塞进顶层"】
+    //
+    // 原实现只对**顶层叶子**做路径去重；遇到文件夹就 `AssignIds(children)` 后
+    // 整棵子树无条件 push_back。后果：同一个含分类的导入文件连导两次，
+    // 分类里的书签变成 1 -> 2 -> 4 份（每导一次翻一倍），且随 Save 落盘，
+    // 只能逐条手删。
+    //
+    // 现在的语义：文件夹按**名字**对齐（同名视为同一个分类），对齐后递归合并
+    // 其子项；叶子仍按**路径**去重（与 mod 追加导入同口径）。
+    // 返回"实际新增的条目数"，供导入提示使用。
     size_t added = 0;
-    // 顶层按路径去重（与 mod 追加导入同口径：_wcsicmp，仅对叶子书签比较）。
-    for (auto& node : incoming) {
-        if (!node.isFolder && !node.path.empty() && ContainsIn(roots_, node.path)) continue;
-        if (node.isFolder) AssignIds(node.children, seq_);
-        if (node.id.empty()) {
-            wchar_t buf[32];
-            swprintf(buf, 32, node.isFolder ? L"f-%d" : L"b-%d", seq_++);
-            node.id = buf;
-        }
-        roots_.push_back(std::move(node));
-        ++added;
-    }
+
+    // std::function 递归：lambda 不能直接自引用。
+    std::function<void(BookmarkList&, BookmarkList&)> mergeInto =
+        [&](BookmarkList& dest, BookmarkList& src) {
+            for (auto& node : src) {
+                if (!node.isFolder) {
+                    if (!node.path.empty() && ContainsIn(roots_, node.path)) continue;
+                    if (node.id.empty()) {
+                        wchar_t buf[32];
+                        swprintf(buf, 32, L"b-%d", seq_++);
+                        node.id = buf;
+                    }
+                    dest.push_back(std::move(node));
+                    ++added;
+                    continue;
+                }
+
+                // 文件夹：按名字找同层已有的同名分类，找到就合并进去。
+                auto it = std::find_if(dest.begin(), dest.end(), [&](const BookmarkNode& d) {
+                    return d.isFolder && str::IEquals(d.name, node.name);
+                });
+                if (it != dest.end()) {
+                    mergeInto(it->children, node.children);
+                    continue;
+                }
+
+                // 新分类：整棵子树进来，但要先剔掉与现有树重复的叶子 ——
+                // 否则"新分类 + 里面已存在的书签"会再翻一份。
+                BookmarkList kept;
+                for (auto& c : node.children) {
+                    if (!c.isFolder && !c.path.empty() && ContainsIn(roots_, c.path)) continue;
+                    kept.push_back(std::move(c));
+                }
+                node.children = std::move(kept);
+                AssignIds(node.children, seq_);
+                if (node.id.empty()) {
+                    wchar_t buf[32];
+                    swprintf(buf, 32, L"f-%d", seq_++);
+                    node.id = buf;
+                }
+                dest.push_back(std::move(node));
+                ++added;
+            }
+        };
+
+    mergeInto(roots_, incoming);
     if (added) Touch();
     return added;
 }

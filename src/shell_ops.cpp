@@ -27,6 +27,23 @@ namespace {
 ComPtr<IFolderView2> GetFv2(IShellView* view) { return FolderView2(view); }
 ComPtr<IShellFolder> GetFolder(IFolderView2* fv2) { return ShellFolder(fv2); }
 
+// 执行 IFileOperation 并**同时**检查两件事：
+//   1. PerformOperations 的 HRESULT
+//   2. GetAnyOperationsAborted
+//
+// 只查 ① 是不够的：用户点取消、目标在过程中消失、部分失败，都会让
+// PerformOperations 返回 S_OK 而 GetAnyOperationsAborted 为 TRUE。
+// 原来只有 RenameTo 查了 ②，其余四处（删除/新建文件夹/转移/新建文本文件）
+// 直接 return SUCCEEDED(...) —— 于是"用户取消了删除"在审计里被记成 ok=1，
+// 调用方也以为文件已经没了。
+bool RunOp(IFileOperation* op) {
+    if (!op) return false;
+    if (FAILED(op->PerformOperations())) return false;
+    BOOL aborted = FALSE;
+    if (FAILED(op->GetAnyOperationsAborted(&aborted))) return false;
+    return aborted ? false : true;
+}
+
 bool Invoke(IContextMenu* cm, HWND owner, const char* verb) {
     if (!cm) return false;
     CMINVOKECOMMANDINFOEX info{};
@@ -271,7 +288,7 @@ bool DeleteSelection(IShellView* view, HWND owner) {
         if (FAILED(sel->GetItemAt(i, &item)) || !item) continue;
         op->DeleteItem(item.get(), nullptr);
     }
-    return SUCCEEDED(op->PerformOperations());
+    return RunOp(op.get());   // 同时查 GetAnyOperationsAborted
 }
 
 bool InvokeSelectionVerb(IShellView* view, HWND owner, const char* verb) {
@@ -360,7 +377,7 @@ bool NewFolder(IShellView* view, HWND owner) {
     op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION);
     const std::wstring folderName = LocalizedNewFolderName();
     op->NewItem(folder.get(), FILE_ATTRIBUTE_DIRECTORY, folderName.c_str(), nullptr, nullptr);
-    return SUCCEEDED(op->PerformOperations());
+    return RunOp(op.get());   // 同时查 GetAnyOperationsAborted
 }
 
 bool TransferToFolder(IShellView* view, HWND owner, const std::wstring& target, bool move) {
@@ -388,7 +405,7 @@ bool TransferToFolder(IShellView* view, HWND owner, const std::wstring& target, 
     op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION);
     HRESULT hr = move ? op->MoveItems(sel.get(), dest.get()) : op->CopyItems(sel.get(), dest.get());
     if (FAILED(hr)) return false;
-    return SUCCEEDED(op->PerformOperations());
+    return RunOp(op.get());   // 同时查 GetAnyOperationsAborted
 }
 
 bool NewTextFile(IShellView* view, HWND owner, std::wstring* created) {
@@ -408,10 +425,33 @@ bool NewTextFile(IShellView* view, HWND owner, std::wstring* created) {
             op) {
             op->SetOwnerWindow(owner);
             op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION);
+            // 名字只算一次：LocalizedNewTextName 每次要读 2-3 次注册表，
+            // 原来在这里调了 3 次（NewItem 一次、回填 created 两次）。
+            const std::wstring baseName = LocalizedNewTextName();
             if (SUCCEEDED(op->NewItem(folder.get(), FILE_ATTRIBUTE_NORMAL,
-                                      (LocalizedNewTextName() + L".txt").c_str(), nullptr, nullptr)) &&
-                SUCCEEDED(op->PerformOperations())) {
-                if (created) *created = dir + L"\\" + LocalizedNewTextName() + L".txt";
+                                      (baseName + L".txt").c_str(), nullptr, nullptr)) &&
+                RunOp(op.get())) {
+                // 【不能手拼 created】上面带了 FOF_RENAMEONCOLLISION，同目录已有同名
+                // 文件时实际创建的是"新建文本文档 (2).txt"，而手拼回的是不带后缀的
+                // 那份 —— 这个出参的契约是"告诉我建了哪个文件"，回错路径比不回更糟。
+                // 改成创建后按目录实际扫描：选最新、且以 baseName 开头的那一个。
+                if (created) {
+                    *created = tf::Join(dir, baseName + L".txt");
+                    WIN32_FIND_DATAW fd{};
+                    HANDLE hf = FindFirstFileW(tf::ToExtended(tf::Join(dir, L"*.txt")).c_str(), &fd);
+                    if (hf != INVALID_HANDLE_VALUE) {
+                        FILETIME newest{};
+                        do {
+                            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                            const std::wstring cand = tf::Join(dir, fd.cFileName);
+                            if (CompareFileTime(&fd.ftLastWriteTime, &newest) > 0) {
+                                newest = fd.ftLastWriteTime;
+                                *created = cand;
+                            }
+                        } while (FindNextFileW(hf, &fd));
+                        FindClose(hf);
+                    }
+                }
                 return true;
             }
         }
@@ -625,11 +665,22 @@ bool ItemFullPath(IShellFolder* folder, PCUITEMID_CHILD pidl, std::wstring* out)
     if (!folder || !pidl || !out) return false;
     STRRET sr{};
     if (FAILED(folder->GetDisplayNameOf(pidl, SHGDN_FORPARSING, &sr))) return false;
-    wchar_t buf[MAX_PATH * 2] = L"";
-    if (FAILED(StrRetToBufW(&sr, pidl, buf, ARRAYSIZE(buf)))) return false;
+
+    // 【不要用固定栈缓冲】原来这里是 `wchar_t buf[MAX_PATH*2]`：
+    // 路径超过 519 字符时 StrRetToBufW 返回 STRSAFE_E_INSUFFICIENT_BUFFER，
+    // 函数返回 false，而调用方把 false 当成"这不是文件系统项" ——
+    // SelectByPath / SelectByPaths / StatItem / RenameTo 对深路径项全部静默失败。
+    // nav_path.h 的注释里已经记过这条教训（"不用 MAX_PATH 栈缓冲"），这里又犯了一次。
+    //
+    // 改成让 shell 自己分配（StrRetToStrW），再转 std::wstring。
+    PWSTR pw = nullptr;
+    if (FAILED(StrRetToStrW(&sr, pidl, &pw)) || !pw) return false;
+    std::wstring path(pw);
+    CoTaskMemFree(pw);   // shell 分配的所有权还给它
+
     // ::{GUID} / shell: 这类命名空间路径没有文件系统语义，不适合当"目标"。
-    if (buf[0] == L':' ) return false;
-    *out = buf;
+    if (path.empty() || path[0] == L':') return false;
+    *out = std::move(path);
     return true;
 }
 
@@ -841,10 +892,7 @@ bool RenameTo(IShellView* view, HWND owner, const std::wstring& fullPath,
     op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI);
     op->SetOwnerWindow(owner);
     if (FAILED(op->RenameItem(item.get(), newName.c_str(), nullptr))) return false;
-    if (FAILED(op->PerformOperations())) return false;
-    BOOL aborted = FALSE;
-    op->GetAnyOperationsAborted(&aborted);
-    return aborted ? false : true;
+    return RunOp(op.get());
 }
 
 // ---------------------------------------------------------------- 只读查询

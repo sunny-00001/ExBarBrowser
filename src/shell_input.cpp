@@ -178,7 +178,10 @@ int DetectViaListView(HWND hWnd, POINT screen, const std::wstring& dir, std::wst
     const int idx = ListView_SubItemHitTest(hWnd, &ht);
     if (idx < 0 || (ht.flags & LVHT_NOWHERE)) return MT_EMPTY;
 
-    wchar_t buf[MAX_PATH] = L"";
+    // 512 而不是 MAX_PATH：这里装的是**单个文件名**（NTFS 上限 255 字符），
+    // MAX_PATH(260) 刚好够但没余量 —— 一旦哪个文件系统允许多几个字符，
+    // ListView 会静默截断，ResolveByDir 拼出错误路径，鼠标规则对该项失效。
+    wchar_t buf[512] = L"";
     LVITEMW it{};
     it.mask = LVIF_TEXT;
     it.iItem = idx;

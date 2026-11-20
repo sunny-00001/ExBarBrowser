@@ -186,6 +186,75 @@ int main() {
         CHECK(store.Save(), "guard: first run can still save");
     }
 
+    // ---- Merge：重复导入不得翻倍 ----
+    //
+    // 原实现只对顶层叶子去重；遇到文件夹就整棵子树无条件 push_back。
+    // 同一份含分类的导入文件连导两次 -> 分类里的书签 1 -> 2 -> 4 份。
+    printf("\n重复导入同一份含分类的书签不得翻倍\n");
+    {
+        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/\" >D</A>\r\n"
+                            L"<DT><H3>分类A</H3>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///C:/x\" >X</A>\r\n"
+                            L"<DT><A HREF=\"file:///C:/y\" >Y</A>\r\n"
+                            L"</DL><p>\r\n</DL><p>\r\n");
+        store.Load(file);
+        const size_t leaves0 = store.Flatten().size();
+        CHECK(leaves0 == 3, "初始 3 个叶子（D / X / Y）");
+
+        // 用同一份内容做一次 Merge
+        // 直接构造 BookmarkList 模拟导入内容（BookmarkStore 构造是私有的）。
+        BookmarkList imported;
+        {
+            BookmarkNode folder;
+            folder.isFolder = true;
+            folder.name = L"分类A";
+            BookmarkNode x;
+            x.name = L"X";
+            x.path = L"C:\\x";
+            BookmarkNode y;
+            y.name = L"Y";
+            y.path = L"C:\\y";
+            folder.children.push_back(x);
+            folder.children.push_back(y);
+            imported.push_back(folder);
+            BookmarkNode d;
+            d.name = L"D";
+            d.path = L"D:\\";
+            imported.push_back(d);
+        }
+        const size_t added1 = store.Merge(std::move(imported));
+        const size_t leaves1 = store.Flatten().size();
+        CHECK(leaves1 == 3, "第一次合并后仍是 3 个叶子（全部已存在）");
+        CHECK(added1 == 0, "第一次合并新增 0 条（同名分类 + 同路径叶子）");
+
+        // 再合一次，仍不应翻倍
+        BookmarkList again;
+        {
+            BookmarkNode folder;
+            folder.isFolder = true;
+            folder.name = L"分类A";
+            BookmarkNode x;
+            x.name = L"X2";
+            x.path = L"C:\\x";   // 同名不同 label，但路径相同 -> 应去重
+            folder.children.push_back(x);
+            again.push_back(folder);
+        }
+        store.Merge(std::move(again));
+        CHECK(store.Flatten().size() == 3, "第二次合并仍不翻倍（核心断言）");
+
+        // 真新项应当加进来
+        BookmarkList fresh;
+        {
+            BookmarkNode n;
+            n.name = L"NEW";
+            n.path = L"C:\\brand-new";
+            fresh.push_back(n);
+        }
+        CHECK(store.Merge(std::move(fresh)) == 1, "新路径被加入并计为 1");
+        CHECK(store.Flatten().size() == 4, "叶子数 3 -> 4");
+    }
+
     // 恢复原文件
     if (!backup.empty()) {
         tf::WriteText(file, backup);
