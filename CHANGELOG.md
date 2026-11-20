@@ -26,6 +26,19 @@
 
 ### 新增
 
+- **书签左侧图标 → 子目录下拉**。点书签项的图标格不再是"打开书签"，而是列出该路径的
+  **直接子目录**，可就地逐级展开 —— 与"点地址栏分隔符（面包屑 chevron）"完全同一效果。
+  两者此前是两套代码：枚举逻辑藏在 `nav_bar_actions.cpp` 的匿名命名空间里（`ChildTreeNodes`），
+  书签栏要用只能复制一份。现在抽出 `src/folder_tree.{h,cpp}` 作为唯一入口
+  （`Children` 建树 / `Show` 弹层，懒加载回调就是 `Children` 自己），
+  `NavModel::ChildFolders` 仍是唯一的 shell 枚举实现，
+  地址栏的两处调用点（面包屑 chevron、`‹` 折叠钮）一并改调它。
+  - `BookmarkBar::Item` 新增 `iconRc`，与 `Paint` 里画图标的槽严格重合；`Handle` 的
+    `WM_LBUTTONUP` 在调用默认行为前先判 `HitIcon`。
+  - 图标格按下不预备拖动重排（`dragArm_` 排除图标区），否则在图标上稍一移动就变成重排书签。
+  - 悬停图标格时该格单独画 `pressed` 圆角底（`hoverIcon_`），让"这一格能点开子目录"可见。
+  - 纯分类节点（只装子书签、无路径）点图标退回"列分类内容"；空目录则直接进入该目录
+    （与 mod 的 `ShowFsMenuForPath` 同口径 —— 弹空菜单等于点了没反应）。
 - **`src/identity.h`**：品牌串、11 个窗口类名、单实例互斥体、命名管道、
   日志文件名、AI 服务名、环境变量、`WM_COPYDATA` 魔数的唯一来源。
   此前这些字面量散在 9 个文件里，改名要动 9 处。

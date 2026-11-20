@@ -37,6 +37,7 @@ private:
         bool folder = false;
         HICON icon = nullptr;
         RECT rc{};
+        RECT iconRc{};      // 左侧图标命中区：点击 → 子目录树（等同面包屑分隔符）
     };
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -46,11 +47,13 @@ private:
     void Paint(HWND);
     void UpdateHover(HWND, int x, int y);
     int HitItem(int x, int y) const;
+    int HitIcon(int x, int y) const;
     bool HitOverflow(int x, int y) const;
     HICON IconFor(const BookmarkNode& n);
     void ShowItemMenu(int index, POINT screen);
     void ShowEmptyMenu(POINT screen);
     void ShowFolderMenu(int index, POINT screen);
+    void ShowChildTree(int index);   // 图标：列该路径的子目录，可就地逐级展开
     void ShowOverflowMenu(POINT screen);
     void Navigate(int index);
     void RebuildTooltip(HWND);
@@ -66,6 +69,7 @@ private:
     RECT ovfRc_{};
     bool overflow_ = false;
     int hover_ = -1;
+    int hoverIcon_ = -1;   // 悬停在图标格上的项（高亮该格，提示"这里能点开子目录"）
     bool hotOvf_ = false;
     bool tracking_ = false;
 

@@ -30,8 +30,9 @@ ExBar mod 分片，可并存、可整体拷走、可单独卸载。
 ExBarBrowser.exe（本进程）
 ├─ 自绘标签栏        tab_strip.cpp（图标/溢出/拖拽/锁定/右键）
 ├─ 导航栏 + 地址框    nav_bar.cpp / nav_bar_actions.cpp（自动补全/最近访问/排序分组）
-├─ 书签栏            bookmark_bar.cpp（Netscape 书签树 + 分类下拉 + 溢出）
+├─ 书签栏            bookmark_bar.cpp（Netscape 书签树 + 图标列子目录 + 分类下拉 + 溢出）
 ├─ 自绘下拉弹层      popup_list.cpp（菜单/历史/视图/文件夹树共用）
+├─ 文件夹树下拉      folder_tree.cpp（面包屑 chevron 与书签图标共用的唯一入口）
 ├─ 状态栏            status_bar.cpp（9 段：计数/日期/路径/容量/磁盘/眼睛/类型）
 ├─ 输入端            input_router.cpp（组合键/序列/鼠标规则 → 命令）
 └─ 每个标签一个 IExplorerBrowser（真实 Shell 视图）
@@ -85,7 +86,8 @@ ExBarBrowser.exe（本进程）
 | 方向历史 / 最近访问 | `src/nav_bar_actions.cpp`、`src/nav_history.cpp` | 分裂箭头与右键出单向历史（24 条）；地址框下拉合并前进/后退 + 最近访问（去重） |
 | 视图菜单 | `src/nav_bar_actions.cpp` | 8 档模式 + 排序（名称/日期/类型/大小）+ 分组（无/类型/日期/大小） |
 | 自绘下拉弹层 | `src/popup_list.cpp` | 图标 + 可变行高（分隔线 2 px）+ 悬停/选中底色 + 深色边框；替代 `TrackPopupMenu` |
-| 书签栏 | `src/bookmark_bar.cpp`、`src/bookmarks.cpp` | Netscape + `EXBAR_*`；图标/分类下拉/溢出 `»`/右键增删改/拖入文件夹/双击空白显隐；书签存于 `data\bookmarks.html` |
+| 书签栏 | `src/bookmark_bar.cpp`、`src/bookmarks.cpp` | Netscape + `EXBAR_*`；**点左侧图标列子目录**（与面包屑分隔符同一实现）/ 点文字打开或列分类 / 溢出 `»` / 右键增删改 / 拖入文件夹 / 双击空白显隐；书签存于 `data\bookmarks.html` |
+| 文件夹树下拉 | `src/folder_tree.cpp`、`src/popup_list.cpp` | 面包屑 chevron 与书签图标共用：枚举直接子文件夹 → 懒加载树 → 就地逐级展开（`NavModel::ChildFolders` 是唯一枚举实现） |
 | 书签导入导出 | `src/bookmark_io.cpp`、`src/bookmark_drop.cpp` | `IFileOpenDialog`/`IFileSaveDialog` 走 Netscape HTML；OLE 拖放接收虚拟项（`CFSTR_SHELLIDLIST`） |
 | 状态栏 9 段 | `src/status_bar.cpp`、`src/view_stats.cpp` | 文件夹/文件/已选、修改日期（含排序箭头）、路径、选中容量、磁盘/容器、隐藏三态、类型；tooltip + 段点击 + 右键显隐 |
 | 视图开关/排序/分组 | `src/shell_view.cpp` | 8 档模式、排序、分组、隐藏/系统/扩展名、隐藏三态、导航窗格、预览窗格开关（经 `IExplorerPaneVisibility` 跨目录强制保持用户意图） |
@@ -279,6 +281,22 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
 > 能按名字解析的那些（如此电脑）也能列出子项；NSE 虚拟项不支持，因为 `ChildFolders` 走的是
 > `SHParseDisplayName`（mod 那边对这类项是改用 PIDL 枚举的）。
 
+### 4.4 书签栏行为
+
+| 操作 | 行为 |
+|---|---|
+| 点击**左侧图标** | 下拉**该路径自己的**子目录（与上面"点击分段右侧 chevron"完全同一份实现：`src/folder_tree.*`），层内可逐级展开；没有子目录时直接进入该目录 |
+| 点击右侧文字 | 分类 → 列分类内容；书签 → 打开该目录 |
+| 悬停图标格 | 该格单独高亮（`pressed` 圆角底），提示"这里能点开子目录" |
+| 在图标格上拖动 | 不触发重排（图标格是独立动作，只有文字区可拖着重排） |
+| 点击溢出 `»` | 列出被折叠的书签项 |
+| 右键项 / 空白 | 打开/编辑/删除/新建分类/撤销/排序/导入导出/隐藏栏 |
+| 从资源管理器拖入目录 | 追加为书签 |
+| 双击空白 | 切换书签栏显隐（`data/mouse.json` 的 `bookmark_empty` 规则） |
+
+> 图标格与文字区是两个动作，因此 `Item::iconRc` 是独立命中矩形（几何与 `Paint` 里画图标的槽
+> 完全重合）。纯分类节点（只装子书签、没有路径）点图标时退回"列分类内容"，避免点了没反应。
+
 ---
 
 ## 5. 架构速览
@@ -295,6 +313,7 @@ main.cpp            进程级：DPI → COM(STA)/OLE → 单实例 → 命令行
       │            ├ nav_bar_actions  编辑/补全/菜单/最近访问/排序分组
       │            └ PopupList   无状态弹层（模态，返回选中行）
       ├ BookmarkBar ── BookmarkStore   （Netscape HTML，data\bookmarks.html）
+      │             ├ folder_tree     图标点击 → 子目录树（与 NavBar 分隔符共用）
       │             └ bookmark_io/drop  导入导出 / OLE 拖放
       ├ StatusBar  ── ViewStats（IFolderView2 / IShellItem2）
       ├ InputRouter ├ Chord / Keymap / Sequence / MouseRules
