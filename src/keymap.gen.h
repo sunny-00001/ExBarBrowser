@@ -29,7 +29,7 @@ inline constexpr DefHotkey kHotkeys[] = {
     {L"hotkeyNewWindow", L"NewWindow", L""},
     {L"hotkeyCloseLeftTabs", L"TabCloseLeft", L"Ctrl+Shift+Left"},
     {L"hotkeyCloseRightTabs", L"TabCloseRight", L"Ctrl+Shift+Right"},
-    {L"hotkeyQuitExplorer", L"QuitExplorer", L"Ctrl+Q"},
+    {L"hotkeyQuitExplorer", L"win.quit", L"Ctrl+Q"},
     {L"hotkeyCloseOtherTabs", L"TabCloseOther", L"Ctrl+Shift+W"},
     {L"hotkeyToggleHidden", L"ToggleHidden", L"Ctrl+H"},
     {L"hotkeyToggleSystemFiles", L"ToggleSystemFiles", L"Ctrl+Shift+H"},

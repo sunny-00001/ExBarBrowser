@@ -30,7 +30,7 @@ bool App::NavigateActive(const std::wstring& path, bool push) {
     }
 
     if (!t->view->Navigate(path)) {
-        MessageBoxW(hwnd_, (L"无法打开：\n" + path).c_str(), L"ExBar", MB_ICONWARNING);
+        MessageBoxW(hwnd_, (L"无法打开：\n" + path).c_str(), id::kBrandShort, MB_ICONWARNING);
         OnTabNavFailed(t->view.get());
         return false;
     }

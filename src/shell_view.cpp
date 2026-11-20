@@ -95,9 +95,10 @@ HWND FindChildByClass(HWND parent, const wchar_t* name) {
 void ApplyShellTheme(HWND container, bool dark) {
     if (!container) return;
     // 只戳 IExplorerBrowser 自己的宿主窗口（container 直接子窗口中的那一个）。
-    if (HWND eb = FindChildByClass(container, L"ExplorerBrowserControl")) {
-        AllowDarkForWindow(eb, dark);
-        SetWindowTheme(eb, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+    if (HWND ebw = FindChildByClass(container, L"ExplorerBrowserControl")) {
+        AllowDarkForWindow(ebw, dark);
+        // shell_view 是唯一例外：见文件顶部的 DirectUI 说明，不能走 ui::ThemeControl
+        SetWindowTheme(ebw, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
         // SetWindowTheme 内部已经会发 WM_THEMECHANGED，不要再手动广播：
         // 对 DirectUI 反复广播会让它重建内部状态，实测会丢选中绘制。
     }
@@ -568,7 +569,7 @@ IShellView* ShellView::CurrentView() {
 //   （ExBarBrowser_TabView）时，框架完全不知道"本视图被激活了"。
 HWND ShellView::FocusTarget() {
     if (!container_) return nullptr;
-    if (HWND eb = FindChildByClass(container_, L"ExplorerBrowserControl")) return eb;
+    if (HWND ebw = FindChildByClass(container_, L"ExplorerBrowserControl")) return ebw;
     if (HWND def = FindChildByClass(container_, L"SHELLDLL_DefView")) return def;
     return container_;
 }

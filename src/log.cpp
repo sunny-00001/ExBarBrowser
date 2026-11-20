@@ -5,6 +5,11 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <string>
+
+// 日志文件名来自 identity.h（规则 B1：品牌串只允许出现在那里）。
+// 显式包含而不是靠 common.h 传递 —— log.cpp 要能独立编译（单测就是这么编的）。
+#include "identity.h"
 
 namespace {
 
@@ -12,7 +17,7 @@ namespace {
 void AppendLine(const wchar_t* buf) {
     wchar_t path[MAX_PATH] = L"";
     if (!GetTempPathW(MAX_PATH, path)) return;
-    lstrcatW(path, L"ExBarBrowser.log");
+    lstrcatW(path, id::kLogFileName);
 
     // 轮转：每 500 行检查一次，超过 4 MB 重命名为 .1（只保留一份）。
     static int sinceCheck = 0;

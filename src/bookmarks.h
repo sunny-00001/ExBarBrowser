@@ -1,12 +1,16 @@
 // 书签：树模型 + Netscape 书签 HTML 读写（与 ExBar mod / 浏览器兼容）。
 //
-// 文件格式（%APPDATA%\ExBar\bookmarks.html）：
+// 文件格式（便携模式：<exe>\data\bookmarks.html）：
 //   <DT><H3 EXBAR_ID="f-1" EXBAR_FLAGS="0">分类</H3>
 //   <DL><p>
 //       <DT><A HREF="file:///D:/" EXBAR_ID="b-1" EXBAR_ICON="shell:folder" EXBAR_FLAGS="0">D 盘</A>
 //   </DL><p>
 // 只依赖 EXBAR_ID（稳定 id），其余属性原样保留以便与 mod 互读。
+//
+// EXBAR_* 属性名是**跨软件契约**（浏览器/mod/本工程互读），永不改名 —— 见 docs/NAMING.md B2。
 #pragma once
+#include <windows.h>   // FILETIME（外部变更检测用）；不写它会把 PCH 当依赖
+
 #include <string>
 #include <vector>
 

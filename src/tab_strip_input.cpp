@@ -3,7 +3,7 @@
 // 只回答"点到了谁"，不改标签状态：选中/关闭/移动一律 PostMessage 给 App。
 #include "tab_strip.h"
 
-#include "eb_ui.h"
+#include "ui_draw.h"
 #include "mouse_rules.h"
 
 LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -62,7 +62,7 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         int close = HitClose(x, y);
         int target = close >= 0 ? MT_TAB_CLOSE : (tab >= 0 ? MT_TAB : MT_EMPTY);
         closeDownIdx_ = -1;  // 每次按下先复位，避免上次残留索引影响本次判定
-        if (sink_ && sink_(target, m, MBTN_LEFT, eb::CurrentMods(), pt)) return 0;
+        if (sink_ && sink_(target, m, MBTN_LEFT, CurrentMods(), pt)) return 0;
 
         if (close >= 0) {
             closeDownIdx_ = close;  // 锁定按下时的关闭按钮，up 时只认这个索引
@@ -90,7 +90,7 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
                                 : (tab >= 0 ? MT_TAB : (HitNew(x, y) ? MT_NEW_TAB
                                                                     : (HitOverflow(x, y) ? MT_OVERFLOW
                                                                                          : MT_EMPTY)));
-        if (sink_ && sink_(target, m, MBTN_LEFT, eb::CurrentMods(), pt)) return 0;
+        if (sink_ && sink_(target, m, MBTN_LEFT, CurrentMods(), pt)) return 0;
 
         if (dragIdx_ >= 0) {
             ReleaseCapture();
@@ -129,7 +129,7 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         POINT pt{x, y};
         ClientToScreen(h, &pt);
         int tab = HitTab(x, y);
-        if (sink_ && sink_(tab >= 0 ? MT_TAB : MT_EMPTY, m, MBTN_MIDDLE, eb::CurrentMods(), pt))
+        if (sink_ && sink_(tab >= 0 ? MT_TAB : MT_EMPTY, m, MBTN_MIDDLE, CurrentMods(), pt))
             return 0;
         if (tab >= 0 && !items_[static_cast<size_t>(tab)].locked) NotifyClose(tab);
         return 0;
@@ -139,7 +139,7 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         POINT pt{x, y};
         ClientToScreen(h, &pt);
         int tab = HitTab(x, y);
-        if (sink_ && sink_(tab >= 0 ? MT_TAB : MT_EMPTY, m, MBTN_RIGHT, eb::CurrentMods(), pt)) return 0;
+        if (sink_ && sink_(tab >= 0 ? MT_TAB : MT_EMPTY, m, MBTN_RIGHT, CurrentMods(), pt)) return 0;
         if (tab >= 0) ShowTabMenu(tab, pt);
         return 0;
     }
@@ -154,7 +154,7 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (HitTab(x, y) < 0 && !HitNew(x, y) && !HitOverflow(x, y)) {
             POINT pt{x, y};
             ClientToScreen(h, &pt);
-            if (sink_ && sink_(MT_EMPTY, m, MBTN_LEFT, eb::CurrentMods(), pt)) return 0;
+            if (sink_ && sink_(MT_EMPTY, m, MBTN_LEFT, CurrentMods(), pt)) return 0;
             PostMessageW(parent_, WM_APP_TAB_NEW, 0, 0);
         }
         return 0;
@@ -167,7 +167,7 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         ScreenToClient(h, &pt);
         int target = HitTab(pt.x, pt.y) >= 0 ? MT_TAB : MT_EMPTY;
         int delta = GET_WHEEL_DELTA_WPARAM(w);
-        if (sink_ && sink_(target, m, delta, eb::CurrentMods(), screen)) return 0;
+        if (sink_ && sink_(target, m, delta, CurrentMods(), screen)) return 0;
         if (overflow_) {
             ScrollBy(delta > 0 ? -theme_->S(48) : theme_->S(48));
             return 0;

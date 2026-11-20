@@ -59,7 +59,7 @@ private:
 
     HWND hwnd_ = nullptr;
     HWND parent_ = nullptr;
-    eb::TooltipHost tooltip_;
+    ui::TooltipHost tooltip_;
     const Theme* theme_ = nullptr;
     std::vector<Item> items_;
     std::map<std::wstring, HICON> icons_;

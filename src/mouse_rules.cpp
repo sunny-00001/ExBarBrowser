@@ -185,6 +185,16 @@ bool MouseRules::HasTriggerRules(int button, int trigger) const {
     return false;
 }
 
+int CurrentMods() {
+    int m = 0;
+    if (GetKeyState(VK_CONTROL) & 0x8000) m |= 1;
+    if (GetKeyState(VK_SHIFT) & 0x8000) m |= 2;
+    if (GetKeyState(VK_MENU) & 0x8000) m |= 4;
+    // AltGr = 右 Alt + 左 Ctrl：字符输入，不是修饰键组合
+    if ((GetKeyState(VK_RMENU) & 0x8000) && (GetKeyState(VK_LCONTROL) & 0x8000)) return 0;
+    return m;
+}
+
 const MouseRule* MouseRules::Find(int target, int button, int trigger, int mods) const {
     for (auto it = rules_.rbegin(); it != rules_.rend(); ++it) {
         if (it->target == target && it->button == button && it->trigger == trigger &&

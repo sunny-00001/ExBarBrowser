@@ -31,25 +31,43 @@ bool RegisterClassOnce(const wchar_t* name, WNDPROC proc, UINT style, HICON icon
     return true;
 }
 
-HWND CreateChild(const wchar_t* cls, HWND parent, void* self, int h96, HINSTANCE inst) {
-    HWND h = CreateWindowExW(0, cls, L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, 100, h96,
-                             parent, nullptr, inst ? inst : GetModuleHandleW(nullptr), nullptr);
+HWND CreateChild(const wchar_t* cls, HWND parent, void* self, int heightPx, HINSTANCE inst,
+                 DWORD style) {
+    // 与 CreatePopup 同一约定：self 走 lpCreateParams，创建后再补设一次。
+    // 本工程的栏都用 GetThis<T>(h) 在过程开头读 GWLP_USERDATA，不处理 WM_NCCREATE，
+    // 所以事后设置对它们是够的；但**约定必须一致** —— 否则下一个给栏加 WM_NCCREATE
+    // 的人会拿到空指针，而 CreatePopup 那边却正常，这种不一致最难查。
+    HWND h = CreateWindowExW(0, cls, L"", style, 0, 0, 100, heightPx, parent, nullptr,
+                             inst ? inst : GetModuleHandleW(nullptr), self);
     if (h && self) SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
     return h;
 }
 
 HWND CreatePopup(const wchar_t* cls, HWND owner, void* self, DWORD exStyle, DWORD style, int x,
                  int y, int w, int height, const wchar_t* title) {
+    // 【必须用 lpCreateParams 传 self，不能创建后再 SetWindowLongPtrW】
+    // 本工程的弹层/对话框窗口过程都实现了 WM_NCCREATE，里面会读
+    // CREATESTRUCTW::lpCreateParams 写进 GWLP_USERDATA：
+    //     SetWindowLongPtrW(h, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+    // WM_NCCREATE 发生在 CreateWindowExW 返回**之前**。若这里传 nullptr 再事后补设，
+    // WM_NCCREATE 会先用 nullptr 覆盖一次（无害），但更糟的是：任何在 WM_NCCREATE
+    // 里就要用 this 的窗口过程会直接拿到空指针。统一走 lpCreateParams 才是唯一安全解。
     HWND h = CreateWindowExW(exStyle, cls, title ? title : L"", style, x, y, w, height, owner,
-                             nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (h && self) SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+                             nullptr, GetModuleHandleW(nullptr), self);
+    if (h && self) {
+        // 兜底：窗口过程**没有**处理 WM_NCCREATE 的情形（如纯 DefWindowProcW 的窗口类）
+        if (!GetWindowLongPtrW(h, GWLP_USERDATA))
+            SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+    }
     return h;
 }
 
-void ThemeControl(HWND h, bool dark, const wchar_t* lightSubApp) {
+void ThemeControl(HWND h, bool dark, const wchar_t* subApp) {
     if (!h) return;
-    const wchar_t* sub = dark ? L"DarkMode_Explorer" : (lightSubApp ? lightSubApp : L"Explorer");
-    SetWindowTheme(h, sub, nullptr);
+    if (!subApp || !*subApp) subApp = L"Explorer";
+    // 深色统一加 DarkMode_ 前缀；浅色就是后缀本身（Explorer / CFD 都是系统已知的 SubAppName）
+    std::wstring name = dark ? (std::wstring(L"DarkMode_") + subApp) : subApp;
+    SetWindowTheme(h, name.c_str(), nullptr);
 }
 
 }  // namespace win

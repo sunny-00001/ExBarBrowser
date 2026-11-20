@@ -161,8 +161,8 @@ void App::SyncChrome() {
     if (!t) return;
     std::wstring p = t->path();
     std::wstring title = t->display.empty() ? LeafOf(p) : t->display;
-    if (title.empty()) title = L"ExBar";
-    SetWindowTextW(hwnd_, (title + L" — ExBar").c_str());
+    if (title.empty()) title = id::kBrandShort;
+    SetWindowTextW(hwnd_, (title + L" — " + id::kBrandShort).c_str());
 
     // 只喂模型：标题兜底、图标解析/缓存都在 TabStrip 内（App 不持有 HICON）。
     tabStrip_.SetTabs(tabSet_.items(), ActiveIndex());

@@ -76,7 +76,7 @@ private:
 
     HWND hwnd_ = nullptr;
     HWND parent_ = nullptr;
-    eb::TooltipHost tooltip_;
+    ui::TooltipHost tooltip_;
     const Theme* theme_ = nullptr;
     std::vector<TabStripItem> items_;
     // path -> HICON（本类拥有，ReleaseIcons 统一销毁）。上限见 tab_strip.cpp TabIcon。

@@ -3,6 +3,8 @@
 // 所有尺寸都过 theme_->S()，本文件不出现裸像素；DPI 变化由 ReloadTheme 触发重算。
 #include "tab_strip.h"
 
+#include "ui_draw.h"
+
 void TabStrip::EnsureVisible(int index) {
     if (!overflow_ || index < 0 || index >= static_cast<int>(tabRects_.size())) return;
     const int viewRight = ovfRc_.left - theme_->S(2);
@@ -32,8 +34,8 @@ void TabStrip::Layout() {
     GetClientRect(hwnd_, &rc);
     if (rc.right <= 0 || rc.bottom <= 0) return;
 
+    // 量字走唯一原语（ui::MeasureText 内部选字体并还原）
     HDC dc = GetDC(hwnd_);
-    HGDIOBJ old = SelectObject(dc, theme_->font);
 
     const int margin = theme_->S(6);
     const int plusW = theme_->S(28);
@@ -46,10 +48,8 @@ void TabStrip::Layout() {
     std::vector<int> widths(static_cast<size_t>(n), theme_->S(112));
     int total = 0;
     for (int i = 0; i < n; ++i) {
-        SIZE sz{};
-        const std::wstring& t = items_[static_cast<size_t>(i)].title;
-        if (!t.empty()) GetTextExtentPoint32W(dc, t.c_str(), static_cast<int>(t.size()), &sz);
-        int w = sz.cx + theme_->S(62);
+        int w = ui::MeasureText(dc, theme_->font, items_[static_cast<size_t>(i)].title) +
+                theme_->S(62);
         w = std::max(theme_->S(112), std::min(w, theme_->S(230)));
         widths[static_cast<size_t>(i)] = w;
         total += w;
@@ -93,7 +93,6 @@ void TabStrip::Layout() {
     ovfRc_ = overflow_ ? RECT{viewRight + gap / 2, 0, viewRight + gap / 2 + ovfW, h} : RECT{};
     (void)viewRight;
 
-    SelectObject(dc, old);
     ReleaseDC(hwnd_, dc);
     RebuildTooltip(hwnd_);
 }
@@ -101,7 +100,7 @@ void TabStrip::Layout() {
 void TabStrip::RebuildTooltip(HWND h) {
     // 工具提示走唯一实现（TooltipHost）
     tooltip_.Attach(h, theme_->S(600));
-    std::vector<eb::TooltipHost::Item> items;
+    std::vector<ui::TooltipHost::Item> items;
     items.reserve(tabRects_.size());
     for (size_t i = 0; i < tabRects_.size() && i < items_.size(); ++i) {
         if (items_[i].path.empty()) continue;

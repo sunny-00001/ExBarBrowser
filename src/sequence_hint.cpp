@@ -2,11 +2,12 @@
 
 #include "platform_win.h"
 
-#include "eb_ui.h"
+#include "ui_draw.h"
 
 namespace {
 
-constexpr wchar_t kClass[] = L"ExBarBrowser_SeqHint";
+// 类名由 identity.h 统一给出（规则 B1）
+constexpr const wchar_t* kClass = id::kSeqHintClass;
 
 }  // namespace
 
@@ -14,11 +15,10 @@ void SequenceHint::Create(HWND owner, const Theme& theme) {
     win::RegisterClassOnce(kClass, SequenceHint::WndProc);
     owner_ = owner;
     theme_ = &theme;
-    hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, kClass, L"",
-                            WS_POPUP, 0, 0, 10, 10, owner, nullptr, GetModuleHandleW(nullptr),
-                            nullptr);
+    hwnd_ = win::CreatePopup(kClass, owner, this,
+                             WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, WS_POPUP, 0, 0,
+                             10, 10);
     if (!hwnd_) return;
-    SetThis(hwnd_, this);
 }
 
 void SequenceHint::ReloadTheme() {
@@ -34,20 +34,15 @@ void SequenceHint::Show(const std::wstring& prefix,
     prefix_ = prefix;
     items_ = items;
 
+    // 量字走唯一原语（ui::MeasureText 内部选字体并还原）
     HDC dc = GetDC(hwnd_);
-    HGDIOBJ old = SelectObject(dc, theme_->font);
     int maxW = 0;
     for (const auto& kv : items_) {
         std::wstring line = kv.first + L"   " + kv.second;
-        SIZE sz{};
-        GetTextExtentPoint32W(dc, line.c_str(), static_cast<int>(line.size()), &sz);
-        maxW = std::max(maxW, static_cast<int>(sz.cx));
+        maxW = std::max(maxW, ui::MeasureText(dc, theme_->font, line));
     }
-    SIZE psz{};
     std::wstring head = prefix_.empty() ? std::wstring(L"序列") : prefix_;
-    GetTextExtentPoint32W(dc, head.c_str(), static_cast<int>(head.size()), &psz);
-    maxW = std::max(maxW, static_cast<int>(psz.cx) + theme_->S(60));
-    SelectObject(dc, old);
+    maxW = std::max(maxW, ui::MeasureText(dc, theme_->font, head) + theme_->S(60));
     ReleaseDC(hwnd_, dc);
 
     const int pad = theme_->S(10);
@@ -88,16 +83,16 @@ LRESULT CALLBACK SequenceHint::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 }
 
 void SequenceHint::Paint(HWND h) {
-    eb::PaintBuffered(h, theme_->listBg, [&](HDC mem, const RECT& rc) {
+    ui::PaintBuffered(h, theme_->listBg, [&](HDC mem, const RECT& rc) {
         // 边框：整窗一圈 1px（用四条分隔线，避免再建 pen/brush 一套样板）
         RECT t{0, 0, rc.right, 0};
-        eb::DrawSeparator(mem, t, false, theme_->editBorder);
+        ui::DrawSeparator(mem, t, false, theme_->editBorder);
         RECT b{0, rc.bottom - 1, rc.right, rc.bottom - 1};
-        eb::DrawSeparator(mem, b, false, theme_->editBorder);
+        ui::DrawSeparator(mem, b, false, theme_->editBorder);
         RECT lft{0, 0, 0, rc.bottom};
-        eb::DrawSeparator(mem, lft, true, theme_->editBorder);
+        ui::DrawSeparator(mem, lft, true, theme_->editBorder);
         RECT rgt{rc.right - 1, 0, rc.right - 1, rc.bottom};
-        eb::DrawSeparator(mem, rgt, true, theme_->editBorder);
+        ui::DrawSeparator(mem, rgt, true, theme_->editBorder);
 
         HGDIOBJ oldFont = SelectObject(mem, theme_->font);
         const int pad = theme_->S(10);

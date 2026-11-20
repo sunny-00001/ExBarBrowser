@@ -60,6 +60,10 @@ enum class CmdId : int {
     ToggleHidden, ToggleSystemFiles, ToggleExtensions, CycleHiddenSeg,
     TogglePreviewPane, ToggleNavPane, ToggleCheckboxes, ViewNext, ViewPrev,
     // Window
+    // 注：QuitExplorer 是 mod 期的名字（那时行为是"重启 explorer.exe"）。本工程里
+    // 它的行为是"退出本程序"，点分名 win.quit 才是准确描述。枚举名保留是因为
+    // 规则 C1（CmdId 值一经分配不再改，废弃则保留占位）—— 改枚举名会打断
+    // keymap.json / 审计日志 / 脚本里的引用。表里的 name 已改为 win.quit。
     NewWindow, QuitExplorer, FolderOptions, MapDrive, UnmapDrive,
     CommandPalette, HotkeyManager, FocusAddress, FocusSearch, Preferences,
     // External

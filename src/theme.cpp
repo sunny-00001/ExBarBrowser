@@ -1,6 +1,6 @@
 #include "theme.h"
 
-#include "eb_theme.h"
+#include "ui_palette.h"
 
 namespace {
 
@@ -40,7 +40,7 @@ void Theme::Init(HWND hwnd, int dpiOverride) {
     dpi = dpiOverride > 0 ? dpiOverride : (hwnd ? DpiOf(hwnd) : 96);
     dark = SystemIsDark();
 
-    const EbColors& T = EbPalette(dark);
+    const UiPalette& T = PaletteFor(dark);
     if (dark) {
         bg = RGB(0x14, 0x14, 0x14);              // 视图容器底（shell 自己会画）
         bar = RGB(32, 32, 32);                    // 工具栏底
@@ -48,7 +48,7 @@ void Theme::Init(HWND hwnd, int dpiOverride) {
         bg = RGB(0xff, 0xff, 0xff);
         bar = GetSysColor(COLOR_WINDOW);          // 工具栏底 = 系统窗口色
     }
-    // 其余令牌一律取 eb 调色板，禁止自造
+    // 其余令牌一律取 UiPalette，禁止自造
     barAlt = T.editBg;
     hover = T.hover;
     line = T.separator;
@@ -79,7 +79,7 @@ void Theme::Init(HWND hwnd, int dpiOverride) {
     brViewBg = CreateSolidBrush(bg);
 
     // 正文/加粗：系统 message font（中文 = Microsoft YaHei UI），与 mod 同源。
-    // 字形不再自持 HFONT —— 一律走 eb::DrawGlyph 的字体池。
+    // 字形不再自持 HFONT —— 一律走 ui::DrawGlyph 的字体池。
     LOGFONTW lf{};
     NONCLIENTMETRICSW ncm{};
     ncm.cbSize = sizeof(ncm);

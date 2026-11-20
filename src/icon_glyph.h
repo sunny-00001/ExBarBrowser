@@ -7,11 +7,10 @@
 //   status_bar.cpp:23-35  另一张私有表（7 个码位，其中 0xE73E 与这里重复）
 //   tab_strip_paint.cpp   0xE72E / 0xE70D
 //   bookmark_bar.cpp      0xE712
-// 同一个"后退箭头"在三处各写一遍数字，字形语义完全靠注释维系；而
-// eb::IconGlyph(L"back") 早就存在，只是没人用（全仓仅 1 次调用）。
+// 同一个"后退箭头"在三处各写一遍数字，字形语义完全靠注释维系。
 //
 // 【纪律】新代码一律用 Glyph(IconId::Xxx)，不写数字。判据见
-// tools/check_components.py 的 "字形码位" 规则：0xE7xx/0xE8xx 只允许出现在本文件。
+// tools/check_components.py 的"绕过 ui::DrawChevron 自绘箭头"规则。
 #pragma once
 #include "common.h"
 

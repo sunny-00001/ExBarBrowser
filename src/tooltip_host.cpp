@@ -3,7 +3,7 @@
 
 #include <commctrl.h>
 
-namespace eb {
+namespace ui {
 
 TooltipHost::~TooltipHost() {
     if (tip_ && IsWindow(tip_)) DestroyWindow(tip_);
@@ -61,4 +61,4 @@ void TooltipHost::SetTools(const std::vector<Item>& items) {
     }
 }
 
-}  // namespace eb
+}  // namespace ui

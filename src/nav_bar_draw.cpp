@@ -1,10 +1,10 @@
 // 导航栏绘制（从 nav_bar.cpp 拆出，保持单文件 <=500 行）
 //
-// 绘制原语一律走 eb::（字体池 / 字形 / 图标 / 填充），与 mod 的 NavDrawBar /
+// 绘制原语一律走 ui::（字体池 / 字形 / 图标 / 填充），与 mod 的 NavDrawBar /
 // DrawRichBreadcrumb 同源；这里只保留"布局矩形 → 调用原语"的胶水。
 #include "nav_bar.h"
 
-#include "eb_ui.h"
+#include "ui_draw.h"
 #include "nav_metrics.h"
 
 namespace {
@@ -14,7 +14,7 @@ void DrawSep(HDC dc, const RECT& zone, COLORREF color, wchar_t glyph) {
     // 与其他栏的 chevron 统一：按 DPI 字号取，而不是用"区高比例"反推
     // （不同栏高下字形大小会漂移，标签栏/弹层的 chevron 都是 S(10)）。
     int em = MulDiv(12, zone.bottom - zone.top, 24);
-    eb::DrawGlyph(dc, glyph, zone, em, color, DT_CENTER | DT_VCENTER);
+    ui::DrawGlyph(dc, glyph, zone, em, color, DT_CENTER | DT_VCENTER);
 }
 
 }  // namespace
@@ -22,28 +22,28 @@ void DrawSep(HDC dc, const RECT& zone, COLORREF color, wchar_t glyph) {
 void NavBar::DrawButton(HDC dc, const Btn& b, bool hover, bool down) {
     const int inset = theme_->S(1);
     RECT hr{b.rc.left + inset, b.rc.top + inset, b.rc.right - inset, b.rc.bottom - inset};
-    // 圆角底板走唯一原语（eb::FillRound）：以前这里有一份私有 FillRound，
+    // 圆角底板走唯一原语（ui::FillRound）：以前这里有一份私有 FillRound，
     // 别的栏拿不到只能画直角 —— 那就是"导航栏圆角、其余栏直角"的成因。
     if (down)
-        eb::FillRound(dc, hr, theme_->pressed, theme_->radiusBtn());
+        ui::FillRound(dc, hr, theme_->pressed, theme_->radiusBtn());
     else if (hover)
-        eb::FillRound(dc, hr, theme_->hover, theme_->radiusBtn());
+        ui::FillRound(dc, hr, theme_->hover, theme_->radiusBtn());
 
     int arrowW = b.hasArrow ? theme_->S(kArrow96) : 0;
     RECT box{b.rc.left, b.rc.top, b.rc.right - arrowW, b.rc.bottom};
     int isz = theme_->S(kIcon96);
     COLORREF color = b.enabled ? theme_->text : theme_->disabled;
     if (b.icon) {
-        eb::DrawIconCentered(dc, b.icon, box, isz);
+        ui::DrawIconCentered(dc, b.icon, box, isz);
     } else if (b.glyph) {
-        eb::DrawGlyph(dc, b.glyph, box, isz, color);
+        ui::DrawGlyph(dc, b.glyph, box, isz, color);
     }
 
     if (b.hasArrow) {
         int divX = b.rc.right - arrowW;
         RECT vr{divX, b.rc.top + theme_->S(6), divX, b.rc.bottom - theme_->S(6)};
-        eb::DrawSeparator(dc, vr, true, theme_->line);
-        eb::DrawChevron(dc, divX + arrowW / 2, (b.rc.top + b.rc.bottom) / 2, theme_->S(4), color,
+        ui::DrawSeparator(dc, vr, true, theme_->line);
+        ui::DrawChevron(dc, divX + arrowW / 2, (b.rc.top + b.rc.bottom) / 2, theme_->S(4), color,
                         1);
     }
 }
@@ -59,7 +59,7 @@ void NavBar::DrawBreadcrumb(HDC dc, const RECT& rc) {
 
     // 前导图标：当前文件夹的 shell 图标（与 mod 同尺寸 iconSize）
     if (leadIcon_) {
-        eb::DrawIconVCentered(dc, leadIcon_, cx, rc.top, rc.bottom, theme_->S(kIcon96));
+        ui::DrawIconVCentered(dc, leadIcon_, cx, rc.top, rc.bottom, theme_->S(kIcon96));
     }
     cx += theme_->S(kLead96);
 
@@ -70,7 +70,7 @@ void NavBar::DrawBreadcrumb(HDC dc, const RECT& rc) {
         RECT zone{cx + theme_->S(3), rc.top, cx + theme_->S(kSep96) - theme_->S(3), rc.bottom};
         if (hot) {
             RECT hr{zone.left - theme_->S(3), rc.top, zone.right + theme_->S(3), rc.bottom};
-            eb::FillRectColor(dc, hr, theme_->hover);
+            ui::FillRectColor(dc, hr, theme_->hover);
         }
         DrawSep(dc, zone, hot ? theme_->text : theme_->chevron, ico::Glyph(ico::IconId::ChevronLeft));
     }
@@ -84,7 +84,7 @@ void NavBar::DrawBreadcrumb(HDC dc, const RECT& rc) {
         if (hotSeg_ == pi) {
             RECT hr{segRects_[k].left - theme_->S(4), rc.top, segRects_[k].right + theme_->S(4),
                     rc.bottom};
-            eb::FillRectColor(dc, hr, theme_->hover);
+            ui::FillRectColor(dc, hr, theme_->hover);
         }
         HGDIOBJ old = SelectObject(dc, theme_->font);
         SetTextColor(dc, part.ghost ? theme_->disabled : theme_->text);
@@ -102,41 +102,41 @@ void NavBar::DrawBreadcrumb(HDC dc, const RECT& rc) {
         if (chevHot) {
             RECT hr{zone.left - theme_->S(3), rc.top, zone.right + theme_->S(3), rc.bottom};
             // 与 mod 一致：展开态按 pressed 底色，悬停才是 hover
-            eb::FillRectColor(dc, hr, chevOpen ? theme_->pressed : theme_->hover);
+            ui::FillRectColor(dc, hr, chevOpen ? theme_->pressed : theme_->hover);
         }
         int cx = (zone.left + zone.right) / 2;
         int cy = (zone.top + zone.bottom) / 2;
-        eb::DrawChevron(dc, cx, cy, theme_->S(10),
+        ui::DrawChevron(dc, cx, cy, theme_->S(10),
                         chevHot ? theme_->text : theme_->chevron, chevOpen ? 1 : 0);
     }
     RestoreDC(dc, save);
 }
 
 void NavBar::Paint(HWND h) {
-    eb::PaintBuffered(h, theme_->bar, [&](HDC mem, const RECT& rc) {
+    ui::PaintBuffered(h, theme_->bar, [&](HDC mem, const RECT& rc) {
         for (const auto& b : buttons_) DrawButton(mem, b, hoverBtn_ == b.id, downBtn_ == b.id);
 
         if (!buttons_.empty()) {
             const int sepX = buttons_.back().rc.right + theme_->S(kGap96) / 2;
             RECT vr{sepX, rc.top + theme_->S(6), sepX, rc.bottom - theme_->S(6)};
-            eb::DrawSeparator(mem, vr, true, theme_->line);
+            ui::DrawSeparator(mem, vr, true, theme_->line);
         }
 
         if (editing_) {
-            eb::FillRectColor(mem, dropRc_, theme_->editBg);
+            ui::FillRectColor(mem, dropRc_, theme_->editBg);
         } else {
             DrawBreadcrumb(mem, fieldRc_);
         }
 
         // 字段内下拉箭头：hover 高亮整格，箭头本身用向下字形
-        if (hotDrop_) eb::FillRectColor(mem, dropRc_, theme_->hover);
+        if (hotDrop_) ui::FillRectColor(mem, dropRc_, theme_->hover);
         {
             int gh = (dropRc_.bottom - dropRc_.top) * 2 / 5;
-            eb::DrawChevron(mem, (dropRc_.left + dropRc_.right) / 2,
+            ui::DrawChevron(mem, (dropRc_.left + dropRc_.right) / 2,
                             (dropRc_.top + dropRc_.bottom) / 2, gh, theme_->text, 1);
         }
 
         // 边框最后描（否则被框内填充盖掉）
-        eb::FrameRectColor(mem, fieldRc_, theme_->editBorder);
+        ui::FrameRectColor(mem, fieldRc_, theme_->editBorder);
     });
 }

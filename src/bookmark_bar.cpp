@@ -7,7 +7,7 @@
 #include "clipboard.h"
 #include "commands.h"
 #include "config.h"
-#include "eb_ui.h"
+#include "ui_draw.h"
 #include "icon_resolve.h"
 #include "mouse_rules.h"
 #include "popup_list.h"
@@ -17,8 +17,8 @@
 
 namespace {
 
-// 类名常量（规则 R10：外部契约要能 grep 到，不能散在 CreateWindow 里）
-constexpr wchar_t kBookmarkBarClass[] = L"ExBarBrowser_BookmarkBar";
+// 类名常量由 identity.h 统一给出（规则 B1：品牌串只允许出现在那里）
+using id::kBookmarkBarClass;
 
 }  // namespace
 
@@ -26,10 +26,9 @@ void BookmarkBar::Create(HWND parent, const Theme& theme) {
     win::RegisterClassOnce(kBookmarkBarClass, BookmarkBar::WndProc, CS_DBLCLKS);
     parent_ = parent;
     theme_ = &theme;
-    hwnd_ = CreateWindowExW(0, kBookmarkBarClass, L"", WS_CHILD | WS_VISIBLE, 0, 0, 100,
-                            theme.S(26), parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+    hwnd_ = win::CreateChild(kBookmarkBarClass, parent, this, theme.S(26), nullptr,
+                             WS_CHILD | WS_VISIBLE);
     if (!hwnd_) return;
-    SetThis(hwnd_, this);
     DragAcceptFiles(hwnd_, TRUE);
     BmkDropAttach(hwnd_, this);  // OLE 拖放（虚拟项/命名空间/drop-into-folder）
     Reload();
@@ -61,7 +60,7 @@ void BookmarkBar::Reload() {
 void BookmarkBar::ReloadTheme() {
     if (!hwnd_) return;
     // 提示窗宽度依赖 DPI/主题 → 重建（TooltipHost 析构会销毁旧窗）
-    tooltip_ = eb::TooltipHost();
+    tooltip_ = ui::TooltipHost();
     Layout();
     InvalidateRect(hwnd_, nullptr, TRUE);
 }
@@ -75,7 +74,7 @@ HICON BookmarkBar::IconFor(const BookmarkNode& n) {
     HICON icon = nullptr;
     if (n.isFolder && n.path.empty()) {
         // 书签"分类"节点无路径：给系统文件夹图标（与 mod 一致）。
-        icon = eb::StockIcon(SIID_FOLDER, true);
+        icon = ui::StockIcon(SIID_FOLDER, true);
     } else {
         // 统一图标识别：此电脑/回收站/侧边栏/云存储等命名空间取准确图标。
         icon = ico::Resolve(n.path, true);
@@ -133,7 +132,7 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
                                                                         : MT_BOOKMARK)
                               : (HitOverflow(x, y) ? MT_OVERFLOW : MT_BOOKMARK_EMPTY);
         int button = (m == WM_LBUTTONDBLCLK) ? MBTN_LEFT : MBTN_RIGHT;
-        if (sink_ && sink_(target, m, button, eb::CurrentMods(), pt)) return 0;
+        if (sink_ && sink_(target, m, button, CurrentMods(), pt)) return 0;
         return 0;
     }
     case WM_LBUTTONDOWN: {
@@ -144,7 +143,7 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         int target = idx >= 0 ? (items_[static_cast<size_t>(idx)].folder ? MT_BOOKMARK_FOLDER
                                                                         : MT_BOOKMARK)
                               : (HitOverflow(x, y) ? MT_OVERFLOW : MT_BOOKMARK_EMPTY);
-        if (sink_ && sink_(target, m, MBTN_LEFT, eb::CurrentMods(), pt)) {
+        if (sink_ && sink_(target, m, MBTN_LEFT, CurrentMods(), pt)) {
             dragArm_ = false;
             return 0;
         }
@@ -203,7 +202,7 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
                               : (HitOverflow(x, y) ? MT_OVERFLOW : MT_BOOKMARK_EMPTY);
         // UP 必须尊重 sink 的返回值：鼠标规则接管（"none"/命令）之后不能再执行默认导航。
         // 原来只调不判，规则命中时同一次点击会既跑命令又导航（双重触发）。
-        if (sink_ && sink_(target, m, MBTN_LEFT, eb::CurrentMods(), pt)) return 0;
+        if (sink_ && sink_(target, m, MBTN_LEFT, CurrentMods(), pt)) return 0;
         if (idx >= 0) {
             if (items_[static_cast<size_t>(idx)].folder)
                 ShowFolderMenu(idx, pt);
@@ -220,7 +219,7 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         ClientToScreen(h, &pt);
         int idx = HitItem(x, y);
         if (sink_ &&
-            sink_(idx >= 0 ? MT_BOOKMARK : MT_BOOKMARK_EMPTY, m, MBTN_RIGHT, eb::CurrentMods(), pt))
+            sink_(idx >= 0 ? MT_BOOKMARK : MT_BOOKMARK_EMPTY, m, MBTN_RIGHT, CurrentMods(), pt))
             return 0;
         if (idx >= 0)
             ShowItemMenu(idx, pt);
@@ -261,8 +260,8 @@ void BookmarkBar::Layout() {
     GetClientRect(hwnd_, &rc);
     if (rc.right <= 0 || rc.bottom <= 0) return;
 
+    // 量字走唯一原语（ui::MeasureText 内部选字体并还原），不再各自 SelectObject
     HDC dc = GetDC(hwnd_);
-    HGDIOBJ old = SelectObject(dc, theme_->font);
 
     const int margin = theme_->S(6);
     const int padX = theme_->S(2);
@@ -274,10 +273,9 @@ void BookmarkBar::Layout() {
     int total = 0;
     std::vector<int> widths(items_.size(), 0);
     for (size_t i = 0; i < items_.size(); ++i) {
-        SIZE sz{};
         const std::wstring& t = items_[i].label;
-        if (!t.empty()) GetTextExtentPoint32W(dc, t.c_str(), static_cast<int>(t.size()), &sz);
-        int w = padX * 2 + iconW + gap + sz.cx + (items_[i].folder ? theme_->S(14) : 0);
+        int textW = ui::MeasureText(dc, theme_->font, t);
+        int w = padX * 2 + iconW + gap + textW + (items_[i].folder ? theme_->S(14) : 0);
         widths[i] = w;
         total += w;
         // 只有相邻项之间才有间距；末项之后不计，否则 total 偏大 1px，临界宽度会误判溢出。
@@ -299,7 +297,6 @@ void BookmarkBar::Layout() {
                               rc.bottom - theme_->S(2)}
                        : RECT{};
 
-    SelectObject(dc, old);
     ReleaseDC(hwnd_, dc);
     RebuildTooltip(hwnd_);
 }
@@ -308,7 +305,7 @@ void BookmarkBar::RebuildTooltip(HWND h) {
     // 工具提示走唯一实现（TooltipHost）：文本复制与 id 管理都在里面，
     // 不再需要"两趟稳定文本"的手工做法。
     tooltip_.Attach(h, theme_->S(600));
-    std::vector<eb::TooltipHost::Item> tips;
+    std::vector<ui::TooltipHost::Item> tips;
     tips.reserve(items_.size());
     for (const auto& it : items_) {
         if (it.rc.right <= it.rc.left) continue;
@@ -318,7 +315,7 @@ void BookmarkBar::RebuildTooltip(HWND h) {
 }
 
 void BookmarkBar::Paint(HWND h) {
-    eb::PaintBuffered(h, theme_->bar, [&](HDC mem, const RECT& rc) {
+    ui::PaintBuffered(h, theme_->bar, [&](HDC mem, const RECT& rc) {
         HGDIOBJ oldFont = SelectObject(mem, theme_->font);
 
         const int padX = theme_->S(2);
@@ -331,7 +328,7 @@ void BookmarkBar::Paint(HWND h) {
             int x = it.rc.left + padX;
             if (it.icon) {
                 RECT ir{x, it.rc.top, x + iconPx, it.rc.bottom};
-                eb::DrawIconCentered(mem, it.icon, ir, iconPx);
+                ui::DrawIconCentered(mem, it.icon, ir, iconPx);
             }
             x += iconPx + theme_->S(6);
             RECT tr{x, it.rc.top, it.rc.right - padX - (it.folder ? theme_->S(14) : 0), it.rc.bottom};
@@ -343,14 +340,14 @@ void BookmarkBar::Paint(HWND h) {
                 // 而不是自绘折线（DPI 下尺寸写死、深色下也不跟随文字色）。
                 RECT cr{it.rc.right - padX - theme_->S(14), it.rc.top,
                         it.rc.right - padX - theme_->S(2), it.rc.bottom};
-                eb::DrawChevron(mem, (cr.left + cr.right) / 2, (cr.top + cr.bottom) / 2, theme_->S(9),
+                ui::DrawChevron(mem, (cr.left + cr.right) / 2, (cr.top + cr.bottom) / 2, theme_->S(9),
                                 theme_->sub, 1);
             }
         }
 
         if (overflow_) {
             if (hotOvf_) FillRect(mem, &ovfRc_, theme_->brHover);
-            eb::DrawGlyph(mem, ico::IconId::More, ovfRc_, theme_->S(11), theme_->sub);  // More：与标签栏的下箭头区分
+            ui::DrawGlyph(mem, ico::IconId::More, ovfRc_, theme_->S(11), theme_->sub);  // More：与标签栏的下箭头区分
         }
 
         if (dragging_ && dropIdx_ >= 0 && dropIdx_ <= static_cast<int>(items_.size())) {
@@ -367,11 +364,11 @@ void BookmarkBar::Paint(HWND h) {
                 if (gx < a.right) gx = (a.right + b.left) / 2;  // 间隙被裁剪时取中线
             }
             RECT bar{gx, theme_->S(3), gx + theme_->S(2), rc.bottom - 2};
-            eb::FillRectColor(mem, bar, theme_->accent);
+            ui::FillRectColor(mem, bar, theme_->accent);
         }
 
         RECT hr{0, rc.bottom - 1, rc.right, rc.bottom - 1};
-        eb::DrawSeparator(mem, hr, false, theme_->line);
+        ui::DrawSeparator(mem, hr, false, theme_->line);
 
         SelectObject(mem, oldFont);
     });
@@ -559,7 +556,7 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
         break;
     }
     case 4:
-        if (MessageBoxW(hwnd_, (L"删除书签“" + it.label + L"”？").c_str(), L"ExBar",
+        if (MessageBoxW(hwnd_, (L"删除书签“" + it.label + L"”？").c_str(), id::kBrandShort,
                         MB_YESNO | MB_ICONQUESTION) == IDYES &&
             store.Remove(it.id)) {
             store.Save();
@@ -585,7 +582,7 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
         }
         break;
     case 8:  // 清除全部书签：可撤销（ReplaceAll 已入快照栈）
-        if (MessageBoxW(hwnd_, L"确定清除全部书签？可在“撤销删除”中恢复。", L"ExBar",
+        if (MessageBoxW(hwnd_, L"确定清除全部书签？可在“撤销删除”中恢复。", id::kBrandShort,
                         MB_YESNO | MB_ICONWARNING) == IDYES) {
             store.ReplaceAll(BookmarkList{});
             store.Save();
@@ -648,7 +645,7 @@ void BookmarkBar::ShowEmptyMenu(POINT screen) {
         }
         break;
     case 9:
-        if (MessageBoxW(hwnd_, L"确定清除全部书签？可在“撤销删除”中恢复。", L"ExBar",
+        if (MessageBoxW(hwnd_, L"确定清除全部书签？可在“撤销删除”中恢复。", id::kBrandShort,
                         MB_YESNO | MB_ICONWARNING) == IDYES) {
             store.ReplaceAll(BookmarkList{});
             store.Save();

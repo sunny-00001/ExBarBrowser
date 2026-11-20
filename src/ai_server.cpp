@@ -27,7 +27,7 @@
 namespace ai {
 namespace {
 
-constexpr wchar_t kPipePrefix[] = L"\\\\.\\pipe\\ExBarBrowser_ai_";
+constexpr const wchar_t* kPipePrefix = id::kPipePrefix;
 constexpr size_t kMaxLineBytes = 64 * 1024;   // 一行上限，防被灌爆
 
 std::atomic<bool> g_running{false};
@@ -81,7 +81,7 @@ std::wstring MakeToken() {
 // 进程退出 → 句柄失效 → 旧名自然连不上，不会连到僵尸管道。
 std::wstring PipeName() {
     wchar_t buf[32] = L"default";
-    if (HWND h = FindWindowW(L"ExBarBrowser_Main", nullptr))
+    if (HWND h = FindWindowW(id::kMainClass, nullptr))
         swprintf(buf, 32, L"%llx", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(h)));
     return std::wstring(kPipePrefix) + buf;
 }
@@ -404,7 +404,7 @@ std::wstring HandleRpcLine(const json::Value& req) {
         // 协议版本回一个我们支持的（MCP 用日期命名）。客户端会据此决定降级行为。
         result.Set(L"protocolVersion", json::Value::MakeStr(L"2024-11-05"));
         json::Value info = json::Value::MakeObject();
-        info.Set(L"name", json::Value::MakeStr(L"exbarbrowser"));
+        info.Set(L"name", json::Value::MakeStr(id::kAiServiceName));
         info.Set(L"version", json::Value::MakeStr(L"1.0"));
         result.Set(L"serverInfo", info);
         // 只声明 tools 能力。声明了却做不到比不声明更糟。

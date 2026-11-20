@@ -54,13 +54,18 @@
 #define SSF_SHOWSUPERHIDDEN 0x00040000
 #endif
 
-// 窗口类名（单实例查找与脚本里也用）
-constexpr wchar_t kMainClass[] = L"ExBarBrowser_Main";
-constexpr wchar_t kViewAreaClass[] = L"ExBarBrowser_ViewArea";
-constexpr wchar_t kTabViewClass[] = L"ExBarBrowser_TabView";
-constexpr wchar_t kTabStripClass[] = L"ExBarBrowser_TabStrip";
-constexpr wchar_t kNavBarClass[] = L"ExBarBrowser_NavBar";
-constexpr wchar_t kStatusBarClass[] = L"ExBarBrowser_StatusBar";
+// 品牌串、窗口类名、进程级资源名的唯一来源（namespace id）。
+// 以前这些字面量散在 9 个文件里，改名要动 9 处；现在只改 identity.h。
+//   · kMainClass / kTabStripClass / ... → 见 identity.h
+//   · kCopyDataMagic                    → 见 identity.h
+#include "identity.h"
+
+using id::kMainClass;
+using id::kViewAreaClass;
+using id::kTabViewClass;
+using id::kTabStripClass;
+using id::kNavBarClass;
+using id::kStatusBarClass;
 
 // 子窗口 -> 主窗口的自定义消息（避免跨文件依赖 App 头）
 enum : UINT {
@@ -89,7 +94,7 @@ enum : UINT {
 using MouseSink = std::function<bool(int target, UINT msg, int button, int mods, POINT screen)>;
 
 // 单实例转发（WM_COPYDATA）
-constexpr ULONG_PTR kCopyDataMagic = 0xEBB1;
+using id::kCopyDataMagic;
 struct CopyDataPayload {
     ULONG_PTR magic;
     wchar_t path[1024];

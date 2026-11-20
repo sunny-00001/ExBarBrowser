@@ -5,7 +5,7 @@
 
 #include <unordered_map>
 
-#include "eb_ui.h"
+#include "ui_draw.h"
 
 namespace ico {
 namespace {
@@ -144,7 +144,7 @@ HICON GetPathIcon(const std::wstring& rawPath, bool small) {
             if (ws[k] != L'\\' && ws[k] != L'/') isRootNs = false;
         if (!isRootNs && !guid.empty()) {
             // 命名空间子项：系统文件夹图标。
-            if (HICON h = eb::StockIcon(SIID_FOLDER, small)) return h;
+            if (HICON h = ui::StockIcon(SIID_FOLDER, small)) return h;
         }
         PIDLIST_ABSOLUTE pidl = nullptr;
         if (SUCCEEDED(SHParseDisplayName(path, nullptr, &pidl, 0, nullptr)) && pidl) {
@@ -185,7 +185,7 @@ HICON GetPathIcon(const std::wstring& rawPath, bool small) {
     }
 
     // 保证控件永不留空：系统 stock 文件夹图标。
-    return eb::StockIcon(SIID_FOLDER, small);
+    return ui::StockIcon(SIID_FOLDER, small);
 }
 
 }  // namespace

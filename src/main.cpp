@@ -118,8 +118,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     const std::wstring path = InitialPath();
 
     // 调试用：设置 EXBARBROWSER_MULTI=1 可绕过单实例，便于与用户正在运行的实例并存
-    const bool multi = GetEnvironmentVariableW(L"EXBARBROWSER_MULTI", nullptr, 0) > 0;
-    HANDLE mutex = multi ? nullptr : CreateMutexW(nullptr, TRUE, L"Local\\ExBarBrowser.Instance");
+    const bool multi = GetEnvironmentVariableW(id::kMultiInstanceEnv, nullptr, 0) > 0;
+    HANDLE mutex = multi ? nullptr : CreateMutexW(nullptr, TRUE, id::kInstanceMutex);
     const bool alreadyRunning = mutex && GetLastError() == ERROR_ALREADY_EXISTS;
 
     if (alreadyRunning) {
@@ -132,7 +132,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         // 后写的整体覆盖前写的（会话/几何/热键全部丢失）。
         MessageBoxW(nullptr,
                     L"已有一个 ExBar 窗口未响应，无法转发打开请求。\n请关闭它后重试。",
-                    L"ExBar", MB_ICONWARNING | MB_SETFOREGROUND);
+                    id::kBrandShort, MB_ICONWARNING | MB_SETFOREGROUND);
         CloseHandle(mutex);
         OleUninitialize();
         return 1;

@@ -66,7 +66,7 @@ bool App::CreateMainWindow(HINSTANCE hInst) {
         }
     }
 
-    hwnd_ = CreateWindowExW(0, kMainClass, L"ExBar", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, w,
+    hwnd_ = CreateWindowExW(0, kMainClass, id::kBrandShort, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, w,
                             h, nullptr, nullptr, hInst, nullptr);
     if (hwnd_) {
         // 类 hIcon 负责标题栏/任务栏；显式送两档让 Alt-Tab、缩略图也用上新图标

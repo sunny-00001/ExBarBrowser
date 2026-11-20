@@ -1,10 +1,10 @@
 // 标签栏绘制：底/悬停/激活底色、图标、标题、关闭钮、锁定字形、溢出箭头、新建 +。
 //
 // 只读 items_/tabRects_ 等已算好的状态（tab_strip_layout 负责几何），不改任何成员。
-// 所有绘制走 eb:: 原语（双缓冲 / 分隔线 / 填充 / 画图标 / 量字），本文件零 GDI 句柄管理。
+// 所有绘制走 ui:: 原语（双缓冲 / 分隔线 / 填充 / 画图标 / 量字），本文件零 GDI 句柄管理。
 #include "tab_strip.h"
 
-#include "eb_ui.h"
+#include "ui_draw.h"
 
 namespace {
 
@@ -30,8 +30,8 @@ void DrawPlus(HDC dc, const RECT& rc, COLORREF color, int thickness) {
     if (s <= 0) return;
     RECT h{cx - s, cy, cx + s + 1, cy};
     RECT v{cx, cy - s, cx, cy + s + 1};
-    eb::DrawSeparator(dc, h, false, color, thickness);
-    eb::DrawSeparator(dc, v, true, color, thickness);
+    ui::DrawSeparator(dc, h, false, color, thickness);
+    ui::DrawSeparator(dc, v, true, color, thickness);
 }
 
 }  // namespace
@@ -40,7 +40,7 @@ void TabStrip::Paint(HWND h) {
     const int line = std::max(1, theme_->S(1));
     const int clipRight = overflow_ ? ovfRc_.left - theme_->S(2) : 0;
 
-    eb::PaintBuffered(h, theme_->bar, [&](HDC mem, const RECT& rc) {
+    ui::PaintBuffered(h, theme_->bar, [&](HDC mem, const RECT& rc) {
         HGDIOBJ oldFont = SelectObject(mem, theme_->font);
         const int clipR = clipRight ? clipRight : rc.right;
 
@@ -58,14 +58,14 @@ void TabStrip::Paint(HWND h) {
 
             if (!isActive && i + 1 < tabRects_.size()) {
                 RECT vr{r.right - 1, theme_->S(7), r.right - 1, r.bottom - theme_->S(7)};
-                eb::DrawSeparator(mem, vr, true, theme_->line);
+                ui::DrawSeparator(mem, vr, true, theme_->line);
             }
 
             int textLeft = r.left + theme_->S(10);
             if (items_[i].icon) {
                 int iconPx = theme_->S(16);
                 RECT ir{r.left + theme_->S(8), r.top, r.left + theme_->S(8) + iconPx, r.bottom};
-                eb::DrawIconCentered(mem, items_[i].icon, ir, iconPx);
+                ui::DrawIconCentered(mem, items_[i].icon, ir, iconPx);
                 textLeft = r.left + theme_->S(8) + iconPx + theme_->S(6);
             }
 
@@ -78,7 +78,7 @@ void TabStrip::Paint(HWND h) {
             const RECT& crc = closeRects_[i];
             const bool closeInView = crc.right > 0 && crc.left < clipR;
             if (items_[i].locked) {
-                if (closeInView) eb::DrawGlyph(mem, ico::IconId::Lock, crc, theme_->S(11), theme_->sub);
+                if (closeInView) ui::DrawGlyph(mem, ico::IconId::Lock, crc, theme_->S(11), theme_->sub);
             } else if (closeInView && CloseVisible(static_cast<int>(i))) {
                 DrawCross(mem, closeRects_[i],
                           (hoverKind_ == kClose && hoverIndex_ == static_cast<int>(i))
@@ -89,7 +89,7 @@ void TabStrip::Paint(HWND h) {
 
             if (isActive) {
                 RECT ul{r.left, r.bottom - theme_->S(2), r.right, r.bottom};
-                eb::FillRectColor(mem, ul, theme_->accent);
+                ui::FillRectColor(mem, ul, theme_->accent);
             }
         }
 
@@ -97,7 +97,7 @@ void TabStrip::Paint(HWND h) {
         // 与书签栏溢出按钮撞脸，也表达不出"滚动到看不见的标签"）。
         if (overflow_) {
             if (hoverKind_ == kOverflow) FillRect(mem, &ovfRc_, theme_->brHover);
-            eb::DrawGlyph(mem, ico::IconId::Overflow, ovfRc_, theme_->S(11), theme_->sub);
+            ui::DrawGlyph(mem, ico::IconId::Overflow, ovfRc_, theme_->S(11), theme_->sub);
         }
 
         // 新建标签 +

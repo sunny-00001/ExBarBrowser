@@ -16,11 +16,8 @@ void TabStrip::Create(HWND parent, const Theme& theme) {
     win::RegisterClassOnce(kTabStripClass, TabStrip::WndProc, CS_DBLCLKS);
     parent_ = parent;
     theme_ = &theme;
-    hwnd_ = CreateWindowExW(0, kTabStripClass, L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0,
-                            100, theme.S(kTabBarHeightDp), parent, nullptr, GetModuleHandleW(nullptr),
-                            nullptr);
+    hwnd_ = win::CreateChild(kTabStripClass, parent, this, theme.S(kTabBarHeightDp));
     if (!hwnd_) return;
-    SetThis(hwnd_, this);
 }
 
 TabStrip::~TabStrip() { ReleaseIcons(); }
@@ -83,7 +80,7 @@ void TabStrip::SetTabs(const std::vector<core::TabRef>& refs, int active) {
 
 void TabStrip::ReloadTheme() {
     if (!hwnd_) return;
-    tooltip_ = eb::TooltipHost();   // 重建（析构销毁旧窗），宽度随 DPI 变
+    tooltip_ = ui::TooltipHost();   // 重建（析构销毁旧窗），宽度随 DPI 变
     Layout();
     InvalidateRect(hwnd_, nullptr, TRUE);
 }

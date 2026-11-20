@@ -119,9 +119,33 @@ int main() {
         for (const auto& d : CommandTable()) {
             const std::wstring dotted = cmdnaming::CanonicalName(d.name);
             if (dotted == d.name) {
-                // 没有别名 —— 允许，但要记下来（本仓库当前应当全部有别名）
-                ++bad;
-                std::printf("      无别名：%ls\n", d.name);
+                // d.name 已经是点分名 = 该命令已迁移到"点分名作主名"的目标形态
+                // （docs/NAMING.md §4.1）。这不是"缺别名"，而是迁移完成的标志。
+                // 仍要求它可被解析，且旧名（若有）也能解析回同一 id。
+                if (!cmdnaming::LooksDotted(d.name)) {
+                    ++bad;
+                    std::printf("      无别名且主名非点分：%ls\n", d.name);
+                    continue;
+                }
+                if (!FindCommand(d.name)) {
+                    ++bad;
+                    std::printf("      点分主名解析不到自己：%ls\n", d.name);
+                }
+                const std::wstring legacy = cmdnaming::LegacyOf(d.name);
+                if (!legacy.empty()) {
+                    const CommandDef* byLegacy = FindCommand(legacy);
+                    if (!byLegacy || byLegacy->id != d.id) {
+                        ++bad;
+                        std::printf("      旧名 %ls 解析不到 %ls\n", legacy.c_str(), d.name);
+                    }
+                }
+                if (seen.count(dotted)) {
+                    ++bad;
+                    std::printf("      重复：%ls 与 %ls 都用 %ls\n", seen[dotted].c_str(),
+                                d.name, dotted.c_str());
+                }
+                seen[dotted] = d.name;
+                ++checked;
                 continue;
             }
             // 点分名唯一

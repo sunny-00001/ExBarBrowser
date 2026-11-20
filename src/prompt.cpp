@@ -4,7 +4,8 @@
 
 namespace {
 
-constexpr wchar_t kClass[] = L"ExBarBrowser_Prompt";
+// 类名由 identity.h 统一给出（规则 B1）
+constexpr const wchar_t* kClass = id::kPromptClass;
 
 struct PromptState {
     HWND edit = nullptr;
@@ -131,9 +132,8 @@ bool PromptText(HWND owner, const Theme& theme, const std::wstring& title,
     int x = orc.left + ((orc.right - orc.left) - w) / 2;
     int y = orc.top + ((orc.bottom - orc.top) - h) / 2;
 
-    HWND hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, kClass, title.c_str(),
-                                WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h, owner, nullptr,
-                                GetModuleHandleW(nullptr), &st);
+    HWND hwnd = win::CreatePopup(kClass, owner, &st, WS_EX_DLGMODALFRAME,
+                                 WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h, title.c_str());
     if (!hwnd) return false;
 
     st.edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initial.c_str(),
@@ -204,9 +204,8 @@ bool PromptText2(HWND owner, const Theme& theme, const std::wstring& title,
     int x = orc.left + ((orc.right - orc.left) - w) / 2;
     int y = orc.top + ((orc.bottom - orc.top) - h) / 2;
 
-    HWND hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, kClass, title.c_str(),
-                                WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h, owner, nullptr,
-                                GetModuleHandleW(nullptr), &st);
+    HWND hwnd = win::CreatePopup(kClass, owner, &st, WS_EX_DLGMODALFRAME,
+                                 WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h, title.c_str());
     if (!hwnd) return false;
 
     st.edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initial1.c_str(),

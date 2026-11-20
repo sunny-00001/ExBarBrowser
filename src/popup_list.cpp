@@ -2,11 +2,11 @@
 
 #include "platform_win.h"
 
-#include "eb_ui.h"
+#include "ui_draw.h"
 
 namespace {
 
-constexpr wchar_t kPopupClass[] = L"ExBarBrowser_Popup";
+using id::kPopupClass;
 
 struct PopupState {
     const std::vector<PopupRow>* rows = nullptr;   // 平铺模式数据
@@ -393,10 +393,10 @@ LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         RECT b{0, hh - 1, w, hh - 1};
         RECT lf{0, 0, 0, hh};
         RECT rt{w - 1, 0, w - 1, hh};
-        eb::DrawSeparator(dc, t, false, st->theme->line);
-        eb::DrawSeparator(dc, b, false, st->theme->line);
-        eb::DrawSeparator(dc, lf, true, st->theme->line);
-        eb::DrawSeparator(dc, rt, true, st->theme->line);
+        ui::DrawSeparator(dc, t, false, st->theme->line);
+        ui::DrawSeparator(dc, b, false, st->theme->line);
+        ui::DrawSeparator(dc, lf, true, st->theme->line);
+        ui::DrawSeparator(dc, rt, true, st->theme->line);
         ReleaseDC(h, dc);
         return 0;
     }
@@ -420,7 +420,7 @@ LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             const int indent = rc.left + st->theme->S(6) + n.depth * st->theme->S(16);
             if (n.icon) {
                 RECT ir{indent, rc.top, indent + st->iconS, rc.bottom};
-                eb::DrawIconFit(dc, n.icon, ir, st->iconS);
+                ui::DrawIconFit(dc, n.icon, ir, st->iconS);
             }
             HGDIOBJ oldFont = SelectObject(dc, st->theme->font);
             SetTextColor(dc, st->theme->text);
@@ -437,7 +437,7 @@ LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 bool expHot = static_cast<int>(dis->itemID) == st->hotExpander;
                 COLORREF clr = expHot ? st->theme->text : st->theme->chevron;
                 // 与地址栏分隔符完全同一个原语：展开 down(dir=1)，收起 left(dir=0)
-                eb::DrawChevron(dc, cx, cy, st->theme->S(10), clr, n.expanded ? 1 : 0);
+                ui::DrawChevron(dc, cx, cy, st->theme->S(10), clr, n.expanded ? 1 : 0);
             }
             return TRUE;
         }
@@ -454,7 +454,7 @@ LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             FillRect(dc, &rc, st->theme->brList);
             const int y = (rc.top + rc.bottom) / 2;
             RECT hr{rc.left + st->theme->S(8), y, rc.right - st->theme->S(8), y};
-            eb::DrawSeparator(dc, hr, false, st->theme->line);
+            ui::DrawSeparator(dc, hr, false, st->theme->line);
             return TRUE;
         }
 
@@ -467,7 +467,7 @@ LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         int x = rc.left + st->theme->S(8);
         if (row.icon) {
             RECT ir{x, rc.top, x + st->iconS, rc.bottom};
-            eb::DrawIconFit(dc, row.icon, ir, st->iconS);
+            ui::DrawIconFit(dc, row.icon, ir, st->iconS);
         }
         x += st->iconS + st->theme->S(8);
 
@@ -482,7 +482,7 @@ LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             int cx = rc.right - st->theme->S(16);
             int cy = (rc.top + rc.bottom) / 2;
             // 与地址栏分隔符共用通用原语 DrawChevron；rest 同形态，选中提亮
-            eb::DrawChevron(dc, cx, cy, st->theme->S(10),
+            ui::DrawChevron(dc, cx, cy, st->theme->S(10),
                             hot || sel ? st->theme->text : st->theme->chevron, 0);
         }
         return TRUE;
@@ -522,24 +522,21 @@ static int MeasureWidth(HWND owner, const Theme& theme,
                         const std::vector<PopupRow>* rows,
                         const std::vector<TreeNode>* tree,
                         int iconS, bool exactWidth, int minWidthPx) {
+    // 量字走唯一原语（ui::MeasureText 内部选字体并还原）
     HDC dc = GetDC(owner);
-    HGDIOBJ old = SelectObject(dc, theme.font);
     int textW = 0;
     if (tree) {
         for (const auto& n : *tree) {
-            SIZE sz{};
-            GetTextExtentPoint32W(dc, n.label.c_str(), static_cast<int>(n.label.size()), &sz);
-            textW = std::max<int>(textW, sz.cx + n.depth * theme.S(16));
+            textW = std::max<int>(textW,
+                                  ui::MeasureText(dc, theme.font, n.label) +
+                                      n.depth * theme.S(16));
         }
     } else if (rows) {
         for (const auto& r : *rows) {
             if (r.separator) continue;
-            SIZE sz{};
-            GetTextExtentPoint32W(dc, r.label.c_str(), static_cast<int>(r.label.size()), &sz);
-            textW = std::max<int>(textW, sz.cx);
+            textW = std::max<int>(textW, ui::MeasureText(dc, theme.font, r.label));
         }
     }
-    SelectObject(dc, old);
     ReleaseDC(owner, dc);
 
     int width = textW + iconS + 8 + 8 + 26;
@@ -571,9 +568,9 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
 
     // WS_EX_COMPOSITED：整窗自绘 + 子 LISTBOX 时，先画到离屏再合成，避免
     // "先白后深"的闪一帧（深色主题下特别刺眼）。
-    st.self = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_COMPOSITED, kPopupClass,
-                              L"", WS_POPUP, x, y, width, height, owner, nullptr,
-                              GetModuleHandleW(nullptr), &st);
+    st.self = win::CreatePopup(kPopupClass, owner, &st,
+                               WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_COMPOSITED, WS_POPUP, x, y,
+                               width, height);
     if (!st.self) return;
     // 内缩 1px：WM_NCPAINT 画的 1px 边框在客户区外沿，LISTBOX 满铺会把它盖掉
     // （视觉上"菜单没有边框"，与 mod 的圆角描边不一致）。
@@ -592,7 +589,7 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
     // 在深色弹层上是一条亮灰宽条（与 mod 对齐：DarkMode_Explorer 下
     // 滚动条变深色且为 hover 展开的窄条，颜色/宽度一次解决）。
     AllowDarkForWindow(st.list, st.theme->dark);
-    SetWindowTheme(st.list, st.theme->dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+    win::ThemeControl(st.list, st.theme->dark);
 
     SendMessageW(st.list, WM_SETFONT, reinterpret_cast<WPARAM>(st.theme->font), TRUE);
     // 可变行高：分隔线按 sepPx 插入，条目按 itemH（LBS_OWNERDRAWVARIABLE 下

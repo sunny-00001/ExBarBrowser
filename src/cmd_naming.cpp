@@ -209,30 +209,25 @@ const std::unordered_map<std::wstring, std::wstring>& DottedToLegacy() {
 
 }  // namespace
 
-namespace {
-
-// 点分名统一按小写查表。理由：旧名查找走 _wcsicmp（大小写不敏感），
-// 如果点分名偏偏敏感，就会出现"NavBack 和 navback 都能用，但 NAV.BACK 不行"
-// 这种半吊子行为 —— 对人来说难以预测，且容易写成难查的 bug。
-std::wstring Lower(const std::wstring& s) {
-    std::wstring out = s;
-    for (auto& c : out)
-        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
-    return out;
-}
-
-}  // namespace
+// 注：本文件曾有一个局部 Lower()（把自己转小写再查表）。两个查表方向都改成
+// _wcsicmp 遍历比对后它不再需要；同类工具已统一在 str::Lower（str.h）。
 
 std::wstring AliasOf(const std::wstring& legacyName) {
     const auto& m = LegacyToDotted();
-    auto it = m.find(legacyName);
-    return it == m.end() ? std::wstring() : it->second;
+    // 查大小写不敏感：与 FindCommand 的 _wcsicmp 口径一致。
+    // 以前这里用 find（区分大小写），而 LegacyOf 用 Lower —— 两个方向不对称，
+    // 表现为"nav.back 认、NavBack 认、navback 不认"这种半吊子行为。
+    for (const auto& kv : m)
+        if (_wcsicmp(kv.first.c_str(), legacyName.c_str()) == 0) return kv.second;
+    return std::wstring();
 }
 
 std::wstring LegacyOf(const std::wstring& dottedName) {
     const auto& m = DottedToLegacy();
-    auto it = m.find(Lower(dottedName));
-    return it == m.end() ? std::wstring() : it->second;
+    // 同样不区分大小写（原先靠 Lower 归一，遇到非 ASCII 或奇怪大小写仍会漏）
+    for (const auto& kv : m)
+        if (_wcsicmp(kv.first.c_str(), dottedName.c_str()) == 0) return kv.second;
+    return std::wstring();
 }
 
 bool LooksDotted(const std::wstring& name) { return name.find(L'.') != std::wstring::npos; }

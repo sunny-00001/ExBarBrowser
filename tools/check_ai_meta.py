@@ -36,17 +36,17 @@ g_fail = 0
 INDIRECT_ARGS = {
     # FsCopyTo/FsMoveTo 的 handler 只有一行 return TransferTargets(args, ...)，
     # 参数在 App::TransferTargets 里读（src/app_commands.cpp）。
-    'FsCopyTo': 'App::TransferTargets',
-    'FsMoveTo': 'App::TransferTargets',
+    'fs.copy': 'App::TransferTargets',
+    'fs.move': 'App::TransferTargets',
     # OpTopN/OpDiskUsage 的 regR 只是一行转发，参数在 RegisterFileCommands
     # 里的 scanImpl lambda 中读取（两条共用同一份实现）。
-    'OpTopN': 'RegisterFileCommands::scanImpl',
-    'OpDiskUsage': 'RegisterFileCommands::scanImpl',
+    'tool.topn': 'RegisterFileCommands::scanImpl',
+    'tool.diskusage': 'RegisterFileCommands::scanImpl',
 }
 
 KNOWN_NO_TARGET = {
-    'CmdCut', 'CmdDelete', 'CopyToFolder', 'MoveToFolder', 'BatchRename',
-    'PathCopyLink',
+    'file.cut', 'file.delete', 'file.copy.to', 'file.move.to', 'file.rename.batch',
+    'path.copy.link',
 }
 
 
@@ -282,16 +282,16 @@ def main():
 
     # 债务消化进度：每个旧的"只能作用于选中"的命令，是否已有确定式对应
     COVERS = {
-        'CmdRename': 'FsRename',
-        'CmdDelete': 'FsDelete',
-        'CopyToFolder': 'FsCopyTo',
-        'MoveToFolder': 'FsMoveTo',
-        'CmdOpen': 'FsOpen',
-        'CmdOpenInNewTab': 'FsOpenInNewTab',
-        'CmdOpenInNewWindow': 'FsOpenInNewWindow',
-        'CmdCut': 'FsCut',
-        'CmdCopy': 'FsCopy',
-        'CmdProps': 'FsProperties',
+        'file.rename': 'fs.rename',
+        'file.delete': 'fs.delete',
+        'file.copy.to': 'fs.copy',
+        'file.move.to': 'fs.move',
+        'file.open': 'fs.open',
+        'file.open.tab': 'fs.open.tab',
+        'file.open.window': 'fs.open.window',
+        'file.cut': 'fs.cut.toclip',
+        'file.copy': 'fs.copy.toclip',
+        'file.properties': 'fs.properties',
     }
     names = {c['name'] for c in cmds}
     impl = {c['name'] for c in cmds if c['implemented']}
@@ -354,16 +354,24 @@ def main():
         # 命令名从"条目行前两个字段"取，不依赖尾部结构 ——
         # 否则尾部一坏，别名检查会连带误报"源命令不存在"，把真正的
         # 问题（字段漏写）埋在假错误里。
+        #
+        # 名字允许点分（win.quit 这类已在迁移中的条目）：用 \S+? 而非 \w+，
+        # 否则改名后的条目会被整行跳过，别名检查误报"源命令不存在"。
         legacy_names = set()
         for ln in COMMANDS.read_text(encoding='utf-8').splitlines():
-            mm = re.match(r'\s*\{CmdId::\w+,\s*L"(\w+)"', ln)
+            mm = re.match(r'\s*\{CmdId::\w+,\s*L"([^"]+)"', ln)
             if mm:
                 legacy_names.add(mm.group(1))
         dotted = {}
         bad = 0
         # 11a. 每个别名都要指向真实命令
+        #
+        # 迁移期（docs/NAMING.md §4.3 规则 C2）：某条命令的 d.name 从旧名改成点分名后，
+        # 别名表里那一行 `{旧名, 点分名}` 就与 d.name 重合，源命令自然不在 legacy_names
+        # 里了。这不是错误 —— 恰恰是"旧名保留、主名迁走"的中间态。判据改成：
+        # 源名存在于命令表 **或** 目标点分名就是该命令的现用主名（即自映射）。
         for legacy, dot in aliases:
-            if legacy not in legacy_names:
+            if legacy not in legacy_names and dot not in legacy_names:
                 fail(f'别名 {legacy} -> {dot}：源命令不存在')
                 bad += 1
             # 11b. 点分名只能有小写字母/数字/点，且至少两段
@@ -379,7 +387,11 @@ def main():
             ok(f'{len(aliases)} 条别名：源命令存在、格式合规、无重复')
 
         # 11d. 覆盖率
-        covered = {a[0] for a in aliases}
+        #
+        # 覆盖要按**两个方向**统计：表里已迁到点分名的命令（win.quit），它的
+        # 别名行是 `{QuitExplorer, win.quit}` —— 左列是旧名、右列才是现用主名。
+        # 只按左列算会把它误报成"尚无显式别名"。
+        covered = {a[0] for a in aliases} | {a[1] for a in aliases}
         missing = legacy_names - covered
         if missing:
             print(f'  注意  {len(missing)}/{len(legacy_names)} 条命令尚无显式别名'
@@ -452,13 +464,13 @@ def main():
     #
     # 例外名单：确有理由的逐条登记，让"为什么它在这儿"可见。
     UI_ONLY = {
-        'NavViewMenu',      # 弹视图菜单，机器调了得到的是一个没人看的菜单
-        'QuitExplorer',     # 关程序不该由机器替人决定
-        'FolderOptions',    # 弹系统对话框
-        'MapDrive',         # 弹系统对话框
-        'UnmapDrive',       # 弹系统对话框
-        'CommandPalette',   # 调色板是给人键入命令用的
-        'HotkeyManager',    # 快捷键配置面板
+        'nav.viewmenu',     # 弹视图菜单，机器调了得到的是一个没人看的菜单
+        'win.quit',         # 关程序不该由机器替人决定（旧名 QuitExplorer，见 NAMING.md §4.5）
+        'win.folderoptions',  # 弹系统对话框
+        'win.mapdrive',     # 弹系统对话框
+        'win.unmapdrive',   # 弹系统对话框
+        'win.palette',      # 调色板是给人键入命令用的
+        'win.hotkeys',      # 快捷键配置面板
     }
     bad = 0
     for c in cmds:

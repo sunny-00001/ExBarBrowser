@@ -2,7 +2,7 @@
 
 #include "platform_win.h"
 
-#include "eb_ui.h"
+#include "ui_draw.h"
 #include "icon_resolve.h"
 #include "mouse_rules.h"
 #include "nav_metrics.h"
@@ -24,16 +24,14 @@ void NavBar::Create(HWND parent, const Theme& theme) {
     parent_ = parent;
     theme_ = &theme;
 
-    hwnd_ = CreateWindowExW(0, kNavBarClass, L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
-                            0, 0, 100, theme.S(30), parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+    hwnd_ = win::CreateChild(kNavBarClass, parent, this, theme.S(30));
     if (!hwnd_) return;
-    SetThis(hwnd_, this);
 
     edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL | ES_LEFT, 0, 0, 10, 10,
                             hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (edit_) {
         SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(theme.font), TRUE);
-        SetWindowTheme(edit_, theme.dark ? L"DarkMode_CFD" : L"Explorer", nullptr);
+        win::ThemeControl(edit_, theme.dark, L"CFD");
         g_oldEditProc = reinterpret_cast<WNDPROC>(
             SetWindowLongPtrW(edit_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(EditProc)));
         // 系统自动补全（目录优先）：与 mod 的 SHACF_FILESYS_DIRS 同口径。
@@ -83,7 +81,7 @@ void NavBar::ReloadTheme() {
     if (!hwnd_) return;
     if (edit_) {
         SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(theme_->font), TRUE);
-        SetWindowTheme(edit_, theme_->dark ? L"DarkMode_CFD" : L"Explorer", nullptr);
+        win::ThemeControl(edit_, theme_->dark, L"CFD");
     }
     Layout();
     InvalidateRect(hwnd_, nullptr, TRUE);
@@ -185,7 +183,7 @@ LRESULT NavBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         ClientToScreen(h, &pt);
 
         const int target = NavTargetAt(x, y);
-        if (sink_ && sink_(target, m, MBTN_LEFT, eb::CurrentMods(), pt)) return 0;
+        if (sink_ && sink_(target, m, MBTN_LEFT, CurrentMods(), pt)) return 0;
 
         int arrowId = 0;
         if (HitArrow(x, y, &arrowId)) {
@@ -233,7 +231,7 @@ LRESULT NavBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         const int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
         POINT pt{x, y};
         ClientToScreen(h, &pt);
-        if (sink_ && sink_(NavTargetAt(x, y), m, MBTN_RIGHT, eb::CurrentMods(), pt)) return 0;
+        if (sink_ && sink_(NavTargetAt(x, y), m, MBTN_RIGHT, CurrentMods(), pt)) return 0;
 
         int btn = HitButton(x, y);
         if (btn == kBack || btn == kForward) ShowHistoryMenu(btn == kBack, pt);
@@ -243,7 +241,7 @@ LRESULT NavBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         const int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
         POINT pt{x, y};
         ClientToScreen(h, &pt);
-        if (sink_ && sink_(NavTargetAt(x, y), m, MBTN_MIDDLE, eb::CurrentMods(), pt)) return 0;
+        if (sink_ && sink_(NavTargetAt(x, y), m, MBTN_MIDDLE, CurrentMods(), pt)) return 0;
         return 0;
     }
     default:
@@ -310,15 +308,13 @@ void NavBar::Layout() {
     const auto& parts = model_.parts();
     if (parts.empty()) return;
 
+    // 量字走唯一原语（ui::MeasureText 内部选字体并还原）
     HDC dc = GetDC(hwnd_);
-    HGDIOBJ old = SelectObject(dc, theme_->font);
     const int sepW = theme_->S(kSep96);
     std::vector<int> widths(parts.size(), 0);
     int total = 0;
     for (size_t i = 0; i < parts.size(); ++i) {
-        SIZE sz{};
-        GetTextExtentPoint32W(dc, parts[i].label.c_str(), static_cast<int>(parts[i].label.size()), &sz);
-        widths[i] = sz.cx + sepW;
+        widths[i] = ui::MeasureText(dc, theme_->font, parts[i].label) + sepW;
         total += widths[i];
     }
     const int startX = moreRc_.right;
@@ -339,7 +335,6 @@ void NavBar::Layout() {
         cx += widths[i];
     }
 
-    SelectObject(dc, old);
     ReleaseDC(hwnd_, dc);
 }
 

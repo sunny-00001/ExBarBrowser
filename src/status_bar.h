@@ -63,7 +63,7 @@ private:
 
     HWND hwnd_ = nullptr;
     HWND parent_ = nullptr;
-    eb::TooltipHost tooltip_;
+    ui::TooltipHost tooltip_;
     const Theme* theme_ = nullptr;
     StatusModel model_;
     std::vector<int> enabled_{0, 1, 2, 3, 4, 5, 6};

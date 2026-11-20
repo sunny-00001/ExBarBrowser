@@ -2,12 +2,12 @@
 
 #include "platform_win.h"
 
-#include "eb_ui.h"
+#include "ui_draw.h"
 #include "mouse_rules.h"
 
 namespace {
 
-// 段图标：以前这里有一张**私有**字形表（7 个码位），与 eb_ui 的命名表重复。
+// 段图标：以前这里有一张**私有**字形表（7 个码位），与 ui_draw 的命名表重复。
 // 现在统一走 ico::IconId —— 改字形只动 icon_glyph.cpp。
 ico::IconId IconOf(int seg) {
     switch (seg) {
@@ -31,10 +31,9 @@ void StatusBar::Create(HWND parent, const Theme& theme) {
     win::RegisterClassOnce(kStatusBarClass, StatusBar::WndProc, CS_DBLCLKS);
     parent_ = parent;
     theme_ = &theme;
-    hwnd_ = CreateWindowExW(0, kStatusBarClass, L"", WS_CHILD | WS_VISIBLE, 0, 0, 100,
-                            theme.S(24), parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+    hwnd_ = win::CreateChild(kStatusBarClass, parent, this, theme.S(24), nullptr,
+                             WS_CHILD | WS_VISIBLE);
     if (!hwnd_) return;
-    SetThis(hwnd_, this);
     stableW_.assign(Seg_Count, 0);
 }
 
@@ -61,7 +60,7 @@ void StatusBar::ReloadTheme() {
     if (!hwnd_) return;
     // 字体变了（DPI/主题）→ "历史最宽"是在旧字体下量的，必须清零重测。
     std::fill(stableW_.begin(), stableW_.end(), 0);
-    tooltip_ = eb::TooltipHost();   // 重建（析构销毁旧窗），宽度随 DPI 变
+    tooltip_ = ui::TooltipHost();   // 重建（析构销毁旧窗），宽度随 DPI 变
     Layout(hwnd_);
     InvalidateRect(hwnd_, nullptr, TRUE);
 }
@@ -104,7 +103,7 @@ LRESULT StatusBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         // 段上要报 MT_STATUS_SEG：mouse.json 里按"状态栏段"配的规则以前永远命中不到。
         const int target = HitSegment(GET_X_LPARAM(l), GET_Y_LPARAM(l)) >= 0 ? MT_STATUS_SEG
                                                                             : MT_STATUS;
-        if (sink_ && sink_(target, m, button, eb::CurrentMods(), pt)) return 0;
+        if (sink_ && sink_(target, m, button, CurrentMods(), pt)) return 0;
         return 0;
     }
     case WM_LBUTTONUP: {
@@ -112,7 +111,7 @@ LRESULT StatusBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         POINT screen = pt;
         ClientToScreen(h, &screen);
         int seg = HitSegment(pt.x, pt.y);
-        if (sink_ && sink_(seg >= 0 ? MT_STATUS_SEG : MT_STATUS, m, MBTN_LEFT, eb::CurrentMods(),
+        if (sink_ && sink_(seg >= 0 ? MT_STATUS_SEG : MT_STATUS, m, MBTN_LEFT, CurrentMods(),
                            screen))
             return 0;
         if (seg >= 0 && onClick_) onClick_(seg);
@@ -121,7 +120,7 @@ LRESULT StatusBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_RBUTTONUP: {
         POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
         ClientToScreen(h, &pt);
-        if (sink_ && sink_(MT_STATUS, m, MBTN_RIGHT, eb::CurrentMods(), pt)) return 0;
+        if (sink_ && sink_(MT_STATUS, m, MBTN_RIGHT, CurrentMods(), pt)) return 0;
         if (onContext_) onContext_(pt);
         return 0;
     }
@@ -143,18 +142,15 @@ void StatusBar::Layout(HWND h) {
     const int glyphW = theme_->S(18);
     const int avail = rc.right - pad * 2;
 
+    // 量字走唯一原语（ui::MeasureText 内部选字体并还原）
     HDC dc = GetDC(h);
-    HGDIOBJ old = SelectObject(dc, theme_->font);
 
     std::vector<int> vis;
     for (int seg : enabled_)
         if (seg >= 0 && seg < Seg_Count) vis.push_back(seg);
 
     auto textW = [&](int seg) {
-        const std::wstring& t = model_.text[seg];
-        SIZE sz{};
-        if (!t.empty()) GetTextExtentPoint32W(dc, t.c_str(), static_cast<int>(t.size()), &sz);
-        int w = sz.cx;
+        int w = ui::MeasureText(dc, theme_->font, model_.text[seg]);
         if (seg <= Seg_Chk || seg == Seg_Size || seg == Seg_Disk) {
             if (w > stableW_[seg]) stableW_[seg] = w;
             w = stableW_[seg];
@@ -259,7 +255,6 @@ void StatusBar::Layout(HWND h) {
     }
     for (const auto& l : rights) layout_.push_back(l);
 
-    SelectObject(dc, old);
     ReleaseDC(h, dc);
     RebuildTooltip(h);
 }
@@ -268,10 +263,10 @@ void StatusBar::RebuildTooltip(HWND h) {
     // 工具提示走唯一实现（TooltipHost）：以前三处栏各写一遍 TTM_DELTOOLW/ADDTOOLW
     // 样板，id 上界分别是 32/64/128，且都要自己持一份字符串副本。
     tooltip_.Attach(h, theme_->S(520));
-    std::vector<eb::TooltipHost::Item> items;
+    std::vector<ui::TooltipHost::Item> items;
     items.reserve(layout_.size());
     for (const auto& l : layout_) {
-        eb::TooltipHost::Item it;
+        ui::TooltipHost::Item it;
         it.rc = l.rc;
         it.text = model_.tip[l.seg].empty() ? model_.text[l.seg] : model_.tip[l.seg];
         items.push_back(std::move(it));
@@ -300,7 +295,7 @@ int StatusBar::HitSegment(int x, int y) const {
 }
 
 void StatusBar::Paint(HWND h) {
-    eb::PaintBuffered(h, theme_->bar, [&](HDC mem, const RECT& rc) {
+    ui::PaintBuffered(h, theme_->bar, [&](HDC mem, const RECT& rc) {
         const int glyphW = theme_->S(18);
         const int gap = theme_->S(4);
         for (const auto& l : layout_) {
@@ -308,7 +303,7 @@ void StatusBar::Paint(HWND h) {
             int x = l.rc.left;
             if (l.glyph) {
                 RECT gr{x, l.rc.top, x + glyphW, l.rc.bottom};
-                eb::DrawGlyph(mem, l.glyphCh, gr, theme_->S(12), theme_->sub);
+                ui::DrawGlyph(mem, l.glyphCh, gr, theme_->S(12), theme_->sub);
                 x += glyphW + gap;
             }
             RECT tr = l.rc;
@@ -327,6 +322,6 @@ void StatusBar::Paint(HWND h) {
 
         // 顶部 1px 分隔线
         RECT hr{0, 0, rc.right, 0};
-        eb::DrawSeparator(mem, hr, false, theme_->line);
+        ui::DrawSeparator(mem, hr, false, theme_->line);
     });
 }

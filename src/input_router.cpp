@@ -2,6 +2,7 @@
 
 #include "commands.h"
 #include "config.h"
+#include "mouse_rules.h"   // CurrentMods（输入端唯一实现）
 
 #include <algorithm>
 #include <cstdlib>
@@ -141,14 +142,11 @@ void InputRouter::BuildRows() {
 }
 
 int InputRouter::CurrentMods() const {
-    int m = 0;
-    if (GetKeyState(VK_CONTROL) & 0x8000) m |= chord::kCtrl;
-    if (GetKeyState(VK_SHIFT) & 0x8000) m |= chord::kShift;
-    if (GetKeyState(VK_MENU) & 0x8000) m |= chord::kAlt;
-    // AltGr = 右 Alt + 左 Ctrl。德语/波兰语等布局下 AltGr+E 是字符「ę」，
-    // 不能被当成 Ctrl+Alt+E（切换扩展名）吃掉。
-    if ((GetKeyState(VK_RMENU) & 0x8000) && (GetKeyState(VK_LCONTROL) & 0x8000)) return 0;
-    return m;
+    // 转调输入端唯一实现（mouse_rules.h）。此前这里逐行复制了同一段
+    // GetKeyState 三连 + AltGr 特判，校验器当时以"需按焦点抑制"为由放行 ——
+    // 但实际读代码，两个版本一字不差，成员函数没有任何额外逻辑。
+    // 保留成员形态只是为了不改调用点（238/247 行用 this->CurrentMods()）。
+    return ::CurrentMods();
 }
 
 std::wstring InputRouter::TokenOf(WPARAM vk) {

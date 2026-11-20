@@ -37,7 +37,8 @@ def main():
     rows = []
     for line in table_src.splitlines():
         m = re.match(
-            r'\s*\{CmdId::(\w+),\s*L"(\w+)",\s*L"([^"]*)",\s*L"([^"]*)",\s*L"([^"]*)",\s*(true|false),',
+            # 主名可能是点分名（win.quit / tab.new），所以第二组不能是 \w+
+            r'\s*\{CmdId::(\w+),\s*L"([^"]+)",\s*L"([^"]*)",\s*L"([^"]*)",\s*L"([^"]*)",\s*(true|false),',
             line,
         )
         if m:
@@ -48,7 +49,20 @@ def main():
 
     ids = {r[0] for r in rows}
     names = {r[1] for r in rows}
-    implemented = {r[1] for r in rows if r[5] == "true"}
+
+    # 规则 C2/C3（docs/NAMING.md §4.3）：旧名永不删，且所有消费方都要认旧名。
+    # 用户已有的 keymap.json 里写的是旧名（QuitExplorer），不能因为改名就失效。
+    # 这里从 cmd_naming.cpp 读出 {旧名 → 点分名} 表，把旧名也算作合法名字 ——
+    # 与运行时 FindCommand 的解析口径保持一致。
+    alias_src = (ROOT / "src" / "cmd_naming.cpp").read_text(encoding="utf-8")
+    aliases = re.findall(r'\{L"(\w+)",\s*L"([\w.]+)"\}', alias_src)
+    for legacy, _dotted in aliases:
+        names.add(legacy)
+    # 处理器是按 CmdId 枚举名注册的（reg(CmdId::QuitExplorer, ...)），
+    # 而表里的 name 可能是点分名（win.quit）—— 两边要先归一到 id 才能比对。
+    name_to_id = {r[1]: r[0] for r in rows}
+    implemented = {r[0] for r in rows if r[5] == "true"}
+    table_ids = {r[0] for r in rows}
 
     handlers = set()
     # 处理器按域分片（app_commands.cpp / _tabs / _files / _misc），审计要看全部片。
@@ -84,6 +98,50 @@ def main():
     dup_names = sorted({r[1] for r in rows if [x[1] for x in rows].count(r[1]) > 1})
     if dup_names:
         errors.append("命令名重复：" + ", ".join(dup_names))
+
+    # ---- 规则 C1：命令 id 稳定（docs/NAMING.md §4.3）----
+    #
+    # 为什么需要基线：`CmdId` 是 enum class，没有显式赋值，所以值 = 声明顺序。
+    # 现在没有任何地方持久化这个整数（审计记 name、keymap 记 name），但只要将来
+    # 有人在中间插一条枚举，后面所有 id 就会位移 —— 那时如果已有外部脚本/AI 客户端
+    # 按 id 调用，就会"调 A 执行 B"。这类 bug 在生产里表现为"偶发执行了错误的命令"，
+    # 极难排查。所以现在就把顺序锁住：插新命令只能加在末尾。
+    #
+    # 记的不是数值而是**顺序**，因为顺序才是真正的契约（显式赋值后数值可任意）。
+    baseline = ROOT / "data" / "commands-baseline.json"
+    cur = {
+        "ids": [r[0] for r in rows],                      # 顺序 = CmdId 的值序
+        "legacyNames": sorted({a[0] for a in aliases}),   # 规则 C2：只增不减
+    }
+    if "--update-baseline" in sys.argv:
+        baseline.write_text(json.dumps(cur, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8")
+        print(f"已写入基线 {baseline.relative_to(ROOT)}"
+              f"（{len(cur['ids'])} 个 id / {len(cur['legacyNames'])} 个旧名）")
+        return 0
+
+    if baseline.exists():
+        old = json.loads(baseline.read_text(encoding="utf-8"))
+        old_ids, new_ids = old.get("ids", []), cur["ids"]
+
+        # C1a：已有 id 的相对顺序不能变（允许在末尾追加，不允许中间插入/删除/重排）
+        common = [x for x in new_ids if x in set(old_ids)]
+        missing = [x for x in old_ids if x not in set(new_ids)]
+        if common != old_ids:
+            errors.append("CmdId 顺序被改动（会位移所有后续 id 的数值）："
+                          "新增命令只能加在枚举末尾")
+        # C1b：删掉的 id 必须保留占位（规则 C1 的原文："废弃保留占位"）
+        if missing:
+            errors.append("CmdId 被删除（应保留枚举项并标废弃，否则后续 id 全部位移）：" +
+                          ", ".join(missing))
+
+        # C2：旧名只增不减（VS Code legacyToolReferenceFullNames 的规矩）
+        lost = [x for x in old["legacyNames"] if x not in set(cur["legacyNames"])]
+        if lost:
+            errors.append("legacy 名被删除（用户已有 keymap.json 会失效）：" + ", ".join(lost))
+    else:
+        print(f"说明  尚无基线 {baseline.relative_to(ROOT)}；"
+              f"跑 python tools/check_commands.py --update-baseline 建立")
 
     # keymap.gen.h 是 data/keymap.json 的生成物（C++ 侧兜底默认表）。
     # 只改 json 不重新生成，就会出现"配置文件读得到新默认键、兜底仍是旧键"的静默不一致。

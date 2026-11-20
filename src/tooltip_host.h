@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-namespace eb {
+namespace ui {
 
 class TooltipHost {
 public:
@@ -47,4 +47,4 @@ private:
     std::vector<UINT_PTR> ids_;
 };
 
-}  // namespace eb
+}  // namespace ui

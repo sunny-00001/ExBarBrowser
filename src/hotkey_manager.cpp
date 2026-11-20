@@ -10,7 +10,8 @@
 
 namespace {
 
-constexpr wchar_t kClass[] = L"ExBarBrowser_Hotkeys";
+// 类名由 identity.h 统一给出（规则 B1）
+constexpr const wchar_t* kClass = id::kHotkeysClass;
 
 struct State {
     HWND hwnd = nullptr;

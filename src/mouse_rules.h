@@ -65,6 +65,17 @@ int MouseTargetFromName(const std::wstring& name);
 int MouseButtonFromName(const std::wstring& name);
 int MouseTriggerFromName(const std::wstring& name);
 
+// 当前修饰键位（1 Ctrl / 2 Shift / 4 Alt），与 MouseRule::mods 及 data/mouse.json 同编码。
+//
+// 【为什么在输入端而不是 UI 层】这个函数读 GetKeyState —— 那是**输入状态**，
+// 不是绘制资源。以前它放在 ui_draw 的旧命名空间（eb，已废弃）里，于是每个栏在自己
+// 的 WM_MOUSEMOVE 里调 UI 层的函数去问输入状态，分层的方向是反的
+// （ARCHITECTURE-RULES.md R15：输入端只产命令，UI 只画）。
+//
+// 返回 0 有两个含义：没按修饰键，或按了 AltGr（右 Alt + 左 Ctrl —— 德语/波兰语等
+// 布局下 AltGr+E 是字符「ę」，不能被当成 Ctrl+Alt+E 吃掉）。调用方按"无修饰"处理。
+int CurrentMods();
+
 class MouseRules {
 public:
     static MouseRules& Get();

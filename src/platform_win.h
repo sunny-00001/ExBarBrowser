@@ -22,14 +22,24 @@ bool RegisterClassOnce(const wchar_t* name, WNDPROC proc, UINT style = 0, HICON 
 // 创建自绘子窗口 + 挂 this 指针（GWLP_USERDATA）+ 统一 WndProc 转发。
 // 省掉"SetThis + SetWindowLongPtrW(GWLP_WNDPROC)"这套事后补丁。
 // 已注册的类必须用注册时的真实 WndProc；本函数不再改写窗口过程。
-HWND CreateChild(const wchar_t* cls, HWND parent, void* self, int h96, HINSTANCE inst = nullptr);
+//
+// heightPx 是**已缩放的像素**（调用方传 theme.S(h96)）；初始宽度统一 100，
+// 随后由 Layout/Resize 决定真实几何。style 默认可见子窗口。
+HWND CreateChild(const wchar_t* cls, HWND parent, void* self, int heightPx,
+                 HINSTANCE inst = nullptr,
+                 DWORD style = WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN);
 
 // 创建顶层/弹出窗口（带 this 指针）。exStyle 用于 WS_EX_TOOLWINDOW 等。
 HWND CreatePopup(const wchar_t* cls, HWND owner, void* self, DWORD exStyle, DWORD style, int x,
                  int y, int w, int h, const wchar_t* title = L"");
 
-// 给原生控件套主题（EDIT / LISTBOX / TREEVIEW…）。dark 决定用 DarkMode_* 还是 Explorer。
-// 以前 nav_bar / popup_list / shell_view 各写一遍同一个三元表达式。
-void ThemeControl(HWND h, bool dark, const wchar_t* lightSubApp = L"Explorer");
+// 给原生控件套主题（EDIT / LISTBOX / TREEVIEW…）。
+// 以前 nav_bar / popup_list / shell_view 各写一遍同一个三元表达式
+// `dark ? L"DarkMode_<X>" : L"Explorer"`，且 X 取值散落（CFD / Explorer）。
+//
+// subApp 是深浅两套 SubAppName 的**共同后缀**：
+//   "Explorer" → 深色用 DarkMode_Explorer（列表/树/滚动条）
+//   "CFD"      → 深色用 DarkMode_CFD（编辑框，即 Common File Dialog 那套）
+void ThemeControl(HWND h, bool dark, const wchar_t* subApp = L"Explorer");
 
 }  // namespace win
