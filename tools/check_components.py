@@ -182,6 +182,23 @@ STALE = [
          why="给 keymap 的图标名用；当前数据形态不含图标名 → 若长期不用应删"),
 ]
 
+# ---------------------------------------------------------------------------
+# 令牌消费检查：色值令牌表里的字段必须真的被 Theme 取用
+#
+#   "定义了但没人取"的令牌比死代码更糟：它看起来像"这个颜色已经考虑了"，
+#   实际改它不会有任何效果 —— 下一个改主题的人会以为自己在改，其实什么也没发生。
+#   2026-11-20 的审查发现 UiPalette 有 6/20 个字段零消费（editFocus /
+#   editPlaceholder / listText / listInertText / chevronHot / panelBorder）。
+#
+#   判据：字段名在 theme.cpp 里出现过（`T.xxx` 或 `T.xxx` 的赋值目标）。
+#   故意不检查"是否被画到"—— 那需要运行时信息；这里只保证"有唯一的下游"。
+# ---------------------------------------------------------------------------
+TOKEN_TABLE = {
+    "file": "ui_palette.h",       # 字段声明所在
+    "struct": "UiPalette",
+    "consumer": "theme.cpp",      # 唯一消费方
+}
+
 # 不参与扫描的文件（备份/生成物）
 SKIP = {"common.h.gch", "keymap.gen.h"}
 
@@ -264,6 +281,21 @@ def scan():
             stale_warn.append(f"{rule['name']}：只在 {rule['home']} 内自用"
                               f"（{internal} 处），公开声明多余 —— {rule['why']}")
 
+    # 令牌表：每个字段都必须被 consumer 取用
+    tbl = files.get(TOKEN_TABLE["file"], "")
+    body = re.search(r"struct\s+" + TOKEN_TABLE["struct"] + r"\s*\{(.*?)\n\};", tbl, re.S)
+    if body:
+        consumer = files.get(TOKEN_TABLE["consumer"], "")
+        unused = []
+        for field in re.findall(r"\b([a-zA-Z_]\w*)\s*[,;]", body.group(1)):
+            if not re.search(r"\bT\." + field + r"\b", consumer):
+                unused.append(field)
+        if unused:
+            fails.append((dict(name="令牌未被消费", allow={TOKEN_TABLE["file"]},
+                               why="色值令牌定义了却没被 Theme 取用 —— 改它不会有任何效果，" +
+                                   "下一个改主题的人会误以为在改"),
+                          [(TOKEN_TABLE["file"], len(unused))], unused))
+
     return fails, files
 
 
@@ -276,17 +308,29 @@ def main():
             rx = re.compile(rule["pat"], re.M)
             row = [(n, len(rx.findall(t))) for n, t in files.items() if rx.search(t)]
             print(f"[{rule['name']}] " + (", ".join(f"{n}×{c}" for n, c in row) or "（无）"))
+        # 非正则类的规则：单独列，让 --list 覆盖全部检查
+        for rule in STALE:
+            rx = re.compile(rule["symbol"], re.M)
+            own = {rule["home"], rule["home"].replace(".cpp", ".h")}
+            ext = sum(len(rx.findall(t)) for n, t in files.items() if n not in own)
+            print(f"[接线/{rule['name']}] 外部调用 {ext} 次（home={rule['home']}）")
+        if TOKEN_TABLE.get("file"):
+            print(f"[令牌消费] {TOKEN_TABLE['struct']} 的字段必须被 {TOKEN_TABLE['consumer']} 取用")
         return 0
 
     if not fails:
+        # 令牌检查是单条规则（TOKEN_TABLE 有定义就启用），一并报出来
+        token_n = 1 if TOKEN_TABLE.get("file") else 0
         print(f"OK：{len(UNIQUE)} 条唯一性规则、{len(FORBID)} 条禁令、"
-              f"{len(STALE)} 条接线检查，全部通过。")
+              f"{len(STALE)} 条接线检查、{token_n} 条令牌消费，全部通过。")
         for w in stale_warn:
             print(f"  提示  {w}")
         return 0
 
     print(f"FAIL：{len(fails)} 条规则被违反\n")
-    for rule, stray in fails:
+    for item in fails:
+        rule, stray = item[0], item[1]
+        detail = item[2] if len(item) > 2 else None
         print(f"  ✗ {rule['name']}")
         for name, cnt in stray:
             if cnt == 0:
@@ -294,6 +338,8 @@ def main():
             else:
                 print(f"      {name}  ×{cnt}")
         print(f"      → {rule['why']}")
+        if detail:
+            print(f"      未消费：{', '.join(detail)}")
         if rule.get("allow"):
             print(f"      允许：{', '.join(sorted(rule['allow']))}")
         print()

@@ -23,6 +23,13 @@ void BuildDefault() {
     g_defaultReady = true;
 }
 
+// 声明"这个 setting 的系统默认键"，给 keymap.gen.h 里 key 为空的条目兜底。
+// 这里**不放未实现命令的键**：原先有一行 {L"hotkeyBatchRename", L"F2"}，已删。
+// 它现在是死数据（hotkeyBatchRename 的 key 是 Ctrl+Shift+R，非空就不查这张表），
+// 但留着是个陷阱：只要 keymap 里那条 key 被清空 —— 用户自己的 keymap.json 就可能是
+// 空 key，BuildRows/SystemKeyFor 还用它显示键名 —— F2 就会挂到这个未实现命令名下；
+// 而 BuildBindings 的 hotkeys 循环跑在 kExtra 之前、add() 又是"先到先得"，等
+// BatchRename 将来实现，F2 就会从 CmdRename 手里被抢走，重命名键静默失效。
 const struct {
     const wchar_t* setting;
     const wchar_t* combo;
@@ -33,7 +40,7 @@ const struct {
     {L"hotkeyCmdNewFolder", L"Ctrl+Shift+N"},{L"hotkeyNavBack", L"Alt+←"},
     {L"hotkeyNavForward", L"Alt+→"},        {L"hotkeyNavUp", L"Alt+↑"},
     {L"hotkeyNavRefresh", L"F5"},           {L"hotkeyTogglePreviewPane", L"Alt+P"},
-    {L"hotkeyCopyPath", L"Ctrl+Shift+C"},   {L"hotkeyBatchRename", L"F2"},
+    {L"hotkeyCopyPath", L"Ctrl+Shift+C"},
     {L"hotkeyTabNew", L"Ctrl+T"},           {L"hotkeyTabClose", L"Ctrl+W"},
     {L"hotkeyTabNext", L"Ctrl+Tab"},        {L"hotkeyTabPrev", L"Ctrl+Shift+Tab"},
     {L"hotkeyNewWindow", L"Ctrl+N"},        {L"hotkeyReopenClosedTab", L"Ctrl+Shift+T"},

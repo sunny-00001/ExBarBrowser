@@ -11,7 +11,7 @@
 namespace {
 
 // 类名由 identity.h 统一给出（规则 B1）
-constexpr const wchar_t* kClass = id::kHotkeysClass;
+using id::kHotkeysClass;
 
 struct State {
     HWND hwnd = nullptr;
@@ -35,7 +35,7 @@ LRESULT CALLBACK HotkeyProc(HWND h, UINT m, WPARAM w, LPARAM l);
 
 namespace {
 
-void RegisterClassOnce() { win::RegisterClassOnce(kClass, HotkeyProc); }
+void RegisterClassOnce() { win::RegisterClassOnce(kHotkeysClass, HotkeyProc); }
 
 void SetSubItem(HWND list, int row, int col, const std::wstring& text) {
     LVITEMW item{};
@@ -266,7 +266,7 @@ void ShowHotkeyManager(HWND owner, const Theme& theme, InputRouter& router) {
     int w = theme.S(820), h = theme.S(560);
     int x = orc.left + ((orc.right - orc.left) - w) / 2;
     int y = orc.top + ((orc.bottom - orc.top) - h) / 2;
-    st->hwnd = CreateWindowExW(0, kClass, L"快捷键管理器", WS_OVERLAPPEDWINDOW | WS_VISIBLE, x, y,
+    st->hwnd = CreateWindowExW(0, kHotkeysClass, L"快捷键管理器", WS_OVERLAPPEDWINDOW | WS_VISIBLE, x, y,
                                w, h, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!st->hwnd) {
         delete st;

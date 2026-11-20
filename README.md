@@ -13,7 +13,7 @@ ExBar mod 分片，可并存、可整体拷走、可单独卸载。
 | 命令 | 137 条目录 / **108 已实现** / 86 条对 AI 暴露（`tools/check_commands.py` 三方对账） |
 | 配置 | 便携模式，全部在 `<exe>\data`：`settings.json` / `bookmarks.html` / `keymap.json` / `mouse.json` / `audit.log` |
 | 验证 | clang++ 20.1.3 零警告；`build_fast.py --clean` 全量 **10.5s**；真实键鼠消息冒烟通过（`docs/MIGRATION-PLAN.md` §8.2） |
-| 检查 | 3 个静态检查全绿：21 条唯一性 + 2 条禁令 + 1 条接线（`check_components`）、14 组（`check_ai_meta`）、三方对账（`check_commands`） |
+| 检查 | 3 个静态检查全绿：21 条唯一性 + 2 条禁令 + 1 条接线 + 1 条令牌消费（`check_components`）、14 组（`check_ai_meta`）、三方对账（`check_commands`，含 CmdId 顺序与 legacy 名基线） |
 | 版本控制 | **独立仓库**（`E:\ExBarBrowser`，分支 `main`）：源码/脚本/文档/生成头入库，构建与运行产物由 `.gitignore` 排除 |
 
 > 本文所有路径均相对仓库根。文档基线：**2026-11-20 19:40**（代码仍在快速演进，

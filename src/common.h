@@ -36,8 +36,9 @@
 // 路径语义的唯一实现（父级/叶子/盘根/向上目标）。本文件只做名字转发。
 #include "nav_path.h"
 
-// 日志的唯一实现（%TEMP%\ExBarBrowser.log + 轮转）。以前这里有一份 inline LogDbg、
-// shell_view.cpp 里另有一份 LogLine —— 两份轮转策略还不一致。
+// 日志的唯一实现（%TEMP%\ExBarBrowser.log + 轮转）。
+// 以前这里有一份 inline LogDbg、shell_view.cpp 里另有一份 LogLine，两份轮转策略
+// 还不一致（一份按大小、一份按行数）。2026-11-20 已合并到 log.h 的 LogLine/LogDbg。
 #include "log.h"
 
 // 字符串工具的唯一实现（Trim / Lower / ICmp / UTF-8 转换）。

@@ -84,6 +84,11 @@ public:
     // 导航完成后 shell 可能异步重建预览窗格，延后一拍再校正。
     void ReapplyPreviewPane();
     static constexpr UINT_PTR kPreviewReapplyTimer = 2;
+#if defined(EXBAR_DIAG_PREVIEW)
+    // 预览窗格/文件夹大小诊断（默认不编译；-DEXBAR_DIAG_PREVIEW 启用）。
+    // 曾经直接写在 ReapplyPreviewPane 里，而后者由定时器反复调用 —— 见 .cpp 的说明。
+    void DiagnosePreviewPaneState();
+#endif
 
 private:
     class Sink;

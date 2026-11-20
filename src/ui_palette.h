@@ -10,27 +10,35 @@
 #include "common.h"
 
 struct UiPalette {
+    // ---- 已被 Theme 消费（改动生效）----
     COLORREF text, hover, pressed, disabled, separator;      // 栏基础色
-    COLORREF editBg, editBorder, editFocus, editPlaceholder; // 编辑框
-    COLORREF listBg, listSelBg, listHotBg, listText, listInertText;  // 下拉列表
-    COLORREF chevron, chevronHot;                            // 面包屑展开箭头
-    COLORREF panelBorder, accent, dimText;
+    COLORREF editBg, editBorder;                             // 编辑框底/边框
+    COLORREF listBg, listSelBg, listHotBg;                   // 下拉列表底/选中/悬停
+    COLORREF chevron;                                        // 面包屑展开箭头
+    COLORREF accent, dimText;                                // 强调色 / 次要文字
+
 };
 
 inline const UiPalette& PaletteFor(bool dark) {
+    // 指定初始化器（C++20）：**字段顺序无关**。
+    // 这里原来是位置式初始化 —— 20 个连续 COLORREF 靠逗号对齐，
+    // 插一个字段、删一个字段都会让后面全部错位，而错位的表现是"某个颜色莫名其妙变了"，
+    // 比编译错误难查得多。
     static const UiPalette light = {
-        0x1A1A1A, 0xE5E5E5, 0xD0D0D0, 0xB0B0B0, 0xD0D0D0,
-        0xFFFFFF, 0xC8C8C8, RGB(0, 102, 201), 0x808080,
-        0xFFFFFF, RGB(204, 232, 255), 0xE8E8E8, 0x1A1A1A, 0x9A9A9A,
-        0x666666, 0x202020,
-        0xA0A0A0, RGB(0, 120, 215), 0x606060,
+        .text = 0x1A1A1A,       .hover = 0xE5E5E5,     .pressed = 0xD0D0D0,
+        .disabled = 0xB0B0B0,   .separator = 0xD0D0D0,
+        .editBg = 0xFFFFFF,     .editBorder = 0xC8C8C8,
+        .listBg = 0xFFFFFF,     .listSelBg = RGB(204, 232, 255), .listHotBg = 0xE8E8E8,
+        .chevron = 0x666666,
+        .accent = RGB(0, 120, 215), .dimText = 0x606060,
     };
     static const UiPalette darkTheme = {
-        0xEEEEEE, 0x3A3A3A, 0x2E2E2E, 0x606060, 0x3F3F3F,
-        0x2A2A2A, 0x555555, RGB(76, 159, 255), 0x777777,
-        0x202020, RGB(76, 159, 255), 0x353535, 0xF0F0F0, 0x777777,
-        0xBBBBBB, 0xDDDDDD,
-        0x000000, RGB(76, 160, 255), 0x9A9A9A,
+        .text = 0xEEEEEE,       .hover = 0x3A3A3A,     .pressed = 0x2E2E2E,
+        .disabled = 0x606060,   .separator = 0x3F3F3F,
+        .editBg = 0x2A2A2A,     .editBorder = 0x555555,
+        .listBg = 0x202020,     .listSelBg = RGB(76, 159, 255),  .listHotBg = 0x353535,
+        .chevron = 0xBBBBBB,
+        .accent = RGB(76, 160, 255), .dimText = 0x9A9A9A,
     };
     return dark ? darkTheme : light;
 }

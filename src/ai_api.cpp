@@ -177,9 +177,10 @@ std::vector<ToolSpec> ListTools() {
     for (const auto& d : CommandTable()) {
         if (!d.aiExposed || !d.implemented) continue;
         ToolSpec t;
-        // 主名 = 点分名（规则 C4：第一段等于 group 小写）。d.name 已是点分名，
-        // 所以直接取；CanonicalName 对点分名原样返回，保留是为了兼容 d.name 仍是
-        // 旧名的过渡期（见 docs/NAMING.md §7）。
+        // 主名 = 点分名（规则 C4：第一段是 group 的小写域前缀）。
+        // d.name 现已全部是点分名，所以 CanonicalName 在这里是恒等 —— 保留是因为它是
+        // "给任意名字还规范名"的公共语义（数据驱动处会用到），不是为了兼容过渡期
+        // （过渡期已结束，见 docs/NAMING.md §7）。
         t.name = cmdnaming::CanonicalName(d.name);
         // 旧名从别名表反查（不是 d.name）—— d.name 迁到点分名后，直接取 d.name
         // 会让 name 与 legacyName 变成同一个值，client 的"旧名对照"就失效了。

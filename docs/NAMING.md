@@ -297,7 +297,7 @@ Emacs Lisp 没有包系统，所有全局符号共享一个命名空间，于是
 | C1 | 命令 id 稳定 | `CmdId` 枚举值与上次基线比对，只允许追加 |
 | C2 | 旧名永不删 | `legacyName` 集合只增不减 |
 | C4 | 主名第一段 = group | `name` 的点分第一段 == `group` 小写 |
-| R12 | 窗口类 ≤3 | `RegisterClassOnce` 调用点数 ≤3 + 原生控件 |
+| R12 | 窗口类 ≤3 | `RegisterClassOnce` 调用点数 ≤3 + 原生控件。**前置条件：B5 载体合并完成**（R12 原文如此）；当前 11 个类，本规则暂不启用 |
 
 ---
 
@@ -325,7 +325,7 @@ Emacs Lisp 没有包系统，所有全局符号共享一个命名空间，于是
 | 校验器：C1 命令 id 稳定 + C2 旧名只增不减 | ✅ 2026-11-20 | `check_commands.py` 新增基线比对（`data/commands-baseline.json`，`--update-baseline` 更新）：C1a 顺序不变、C1b 不删、C2 legacy 只增 |
 | 校验器：`eb` 废弃规则 | ✅ 2026-11-20 | 3 条 `FORBID`（`namespace eb` / `eb::` / `#include "eb_`），防旧前缀回流 |
 | `eb` 五类符号拆成具名类型（`Painter`/`Assets`/`Metrics`） | ⬜ 待办 | 命名空间已改 `ui`（"来源前缀"这个痛点已消除）；进一步拆成类型属组件化（B4），见 §3.2 |
-| 窗口类 11 → 3 | ⬜ 待办 | 需先做载体合并（B5） |
+| 窗口类 11 → 3 | ⛔ 依赖 B5，不是独立任务 | R12 原文即"**B5 之后**：窗口类 ≤3"。当前 11 个类各承载独立 WndProc + 独立绘制，减到 3 个等价于把栏/面板合并进统一载体（Lister/Popup/Dialog）—— 那是架构重构，改法与"改名"完全无关。**把它挂在命名清单里是分类错误**，已在 §6 标注依赖关系 |
 
 ### 7.1 本轮顺带修掉的真实缺陷
 
@@ -340,6 +340,20 @@ Emacs Lisp 没有包系统，所有全局符号共享一个命名空间，于是
 | `cmd_naming` 两个查表方向大小写不对称 | `AliasOf` 用 `find`（区分大小写）、`LegacyOf` 先 `Lower` —— 表现为"`nav.back` 认、`NavBack` 认、`navback` 不认"这种半吊子行为。命名测试断言 `FindCommand(L"navback") != nullptr` 一直失败 | 两个方向都改 `_wcsicmp` 遍历；局部 `Lower()`（第三个大小写归一实现）随之删除，同类工具统一在 `str::Lower` |
 | `check_ai_meta.py` 硬编码旧名做键 | 点分名作主名后，`INDIRECT_ARGS` / `KNOWN_NO_TARGET` / `COVERS` / `UI_ONLY` 四张表的键全部失配，误报 19 条 | 全部改为点分名（`c['name']` 现在就是这个值） |
 | `input_router::CurrentMods` 与 `eb::CurrentMods` 逐行重复 | 校验器以"需按焦点抑制"为由白名单放行，但两个版本一字不差，成员函数无任何额外逻辑 | 成员版改为 `return ::CurrentMods();`；白名单从 2 个文件收紧到 1 个 |
+
+### 7.2 第二轮审查（2026-11-20 21:00）发现的问题
+
+以"假设自己改错了"为前提重审，不重复上一轮结论。以下都是**上一轮没发现**的：
+
+| 问题 | 性质 | 处置 |
+|---|---|---|
+| `FindCommand` 第三路是死路径 | 注释写"迁移期间三种组合"，但迁移已完成，`d.name` 全为点分名，第三路永不可能命中 | 删掉该分支；三路 137×3 次线性扫描改为 `unordered_map` 索引（`FindCommand` 在 `BuildBindings` 里被调 92 次） |
+| **C1 判据漏报中间插入** | 原实现比"已有序项的相对顺序"，而 `[A,B,C]` vs `[A,X,B,C]` 的相对顺序**没变** → 最危险的情况（后续 id 全部位移）恰好漏报 | 改为**前缀判据** `new[:len(old)] == old`，并指出第一处不同的下标。实测注入中间项后能准确报出"枚举第 1 项起与基线不符" |
+| **C1 读错了数据源** | 基线存的是 `commands.cpp` 的**表行顺序**，但 `CmdId` 数值来自 `commands.h` 的**枚举声明顺序**。两者当前确实不同（枚举 @69 = `CopyToFolder`，表 @69 = `FileFocusTop`）→ 既会误报（挪表行）又漏报（真改枚举） | 新增 `EnumOrder()` 从 `commands.h` 读取；重建基线 |
+| `WM_COPYDATA` 魔数换值是错的 | 窗口类名未变，升级期新旧进程混跑时新进程发新魔数会被旧进程静默拒绝，用户看到"未响应"的误导提示 | **撤销换值**，恢复 `0xEBB1`，并在 `identity.h` / D9 说明"独立免除了与 mod 的兼容义务，但同一程序前后版本仍要兼容" |
+| `UiPalette` 有 6 个令牌零消费 | `editFocus` / `editPlaceholder` / `listText` / `listInertText` / `chevronHot` / `panelBorder` 定义了但 `Theme` 从不取用 —— 改它们毫无效果，下一个改主题的人会以为在改 | 删掉 6 个；新增校验规则"令牌未被消费"防复发；位置式初始化改**指定初始化器**（23 个字段逐位核对，值零变化） |
+| `CreateChild` 与 `CreatePopup` 约定不一致 | 前者传 `nullptr` 再事后设置，后者走 `lpCreateParams`。栏目前不用 `WM_NCCREATE` 所以侥幸无事，但下一个给栏加该处理的人会拿到空指针 | 统一走 `lpCreateParams` |
+| R12（窗口类 ≤3）被错列为独立待办 | R12 原文写的是"**B5 之后**：窗口类 ≤3" —— 它依赖载体合并，不是命名清理能达成的 | 标注前置条件；当前 11 个类暂不启用该规则 |
 
 ---
 

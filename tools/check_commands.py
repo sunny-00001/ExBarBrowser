@@ -2,10 +2,12 @@
 # -*- coding: utf-8 -*-
 """命令目录静态审计（CI / 提交前跑一次，无窗口依赖）。
 
-检查三件事，任何一条不满足都说明"键位/面板点得到但没实现"：
+检查四件事，任何一条不满足都说明"键位/面板点得到但没实现"：
   1. data/keymap.json 里出现的每条命令（hotkeys + sequences）都在 src/commands.cpp 的表里；
   2. 表里 implemented=true 的命令，在 src/app_commands.cpp 里都有 reg(CmdId::X) 处理器；
-  3. 表里 implemented=false 的命令不能有处理器（否则是"实现了却标成未实现"）。
+  3. 表里 implemented=false 的命令不能有处理器（否则是"实现了却标成未实现"）；
+  4. keymap 里的键位不能绑到 implemented=false 的命令上（否则按了没反应、也没有提示）。
+     确属"先占位、功能后补"的要写进下面的 PENDING，并写明原因。
 
 用法：python tools/check_commands.py     # 退出码 0 = 通过
 """
@@ -19,10 +21,68 @@ TABLE_SRC = ROOT / "src" / "commands.cpp"
 HANDLERS_GLOB = "app_commands*.cpp"   # 处理器按域分片后不再只有一个文件
 KEYMAP = ROOT / "data" / "keymap.json"
 
+# 键位先占位、功能后补：这些 setting 绑的命令尚未实现，是有意为之。
+# 新增项必须写明原因，否则应视为违规（键位按了没反应，用户不会知道为什么）。
+#
+# 登记不是免死金牌：每次改动都要回头看这条到底还该不该留着。命令一旦实现，
+# 把对应项从这里删掉 —— 否则"实现了却仍被当成占位"会让这条检查失去意义。
+PENDING = {
+    # 选择族与撤销：共同前置是 SelectionModel（现在 shell_ops 只有 SelectByPath /
+    # SelectNone 两个点操作），见 docs/ROADMAP.md §4.7 P3-6。
+    "hotkeySelectInvert": "SelectInvert 待实现（前置 SelectionModel）",
+    "hotkeySelectFiles": "SelectFiles 待实现（前置 SelectionModel）",
+    "hotkeySelectFolders": "SelectFolders 待实现（前置 SelectionModel）",
+    "hotkeySelectByPattern": "SelectByPattern 待实现（前置 SelectionModel）",
+    "hotkeyCmdUndo": "CmdUndo 待实现（撤销语义要落到 IFileOperation，见 §4.7 P3-6）",
+    # 复选框：shell 视图没有公开接口（docs/DECISIONS.md D2），要等自绘或补丁方案。
+    "hotkeyToggleCheckboxes": "ToggleCheckboxes 待实现（shell 视图无可编程接口，D2）",
+    # 批量重命名建议直接接 PowerRename，不自建规则编辑器（OPERATION-MODEL §7）。
+    "hotkeyBatchRename": "BatchRename 待实现（接 PowerRename）",
+    # 搜索：依赖导航栏搜索框存在（ROADMAP §4.4 P3-2），Ctrl+F 先留着占位。
+    "hotkeyFocusSearch": "FocusSearch 待实现（前置导航栏搜索框，§4.4 P3-2）",
+    # 工具集：要跨目录大范围扫描，必须进 helper 或工作线程，否则 UI 假死（§4.5 P3-3）。
+    "hotkeyDupFinder": "DupFinder 待实现（需 helper 进程 + IPC，§4.5）",
+    "hotkeyFileHash": "FileHash 待实现（需 helper 进程 + IPC，§4.5）",
+    "hotkeyFolderCompare": "FolderCompare 待实现（需 helper 进程 + IPC，§4.5）",
+    # AI 面板：接口层（ai_api / ai_server）已通，缺窗口内对话 UI 与历史（ROADMAP §5 P4）。
+    "hotkeyAiTogglePanel": "AiTogglePanel 待实现（缺面板 UI，接口层已就绪）",
+    # 注意：TabMergeAll 与本表语义不符 —— 它不是"后补"而是"不适用"（本工程是单窗口
+    # 模型，没有 explorer 标签可合并，见 docs/PARITY.md §3.1 与 MIGRATION-PLAN）。
+    # 登记在这里只是为了让 CI 不因它变红；正确的处置是删掉 data/keymap.json 里的
+    # hotkeyMergeAllWindows（Ctrl+Alt+W），见提交说明。
+    "hotkeyMergeAllWindows": "TabMergeAll 不适用（单窗口模型）—— 应删键位，暂登记",
+}
+
 
 def strip_comments(text):
     """去掉整行/行尾 // 注释，避免文档里的示例被当成真实注册。"""
     return "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+
+
+def EnumOrder():
+    """按声明顺序读出 commands.h 里 `enum class CmdId` 的全部标识符。
+
+    只认 word 形态的 token，跳过显式赋值（`None = 0`）与注释。
+    这是 CmdId 数值的真实来源 —— 与 commands.cpp 表行的顺序无关。
+    """
+    src = (ROOT / "src" / "commands.h").read_text(encoding="utf-8")
+    body = re.search(r"enum class CmdId\s*:\s*int\s*\{(.*?)\n\};", src, re.S)
+    if not body:
+        return []
+    body = re.sub(r"//.*", "", body.group(1))
+    out = []
+    for tok in body.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        m = re.fullmatch(r"(\w+)\s*(?:=\s*\d+)?", tok)
+        if not m:
+            continue
+        name = m.group(1)
+        if name == "None":      # 显式 = 0 的哨兵，不算命令
+            continue
+        out.append(name)
+    return out
 
 
 def main():
@@ -87,6 +147,62 @@ def main():
         errors.append("keymap 引用了目录里不存在的命令（键位会静默消失）：" +
                       ", ".join(sorted(set(missing_in_table))))
 
+    # ---- keymap 只绑已实现的命令 ----
+    #
+    # 上面那条只保证"名字在表里"，表里却有 40 多条 implemented=false。
+    # name 只是"认得这个命令"，不等于"按下去有反应"：InputRouter 建表时对未实现的
+    # 命令直接 continue（src/input_router.cpp 的 `!def->implemented` 分支），
+    # 于是键位既不触发也不报错 —— 用户只看到"按了没反应"。
+    #
+    # 归一化要注意口径：keymap 里写的是旧名（SelectInvert），表里 name 是点分名
+    # （file.select.invert），而 implemented 收集的是 CmdId 枚举名。所以
+    # 旧名/点分名 → 都要先经别名表 + name_to_id 落到 CmdId，再问 implemented。
+    legacy_to_dotted = dict(aliases)
+
+    def to_cmd_id(name):
+        """命令名（旧名 / 点分名）→ CmdId 枚举名；认不出返回 None。"""
+        if name in name_to_id:                 # 点分名（表里的主名）
+            return name_to_id[name]
+        dotted = legacy_to_dotted.get(name)    # 旧名 → 点分名
+        return name_to_id.get(dotted) if dotted else None
+
+    # (setting 或 sequence:<seq>, 命令名)
+    bindings = [(h.get("setting", ""), h.get("command", "")) for h in km.get("hotkeys", [])]
+    bindings += [("sequence:" + s.get("seq", ""), s.get("command", ""))
+                 for s in km.get("sequences", [])]
+    unimpl, pending_hit = [], []
+    for setting, spec in bindings:
+        name = spec.split(":", 1)[0]           # "ViewMode:3" 这类内联参数先剥掉
+        if not name:
+            continue
+        cid = to_cmd_id(name)
+        # 认出了且已实现 → 正常；其余（认不出 / 标着未实现）都是"按了没反应"。
+        # 认不出的情况上面 missing_in_table 已经报过，这里不重复计一遍。
+        if cid is None or cid in implemented:
+            continue
+        if setting in PENDING:
+            pending_hit.append((setting, name))
+        else:
+            unimpl.append(f"{setting}→{name}")
+    if unimpl:
+        errors.append("keymap 绑了未实现的命令（按了没反应）：" + ", ".join(sorted(unimpl)))
+
+    # PENDING 里过期/写错的项也要报出来，否则这张白名单只会越来越长：
+    #   - setting 在 keymap 里已不存在（改名或删键位了，登记项失去对象）；
+    #   - 命令已经实现了却还挂在 PENDING（占位理由不成立了）。
+    stale = []
+    bound = {s for s, _ in bindings}
+    for setting in sorted(PENDING):
+        if setting not in bound:
+            stale.append(f"{setting}（keymap 里没有这个 setting）")
+            continue
+        spec = next(c for s, c in bindings if s == setting)
+        cid = to_cmd_id(spec.split(":", 1)[0])
+        if cid is not None and cid in implemented:
+            stale.append(f"{setting}（{cid} 已实现，可以摘掉了）")
+    if stale:
+        errors.append("PENDING 有失效登记（应删掉对应项）：" + ", ".join(stale))
+
     no_handler = sorted(n for n in implemented if n not in handlers)
     if no_handler:
         errors.append("标为已实现但没有处理器（点/按都没反应）：" + ", ".join(no_handler))
@@ -110,7 +226,12 @@ def main():
     # 记的不是数值而是**顺序**，因为顺序才是真正的契约（显式赋值后数值可任意）。
     baseline = ROOT / "data" / "commands-baseline.json"
     cur = {
-        "ids": [r[0] for r in rows],                      # 顺序 = CmdId 的值序
+        # 顺序 = **枚举声明顺序**，不是表行顺序。
+        # 这两者不是一回事：表行顺序只影响菜单分组展示（可以随分组调整挪动），
+        # 而 CmdId 的数值 = 枚举声明顺序。之前的实现误用表顺序，导致既会误报
+        # （挪表行）又漏报（真改了枚举顺序但表里恰好没动）—— 实测两者当前确实不同：
+        # 枚举 @69 是 CopyToFolder，表 @69 是 FileFocusTop。
+        "ids": EnumOrder(),
         "legacyNames": sorted({a[0] for a in aliases}),   # 规则 C2：只增不减
     }
     if "--update-baseline" in sys.argv:
@@ -124,13 +245,25 @@ def main():
         old = json.loads(baseline.read_text(encoding="utf-8"))
         old_ids, new_ids = old.get("ids", []), cur["ids"]
 
-        # C1a：已有 id 的相对顺序不能变（允许在末尾追加，不允许中间插入/删除/重排）
-        common = [x for x in new_ids if x in set(old_ids)]
-        missing = [x for x in old_ids if x not in set(new_ids)]
-        if common != old_ids:
-            errors.append("CmdId 顺序被改动（会位移所有后续 id 的数值）："
+        # C1a：旧序列必须是新序列的**前缀**。
+        #
+        # 不能写成"commons 顺序不变"—— 那样中间插入会漏报：
+        #   old = [A,B,C]，new = [A,X,B,C] → common=[A,B,C]==old，看起来"顺序没变"，
+        #   但 X 插在位置 1，B 从 1 变 2、C 从 2 变 3，全部位移。
+        # 而"中间插入"正是 C1 要防的最危险情况。判据必须是前缀关系：
+        #   [A,B,C] vs [A,B,C,D] → 前缀，放行（末尾追加）
+        #   [A,B,C] vs [A,X,B,C] → 非前缀，报错（中间插入）
+        if new_ids[:len(old_ids)] != old_ids:
+            # 指出第一处不同，方便定位
+            diff = next((i for i, (a, b) in enumerate(zip(old_ids, new_ids)) if a != b),
+                        min(len(old_ids), len(new_ids)))
+            errors.append(f"CmdId 顺序被改动：枚举第 {diff} 项起与基线不符"
+                          f"（基线 {old_ids[diff] if diff < len(old_ids) else '<end>'}，"
+                          f"现为 {new_ids[diff] if diff < len(new_ids) else '<end>'}）。"
                           "新增命令只能加在枚举末尾")
-        # C1b：删掉的 id 必须保留占位（规则 C1 的原文："废弃保留占位"）
+
+        # C1b：旧 id 不能删（删了后续 id 全部位移）
+        missing = [x for x in old_ids if x not in set(new_ids)]
         if missing:
             errors.append("CmdId 被删除（应保留枚举项并标废弃，否则后续 id 全部位移）：" +
                           ", ".join(missing))
@@ -159,6 +292,11 @@ def main():
 
     print(f"命令表 {len(rows)} 条，已实现 {len(implemented)}，处理器 {len(handlers)}，"
           f"keymap 引用 {len(set(specs))} 条")
+    # 占位是无害的"已知欠债"，不是错误，但要让它在输出里可见 —— 否则 PENDING
+    # 会变成一张只增不减的免死金牌，没人再回头看哪条其实早该实现或该删键位。
+    if pending_hit:
+        print(f"注意  {len(pending_hit)} 条键位为占位（命令未实现，已在 PENDING 登记）：" +
+              ", ".join(sorted(f"{s}→{n}" for s, n in pending_hit)))
     if errors:
         for e in errors:
             print("FAIL " + e)

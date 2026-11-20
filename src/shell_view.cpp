@@ -97,7 +97,9 @@ void ApplyShellTheme(HWND container, bool dark) {
     // 只戳 IExplorerBrowser 自己的宿主窗口（container 直接子窗口中的那一个）。
     if (HWND ebw = FindChildByClass(container, L"ExplorerBrowserControl")) {
         AllowDarkForWindow(ebw, dark);
-        // shell_view 是唯一例外：见文件顶部的 DirectUI 说明，不能走 ui::ThemeControl
+        // 这里刻意不走 win::ThemeControl：那是个"给我们的原生控件套主题"的入口，
+        // 而这个窗口是 Shell 的 DirectUI 宿主，套法有额外约束（见文件顶部的实测记录）。
+        // 行为上两者等价，分开是为了让"哪些窗口归我们管"一眼可辨。
         SetWindowTheme(ebw, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
         // SetWindowTheme 内部已经会发 WM_THEMECHANGED，不要再手动广播：
         // 对 DirectUI 反复广播会让它重建内部状态，实测会丢选中绘制。
@@ -629,6 +631,41 @@ void ShellView::SchedulePreviewReapply() {
 }
 
 void ShellView::ReapplyPreviewPane() {
+    // 真正的功能只有两行：停掉重试定时器、把预览窗格状态再套一次。
+    // 原先这个函数里还塞着 ~160 行诊断（列枚举/逐项取大小/SetColumns 强制重建/UIA 树遍历）
+    // —— 而它由 120ms 定时器反复调用，等于每次悬停预览都做一遍跨进程 UIA 与列重建。
+    // 已抽到 DiagnosePreviewPaneState()，由 -DEXBAR_DIAG_PREVIEW 控制。
+    if (container_) KillTimer(container_, kPreviewReapplyTimer);
+    IShellView* view = CurrentView();
+    ApplyPreviewPaneState(view);
+    if (view) view->Release();
+#if defined(EXBAR_DIAG_PREVIEW)
+    DiagnosePreviewPaneState();
+#endif
+}
+
+#if defined(EXBAR_DIAG_PREVIEW)
+// 【诊断：预览窗格/文件夹大小】2026-11 排查"详细信息视图里 Size 列不显示"时写的。
+//
+// 为什么必须默认关闭：它原本直接长在 ReapplyPreviewPane 里，而后者由 120ms 定时器
+// 反复调用。这段代码会做四件重活 ——
+//   ① 在最多 40 个列里逐个 GetDetailsOf + StrRetToBufW 找 Size 列；
+//   ② 对前 4 项取 PKEY_Size（网络路径/大文件夹 = 真实 I/O）；
+//   ③ 用 IColumnManager 把 Size 列**移除再加回**（强制重建可见列，视图会闪）；
+//   ④ UIA 全后代遍历（TreeScope_Descendants + 逐元素取名字，跨进程调用）。
+// 留在生产路径上，用户每次把鼠标移过文件列表都要付一遍这个代价。
+//
+// 需要时加 -DEXBAR_DIAG_PREVIEW 重新启用。不要退化成注释 —— 注释掉的代码会腐烂，
+// 活着但默认跑着的诊断更糟。
+void ShellView::DiagnosePreviewPaneState() {
+    IShellView* view = CurrentView();
+    if (!view) return;
+    IFolderView2* fv2 = nullptr;
+    if (FAILED(view->QueryInterface(IID_IFolderView2, reinterpret_cast<void**>(&fv2))) || !fv2) {
+        view->Release();
+        return;
+    }
+    {
     if (container_) KillTimer(container_, kPreviewReapplyTimer);
     IShellView* view = CurrentView();
     ApplyPreviewPaneState(view);
@@ -795,7 +832,12 @@ void ShellView::ReapplyPreviewPane() {
         }
         view->Release();
     }
+    }
+    fv2->Release();
+    view->Release();
 }
+#endif  // EXBAR_DIAG_PREVIEW
+
 
 void ShellView::TogglePreviewPane() {
     // 以"窗格现在是否可见"为准取反；FOLDERFLAGS 没有预览窗格位，不能作为状态源。

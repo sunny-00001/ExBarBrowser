@@ -7,15 +7,15 @@
 namespace {
 
 // 类名由 identity.h 统一给出（规则 B1）
-constexpr const wchar_t* kClass = id::kSeqHintClass;
+using id::kSeqHintClass;
 
 }  // namespace
 
 void SequenceHint::Create(HWND owner, const Theme& theme) {
-    win::RegisterClassOnce(kClass, SequenceHint::WndProc);
+    win::RegisterClassOnce(kSeqHintClass, SequenceHint::WndProc);
     owner_ = owner;
     theme_ = &theme;
-    hwnd_ = win::CreatePopup(kClass, owner, this,
+    hwnd_ = win::CreatePopup(kSeqHintClass, owner, this,
                              WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, WS_POPUP, 0, 0,
                              10, 10);
     if (!hwnd_) return;

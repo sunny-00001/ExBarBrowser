@@ -5,7 +5,7 @@
 namespace {
 
 // 类名由 identity.h 统一给出（规则 B1）
-constexpr const wchar_t* kClass = id::kPromptClass;
+using id::kPromptClass;
 
 struct PromptState {
     HWND edit = nullptr;
@@ -114,7 +114,7 @@ LRESULT CALLBACK PromptProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
 
-void RegisterClassOnce() { win::RegisterClassOnce(kClass, PromptProc); }
+void RegisterClassOnce() { win::RegisterClassOnce(kPromptClass, PromptProc); }
 
 }  // namespace
 
@@ -132,7 +132,7 @@ bool PromptText(HWND owner, const Theme& theme, const std::wstring& title,
     int x = orc.left + ((orc.right - orc.left) - w) / 2;
     int y = orc.top + ((orc.bottom - orc.top) - h) / 2;
 
-    HWND hwnd = win::CreatePopup(kClass, owner, &st, WS_EX_DLGMODALFRAME,
+    HWND hwnd = win::CreatePopup(kPromptClass, owner, &st, WS_EX_DLGMODALFRAME,
                                  WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h, title.c_str());
     if (!hwnd) return false;
 
@@ -204,7 +204,7 @@ bool PromptText2(HWND owner, const Theme& theme, const std::wstring& title,
     int x = orc.left + ((orc.right - orc.left) - w) / 2;
     int y = orc.top + ((orc.bottom - orc.top) - h) / 2;
 
-    HWND hwnd = win::CreatePopup(kClass, owner, &st, WS_EX_DLGMODALFRAME,
+    HWND hwnd = win::CreatePopup(kPromptClass, owner, &st, WS_EX_DLGMODALFRAME,
                                  WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h, title.c_str());
     if (!hwnd) return false;
 
