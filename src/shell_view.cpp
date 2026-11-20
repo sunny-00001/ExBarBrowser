@@ -1,4 +1,6 @@
 #include "shell_view.h"
+
+#include "shell_ops.h"
 #include "str.h"
 
 #include "config.h"
@@ -443,8 +445,9 @@ void ShellView::SetViewMode(int fvm, int iconPx) {
     if (!browser_) return;
     IShellView* view = nullptr;
     if (SUCCEEDED(browser_->GetCurrentView(IID_IShellView, reinterpret_cast<void**>(&view))) && view) {
-        IFolderView2* fv2 = nullptr;
-        if (SUCCEEDED(view->QueryInterface(IID_IFolderView2, reinterpret_cast<void**>(&fv2))) && fv2) {
+        // 走唯一实现：手写 QI 会绕过 ComPtr 的 Reset 语义（见 shell_ops.h 注释）。
+        ComPtr<IFolderView2> fv2 = shellops::FolderView2(view);
+        if (fv2) {
             fv2->SetViewModeAndIconSize(static_cast<FOLDERVIEWMODE>(fvm), iconPx);
             // 读回校验：Set 成功但视图不重画时能立刻从日志看出来（不再盲目 Refresh）
             FOLDERVIEWMODE gotMode = FVM_AUTO;
@@ -519,7 +522,6 @@ void ShellView::SetViewMode(int fvm, int iconPx) {
                     if (name) CoTaskMemFree(name);
                 }
             }
-            fv2->Release();
         }
         view->Release();
     }
@@ -674,8 +676,8 @@ void ShellView::ReapplyPreviewPane() {
 void ShellView::DiagnosePreviewPaneState() {
     IShellView* view = CurrentView();
     if (!view) return;
-    IFolderView2* fv2 = nullptr;
-    if (FAILED(view->QueryInterface(IID_IFolderView2, reinterpret_cast<void**>(&fv2))) || !fv2) {
+    ComPtr<IFolderView2> fv2 = shellops::FolderView2(view);
+    if (!fv2) {
         view->Release();
         return;
     }
@@ -690,7 +692,6 @@ void ShellView::DiagnosePreviewPaneState() {
     const HRESULT hsf = fv2->GetFolder(IID_IShellFolder2, reinterpret_cast<void**>(&sf2));
     LogDbg(L"[late] GetFolder(IShellFolder2) hr=0x%08X", static_cast<unsigned long>(hsf));
     if (FAILED(hsf) || !sf2) {
-        fv2->Release();
         view->Release();
         return;
     }
@@ -797,7 +798,7 @@ void ShellView::DiagnosePreviewPaneState() {
             }
         }
     }
-    view->Release();
+    view->Release();   // fv2 由 ComPtr 自动释放
 }
 #endif  // EXBAR_DIAG_PREVIEW
 

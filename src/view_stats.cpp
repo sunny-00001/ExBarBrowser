@@ -1,5 +1,7 @@
 #include "view_stats.h"
 
+#include "shell_ops.h"
+
 #include <propkey.h>
 
 #include <algorithm>
@@ -96,9 +98,10 @@ bool CollectViewStats(IShellView* view, ViewStats* out, SplitCache* cache) {
     if (!view || !out) return false;
     *out = ViewStats{};
 
-    ComPtr<IFolderView2> fv2;
-    if (FAILED(view->QueryInterface(IID_IFolderView2, reinterpret_cast<void**>(&fv2))) || !fv2)
-        return false;
+    ComPtr<IFolderView2> fv2 = shellops::FolderView2(view);
+
+
+    if (!fv2) return false;
 
     int total = 0;
     if (SUCCEEDED(fv2->ItemCount(SVGIO_ALLVIEW, &total)) && total > 0)
@@ -264,9 +267,9 @@ bool CollectViewStats(IShellView* view, ViewStats* out, SplitCache* cache) {
 std::vector<std::wstring> SelectedPaths(IShellView* view, size_t max) {
     std::vector<std::wstring> out;
     if (!view) return out;
-    ComPtr<IFolderView2> fv2;
-    if (FAILED(view->QueryInterface(IID_IFolderView2, reinterpret_cast<void**>(&fv2))) || !fv2)
-        return out;
+    ComPtr<IFolderView2> fv2 = shellops::FolderView2(view);
+
+    if (!fv2) return out;
     ComPtr<IShellItemArray> sel;
     if (FAILED(fv2->GetSelection(FALSE, &sel)) || !sel) return out;
     DWORD n = 0;
@@ -282,9 +285,9 @@ std::vector<std::wstring> SelectedPaths(IShellView* view, size_t max) {
 
 std::wstring ViewFolderPath(IShellView* view) {
     if (!view) return std::wstring();
-    ComPtr<IFolderView2> fv2;
-    if (FAILED(view->QueryInterface(IID_IFolderView2, reinterpret_cast<void**>(&fv2))) || !fv2)
-        return std::wstring();
+    ComPtr<IFolderView2> fv2 = shellops::FolderView2(view);
+
+    if (!fv2) return std::wstring();
     ComPtr<IShellItem2> folder2;
     if (FAILED(fv2->GetFolder(IID_IShellItem2, reinterpret_cast<void**>(&folder2))) || !folder2)
         return std::wstring();

@@ -7,19 +7,25 @@
 #include "view_stats.h"
 
 namespace shellops {
-namespace {
 
-ComPtr<IFolderView2> GetFv2(IShellView* view) {
+ComPtr<IFolderView2> FolderView2(IShellView* view) {
     ComPtr<IFolderView2> fv2;
+    // ComPtr::operator& 会先 Reset，所以这里传 &fv2 不会泄漏既有引用。
     if (view) view->QueryInterface(IID_IFolderView2, reinterpret_cast<void**>(&fv2));
     return fv2;
 }
 
-ComPtr<IShellFolder> GetFolder(IFolderView2* fv2) {
+ComPtr<IShellFolder> ShellFolder(IFolderView2* fv2) {
     ComPtr<IShellFolder> folder;
     if (fv2) fv2->GetFolder(IID_IShellFolder, reinterpret_cast<void**>(&folder));
     return folder;
 }
+namespace {
+
+// 实现在本文件的公开区（见下方 FolderView2 / ShellFolder）；这里只放别名，
+// 让本文件内既有调用点零改动。
+ComPtr<IFolderView2> GetFv2(IShellView* view) { return FolderView2(view); }
+ComPtr<IShellFolder> GetFolder(IFolderView2* fv2) { return ShellFolder(fv2); }
 
 bool Invoke(IContextMenu* cm, HWND owner, const char* verb) {
     if (!cm) return false;

@@ -115,4 +115,19 @@ bool SetGroup(IShellView* view, int mode);  // 0 无 1 类型 2 日期 3 大小
 bool ToggleHidden(IShellView* view, int which, HWND owner);  // which: 0 hidden 1 system 2 ext
 int CycleHiddenState(IShellView* view, HWND owner);          // 返回新状态 0/1/2
 
+// ---- 取接口（唯一实现）----
+//
+// `IShellView*` 拿到手之后，几乎每处都要 QI 一次 IFolderView2 / IShellFolder。
+// 以前这个模板函数只在 shell_ops.cpp 的匿名命名空间里，外部拿不到，于是
+// shell_view.cpp（3 处）与 view_stats.cpp（3 处）各自手写同一段 QI + 判空。
+//
+// 之所以对外暴露而不是各写一份：QI 有个容易写错的细节 ——
+// `ComPtr::operator&` 会先 Reset 再返回地址，所以 `QueryInterface(..., &fv2)`
+// 是安全的；但手写成 `reinterpret_cast<void**>(&fv2)` 时**不会** Reset，
+// 若 fv2 非空就直接泄漏。把 QI 收进一个函数，这个坑只需要在一个地方处理。
+//
+// 失败返回空 ComPtr（不是 nullptr 裸指针），调用方用 `if (!fv2)` 判断即可。
+ComPtr<IFolderView2> FolderView2(IShellView* view);
+ComPtr<IShellFolder> ShellFolder(IFolderView2* fv2);
+
 }  // namespace shellops

@@ -171,6 +171,16 @@ UNIQUE = [
     dict(name="视图档位表", pat=r"\{FVM_THUMBNAIL,\s*256,",
          allow={"view_modes.h"},
          why="唯一来源是 view_modes.h 的 viewmode::kModes；下标是命令 arg 契约，不能有第二份"),
+
+    # ---- 取视图接口（2026-11-20 收编）----
+    # `IShellView*` → `IFolderView2` 的 QI 模板以前只在 shell_ops.cpp 的匿名
+    # 命名空间里，外部拿不到，于是 shell_view.cpp / view_stats.cpp 各自手写。
+    # 手写版本有个坑：`reinterpret_cast<void**>(&fv2)` **不会**走 ComPtr 的
+    # operator&（那个会先 Reset），fv2 非空时直接泄漏。
+    dict(name="取 IFolderView2", pat=r"QueryInterface\(IID_IFolderView2",
+         allow={"shell_ops.cpp"},
+         why="统一用 shellops::FolderView2(view) / ShellFolder(fv2)；"
+             "手写 QI 容易漏掉 ComPtr 的 Reset 语义而造成引用泄漏"),
 ]
 
 # ---------------------------------------------------------------------------
