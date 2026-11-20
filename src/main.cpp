@@ -5,6 +5,7 @@
 //   · 视图用 IExplorerBrowser 在本进程内托管真实 Shell 视图；
 //   · 再次"打开文件夹"时不新起进程，而是把路径转发给已存在的窗口开新标签。
 #include "app.h"
+#include "str.h"
 
 namespace {
 
@@ -45,7 +46,7 @@ std::wstring InitialPath() {
         for (int i = 1; i < argc; ++i) {
             std::wstring a = argv[i];
             if (a.empty()) continue;
-            if (_wcsicmp(a.c_str(), L"/select") == 0 && i + 1 < argc) {
+            if (str::IEquals(a.c_str(), L"/select") && i + 1 < argc) {
                 const std::wstring full = NormalizePath(StripQuotes(argv[++i]));
                 // 盘根/UNC 根没有父级：直接打开它自己（以前会退化成"打开主目录"）
                 path = ParentOf(full);

@@ -1,4 +1,5 @@
 #include "bookmark_bar.h"
+#include "str.h"
 
 #include "platform_win.h"
 
@@ -7,6 +8,7 @@
 #include "clipboard.h"
 #include "commands.h"
 #include "config.h"
+#include "folder_tree.h"
 #include "ui_draw.h"
 #include "icon_resolve.h"
 #include "mouse_rules.h"
@@ -115,9 +117,10 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     case WM_MOUSELEAVE:
         tracking_ = false;
-        if (hover_ >= 0 || hotOvf_) {
+        if (hover_ >= 0 || hotOvf_ || hoverIcon_ >= 0) {
             hover_ = -1;
             hotOvf_ = false;
+            hoverIcon_ = -1;
             InvalidateRect(h, nullptr, FALSE);
         }
         return 0;
@@ -147,13 +150,16 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
             dragArm_ = false;
             return 0;
         }
-        // 鼠标规则未接管：左键按下可见项 → 准备拖动重排（超阈值才算拖）
-        dragArm_ = idx >= 0;
+        // 鼠标规则未接管：左键按下可见项 → 准备拖动重排（超阈值才算拖）。
+        // 图标格例外：那里是"列子目录"的独立动作，按下不预备拖动 ——
+        // 否则在图标上稍微一拖就变成重排书签，与点击语义打架。
+        const bool onIcon = idx >= 0 && HitIcon(x, y) == idx;
+        dragArm_ = idx >= 0 && !onIcon;
         dragIdx_ = idx;
         dragStart_ = {x, y};
         dropIdx_ = idx;
         dragging_ = false;
-        if (idx >= 0) SetCapture(h);
+        if (dragArm_) SetCapture(h);
         return 0;
     }
     case WM_MOUSEMOVE: {
@@ -203,6 +209,12 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         // UP 必须尊重 sink 的返回值：鼠标规则接管（"none"/命令）之后不能再执行默认导航。
         // 原来只调不判，规则命中时同一次点击会既跑命令又导航（双重触发）。
         if (sink_ && sink_(target, m, MBTN_LEFT, CurrentMods(), pt)) return 0;
+        if (idx >= 0 && HitIcon(x, y) == idx) {
+            // 图标格：与地址栏分隔符同一个动作 —— 列这一级的子目录，可就地逐级展开。
+            // 分类项同样适用（分类绑了路径就列那个路径的子目录，没路径退回分类菜单）。
+            ShowChildTree(idx);
+            return 0;
+        }
         if (idx >= 0) {
             if (items_[static_cast<size_t>(idx)].folder)
                 ShowFolderMenu(idx, pt);
@@ -265,7 +277,9 @@ void BookmarkBar::Layout() {
 
     const int margin = theme_->S(6);
     const int padX = theme_->S(2);
-    const int iconW = theme_->S(16);
+    // 图标格宽必须与 Paint 里画图标的槽完全一致，否则文字会整体错位一格 ——
+    // 两处都取同一个令牌，不再各写一个 S(16)。
+    const int iconW = theme_->iconSmall();
     const int gap = theme_->S(6);
     const int ovfW = theme_->S(24);
     const int avail = rc.right - margin * 2;
@@ -288,9 +302,14 @@ void BookmarkBar::Layout() {
     for (size_t i = 0; i < items_.size(); ++i) {
         if (x + widths[i] > viewRight) {
             items_[i].rc = RECT{0, 0, 0, 0};
+            items_[i].iconRc = RECT{0, 0, 0, 0};
             continue;
         }
         items_[i].rc = RECT{x, theme_->S(2), x + widths[i], rc.bottom - theme_->S(2)};
+        // 图标命中区与 Paint 里画图标的槽完全重合（左侧 padX 起、iconW 宽）。
+        // 只有这一格内是"列子目录"，右侧文字区仍是打开/分类菜单。
+        items_[i].iconRc = RECT{items_[i].rc.left + padX, items_[i].rc.top,
+                                items_[i].rc.left + padX + iconW, items_[i].rc.bottom};
         x += widths[i] + theme_->S(1);
     }
     ovfRc_ = overflow_ ? RECT{rc.right - margin - ovfW, theme_->S(2), rc.right - margin,
@@ -319,12 +338,20 @@ void BookmarkBar::Paint(HWND h) {
         HGDIOBJ oldFont = SelectObject(mem, theme_->font);
 
         const int padX = theme_->S(2);
-        const int iconPx = theme_->S(16);
+        // 与 Layout 的 iconW 同一令牌（见那里的注释）
+        const int iconPx = theme_->iconSmall();
         for (size_t i = 0; i < items_.size(); ++i) {
             const Item& it = items_[i];
             if (it.rc.right <= it.rc.left) continue;
             const bool draggingThis = dragging_ && dragIdx_ == static_cast<int>(i);
             if (hover_ == static_cast<int>(i) && !draggingThis) FillRect(mem, &it.rc, theme_->brHover);
+            // 图标格单独高亮：它是"列子目录"的按钮（等价面包屑分隔符），
+            // 与右侧文字区（导航/分类菜单）是两个动作，需让用户看出边界。
+            if (hoverIcon_ == static_cast<int>(i) && !draggingThis) {
+                RECT ir = it.iconRc;
+                InflateRect(&ir, theme_->S(1), 0);
+                ui::FillRound(mem, ir, theme_->pressed, theme_->radiusBtn());
+            }
             int x = it.rc.left + padX;
             if (it.icon) {
                 RECT ir{x, it.rc.top, x + iconPx, it.rc.bottom};
@@ -340,14 +367,14 @@ void BookmarkBar::Paint(HWND h) {
                 // 而不是自绘折线（DPI 下尺寸写死、深色下也不跟随文字色）。
                 RECT cr{it.rc.right - padX - theme_->S(14), it.rc.top,
                         it.rc.right - padX - theme_->S(2), it.rc.bottom};
-                ui::DrawChevron(mem, (cr.left + cr.right) / 2, (cr.top + cr.bottom) / 2, theme_->S(9),
-                                theme_->sub, 1);
+                ui::DrawChevron(mem, (cr.left + cr.right) / 2, (cr.top + cr.bottom) / 2,
+                                theme_->iconChevron(), theme_->sub, 1);
             }
         }
 
         if (overflow_) {
             if (hotOvf_) FillRect(mem, &ovfRc_, theme_->brHover);
-            ui::DrawGlyph(mem, ico::IconId::More, ovfRc_, theme_->S(11), theme_->sub);  // More：与标签栏的下箭头区分
+            ui::DrawGlyph(mem, ico::IconId::More, ovfRc_, theme_->iconGlyph(), theme_->sub);  // More：与标签栏的下箭头区分
         }
 
         if (dragging_ && dropIdx_ >= 0 && dropIdx_ <= static_cast<int>(items_.size())) {
@@ -377,9 +404,11 @@ void BookmarkBar::Paint(HWND h) {
 void BookmarkBar::UpdateHover(HWND h, int x, int y) {
     int idx = HitItem(x, y);
     bool ovf = HitOverflow(x, y);
-    if (idx != hover_ || ovf != hotOvf_) {
+    int iconIdx = (idx >= 0 && HitIcon(x, y) == idx) ? idx : -1;
+    if (idx != hover_ || ovf != hotOvf_ || iconIdx != hoverIcon_) {
         hover_ = idx;
         hotOvf_ = ovf;
+        hoverIcon_ = iconIdx;
         InvalidateRect(h, nullptr, FALSE);
     }
 }
@@ -389,6 +418,15 @@ int BookmarkBar::HitItem(int x, int y) const {
     for (size_t i = 0; i < items_.size(); ++i) {
         if (items_[i].rc.right <= items_[i].rc.left) continue;
         if (PtInRect(&items_[i].rc, pt)) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+int BookmarkBar::HitIcon(int x, int y) const {
+    POINT pt{x, y};
+    for (size_t i = 0; i < items_.size(); ++i) {
+        if (items_[i].iconRc.right <= items_[i].iconRc.left) continue;
+        if (PtInRect(&items_[i].iconRc, pt)) return static_cast<int>(i);
     }
     return -1;
 }
@@ -442,6 +480,40 @@ void BookmarkBar::Navigate(int index) {
     if (index < 0 || index >= static_cast<int>(items_.size())) return;
     const std::wstring& p = items_[static_cast<size_t>(index)].path;
     if (!p.empty() && onNavigate_) onNavigate_(p);
+}
+
+void BookmarkBar::ShowChildTree(int index) {
+    if (index < 0 || index >= static_cast<int>(items_.size())) return;
+    const Item& it = items_[static_cast<size_t>(index)];
+
+    // 锚点 = 图标格底边（不是鼠标点），与面包屑下拉"对齐到 chevron 区"同口径，
+    // 否则菜单会随鼠标在图标格里的位置上下漂。
+    POINT at{it.iconRc.left, it.rc.bottom};
+    ClientToScreen(hwnd_, &at);
+
+    // 纯分类节点没有路径（只装子书签）→ 没有文件系统子目录可列，
+    // 退回原有的"列分类内容"下拉，避免点了图标什么都不发生。
+    if (it.path.empty()) {
+        ShowFolderMenu(index, at);
+        return;
+    }
+
+    // 与地址栏分隔符同一份实现：顶层 = 该路径的直接子文件夹，子节点懒加载、就地展开。
+    std::vector<TreeNode> top = folder_tree::Children(it.path);
+    if (top.empty()) {
+        // 没有子目录：空目录直接进去（与 mod 的 ShowFsMenuForPath 同口径 ——
+        // 弹一个空菜单等于点了没反应）。文件类书签保持原行为，不动作。
+        const DWORD attr = GetFileAttributesW(it.path.c_str());
+        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) && onNavigate_)
+            onNavigate_(it.path);
+        return;
+    }
+    std::wstring picked = folder_tree::Show(hwnd_, *theme_, at, std::move(top));
+
+    // 弹层是模态的，回来时"光标下高亮"已经不成立，清掉避免残留
+    hoverIcon_ = -1;
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+    if (!picked.empty() && onNavigate_) onNavigate_(picked);
 }
 
 void BookmarkBar::ShowFolderMenu(int index, POINT screen) {
@@ -629,7 +701,7 @@ void BookmarkBar::ShowEmptyMenu(POINT screen) {
         std::sort(store.roots().begin(), store.roots().end(),
                   [](const BookmarkNode& a, const BookmarkNode& b) {
                       if (a.isFolder != b.isFolder) return a.isFolder;
-                      return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
+                      return str::ICmp(a.name, b.name) < 0;
                   });
         store.MarkDirty();
         store.Save();

@@ -3,6 +3,7 @@
 // 只管"模型 + 视图"的成对变化：core::TabSet 记顺序/锁定，App::tabs_ 持视图与历史；
 // 画与命中全在 TabStrip，本文件不碰 GDI。改这里只有一个理由：标签怎么开、关、切。
 #include "app.h"
+#include "str.h"
 
 // ---------------------------------------------------------------- 标签
 int App::NewTab(const std::wstring& path, int index) {
@@ -35,7 +36,7 @@ int App::NewTab(const std::wstring& path, int index) {
     tabs_[id] = std::move(tab);
 
     for (const auto& locked : Config::Get().s().lockedPaths)
-        if (_wcsicmp(locked.c_str(), initial.c_str()) == 0) tabSet_.SetLocked(id, true);
+        if (str::IEquals(locked, initial)) tabSet_.SetLocked(id, true);
 
     // 新标签套用持久化的视图偏好（模式/排序/分组/窗格），而不是每次回到默认。
     // 必须等首个视图就绪后再调：Create() 内部的首个导航可能还没产出 IShellView。
@@ -48,7 +49,7 @@ int App::NewTab(const std::wstring& path, int index) {
 
 int App::NewTabIndex() const {
     const std::wstring& pos = Config::Get().s().tabNewPos;
-    if (_wcsicmp(pos.c_str(), L"end") == 0) return tabSet_.Count();
+    if (str::IEquals(pos.c_str(), L"end")) return tabSet_.Count();
     return ActiveIndex() + 1;
 }
 

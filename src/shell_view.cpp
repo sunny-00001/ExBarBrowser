@@ -1,4 +1,5 @@
 #include "shell_view.h"
+#include "str.h"
 
 #include "config.h"
 #include "platform_win.h"
@@ -700,7 +701,7 @@ void ShellView::DiagnosePreviewPaneState() {
         if (FAILED(sf2->GetDetailsOf(nullptr, c, &sd))) continue;
         wchar_t buf[128] = L"";
         if (SUCCEEDED(StrRetToBufW(&sd.str, nullptr, buf, _countof(buf))) &&
-            (_wcsicmp(buf, L"大小") == 0 || _wcsicmp(buf, L"Size") == 0)) {
+            (str::IEquals(buf, L"大小") || str::IEquals(buf, L"Size"))) {
             sizeCol = c;
             LogDbg(L"[late] Size column index=%d", c);
             break;
@@ -829,7 +830,7 @@ namespace {
 BOOL CALLBACK FindTreeProc(HWND h, LPARAM p) {
     wchar_t cls[64] = L"";
     GetClassNameW(h, cls, 64);
-    if (_wcsicmp(cls, L"NamespaceTreeControl") == 0) {
+    if (str::IEquals(cls, L"NamespaceTreeControl")) {
         *reinterpret_cast<HWND*>(p) = h;
         return FALSE;
     }

@@ -1,7 +1,9 @@
 // 导航栏的交互动作：地址编辑 / Tab 补全 / 自绘下拉菜单
 // （从 nav_bar.cpp 拆出，保持单文件 <=500 行）
 #include "nav_bar.h"
+#include "str.h"
 
+#include "folder_tree.h"
 #include "icon_resolve.h"
 #include "popup_list.h"
 
@@ -19,18 +21,6 @@ void FreeRows(std::vector<PopupRow>& rows) {
     for (auto& r : rows)
         if (r.icon) DestroyIcon(r.icon);
     rows.clear();
-}
-
-// 树节点懒加载：枚举 folder 的直接子文件夹，构造 TreeNode。
-// icon 的所有权随 TreeNode 移交给弹层，由 ShowFolderTree 统一销毁。
-static std::vector<TreeNode> ChildTreeNodes(const std::wstring& folder) {
-    std::vector<TreeNode> out;
-    std::vector<std::pair<std::wstring, std::wstring>> kids;
-    if (!NavModel::ChildFolders(folder, kids)) return out;
-    out.reserve(kids.size());
-    for (const auto& kv : kids)
-        out.push_back({kv.first, kv.second, IconFor(kv.second), 0, -1, {}, true, false, false});
-    return out;
 }
 
 struct ViewMode {
@@ -114,7 +104,7 @@ bool NavBar::DoComplete() {
         std::vector<std::pair<std::wstring, std::wstring>> kids;
         NavModel::ChildFolders(parent, kids);
         for (const auto& kv : kids) {
-            if (prefix.empty() || _wcsnicmp(kv.first.c_str(), prefix.c_str(), prefix.size()) == 0)
+            if (prefix.empty() || str::IStartsWith(kv.first, prefix))
                 tabMatches_.push_back(kv.first);
         }
         if (tabMatches_.empty()) return false;
@@ -146,7 +136,8 @@ void NavBar::ShowChildMenu(int partIndex, POINT screen) {
     if (target.empty()) return;
 
     // 顶层 = 该段的直接子文件夹；子节点由弹层按需懒加载、就地内联展开
-    std::vector<TreeNode> top = ChildTreeNodes(target);
+    // （枚举与展开都走 folder_tree，与书签栏图标点击同一份实现）
+    std::vector<TreeNode> top = folder_tree::Children(target);
     if (top.empty()) return;
 
     // 对齐到该段的 chevron 区（不是鼠标点），否则菜单会"飘"在鼠标位置
@@ -163,7 +154,7 @@ void NavBar::ShowChildMenu(int partIndex, POINT screen) {
     }
     // 点击 folder 行 chevron 内联展开子树（与 exbar.cpp treeMode 一致），
     // 而不是向右弹出新菜单；整棵树的 icon 由 ShowFolderTree 统一销毁。
-    std::wstring picked = ShowFolderTree(hwnd_, *theme_, at, std::move(top), ChildTreeNodes);
+    std::wstring picked = folder_tree::Show(hwnd_, *theme_, at, std::move(top));
     // 与 mod 28756-28758 一致：恢复 › 的同时清掉悬停态，避免光标下高亮残留
     openChev_ = -1;
     hotChev_ = -1;
@@ -185,14 +176,14 @@ void NavBar::ShowFoldMenu(POINT screen) {
                            0, -1, {}, true, false, false});
     } else {
         // 没折叠时这个钮给"此电脑"的顶层（驱动器/用户文件夹），与 mod 一致
-        top = ChildTreeNodes(nav::kThisPc);
+        top = folder_tree::Children(nav::kThisPc);
     }
     if (top.empty()) return;
 
     POINT at{moreRc_.left, fieldRc_.bottom};
     ClientToScreen(hwnd_, &at);
     // 折叠菜单同样走内联树：点 chevron 就地展开，整棵树 icon 由弹层销毁
-    std::wstring picked = ShowFolderTree(hwnd_, *theme_, at, std::move(top), ChildTreeNodes);
+    std::wstring picked = folder_tree::Show(hwnd_, *theme_, at, std::move(top));
     if (!picked.empty() && onNavigate_) onNavigate_(picked);
 }
 
@@ -244,7 +235,7 @@ void NavBar::ShowDropMenu(POINT screen) {
             if (n >= 12) break;
             bool dup = false;
             for (const auto& r : rows)
-                if (!r.separator && _wcsicmp(r.path.c_str(), p.c_str()) == 0) { dup = true; break; }
+                if (!r.separator && str::IEquals(r.path, p)) { dup = true; break; }
             if (!dup) {
                 rows.push_back({p, p, IconFor(p), false, false, false, 2000 + n});
                 ++n;

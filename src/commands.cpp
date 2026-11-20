@@ -196,13 +196,13 @@ const CommandDef* FindCommand(const std::wstring& name) {
     // 而 d.name 将来会从旧名迁到点分名 —— 迁移期间三种组合都会出现。所以这里对
     // **任何输入**都试三条路，与 d.name 用哪种写法无关。
     for (const auto& d : kTable)
-        if (_wcsicmp(d.name, name.c_str()) == 0) return &d;
+        if (str::IEquals(d.name, name.c_str())) return &d;
 
     // 输入是旧名 → 换成点分名再匹配（d.name 已是点分名的情形）
     const std::wstring dotted = cmdnaming::AliasOf(name);
     if (!dotted.empty()) {
         for (const auto& d : kTable)
-            if (_wcsicmp(d.name, dotted.c_str()) == 0) return &d;
+            if (str::IEquals(d.name, dotted.c_str())) return &d;
     }
 
     // 输入是点分名 → 换成旧名再匹配（d.name 仍是旧名的情形，即当前主流）
@@ -210,7 +210,7 @@ const CommandDef* FindCommand(const std::wstring& name) {
         const std::wstring legacy = cmdnaming::LegacyOf(name);
         if (!legacy.empty()) {
             for (const auto& d : kTable)
-                if (_wcsicmp(d.name, legacy.c_str()) == 0) return &d;
+                if (str::IEquals(d.name, legacy.c_str())) return &d;
         }
     }
     return nullptr;
@@ -293,7 +293,7 @@ Args ArgsFromLegacyArg(const CommandDef& def, const std::wstring& legacyArg) {
     if (type == L"integer" || type == L"number") {
         out.Set(key, json::Value::MakeInt(_wtoi(legacyArg.c_str())));
     } else if (type == L"boolean") {
-        out.Set(key, json::Value::MakeBool(legacyArg == L"1" || _wcsicmp(legacyArg.c_str(), L"true") == 0));
+        out.Set(key, json::Value::MakeBool(legacyArg == L"1" || str::IEquals(legacyArg.c_str(), L"true")));
     } else {
         out.Set(key, json::Value::MakeStr(legacyArg));
     }

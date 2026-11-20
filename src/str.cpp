@@ -23,6 +23,8 @@ int ICmp(const std::wstring& a, const std::wstring& b) {
     return _wcsicmp(a.c_str(), b.c_str());
 }
 
+int ICmp(const wchar_t* a, const wchar_t* b) { return _wcsicmp(a, b); }
+
 bool IStartsWith(const std::wstring& s, const std::wstring& prefix) {
     if (prefix.size() > s.size()) return false;
     return _wcsnicmp(s.c_str(), prefix.c_str(), prefix.size()) == 0;

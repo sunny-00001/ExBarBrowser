@@ -1,6 +1,7 @@
 #include "mouse_rules.h"
 
 #include "common.h"
+#include "str.h"
 #include "json.h"
 #include "text_file.h"
 
@@ -41,7 +42,7 @@ const NameMap kTriggers[] = {
 
 const NameMap* FindName(const NameMap* table, size_t n, const std::wstring& name) {
     for (size_t i = 0; i < n; ++i)
-        if (_wcsicmp(table[i].name, name.c_str()) == 0) return &table[i];
+        if (str::IEquals(table[i].name, name.c_str())) return &table[i];
     return nullptr;
 }
 

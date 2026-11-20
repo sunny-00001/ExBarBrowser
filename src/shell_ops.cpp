@@ -1,4 +1,5 @@
 #include "shell_ops.h"
+#include "str.h"
 
 #include <propkey.h>
 
@@ -329,7 +330,7 @@ std::wstring LocalizedNewTextName() {
                 out2[0])
                 return out2;
         }
-        if (_wcsicmp(doc, L"txtfile") == 0) return L"新建文本文档";
+        if (str::IEquals(doc, L"txtfile")) return L"新建文本文档";
     }
     return L"新建文本文档";
 }

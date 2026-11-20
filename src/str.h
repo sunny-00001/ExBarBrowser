@@ -19,6 +19,12 @@ std::wstring Lower(std::wstring s);
 int ICmp(const std::wstring& a, const std::wstring& b);
 inline bool IEquals(const std::wstring& a, const std::wstring& b) { return ICmp(a, b) == 0; }
 
+// 裸指针重载：Win32 里到处是 `const wchar_t*`（类名、注册表值名、命令行参数），
+// 调用方不该为了比较而临时构造 std::wstring（每次都是一次堆分配）。
+// 这两个是本文件对外唯一的"大小写不敏感"入口 —— 不要再直接写 _wcsicmp。
+int ICmp(const wchar_t* a, const wchar_t* b);
+inline bool IEquals(const wchar_t* a, const wchar_t* b) { return ICmp(a, b) == 0; }
+
 // 前缀判断（大小写不敏感）—— 路径/命令名匹配用
 bool IStartsWith(const std::wstring& s, const std::wstring& prefix);
 

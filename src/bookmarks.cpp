@@ -1,6 +1,7 @@
 #include "bookmarks.h"
 
 #include "common.h"
+#include "str.h"
 #include "config.h"
 #include "text_file.h"
 
@@ -234,7 +235,7 @@ bool RemoveIn(BookmarkList& list, const std::wstring& id) {
 
 bool ContainsIn(const BookmarkList& list, const std::wstring& path) {
     for (const auto& n : list) {
-        if (!n.isFolder && _wcsicmp(n.path.c_str(), path.c_str()) == 0) return true;
+        if (!n.isFolder && str::IEquals(n.path, path)) return true;
         if (ContainsIn(n.children, path)) return true;
     }
     return false;

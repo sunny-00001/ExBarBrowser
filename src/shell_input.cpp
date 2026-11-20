@@ -1,4 +1,5 @@
 #include "shell_input.h"
+#include "str.h"
 
 #include "mouse_rules.h"
 
@@ -44,7 +45,7 @@ LRESULT CALLBACK ShellSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 bool ClassIs(HWND h, const wchar_t* name) {
     wchar_t cls[64] = L"";
     if (!h || !GetClassNameW(h, cls, _countof(cls))) return false;
-    return _wcsicmp(cls, name) == 0;
+    return str::IEquals(cls, name);
 }
 
 HWND FindAncestorClass(HWND h, const wchar_t* name, int limit = 16) {
@@ -247,14 +248,14 @@ int DetectViaUia(HWND hWnd, POINT screen, const std::wstring& dir, std::wstring*
         BStr cls;
         if (SUCCEEDED(cur->get_CurrentClassName(cls.Out()))) {
             const wchar_t* c = cls.Str();
-            if (_wcsicmp(c, L"UIGroupItem") == 0) sawGroup = true;
-            else if (_wcsicmp(c, L"UIItemsView") == 0) sawItemsView = true;
-            else if (_wcsicmp(c, L"BreadcrumbBar") == 0 ||
-                     _wcsicmp(c, L"AddressBar") == 0) sawAddress = true;
-            else if (_wcsicmp(c, L"SearchBox") == 0 ||
-                     _wcsicmp(c, L"SearchEditBox") == 0) sawSearch = true;
-            else if (_wcsicmp(c, L"CommandBar") == 0 ||
-                     _wcsicmp(c, L"ToolbarWindow32") == 0) sawToolbar = true;
+            if (str::IEquals(c, L"UIGroupItem")) sawGroup = true;
+            else if (str::IEquals(c, L"UIItemsView")) sawItemsView = true;
+            else if (str::IEquals(c, L"BreadcrumbBar") ||
+                     str::IEquals(c, L"AddressBar")) sawAddress = true;
+            else if (str::IEquals(c, L"SearchBox") ||
+                     str::IEquals(c, L"SearchEditBox")) sawSearch = true;
+            else if (str::IEquals(c, L"CommandBar") ||
+                     str::IEquals(c, L"ToolbarWindow32")) sawToolbar = true;
             if (sawAddress || sawSearch || sawToolbar) break;
         }
 
@@ -490,8 +491,8 @@ int DetectTarget(HWND hWnd, POINT screen, const std::wstring& dir, std::wstring*
 
     wchar_t cls[64] = L"";
     if (GetClassNameW(hWnd, cls, _countof(cls))) {
-        if (_wcsicmp(cls, L"SysTreeView32") == 0) return MT_TREE;
-        if (_wcsicmp(cls, L"SysListView32") == 0)
+        if (str::IEquals(cls, L"SysTreeView32")) return MT_TREE;
+        if (str::IEquals(cls, L"SysListView32"))
             return DetectViaListView(hWnd, screen, dir, name, isFolder);
     }
     return DetectViaUia(hWnd, screen, dir, name, isFolder);

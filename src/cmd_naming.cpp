@@ -9,6 +9,7 @@
 //
 // 少数偏离 group 的例外在注释里说明理由。
 #include "cmd_naming.h"
+#include "str.h"
 
 #include <unordered_map>
 
@@ -218,7 +219,7 @@ std::wstring AliasOf(const std::wstring& legacyName) {
     // 以前这里用 find（区分大小写），而 LegacyOf 用 Lower —— 两个方向不对称，
     // 表现为"nav.back 认、NavBack 认、navback 不认"这种半吊子行为。
     for (const auto& kv : m)
-        if (_wcsicmp(kv.first.c_str(), legacyName.c_str()) == 0) return kv.second;
+        if (str::IEquals(kv.first, legacyName)) return kv.second;
     return std::wstring();
 }
 
@@ -226,7 +227,7 @@ std::wstring LegacyOf(const std::wstring& dottedName) {
     const auto& m = DottedToLegacy();
     // 同样不区分大小写（原先靠 Lower 归一，遇到非 ASCII 或奇怪大小写仍会漏）
     for (const auto& kv : m)
-        if (_wcsicmp(kv.first.c_str(), dottedName.c_str()) == 0) return kv.second;
+        if (str::IEquals(kv.first, dottedName)) return kv.second;
     return std::wstring();
 }
 

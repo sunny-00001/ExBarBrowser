@@ -1,6 +1,7 @@
 #include "keymap.h"
 
 #include "common.h"
+#include "str.h"
 #include "json.h"
 #include "keymap.gen.h"
 #include "text_file.h"
@@ -72,7 +73,7 @@ const Keymap& DefaultKeymap() {
 
 std::wstring SystemKeyFor(const std::wstring& setting) {
     for (const auto& e : kSysKeys)
-        if (_wcsicmp(e.setting, setting.c_str()) == 0) return e.combo;
+        if (str::IEquals(e.setting, setting.c_str())) return e.combo;
     return std::wstring();
 }
 

@@ -1,4 +1,5 @@
 #include "input_router.h"
+#include "str.h"
 
 #include "commands.h"
 #include "config.h"
@@ -217,8 +218,8 @@ bool GlobalWhileEditing(const KeyChord& c) {
 bool InputRouter::HandleKey(WPARAM vk, HWND focus, LPARAM keyInfo) {
     wchar_t focusClass[32] = L"";
     if (focus) GetClassNameW(focus, focusClass, 32);
-    const bool inEdit = _wcsicmp(focusClass, L"EDIT") == 0;
-    const bool inTabStrip = _wcsicmp(focusClass, kTabStripClass) == 0;
+    const bool inEdit = str::IEquals(focusClass, L"EDIT");
+    const bool inTabStrip = str::IEquals(focusClass, kTabStripClass);
     const bool repeat = (keyInfo & (1LL << 30)) != 0;
     if (inEdit && seq_.pending()) Cancel();
 
@@ -469,7 +470,7 @@ std::wstring InputRouter::StatusText() const {
 
 bool InputRouter::SetKeyForCommand(const std::wstring& command, const std::wstring& key) {
     for (const auto& r : rows_) {
-        if (r.isSequence || _wcsicmp(r.command.c_str(), command.c_str()) != 0) continue;
+        if (r.isSequence || !str::IEquals(r.command, command)) continue;
         if (key.empty()) {
             // "清除" = 显式解绑（写哨兵）。不能删覆盖项：删掉之后 BuildBindings 会
             // 回落到 hk.key / SystemKeyFor，用户看到的是"清不掉"。

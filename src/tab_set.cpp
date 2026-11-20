@@ -1,6 +1,21 @@
 #include "tab_set.h"
 
 #include <algorithm>
+#include <cwctype>
+
+namespace {
+
+// 路径比较按大小写不敏感（Windows 路径语义）。这里不用 _wcsicmp：
+// 本文件守 R2（零 Win32，可在任意平台单测），CRT 的 _wcsicmp 是 MSVC 方言；
+// towlower 是标准库，行为一致且足够（只比较相等性）。
+bool IPathEqual(const std::wstring& a, const std::wstring& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (towlower(a[i]) != towlower(b[i])) return false;
+    return true;
+}
+
+}  // namespace
 
 namespace core {
 
@@ -45,6 +60,46 @@ void TabSet::SetLocked(int id, bool locked) {
             t.locked = locked;
             return;
         }
+}
+
+void TabSet::SetAlias(int id, const std::wstring& alias) {
+    for (auto& t : items_)
+        if (t.id == id) {
+            t.alias = alias;
+            return;
+        }
+}
+
+void TabSet::SetColor(int id, int color) {
+    if (color < 0 || color > 7) color = 0;   // 越界=无颜色，不保留非法下标
+    for (auto& t : items_)
+        if (t.id == id) {
+            t.color = color;
+            return;
+        }
+}
+
+// 重复判定按路径（大小写不敏感）：Windows 路径大小写不敏感，
+// 而标签路径来自 Shell 回调，同一目录可能以不同大小写出现两次。
+std::vector<int> TabSet::DuplicatesOf(int id) const {
+    std::vector<int> out;
+    const TabRef* self = Find(id);
+    if (!self || self->path.empty()) return out;
+    for (const auto& t : items_) {
+        if (t.id == id) continue;
+        if (IPathEqual(t.path, self->path)) out.push_back(t.id);
+    }
+    return out;
+}
+
+bool TabSet::HasDuplicates() const {
+    for (size_t i = 0; i < items_.size(); ++i) {
+        if (items_[i].path.empty()) continue;
+        for (size_t k = i + 1; k < items_.size(); ++k) {
+            if (IPathEqual(items_[i].path, items_[k].path)) return true;
+        }
+    }
+    return false;
 }
 
 int TabSet::IndexOf(int id) const {

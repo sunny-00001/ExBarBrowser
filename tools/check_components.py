@@ -43,15 +43,15 @@ UNIQUE = [
          why="统一用 ui::PaintBuffered(hwnd, bg, draw)，不要自己建离屏 DC"),
 
     dict(name="分隔线", pat=r"\bMoveToEx\s*\(",
-         allow={"ui_draw.cpp", "tab_strip_paint.cpp"},
-         why="统一用 ui::DrawSeparator；tab_strip 的 ✕/＋ 是唯一的折线例外"),
+         allow={"ui_draw.cpp"},
+         why="统一用 ui::DrawSeparator；✕/＋ 也是字形（ico::Close / ico::Add）"),
 
     dict(name="实心画刷", pat=r"\bCreateSolidBrush\s*\(",
          allow={"theme.cpp", "ui_draw.cpp"},
          why="画刷由 Theme 持有（brHover/brListSel/...），临时填充用 ui::FillRectColor"),
 
     dict(name="钢笔", pat=r"\bCreatePen\s*\(",
-         allow={"ui_draw.cpp", "tab_strip_paint.cpp"},
+         allow={"ui_draw.cpp"},
          why="统一用 ui::DrawSeparator / ui::DrawChevron"),
 
     dict(name="窗口类注册", pat=r"\bRegisterClassW\s*\(",
@@ -126,6 +126,14 @@ UNIQUE = [
          allow=set(),
          why="eb_ui.* → ui_draw.*；eb_theme.h → ui_palette.h"),
 
+    # ---- 日志入口唯一（R7）----
+    # 曾同时存在 LogDbg（54 处）与 LogLine（31 处），实现逐字相同。两个名字、零语义
+    # 差异，新代码不知道该用哪个。判据放在**头文件**：入口的唯一性就是"对外声明了几个"，
+    # log.cpp 内部的 LogV 是私有辅助，不算入口。
+    dict(name="日志入口唯一", pat=r"^void\s+(?!LogDbg\b)Log\w+\s*\(.*\);",
+         allow=set(), headers_only=True,
+         why="日志唯一入口是 LogDbg（log.h）；头文件里不要再声明同义的第二个名字"),
+
     # ---- 模块入口必须被接线（防"建了入口当装饰"）----
     # 2026-11-20 审查发现 7 个入口零调用：MeasureText / CreateChild / CreatePopup /
     # ThemeControl / FontPx / Scale / IconSize / GlyphFace / IconGlyph / IconIdFromName。
@@ -137,6 +145,23 @@ UNIQUE = [
     dict(name="控件主题套用", pat=r"\bSetWindowTheme\s*\(",
          allow={"platform_win.cpp", "shell_view.cpp"},
          why="统一用 win::ThemeControl(h, dark)；shell_view 有 DirectUI 例外，见其注释"),
+
+    # ---- 大小写不敏感比较（2026-11-20 收编）----
+    # str.h 从写下那天就有 ICmp / IEquals / IStartsWith，但**零外部调用** ——
+    # 而同一时期 33 处直接写 _wcsicmp/_wcsnicmp，13 个文件各自为政。
+    # 这是"入口建好没人用"的最典型样本：同一个头文件里 Trim/Lower 收编成功了，
+    # 比较函数却从没被用过一次。
+    #
+    # 两条豁免：
+    #   · str.cpp —— 那是唯一实现本体。
+    #   · shell_ops.cpp —— 路径比较必须用 CompareStringOrdinal（ordinal 语义），
+    #     不能用 locale 相关的 _wcsicmp（土耳其语 i/I 会判错）。它已改用 ordinal，
+    #     但注释里提到 _wcsicmp 供后人对照，strip_comments 后不会命中，这里仍留着
+    #     白名单以防将来有人在此文件里误用。
+    dict(name="大小写不敏感比较", pat=r"\b_wcs(?:i|ni)cmp\s*\(",
+         allow={"str.cpp", "shell_ops.cpp"},
+         why="统一用 str::ICmp / str::IEquals / str::IStartsWith（str.h）；"
+             "路径语义要 ordinal 比较时用 CompareStringOrdinal"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -150,8 +175,20 @@ FORBID = [
 
     dict(name="绕过 ui::DrawChevron 自绘箭头",
          pat=r"MoveToEx[^;]*;\s*$",
-         allow={"ui_draw.cpp", "tab_strip_paint.cpp"},
-         why="箭头一律 ui::DrawChevron（字形），折线只在 tab_strip 的 ✕/＋"),
+         allow={"ui_draw.cpp"},
+         why="箭头一律 ui::DrawChevron（字形）；本仓已无折线图标例外"),
+
+    # 图标尺寸必须是令牌，不能是"某个栏自己想画多大"。
+    # 背景：字形表（icon_glyph）管码位、DrawGlyph 管画法，唯独"画多大"没有归属，
+    # 于是 S(9)/S(11)/S(12)/S(14)/S(16) 散在 6 个文件里，同一行三个图标来自三个数字。
+    # 现在统一走 Theme::iconChevron/iconGlyph/iconCompact/iconSmall。
+    # 判据只抓"直接把 S(数字) 交给图标/字形原语"，不动普通布局尺寸（栏高、留白）。
+    dict(name="图标尺寸绕过尺寸令牌",
+         pat=r"(?:DrawGlyph|DrawChevron|DrawIconCentered|DrawIconVCentered|DrawIconFit)"
+             r"\s*\([^;)]*?\bS\s*\(\s*\d+\s*\)",
+         allow=set(),
+         why="图标尺寸一律用 Theme::iconChevron/iconGlyph/iconCompact/iconSmall，"
+             "不要在栏里写 S(裸数字) —— 同一行三个图标各写一个数就是'大小不协调'的成因"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -197,6 +234,24 @@ TOKEN_TABLE = {
     "file": "ui_palette.h",       # 字段声明所在
     "struct": "UiPalette",
     "consumer": "theme.cpp",      # 唯一消费方
+}
+
+# ---------------------------------------------------------------------------
+# 尺寸令牌检查（R6 的延伸）：Theme 的图标尺寸字段必须被 accessor 取用，
+# 且 accessor 必须在业务代码里真的被调用。
+#
+#   为什么单独查这一类：图标尺寸直到 2026-11-20 才第一次被收成令牌，而它此前正是
+#   "7 个裸数字散在 6 个文件"（S(9)/S(11)/S(12)/S(14)/S(16)）的重灾区。令牌化若只
+#   停留在"定义了字段"，下一个人仍旧会写 S(12)。必须同时保证两件事：
+#     ① 每个 icon*96 字段都被 theme.h 里的某个 accessor 读（否则改它不生效）
+#     ② 每个 accessor 在 src/*.cpp 里至少有一处调用（否则是装饰）
+#   判据是文本级的，不追求语义精确 —— 它要挡住的是"加了令牌却没人用"，
+#   而不是"用法不合我意"。真正的分档口径写在 theme.h 那段注释里。
+# ---------------------------------------------------------------------------
+ICON_TOKEN = {
+    "file": "theme.h",
+    "prefix": "icon",      # 字段 iconXxx96 + accessor iconXxx()
+    "suffix": "96",
 }
 
 # 不参与扫描的文件（备份/生成物）
@@ -255,6 +310,9 @@ def scan():
         hits = []
         rx = re.compile(rule["pat"], re.M)
         for name, text in files.items():
+            # headers_only：只在头文件里判（入口 = 对外声明）
+            if rule.get("headers_only") and not name.endswith(".h"):
+                continue
             n = len(rx.findall(text))
             if n:
                 hits.append((name, n))
@@ -295,6 +353,28 @@ def scan():
                                why="色值令牌定义了却没被 Theme 取用 —— 改它不会有任何效果，" +
                                    "下一个改主题的人会误以为在改"),
                           [(TOKEN_TABLE["file"], len(unused))], unused))
+
+    # 尺寸令牌：字段 ↔ accessor ↔ 调用点，三段都要通
+    th = files.get(ICON_TOKEN["file"], "")
+    if th:
+        pre, suf = ICON_TOKEN["prefix"], ICON_TOKEN["suffix"]
+        # ① 字段 iconXxx96 必须在 theme.h 里被某个 `S(iconXxx96)` 读到
+        for field in re.findall(r"\b(" + pre + r"[A-Za-z]\w*" + suf + r")\s*=", th):
+            if not re.search(r"S\s*\(\s*" + field + r"\s*\)", th):
+                fails.append((dict(name=f"图标尺寸字段未被 accessor 读取（{field}）",
+                                   allow={ICON_TOKEN["file"]},
+                                   why="字段加了但没有 accessor 读它 —— 改这个数字不会影响任何绘制"),
+                              [(ICON_TOKEN["file"], 1)]))
+        # ② accessor iconXxx() 必须被业务代码调用（theme.h 内的声明不算）
+        accs = set(re.findall(r"int\s+(" + pre + r"[A-Za-z]\w*)\s*\(\s*\)\s*const", th))
+        for acc in sorted(accs):
+            callers = [n for n, t in files.items()
+                       if n != ICON_TOKEN["file"] and re.search(r"\b" + acc + r"\s*\(\s*\)", t)]
+            if not callers:
+                fails.append((dict(name=f"图标尺寸 accessor 零调用（{acc}）",
+                                   allow=set(),
+                                   why="accessor 建了但没人用 —— 那种图标尺寸还是散在栏里的裸数字"),
+                              [(ICON_TOKEN["file"], 0)]))
 
     return fails, files
 
