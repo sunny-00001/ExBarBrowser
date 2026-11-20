@@ -140,6 +140,16 @@ void ServeLoop() {
         char buf[4096];
         DWORD read = 0;
         while (g_running && ReadFile(g_pipe, buf, sizeof(buf), &read, nullptr) && read > 0) {
+            // 【必须在这里限长，不能只在见到 '\n' 之后判】
+            // 原实现是 acc.append 无条件累积，上限检查放在 `line.size() > kMaxLineBytes`
+            // 那一支 —— 而那一支只有在读到一个换行之后才会执行。客户端只要一直不发 '\n'
+            // （或发一个 1GB 的巨型行），acc 就无界增长，本机任意进程无需令牌即可
+            // 把浏览器内存耗光。这里逐次判断，超限即断连。
+            if (acc.size() + read > kMaxLineBytes) {
+                LogDbg(L"[ai] 单行超过 %zu 字节（已累积 %zu），断开该客户端",
+                       kMaxLineBytes, acc.size() + read);
+                break;
+            }
             acc.append(buf, read);
             size_t nl;
             while ((nl = acc.find('\n')) != std::string::npos) {

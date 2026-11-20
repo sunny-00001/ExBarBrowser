@@ -85,9 +85,22 @@ bool ReadText(const std::wstring& path, std::wstring* out) {
 }
 
 bool WriteText(const std::wstring& path, const std::wstring& text) {
-    // 原子写：先写 <path>.tmp，再 MoveFileEx 替换。避免崩溃/断电留下半截配置。
+    // 原子写：先写 <path>.<pid>.tmp，FlushFileBuffers，再 MoveFileEx 替换。
+    //
+    // 三处都是踩过的坑：
+    // ① **tmp 名必须带 pid**。identity.h 的 kMultiInstanceEnv 故意允许双实例；
+    //    固定 ".tmp" 时 A 与 B 会共用同一个临时文件 —— B 的 CREATE_ALWAYS 截断
+    //    A 正在写的内容，A 的 MoveFileEx 就把 B 的半截数据改名上位。更糟的是
+    //    一方失败后 DeleteFileW(tmp) 会删掉对方正在写的文件。
+    // ② **必须 FlushFileBuffers**。WriteFile 只进系统缓存就改名，NTFS 日志只保证
+    //    元数据顺序；断电后可能出现"文件名已换、内容是 0 字节"。这条链上
+    //    settings.json / bookmarks.html / keymap.json / ai-token.txt 全都要走。
+    // ③ MoveFileEx 加 MOVEFILE_WRITE_THROUGH，让改名本身也落盘。
     std::string bytes = ToUtf8(text);
-    std::wstring tmp = path + L".tmp";
+    wchar_t suffix[32] = L"";
+    swprintf(suffix, 32, L".%lu.tmp", static_cast<unsigned long>(GetCurrentProcessId()));
+    const std::wstring tmp = path + suffix;
+
     HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
@@ -96,12 +109,14 @@ bool WriteText(const std::wstring& path, const std::wstring& text) {
               (WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &written,
                          nullptr) != FALSE &&
                written == bytes.size());  // 短写（磁盘满）=失败，防半截文件被当成功替换
+    if (ok) ok = FlushFileBuffers(h) != FALSE;   // 落盘后再改名，否则断电得到空文件
     CloseHandle(h);
     if (!ok) {
         DeleteFileW(tmp.c_str());
         return false;
     }
-    if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    if (!MoveFileExW(tmp.c_str(), path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         DeleteFileW(tmp.c_str());
         return false;
     }
