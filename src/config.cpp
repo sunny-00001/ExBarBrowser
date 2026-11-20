@@ -7,6 +7,10 @@
 
 namespace {
 
+// 钳到 [lo, hi]。用于"用户可改的数值字段"——超出物理合理范围的值不是错误，
+// 但直接采信会把界面画到看不见的地方。
+int ClampInt(int v, int lo, int hi) { return std::max(lo, std::min(hi, v)); }
+
 std::vector<std::wstring> ReadStringArray(const json::Value& root, const wchar_t* key) {
     std::vector<std::wstring> out;
     const json::Value* a = root.Find(key);
@@ -26,6 +30,41 @@ json::Value MakeIntArray(const std::vector<int>& items) {
     json::Value a = json::Value::MakeArray();
     for (int n : items) a.arr.push_back(json::Value::MakeInt(n));
     return a;
+}
+
+// 标签个性化：数组里每项是 {path, alias, color}。
+// 只写"有内容"的项（alias 或 color 非空），不往配置里塞一堆空对象 ——
+// 否则 settings.json 会随标签数线性膨胀，而绝大多数标签是默认态。
+json::Value MakeTabMeta(const std::vector<TabMeta>& items) {
+    json::Value a = json::Value::MakeArray();
+    for (const auto& m : items) {
+        if (m.path.empty()) continue;
+        if (m.alias.empty() && m.color == 0) continue;
+        json::Value o = json::Value::MakeObject();
+        o.Set(L"path", json::Value::MakeStr(m.path));
+        if (!m.alias.empty()) o.Set(L"alias", json::Value::MakeStr(m.alias));
+        if (m.color != 0) o.Set(L"color", json::Value::MakeInt(m.color));
+        a.arr.push_back(std::move(o));
+    }
+    return a;
+}
+
+std::vector<TabMeta> ReadTabMeta(const json::Value& root) {
+    std::vector<TabMeta> out;
+    const json::Value* a = root.Find(L"tabMeta");
+    if (!a || !a->IsArray()) return out;
+    for (const auto& v : a->arr) {
+        if (!v.IsObject()) continue;
+        TabMeta m;
+        m.path = v.GetStr(L"path");
+        m.alias = v.GetStr(L"alias");
+        m.color = v.GetInt(L"color", 0);
+        // 越界颜色夹回 0：配置被手改成 99 时不该让绘制走空色板。
+        if (m.color < 0 || m.color >= core::kTabColorCount) m.color = 0;
+        if (m.path.empty()) continue;
+        out.push_back(std::move(m));
+    }
+    return out;
 }
 
 }  // namespace
@@ -100,6 +139,7 @@ void Config::Load() {
     s_.seqSingleInstant = root.GetBool(L"seqSingleInstant", s_.seqSingleInstant);
     s_.seqUniqueAuto = root.GetBool(L"seqUniqueAuto", s_.seqUniqueAuto);
     s_.holdDelayMs = root.GetInt(L"holdDelayMs", s_.holdDelayMs);
+    // 两个延时也是用户可改的：低于下限会让按键序列/长按失效，按默认值处理。
     if (s_.seqTimeoutMs < 200) s_.seqTimeoutMs = 3000;
     if (s_.holdDelayMs < 300) s_.holdDelayMs = 800;
 
@@ -124,10 +164,14 @@ void Config::Load() {
     const json::Value* geo = root.Find(L"window");
     if (geo && geo->IsObject()) {
         s_.hasGeometry = geo->GetBool(L"valid", false);
-        s_.winX = geo->GetInt(L"x", s_.winX);
-        s_.winY = geo->GetInt(L"y", s_.winY);
-        s_.winW = geo->GetInt(L"w", s_.winW);
-        s_.winH = geo->GetInt(L"h", s_.winH);
+        // 【必须钳制】配置是用户可改的文本，也可能是别的工具写坏的。
+        // 手写成 "w": 10000000000 时，app.cpp 的 `work.right - w` 会先有符号溢出，
+        // CreateWindowEx 收到负宽高 → 窗口看不见且没有任何报错。
+        // GetInt 已经挡住越界到 int 之外的值（返回默认），这里再挡"合法但荒谬"的范围。
+        s_.winW = ClampInt(geo->GetInt(L"w", s_.winW), 240, 20000);
+        s_.winH = ClampInt(geo->GetInt(L"h", s_.winH), 160, 20000);
+        s_.winX = ClampInt(geo->GetInt(L"x", s_.winX), -32768, 32767);
+        s_.winY = ClampInt(geo->GetInt(L"y", s_.winY), -32768, 32767);
         s_.maximized = geo->GetBool(L"max", false);
     }
 
@@ -135,6 +179,7 @@ void Config::Load() {
     s_.sessionPaths = ReadStringArray(root, L"sessionPaths");
     s_.sessionActive = root.GetInt(L"sessionActive", 0);
     s_.lockedPaths = ReadStringArray(root, L"lockedPaths");
+    s_.tabMeta = ReadTabMeta(root);
     s_.closedTabs = ReadStringArray(root, L"closedTabs");
 
     if (const json::Value* segs = root.Find(L"statusSegs"); segs && segs->IsArray()) {
@@ -197,6 +242,7 @@ void Config::Save() {
     root.Set(L"sessionPaths", MakeStringArray(s_.sessionPaths));
     root.Set(L"sessionActive", json::Value::MakeInt(s_.sessionActive));
     root.Set(L"lockedPaths", MakeStringArray(s_.lockedPaths));
+    root.Set(L"tabMeta", MakeTabMeta(s_.tabMeta));
     root.Set(L"closedTabs", MakeStringArray(s_.closedTabs));
     root.Set(L"statusSegs", MakeIntArray(s_.statusSegs));
 
@@ -233,6 +279,36 @@ void Config::AddRecent(const std::wstring& path) {
 void Config::RememberSession(const std::vector<std::wstring>& paths, int active) {
     s_.sessionPaths = paths;
     s_.sessionActive = active;
+}
+
+void Config::SetTabMeta(const std::wstring& path, const std::wstring& alias, int color) {
+    if (path.empty()) return;
+    if (color < 0 || color >= core::kTabColorCount) color = 0;
+    auto& list = s_.tabMeta;
+    auto it = std::find_if(list.begin(), list.end(),
+                           [&path](const TabMeta& m) { return str::IEquals(m.path, path); });
+    if (alias.empty() && color == 0) {
+        if (it != list.end()) list.erase(it);   // 全部复位 = 不留空项
+        return;
+    }
+    if (it == list.end()) {
+        list.push_back(TabMeta{path, alias, color});
+        return;
+    }
+    it->alias = alias;
+    it->color = color;
+}
+
+void Config::GetTabMeta(const std::wstring& path, std::wstring* alias, int* color) const {
+    if (alias) alias->clear();
+    if (color) *color = 0;
+    if (path.empty()) return;
+    for (const auto& m : s_.tabMeta) {
+        if (!str::IEquals(m.path, path)) continue;
+        if (alias) *alias = m.alias;
+        if (color) *color = m.color;
+        return;
+    }
 }
 
 void Config::SetHotkeyOverride(const std::wstring& setting, const std::wstring& key) {

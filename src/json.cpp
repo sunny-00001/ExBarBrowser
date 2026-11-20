@@ -1,10 +1,31 @@
 #include "json.h"
 
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
 namespace json {
+
+namespace {
+
+// double → int，**避免未定义行为**。
+//
+// 原来直接 `static_cast<int>(v->num)`：当 num 超出 int 范围（配置被手改成
+// `"w": 10000000000`，或其它工具写入异常值），这在 C++ 里是 UB ——
+// 实测 GCC/MSVC 都给出 INT_MIN，然后 INT_MIN 流进窗口尺寸计算，
+// 再做 `work.right - w` 就是又一次有符号溢出，最终 CreateWindowEx 收到负宽高。
+//
+// NaN / inf 同样处理（JSON 语法不允许，但 `1e999` 会解析成 inf）。
+// 越界时返回调用方给的默认值，而不是钳到 INT_MAX —— 钳到极值仍会让窗口
+// 变得不可见，而"当作没写这个键"才是用户能预期的行为。
+int ClampToInt(double d, int def) {
+    if (!std::isfinite(d)) return def;
+    if (d < static_cast<double>(INT_MIN) || d > static_cast<double>(INT_MAX)) return def;
+    return static_cast<int>(d);
+}
+
+}  // namespace
 
 const Value* Value::Find(const wchar_t* key) const {
     if (type != kObject || !key) return nullptr;
@@ -29,7 +50,7 @@ bool Value::GetBool(const wchar_t* key, bool def) const {
 int Value::GetInt(const wchar_t* key, int def) const {
     const Value* v = Find(key);
     if (!v || v->type != kNumber) return def;
-    return static_cast<int>(v->num);
+    return ClampToInt(v->num, def);
 }
 
 void Value::Set(const std::wstring& key, Value v) {
@@ -327,10 +348,20 @@ void Escape(const std::wstring& s, std::wstring& out) {
 
 void Num(double d, std::wstring& out) {
     wchar_t buf[64];
-    if (d == static_cast<double>(static_cast<long long>(d)))
+    // 先判有限性：`1e999` 能解析成 inf（strtod 不报错），而
+    // `static_cast<long long>(inf)` 是 UB。inf/nan 在 JSON 里没有字面量，
+    // 写成 0 是唯一安全选择（写入方本身就不该产生这种值）。
+    if (!std::isfinite(d)) {
+        out += L'0';
+        return;
+    }
+    // 只有确认在 long long 范围内才能转 —— `1e300` 同样越界。
+    if (d >= -9.2233720368547758e18 && d <= 9.2233720368547758e18 &&
+        d == static_cast<double>(static_cast<long long>(d))) {
         swprintf(buf, 64, L"%lld", static_cast<long long>(d));
-    else
+    } else {
         swprintf(buf, 64, L"%.10g", d);
+    }
     out += buf;
 }
 
