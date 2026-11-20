@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <cstring>   // memcpy（BOM 分支按字节拷贝，避免未对齐的 wchar_t 读）
 #include <vector>
 
 #include "str.h"
@@ -37,21 +38,49 @@ bool ReadAllBytes(const std::wstring& path, std::string* out) {
 }
 
 bool ReadText(const std::wstring& path, std::wstring* out) {
+    if (!out) return false;
     std::string bytes;
     if (!ReadAllBytes(path, &bytes)) return false;
-    // UTF-16 LE BOM
-    if (bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0xFF &&
-        static_cast<unsigned char>(bytes[1]) == 0xFE) {
-        size_t chars = (bytes.size() - 2) / 2;
-        out->assign(reinterpret_cast<const wchar_t*>(bytes.data() + 2), chars);
-        return true;
+
+    // BOM 分派：三种都要认。以前只认 UTF-8 与 UTF-16LE，UTF-16BE（FE FF）会掉进
+    // UTF-8 分支变成整篇乱码 —— 而 Windows 记事本的"Unicode big endian"就是它。
+    if (bytes.size() >= 2) {
+        const auto b0 = static_cast<unsigned char>(bytes[0]);
+        const auto b1 = static_cast<unsigned char>(bytes[1]);
+        if (b0 == 0xFF && b1 == 0xFE) {  // UTF-16 LE
+            const size_t chars = (bytes.size() - 2) / 2;
+            out->assign(chars, L'\0');
+            // memcpy 而不是 reinterpret_cast：+2 是奇数偏移时未对齐读在 ARM64 上会崩。
+            if (chars) memcpy(&(*out)[0], bytes.data() + 2, chars * sizeof(wchar_t));
+            return true;
+        }
+        if (b0 == 0xFE && b1 == 0xFF) {  // UTF-16 BE：逐 16 位翻转
+            const size_t chars = (bytes.size() - 2) / 2;
+            out->assign(chars, L'\0');
+            for (size_t i = 0; i < chars; ++i) {
+                const auto hi = static_cast<unsigned char>(bytes[2 + i * 2]);
+                const auto lo = static_cast<unsigned char>(bytes[3 + i * 2]);
+                (*out)[i] = static_cast<wchar_t>((hi << 8) | lo);
+            }
+            return true;
+        }
     }
-    // UTF-8 BOM
+
     size_t skip = 0;
     if (bytes.size() >= 3 && static_cast<unsigned char>(bytes[0]) == 0xEF &&
         static_cast<unsigned char>(bytes[1]) == 0xBB && static_cast<unsigned char>(bytes[2]) == 0xBF)
         skip = 3;
-    *out = FromUtf8(bytes.substr(skip));
+
+    // 严格解码：非法 UTF-8 字节序列直接失败，而不是替换成 U+FFFD。
+    //
+    // 这一步是数据完整性的关键。宽松解码会把 GBK 的"中文"解成 4 个 U+FFFD（实测），
+    // 中文名全变 "????"，调用方毫不知情；配合"加载失败当成空书签"就是永久损坏。
+    // 读用户文件宁可失败（由 BookmarkStore 的护栏拒绝写盘、由调用方提示），
+    // 也不能悄悄改坏它。
+    if (!str::FromUtf8Strict(bytes.substr(skip), out)) {
+        out->clear();
+        return false;
+    }
     return true;
 }
 

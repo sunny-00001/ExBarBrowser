@@ -41,8 +41,9 @@ void App::RegisterTabCommands() {
         return true;
     });
     reg(CmdId::TabClose, [this](const Args&) {
-        CloseTab(activeId_);
-        return true;
+        // 透传真实结果：锁定标签会拒绝关闭，那时不能报 ok=true。
+        // 前置已要求 HasMultipleTabs，所以这里不会走到"关掉最后一个 = 退出程序"。
+        return CloseTab(activeId_);
     });
     reg(CmdId::TabCloseOther, [this](const Args&) {
         CloseOthers(activeId_);
@@ -101,9 +102,18 @@ void App::RegisterTabCommands() {
         return true;
     });
     reg(CmdId::TabActivate, [this](const Args& args) {
-        int idx = args.Int(L"index");
-        if (idx > 0) --idx;  // 允许 1-based
-        if (idx >= 0 && idx < tabSet_.Count()) Activate(tabSet_.IdAt(idx));
+        // index 是 **0 起**的标签序号，与 schema 的 "minimum":0 一致。
+        //
+        // 这里曾有一行 `if (idx > 0) --idx;  // 允许 1-based`，试图同时接受两种口径。
+        // 结果是 0 和 1 都指向第 1 个标签、而最后一个标签用 0 起序号永远够不到
+        // （必须传 tabCount 才能命中）—— 调用方按 schema 传值反而差一格，且
+        // ok=true、审计无异常，属于最难查的"调 A 执行 B"。
+        //
+        // 两种口径不能在一个参数里共存：宁可只认 schema 写的那一种。需要
+        // 1 起语义的调用方用 tab.goto.1..5（它们内部各自减 1），不要污染这个参数。
+        const int idx = args.Int(L"index");
+        if (idx < 0 || idx >= tabSet_.Count()) return false;   // 越界如实报错，不假装成功
+        Activate(tabSet_.IdAt(idx));
         return true;
     });
     reg(CmdId::TabNext, [this](const Args&) {

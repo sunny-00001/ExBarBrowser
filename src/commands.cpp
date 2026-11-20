@@ -14,7 +14,12 @@ namespace {
 const std::vector<CommandDef> kTable = {
     // ---- Tab ----
     {CmdId::TabNew, L"tab.new", L"Tab", L"标签栏", L"新建标签页", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要打开的目录；省略则沿用当前目录\"}},\"additionalProperties\":false}", true, false},
-    {CmdId::TabClose, L"tab.close", L"Tab", L"标签栏", L"关闭标签页", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
+    // 【为什么要求 HasMultipleTabs】关掉最后一个标签 = 关闭程序（CloseTab 里
+    // Count()==0 会 DestroyWindow）。而 win.quit 特意设了 aiExposed=false，
+    // 理由是"退出程序不该由机器替人决定"。如果 tab.close 只要 HasTabs，
+    // AI 就能用 tab.close 达成同一件事，把那条设计整个绕过去。
+    // 单标签时关标签没有"关标签"的意义（等于退出），所以拒绝是语义正确的。
+    {CmdId::TabClose, L"tab.close", L"Tab", L"标签栏", L"关闭标签页", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs, Req::HasMultipleTabs}},
     {CmdId::TabCloseOther, L"tab.close.others", L"Tab", L"标签栏", L"关闭其他标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
     {CmdId::TabCloseLeft, L"tab.close.left", L"Tab", L"标签栏", L"关闭左侧标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
     {CmdId::TabCloseRight, L"tab.close.right", L"Tab", L"标签栏", L"关闭右侧标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},

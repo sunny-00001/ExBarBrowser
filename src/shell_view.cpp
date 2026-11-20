@@ -195,10 +195,23 @@ HRESULT STDMETHODCALLTYPE ShellView::GetPaneState(REFEXPLORERPANE ep,
                                                   EXPLORERPANESTATE* peps) {
     if (!peps) return E_POINTER;
     if (ep == EP_PreviewPane) {
-        // 打开态只给默认值，保留 shell 自带"预览窗格"开关的用户可切换性。
-        // 关闭态必须 EPS_FORCE：否则切目录时 shell 会按每个目录保存的状态重新打开。
-        *peps = previewPaneWanted_ ? (EPS_DEFAULT_ON | EPS_INITIALSTATE)
-                                    : (EPS_DEFAULT_OFF | EPS_INITIALSTATE | EPS_FORCE);
+        // **开与关都必须是 EPS_FORCE**（2026-11-20 修正）。
+        //
+        // 原来是"开给 EPS_DEFAULT_ON（非强制）、关给 EPS_FORCE"，理由是想保留 shell
+        // 自带预览开关的用户可切换性。但这造成了一个静默失效：EPS_DEFAULT_ON 只是
+        // "默认值"，shell 会用**每个目录自己保存的窗格状态**覆盖它 —— 于是配置里
+        // showPreviewPane=true，实际窗格仍然不可见（实测窗格宿主窗口被创建，但
+        // 一直是 0x0、SW_HIDE）。
+        //
+        // 语义上这也说不通：本工程的预览窗格偏好是**每实例**状态（previewPaneWanted_，
+        // 见上面 122 行的注释），由命令 view.toggle.preview 显式控制并写回配置。
+        // 既然用户意图明确，"按目录的历史状态"就不该有权覆盖它。
+        //
+        // 代价：shell 自带的"预览窗格"菜单项不再能单独改变这一项（会被本值压回）。
+        // 这是有意的取舍 —— 一个偏好只有一处真相，好过"两个开关互相打架"。
+        *peps = previewPaneWanted_
+                    ? (EXPLORERPANESTATE)(EPS_DEFAULT_ON | EPS_INITIALSTATE | EPS_FORCE)
+                    : (EXPLORERPANESTATE)(EPS_DEFAULT_OFF | EPS_INITIALSTATE | EPS_FORCE);
         return S_OK;
     }
     *peps = EPS_DONTCARE;
@@ -309,7 +322,7 @@ bool ShellView::InitBrowser() {
 
     RECT rc{0, 0, 10, 10};
     hr = init(browser_, container_, &rc, 0 /* FVO_DEFAULT */);
-    LogLine(L"[init] Initialize hr=0x%08lX", static_cast<unsigned long>(hr));
+    LogDbg(L"[init] Initialize hr=0x%08lX", static_cast<unsigned long>(hr));
     if (FAILED(hr)) {
         IUnknown_SetSite(browser_, nullptr);
         browser_->Release();
@@ -374,7 +387,7 @@ void ShellView::SetVisible(bool visible) {
 
 bool ShellView::Navigate(const std::wstring& path) {
     if (!browser_ || path.empty()) return false;
-    LogLine(L"[nav] request path=%s viewReady=%d", path.c_str(), viewReady_ ? 1 : 0);
+    LogDbg(L"[nav] request path=%s viewReady=%d", path.c_str(), viewReady_ ? 1 : 0);
     return DoNavigate(path);
 }
 
@@ -397,17 +410,17 @@ bool ShellView::DoNavigate(const std::wstring& path) {
     ComPtr<IShellItem> item;
     HRESULT hr = SHCreateItemFromParsingName(p.c_str(), nullptr, IID_IShellItem,
                                              reinterpret_cast<void**>(&item));
-    LogLine(L"[nav] parse '%s' hr=0x%08lX", p.c_str(), static_cast<unsigned long>(hr));
+    LogDbg(L"[nav] parse '%s' hr=0x%08lX", p.c_str(), static_cast<unsigned long>(hr));
     if (FAILED(hr)) return false;
 
     PWSTR name = nullptr;
     if (SUCCEEDED(item->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &name)) && name) {
-        LogLine(L"[nav] item=%s", name);
+        LogDbg(L"[nav] item=%s", name);
         CoTaskMemFree(name);
     }
 
     hr = browser_->BrowseToObject(item.get(), 0);
-    LogLine(L"[nav] browse hr=0x%08lX", static_cast<unsigned long>(hr));
+    LogDbg(L"[nav] browse hr=0x%08lX", static_cast<unsigned long>(hr));
     if (hr == HRESULT_FROM_WIN32(ERROR_BUSY)) {
         // 上一次浏览还没收尾：这是正常抖动，不是失败。记下最后一次请求并重放，
         // 否则快速连点会弹"无法打开"、历史栈还会被回滚。
@@ -436,7 +449,7 @@ void ShellView::SetViewMode(int fvm, int iconPx) {
             FOLDERVIEWMODE gotMode = FVM_AUTO;
             int gotIcon = 0;
             if (SUCCEEDED(fv2->GetViewModeAndIconSize(&gotMode, &gotIcon)))
-                LogLine(L"[view] set %d/%d -> %d/%d", fvm, iconPx, static_cast<int>(gotMode),
+                LogDbg(L"[view] set %d/%d -> %d/%d", fvm, iconPx, static_cast<int>(gotMode),
                         gotIcon);
             // 临时诊断：列管理器里到底有哪些列，Size 是否可见。
             IColumnManager* cm = nullptr;
@@ -446,7 +459,7 @@ void ShellView::SetViewMode(int fvm, int iconPx) {
                 UINT all = 0, visible = 0;
                 cm->GetColumnCount(CM_ENUM_ALL, &all);
                 cm->GetColumnCount(CM_ENUM_VISIBLE, &visible);
-                LogLine(L"[cols] all=%u visible=%u", all, visible);
+                LogDbg(L"[cols] all=%u visible=%u", all, visible);
                 std::vector<PROPERTYKEY> keys(all > 0 ? all : 1);
                 if (all > 0 && SUCCEEDED(cm->GetColumns(CM_ENUM_ALL, keys.data(), all))) {
                     for (UINT i = 0; i < all; ++i) {
@@ -455,7 +468,7 @@ void ShellView::SetViewMode(int fvm, int iconPx) {
                         ci.dwMask = static_cast<DWORD>(CM_MASK_NAME | CM_MASK_STATE |
                                                        CM_MASK_WIDTH);
                         HRESULT hci = cm->GetColumnInfo(keys[i], &ci);
-                        LogLine(L"[cols] %u fmt=%08X pid=%u name=%s state=%u width=%u hr=0x%08X",
+                        LogDbg(L"[cols] %u fmt=%08X pid=%u name=%s state=%u width=%u hr=0x%08X",
                                 i, keys[i].fmtid.Data1, keys[i].pid,
                                 hci == S_OK ? ci.wszName : L"?", ci.dwState, ci.uWidth,
                                 static_cast<unsigned long>(hci));
@@ -466,16 +479,16 @@ void ShellView::SetViewMode(int fvm, int iconPx) {
                 ComPtr<IShellItemArray> items;
                 HRESULT hrItems = fv2->Items(SVGIO_ALLVIEW, IID_IShellItemArray,
                                              reinterpret_cast<void**>(&items));
-                LogLine(L"[cols] Items hr=0x%08X array=%d", static_cast<unsigned long>(hrItems),
+                LogDbg(L"[cols] Items hr=0x%08X array=%d", static_cast<unsigned long>(hrItems),
                         items ? 1 : 0);
                 int itemCount = 0;
                 fv2->ItemCount(SVGIO_ALLVIEW, &itemCount);
-                LogLine(L"[cols] ItemCount=%d", itemCount);
+                LogDbg(L"[cols] ItemCount=%d", itemCount);
                 for (int i = 0; i < itemCount && i < 12; ++i) {
                     PITEMID_CHILD pidl = nullptr;
                     HRESULT hrp = fv2->Item(i, &pidl);
                     if (FAILED(hrp) || !pidl) {
-                        LogLine(L"[cols] item %d Item hr=0x%08X", i,
+                        LogDbg(L"[cols] item %d Item hr=0x%08X", i,
                                 static_cast<unsigned long>(hrp));
                         continue;
                     }
@@ -484,7 +497,7 @@ void ShellView::SetViewMode(int fvm, int iconPx) {
                                                          reinterpret_cast<void**>(&item));
                     CoTaskMemFree(pidl);
                     if (FAILED(hrs) || !item) {
-                        LogLine(L"[cols] item %d shell hr=0x%08X", i,
+                        LogDbg(L"[cols] item %d shell hr=0x%08X", i,
                                 static_cast<unsigned long>(hrs));
                         continue;
                     }
@@ -499,7 +512,7 @@ void ShellView::SetViewMode(int fvm, int iconPx) {
                                                        reinterpret_cast<void**>(&i2))) &&
                         i2)
                         hs = i2->GetUInt64(PKEY_Size, &size);
-                    LogLine(L"[cols] item %d folder=%d size=%llu hr=0x%08X name=%s", i,
+                    LogDbg(L"[cols] item %d folder=%d size=%llu hr=0x%08X name=%s", i,
                             (attr & SFGAO_FOLDER) ? 1 : 0, size,
                             static_cast<unsigned long>(hs), name ? name : L"?");
                     if (name) CoTaskMemFree(name);
@@ -603,7 +616,7 @@ void ShellView::CapturePreviewPaneState(IShellView*) {
     const bool visible = PreviewPaneVisibleNow(container_);
     previewPaneWanted_ = visible;
     previewPaneWantedKnown_ = true;
-    LogLine(L"[preview] capture visible=%d", visible ? 1 : 0);
+    LogDbg(L"[preview] capture visible=%d", visible ? 1 : 0);
 }
 
 void ShellView::ApplyPreviewPaneState(IShellView*) {
@@ -613,7 +626,7 @@ void ShellView::ApplyPreviewPaneState(IShellView*) {
     if (!previewPaneWantedKnown_) return;
     const bool visible = PreviewPaneVisibleNow(container_);
     if (visible != previewPaneWanted_) {
-        LogLine(L"[preview] mismatch visible=%d wanted=%d（下一次建窗格按 GetPaneState 纠正）",
+        LogDbg(L"[preview] mismatch visible=%d wanted=%d（下一次建窗格按 GetPaneState 纠正）",
                 visible ? 1 : 0, previewPaneWanted_ ? 1 : 0);
     }
 }
@@ -665,175 +678,124 @@ void ShellView::DiagnosePreviewPaneState() {
         view->Release();
         return;
     }
-    {
-    if (container_) KillTimer(container_, kPreviewReapplyTimer);
-    IShellView* view = CurrentView();
-    ApplyPreviewPaneState(view);
-    if (view) {
-        IFolderView2* fv2 = nullptr;
-        if (SUCCEEDED(view->QueryInterface(IID_IFolderView2,
-                                          reinterpret_cast<void**>(&fv2))) &&
-            fv2) {
-            int n = 0;
-            fv2->ItemCount(SVGIO_ALLVIEW, &n);
-            LogLine(L"[late] items=%d", n);
-                ComPtr<IShellFolder2> sf2;
-                HRESULT hsf = fv2->GetFolder(IID_IShellFolder2,
-                                             reinterpret_cast<void**>(&sf2));
-                LogLine(L"[late] GetFolder(IShellFolder2) hr=0x%08X",
-                        static_cast<unsigned long>(hsf));
-                int sizeCol = -1;
-                for (int c = 0; c < 40; ++c) {
-                    SHELLDETAILS sd{};
-                    if (FAILED(sf2->GetDetailsOf(nullptr, c, &sd))) continue;
-                    wchar_t buf[128] = L"";
-                    if (SUCCEEDED(StrRetToBufW(&sd.str, nullptr, buf, _countof(buf))) &&
-                        (_wcsicmp(buf, L"大小") == 0 || _wcsicmp(buf, L"Size") == 0)) {
-                        sizeCol = c;
-                        LogLine(L"[late] Size column index=%d", c);
-                        break;
-                    }
-                }
-                for (int i = 0; i < n && i < 4; ++i) {
-                    PITEMID_CHILD pidl = nullptr;
-                    if (FAILED(fv2->Item(i, &pidl)) || !pidl) continue;
-                    VARIANT var{};
-                    HRESULT hdet = sf2 ? sf2->GetDetailsEx(pidl, &PKEY_Size, &var) : E_FAIL;
-                    unsigned long long v = 0;
-                    if (SUCCEEDED(hdet) && var.vt == VT_UI8) v = var.ullVal;
-                    if (SUCCEEDED(hdet)) VariantClear(&var);
-                    wchar_t detText[128] = L"";
-                    HRESULT hdetText = E_FAIL;
-                    if (sizeCol >= 0) {
-                        SHELLDETAILS sdItem{};
-                        hdetText = sf2->GetDetailsOf(pidl, sizeCol, &sdItem);
-                        if (SUCCEEDED(hdetText))
-                            StrRetToBufW(&sdItem.str, nullptr, detText, _countof(detText));
-                    }
-                    ComPtr<IShellItem> item;
-                    HRESULT hrs = SHCreateItemFromIDList(pidl, IID_IShellItem,
-                                                         reinterpret_cast<void**>(&item));
-                    CoTaskMemFree(pidl);
-                    if (FAILED(hrs) || !item) continue;
-                    PWSTR name = nullptr;
-                    item->GetDisplayName(SIGDN_NORMALDISPLAY, &name);
-                    SFGAOF attr = 0;
-                    item->GetAttributes(SFGAO_FOLDER, &attr);
-                    LogLine(L"[late] item %d folder=%d details=%llu hr=0x%08X text=%s hrText=0x%08X name=%s", i,
-                            (attr & SFGAO_FOLDER) ? 1 : 0, v, static_cast<unsigned long>(hdet),
-                            detText, static_cast<unsigned long>(hdetText), name ? name : L"?");
-                    if (name) CoTaskMemFree(name);
-                }
-            // 临时诊断：强制重建 Size 列，看是否能触发 shell 重新取文件夹大小。
-            IColumnManager* cm2 = nullptr;
-            if (SUCCEEDED(fv2->QueryInterface(IID_IColumnManager,
-                                             reinterpret_cast<void**>(&cm2))) &&
-                cm2) {
-                UINT vc = 0;
-                cm2->GetColumnCount(CM_ENUM_VISIBLE, &vc);
-                std::vector<PROPERTYKEY> vk(vc > 0 ? vc : 1);
-                HRESULT hget = cm2->GetColumns(CM_ENUM_VISIBLE, vk.data(), vc);
-                int sizeIdx = -1;
-                for (UINT k = 0; k < vc; ++k)
-                    if (IsEqualPropertyKey(vk[k], PKEY_Size)) sizeIdx = static_cast<int>(k);
-                LogLine(L"[late] toggle cols vc=%u get=0x%08X sizeIdx=%d", vc,
-                        static_cast<unsigned long>(hget), sizeIdx);
-                if (sizeIdx >= 0 && vc > 1) {
-                    std::vector<PROPERTYKEY> without;
-                    for (UINT k = 0; k < vc; ++k)
-                        if (static_cast<int>(k) != sizeIdx) without.push_back(vk[k]);
-                    HRESULT h1 = cm2->SetColumns(without.data(),
-                                                 static_cast<UINT>(without.size()));
-                    HRESULT h2 = cm2->SetColumns(vk.data(), vc);
-                    LogLine(L"[late] toggle hr1=0x%08X hr2=0x%08X",
-                            static_cast<unsigned long>(h1), static_cast<unsigned long>(h2));
-                }
-                cm2->Release();
-            }
-            fv2->Release();
+    int n = 0;
+    fv2->ItemCount(SVGIO_ALLVIEW, &n);
+    LogDbg(L"[late] items=%d", n);
+
+    // 【判空】GetFolder(IID_IShellFolder2) 在虚拟目录（搜索结果 / 库 / 第三方 NSE）
+    // 上会失败。以前这里只把 hr 写进日志就继续用 sf2 —— 是必崩的空指针解引用，
+    // 而本函数原来挂在 120ms 定时器上，等于"导航到某类目录就崩"。
+    ComPtr<IShellFolder2> sf2;
+    const HRESULT hsf = fv2->GetFolder(IID_IShellFolder2, reinterpret_cast<void**>(&sf2));
+    LogDbg(L"[late] GetFolder(IShellFolder2) hr=0x%08X", static_cast<unsigned long>(hsf));
+    if (FAILED(hsf) || !sf2) {
+        fv2->Release();
+        view->Release();
+        return;
+    }
+
+    int sizeCol = -1;
+    for (int c = 0; c < 40; ++c) {
+        SHELLDETAILS sd{};
+        if (FAILED(sf2->GetDetailsOf(nullptr, c, &sd))) continue;
+        wchar_t buf[128] = L"";
+        if (SUCCEEDED(StrRetToBufW(&sd.str, nullptr, buf, _countof(buf))) &&
+            (_wcsicmp(buf, L"大小") == 0 || _wcsicmp(buf, L"Size") == 0)) {
+            sizeCol = c;
+            LogDbg(L"[late] Size column index=%d", c);
+            break;
         }
-        if (container_) {
-            HWND root = GetAncestor(container_, GA_ROOT);
-            if (root) SetForegroundWindow(root);
+    }
+    for (int i = 0; i < n && i < 4; ++i) {
+        PITEMID_CHILD pidl = nullptr;
+        if (FAILED(fv2->Item(i, &pidl)) || !pidl) continue;
+        VARIANT var{};
+        HRESULT hdet = sf2->GetDetailsEx(pidl, &PKEY_Size, &var);
+        unsigned long long v = 0;
+        if (SUCCEEDED(hdet) && var.vt == VT_UI8) v = var.ullVal;
+        if (SUCCEEDED(hdet)) VariantClear(&var);
+        wchar_t detText[128] = L"";
+        HRESULT hdetText = E_FAIL;
+        if (sizeCol >= 0) {
+            SHELLDETAILS sdItem{};
+            hdetText = sf2->GetDetailsOf(pidl, sizeCol, &sdItem);
+            if (SUCCEEDED(hdetText))
+                StrRetToBufW(&sdItem.str, nullptr, detText, _countof(detText));
         }
-        HWND vh = nullptr;
-        if (SUCCEEDED(view->GetWindow(&vh)) && vh) {
-            ComPtr<IUIAutomation> uia;
-            if (SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr,
-                                          CLSCTX_INPROC_SERVER, IID_IUIAutomation,
-                                          reinterpret_cast<void**>(&uia))) &&
-                uia) {
-                ComPtr<IUIAutomationElement> root;
-                if (SUCCEEDED(uia->ElementFromHandle(vh, &root)) && root) {
-                    VARIANT v{};
-                    v.vt = VT_I4;
-                    v.lVal = UIA_ListItemControlTypeId;
-                    ComPtr<IUIAutomationCondition> cond;
-                    if (SUCCEEDED(uia->CreatePropertyCondition(UIA_ControlTypePropertyId, v,
-                                                               &cond)) &&
-                        cond) {
-                        ComPtr<IUIAutomationElementArray> arr;
-                        if (SUCCEEDED(root->FindAll(TreeScope_Descendants, cond.get(), &arr)) &&
-                            arr) {
-                            int cnt = 0;
-                            arr->get_Length(&cnt);
-                            LogLine(L"[uia] listitems=%d", cnt);
-                            for (int i = 0; i < cnt && i < 4; ++i) {
-                                ComPtr<IUIAutomationElement> el;
-                                if (FAILED(arr->GetElement(i, &el)) || !el) continue;
-                                BSTR name = nullptr;
-                                el->get_CurrentName(&name);
-                                LogLine(L"[uia] item %d name=%s", i,
-                                        name ? name : L"?");
-                                if (name) SysFreeString(name);
-                                ComPtr<IUIAutomationCondition> trueCond;
-                                ComPtr<IUIAutomationElementArray> allKids;
-                                if (SUCCEEDED(uia->CreateTrueCondition(&trueCond)) &&
-                                    SUCCEEDED(el->FindAll(TreeScope_Descendants,
-                                                          trueCond.get(), &allKids)) &&
-                                    allKids) {
-                                    int ac = 0;
-                                    allKids->get_Length(&ac);
-                                    for (int k = 0; k < ac && k < 20; ++k) {
-                                        ComPtr<IUIAutomationElement> kid;
-                                        if (FAILED(allKids->GetElement(k, &kid)) || !kid) continue;
-                                        BSTR kn = nullptr;
-                                        kid->get_CurrentName(&kn);
-                                        LogLine(L"[uia]   desc %d name=%s", k,
-                                                kn ? kn : L"?");
-                                        if (kn) SysFreeString(kn);
-                                    }
-                                }
-                                ComPtr<IUIAutomationElementArray> kids;
-                                if (SUCCEEDED(uia->CreateTrueCondition(&trueCond)) &&
-                                    SUCCEEDED(el->FindAll(TreeScope_Children, trueCond.get(),
-                                                          &kids)) &&
-                                    kids) {
-                                    int kc = 0;
-                                    kids->get_Length(&kc);
-                                    for (int k = 0; k < kc; ++k) {
-                                        ComPtr<IUIAutomationElement> kid;
-                                        if (FAILED(kids->GetElement(k, &kid)) || !kid) continue;
-                                        BSTR kn = nullptr;
-                                        kid->get_CurrentName(&kn);
-                                        RECT kr{};
-                                        kid->get_CurrentBoundingRectangle(&kr);
-                                        LogLine(L"[uia]   child %d name=%s rect=%d,%d,%d,%d", k,
-                                                kn ? kn : L"?", kr.left, kr.top, kr.right,
-                                                kr.bottom);
-                                        if (kn) SysFreeString(kn);
-                                    }
-                                }
-                            }
+        ComPtr<IShellItem> item;
+        HRESULT hrs = SHCreateItemFromIDList(pidl, IID_IShellItem,
+                                             reinterpret_cast<void**>(&item));
+        CoTaskMemFree(pidl);
+        if (FAILED(hrs) || !item) continue;
+        PWSTR name = nullptr;
+        item->GetDisplayName(SIGDN_NORMALDISPLAY, &name);
+        SFGAOF attr = 0;
+        item->GetAttributes(SFGAO_FOLDER, &attr);
+        LogDbg(L"[late] item %d folder=%d details=%llu hr=0x%08X text=%s hrText=0x%08X name=%s", i,
+               (attr & SFGAO_FOLDER) ? 1 : 0, v, static_cast<unsigned long>(hdet), detText,
+               static_cast<unsigned long>(hdetText), name ? name : L"?");
+        if (name) CoTaskMemFree(name);
+    }
+
+    // IColumnManager：把 Size 列移除再加回，强制 shell 重建可见列。
+    ComPtr<IColumnManager> cm2;
+    if (SUCCEEDED(fv2->QueryInterface(IID_IColumnManager, reinterpret_cast<void**>(&cm2))) && cm2) {
+        UINT vc = 64;
+        std::vector<PROPERTYKEY> vk(vc);
+        HRESULT hget = cm2->GetColumns(CM_ENUM_VISIBLE, vk.data(), vc);
+        int sizeIdx = -1;
+        for (UINT k = 0; k < vc; ++k)
+            if (IsEqualPropertyKey(vk[k], PKEY_Size)) sizeIdx = static_cast<int>(k);
+        LogDbg(L"[late] toggle cols vc=%u get=0x%08X sizeIdx=%d", vc,
+               static_cast<unsigned long>(hget), sizeIdx);
+        if (sizeIdx >= 0 && vc > 1) {
+            std::vector<PROPERTYKEY> without;
+            for (UINT k = 0; k < vc; ++k)
+                if (static_cast<int>(k) != sizeIdx) without.push_back(vk[k]);
+            HRESULT h1 = cm2->SetColumns(without.data(), static_cast<UINT>(without.size()));
+            HRESULT h2 = cm2->SetColumns(vk.data(), vc);
+            LogDbg(L"[late] toggle hr1=0x%08X hr2=0x%08X", static_cast<unsigned long>(h1),
+                   static_cast<unsigned long>(h2));
+        }
+    }
+
+    HWND vh = nullptr;
+    if (SUCCEEDED(view->GetWindow(&vh)) && vh) {
+        ComPtr<IUIAutomation> uia;
+        if (SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                                       IID_IUIAutomation, reinterpret_cast<void**>(&uia))) &&
+            uia) {
+            ComPtr<IUIAutomationElement> root;
+            if (SUCCEEDED(uia->ElementFromHandle(vh, &root)) && root) {
+                VARIANT var{};
+                var.vt = VT_I4;
+                var.lVal = UIA_ListItemControlTypeId;
+                ComPtr<IUIAutomationCondition> cond;
+                if (SUCCEEDED(
+                        uia->CreatePropertyCondition(UIA_ControlTypePropertyId, var, &cond)) &&
+                    cond) {
+                    ComPtr<IUIAutomationElementArray> arr;
+                    if (SUCCEEDED(root->FindAll(TreeScope_Descendants, cond.get(), &arr)) &&
+                        arr) {
+                        int kc = 0;
+                        arr->get_Length(&kc);
+                        LogDbg(L"[uia] listitems=%d", kc);
+                        for (int k = 0; k < kc; ++k) {
+                            ComPtr<IUIAutomationElement> kid;
+                            if (FAILED(arr->GetElement(k, &kid)) || !kid) continue;
+                            BSTR kn = nullptr;
+                            kid->get_CurrentName(&kn);
+                            RECT kr{};
+                            kid->get_CurrentBoundingRectangle(&kr);
+                            LogDbg(L"[uia]   child %d name=%s rect=%d,%d,%d,%d", k,
+                                   kn ? kn : L"?", kr.left, kr.top, kr.right, kr.bottom);
+                            if (kn) SysFreeString(kn);
                         }
                     }
                 }
             }
         }
-        view->Release();
     }
-    }
-    fv2->Release();
     view->Release();
 }
 #endif  // EXBAR_DIAG_PREVIEW
@@ -844,7 +806,7 @@ void ShellView::TogglePreviewPane() {
     const bool visible = PreviewPaneVisibleNow(container_);
     previewPaneWanted_ = !visible;
     previewPaneWantedKnown_ = true;
-    LogLine(L"[preview] toggle visible=%d -> wanted=%d", visible ? 1 : 0,
+    LogDbg(L"[preview] toggle visible=%d -> wanted=%d", visible ? 1 : 0,
             previewPaneWanted_ ? 1 : 0);
 
     IShellView* view = CurrentView();
@@ -961,7 +923,7 @@ void ShellView::OnViewCreated(IShellView* view) {
 }
 
 void ShellView::OnNavigationFailed() {
-    LogLine(L"[nav] failed path=%s", path_.c_str());
+    LogDbg(L"[nav] failed path=%s", path_.c_str());
     if (failFn_) failFn_();
 }
 
@@ -981,17 +943,17 @@ void ShellView::ReplayQueued() {
     if (++replayTries_ > 20) {
         replayTries_ = 0;
         abandonedPath_ = p;
-        LogLine(L"[nav] abandon %s", p.c_str());
+        LogDbg(L"[nav] abandon %s", p.c_str());
         OnNavigationFailed();  // 回滚，保证 App 立刻可用
         return;
     }
-    LogLine(L"[nav] replay #%d %s", replayTries_, p.c_str());
+    LogDbg(L"[nav] replay #%d %s", replayTries_, p.c_str());
     Navigate(p);  // 若再 BUSY 会按当前 replayTries_ 重新 SetTimer
 }
 
 void ShellView::OnNavigated(PCIDLIST_ABSOLUTE pidl) {
     std::wstring p = PidlName(pidl);
-    LogLine(L"[nav] complete pidl=%s", p.c_str());
+    LogDbg(L"[nav] complete pidl=%s", p.c_str());
     if (!p.empty()) {
         path_ = p;
         shellinput::UpdateDir(container_, p);
@@ -1008,7 +970,7 @@ void ShellView::OnNavigated(PCIDLIST_ABSOLUTE pidl) {
     display_ = display;
 
     if (!abandonedPath_.empty() && p == abandonedPath_) {
-        LogLine(L"[nav] late-complete after abandon %s", p.c_str());
+        LogDbg(L"[nav] late-complete after abandon %s", p.c_str());
         abandonedPath_.clear();
     }
     replayTries_ = 0;

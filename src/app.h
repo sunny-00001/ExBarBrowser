@@ -76,7 +76,13 @@ private:
     // 标签
     int NewTab(const std::wstring& path, int index = -1);
     int NewTabIndex() const;  // tabNewPos: right = 当前标签右侧, end = 末尾
-    void CloseTab(int id);
+    // 关闭标签。返回是否**真的关掉了**：
+    //   false = 标签不存在，或已锁定（只响一声提示）
+    //   true  = 已关闭（注意：关掉最后一个标签会让程序退出）
+    //
+    // 返回值是为命令总线准备的 —— 以前它是 void，handler 只能无条件 return true，
+    // 于是"锁定标签没关掉"在审计里被记成成功（ok=1），AI 也以为自己做到了。
+    bool CloseTab(int id);
     void CloseOthers(int keepId);
     void CloseSide(int id, bool left);
     void Activate(int id);

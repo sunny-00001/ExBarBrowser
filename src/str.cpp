@@ -57,4 +57,23 @@ std::wstring FromUtf8(const char* s) {
     return out;
 }
 
+bool FromUtf8Strict(const std::string& s, std::wstring* out) {
+    if (!out) return false;
+    out->clear();
+    if (s.empty()) return true;
+
+    // MB_ERR_INVALID_CHARS：遇到非法序列直接失败（GetLastError = ERROR_NO_UNICODE_TRANSLATION
+    // = 1113），而不是替换成 U+FFFD。宽松版在这里会把 GBK 字节静默解成 "????"。
+    const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.c_str(),
+                                      static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0) return false;
+    out->assign(static_cast<size_t>(n), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.c_str(),
+                            static_cast<int>(s.size()), &(*out)[0], n) != n) {
+        out->clear();
+        return false;
+    }
+    return true;
+}
+
 }  // namespace str

@@ -109,6 +109,41 @@ int main() {
     store.Save();
     CHECK(!store.FileChanged(), "no false positive after Save");
 
+    // ---- 数据丢失护栏：读不懂的文件不许被覆盖 ----
+    //
+    // 这是全模块唯一的数据丢失链：Load 失败 → 书签栏空白 → 用户加一个书签 →
+    // Save() 用只有表头的 HTML 覆盖原文件 → 原有书签永久丢失。
+    printf("\n加载失败时必须拒绝写盘（防止清空用户书签）\n");
+    {
+        // 造一个"存在但读不懂"的文件：有内容，但不是 Netscape 书签格式。
+        const std::wstring bad = L"\xD6\xD0\xCE\xC4 这不是书签文件";  // 含非 ASCII
+        tf::WriteText(file, bad);
+
+        // 先装一份可用书签，确认后续 Save 有东西可丢
+        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/\" >D</A>\r\n</DL><p>\r\n");
+        store.Load(file);
+        CHECK(Names() == L"D|", "guard: seeded with D");
+
+        // 现在把文件换成读不懂的内容，再 Load
+        tf::WriteText(file, bad);
+        CHECK(!store.Load(file), "guard: Load rejects non-bookmark content");
+        CHECK(store.LoadFailed(), "guard: LoadFailed() reports it");
+        CHECK(Names() == L"D|", "guard: in-memory tree NOT cleared by failed Load");
+
+        // 关键断言：此时 Save 必须拒绝，且文件内容保持原样（不被空书签覆盖）
+        CHECK(!store.Save(), "guard: Save refused after failed Load");
+        std::wstring after;
+        tf::ReadText(file, &after);
+        CHECK(after == bad, "guard: file on disk untouched (no empty-bookmark overwrite)");
+
+        // 文件不存在 ≠ 加载失败：首次运行应当允许写盘
+        DeleteFileW(file.c_str());
+        store.Load(file);
+        CHECK(!store.LoadFailed(), "guard: missing file is NOT a load failure");
+        CHECK(store.Save(), "guard: first run can still save");
+    }
+
     // 恢复原文件
     if (!backup.empty()) {
         tf::WriteText(file, backup);

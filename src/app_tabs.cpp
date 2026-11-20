@@ -52,12 +52,12 @@ int App::NewTabIndex() const {
     return ActiveIndex() + 1;
 }
 
-void App::CloseTab(int id) {
+bool App::CloseTab(int id) {
     const core::TabRef* ref = tabSet_.Find(id);
-    if (!ref) return;
+    if (!ref) return false;
     if (ref->locked) {
         MessageBeep(MB_ICONWARNING);
-        return;
+        return false;   // 锁定标签没被关掉 —— 必须让调用方知道
     }
     const int index = tabSet_.IndexOf(id);
     std::wstring path = ref->path;
@@ -68,7 +68,7 @@ void App::CloseTab(int id) {
     if (tabSet_.Count() == 0) {
         OnDestroy();
         DestroyWindow(hwnd_);
-        return;
+        return true;
     }
     if (activeId_ == id) {
         int next = std::min(index, tabSet_.Count() - 1);
@@ -77,6 +77,7 @@ void App::CloseTab(int id) {
         SyncChrome();
     }
     Layout();
+    return true;
 }
 
 void App::CloseOthers(int keepId) {

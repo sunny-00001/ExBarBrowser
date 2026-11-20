@@ -317,33 +317,72 @@ BookmarkStore& BookmarkStore::Get() {
 }
 
 bool BookmarkStore::Load(const std::wstring& path) {
-    file_ = path;
-    roots_.clear();
-    dirty_ = false;
-    seq_ = 1;
-    undo_.clear();
-
+    // 【顺序很关键】先把内容读进内存树，成功后才替换现有状态。
+    //
+    // 以前是"一进函数就 roots_.clear() + undo_.clear()，然后任何一步失败就 return false"。
+    // 调用方都没接返回值，于是"文件存在但读不懂"被无声地当成"没有书签"：书签栏空白 →
+    // 用户随手加一个书签 → Save() 用只有表头的 HTML 覆盖原文件 → **原有书签全部永久
+    // 丢失，且没有备份、Undo 栈也已被清空**。这是全模块唯一的数据丢失链。
     std::wstring html;
-    if (!tf::ReadText(path, &html)) {
-        // 文件不存在（首次运行/被删除）：返回 false，由调用方按空书签处理
+    const bool readOk = tf::ReadText(path, &html);
+
+    if (!readOk) {
+        // 读不到：可能是首次运行（文件不存在，正常），也可能是权限/占用（异常）。
+        // 我们无法区分这两者，但**都不能清空内存树** —— 若文件其实存在只是读失败，
+        // 清空就等于替用户删了书签。文件不存在时内存树本来就是空的，不清也无损。
+        loadFailed_ = tf::Exists(path);
+        LogDbg(L"[bmk] 读取失败（%s）：%s", loadFailed_ ? L"文件存在但读不出" : L"文件不存在",
+               path.c_str());
         return false;
     }
+
     size_t dl = Lower(html).find(L"<dl");
-    if (dl == std::wstring::npos) return false;
+    if (dl == std::wstring::npos) {
+        // 文件读到了但不像 Netscape 书签（空文件 / 格式不符 / 编码不对）。
+        // 这是最危险的一种：文件确实存在，用户很可能有真实数据在里面。
+        loadFailed_ = true;
+        LogDbg(L"[bmk] 内容不是 Netscape 书签格式（%u 字节），已拒绝加载并禁止覆盖写",
+               static_cast<unsigned>(html.size()));
+        return false;
+    }
+
+    // 解析到临时树，成功后再整体换入 —— 中途失败不会留下半棵树。
+    BookmarkList parsed;
+    int parsedSeq = 1;
     std::vector<Token> toks = Tokenize(html);
     size_t pos = 0;
     while (pos < toks.size() &&
            !(toks[pos].tag && TagName(toks[pos].text) == L"dl" && !IsClosing(toks[pos].text)))
         ++pos;
     if (pos < toks.size()) ++pos;
-    ParseLevel(toks, pos, roots_, 0);
-    AssignIds(roots_, seq_);
+    ParseLevel(toks, pos, parsed, 0);
+    AssignIds(parsed, parsedSeq);
+
+    file_ = path;
+    roots_ = std::move(parsed);
+    seq_ = parsedSeq;
+    dirty_ = false;
+    undo_.clear();
+    loadFailed_ = false;
     fileStamp_ = LastWriteOf(path);  // 记录基线，供外部变更检测
     return true;
 }
 
 bool BookmarkStore::Save() {
     if (file_.empty()) file_ = Config::Get().BookmarksPath();
+
+    // 【护栏】加载失败过就别写盘。
+    //
+    // 这是 Load 那条数据丢失链的第二半：Load 失败后内存树可能是空的/不完整的，
+    // 此时任何一次 Save（用户加个书签、关窗口时的自动保存）都会把用户的文件
+    // 覆盖成"只有表头的空书签"。宁可不保存，也不能销毁用户数据。
+    //
+    // 用户可以恢复：改好那个文件（或删掉它）后重启，Load 成功即自动解除。
+    if (loadFailed_) {
+        LogDbg(L"[bmk] 拒绝写盘：上次加载失败，覆盖会销毁用户书签（%s）", file_.c_str());
+        return false;
+    }
+
     std::wstring html =
         L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n"
         L"<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\r\n"

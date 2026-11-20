@@ -55,11 +55,3 @@ void LogDbg(const wchar_t* fmt, ...) {
     LogV(fmt, ap);
     va_end(ap);
 }
-
-void LogLine(const wchar_t* fmt, ...) {
-    if (!fmt) return;
-    va_list ap;
-    va_start(ap, fmt);
-    LogV(fmt, ap);
-    va_end(ap);
-}

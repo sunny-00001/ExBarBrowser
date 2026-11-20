@@ -70,6 +70,13 @@ public:
     bool dirty() const { return dirty_; }
     void MarkDirty() { dirty_ = true; }
 
+    // 上次 Load 是否**因为文件存在但读不懂**而失败（区别于"文件不存在"）。
+    //
+    // 这个标志存在的唯一目的：阻止 Save() 把一份读不懂的文件覆盖成"空书签"。
+    // 用户手工编辑打错一个标签、编辑器保存成 GBK、另一进程正在写 —— 只要
+    // Load 失败而文件确实存在，写盘就等于销毁用户全部书签。
+    bool LoadFailed() const { return loadFailed_; }
+
 private:
     BookmarkStore() = default;
     std::wstring NewId(bool folder);
@@ -81,6 +88,8 @@ private:
     BookmarkList roots_;
     std::wstring file_;
     bool dirty_ = false;
+    // 文件存在但解析失败 → 禁止写盘（否则会用空树覆盖用户的全部书签）。
+    bool loadFailed_ = false;
     int seq_ = 1;
     std::vector<BookmarkList> undo_;      // 删除/重排前快照（≤20）
     FILETIME fileStamp_{};                // Load/Save 时的文件时间，用于外部变更检测
