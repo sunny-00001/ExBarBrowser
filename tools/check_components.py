@@ -162,6 +162,15 @@ UNIQUE = [
          allow={"str.cpp", "shell_ops.cpp"},
          why="统一用 str::ICmp / str::IEquals / str::IStartsWith（str.h）；"
              "路径语义要 ordinal 比较时用 CompareStringOrdinal"),
+
+    # ---- 视图档位表（2026-11-20 合并）----
+    # app_commands.cpp 与 nav_bar_actions.cpp 曾各有一份逐字相同的 8 档表。
+    # 这张表的**下标**同时是 view.mode 命令的 arg、菜单回传值、配置持久化值 ——
+    # 任一处增删/换序而另一处没改，就是"菜单显示的和实际切的不一致"，无任何报错。
+    # 纯数据重复查重抓不到，只能靠"某个特征值只允许出现在一个文件里"来守。
+    dict(name="视图档位表", pat=r"\{FVM_THUMBNAIL,\s*256,",
+         allow={"view_modes.h"},
+         why="唯一来源是 view_modes.h 的 viewmode::kModes；下标是命令 arg 契约，不能有第二份"),
 ]
 
 # ---------------------------------------------------------------------------

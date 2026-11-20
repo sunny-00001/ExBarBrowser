@@ -5,25 +5,19 @@
 #include "app.h"
 
 #include "app_commands.h"
+#include "view_modes.h"
 #include "clipboard.h"
 #include "shell_ops.h"
 #include "hotkey_manager.h"
 #include "popup_list.h"
+#include "prompt.h"
 
 namespace {
 
-struct ViewModeDef {
-    int fvm;
-    int icon;
-    const wchar_t* label;
-};
-
-const ViewModeDef kViewModes[] = {
-    {FVM_THUMBNAIL, 256, L"超大图标"}, {FVM_THUMBNAIL, 96, L"大图标"},
-    {FVM_THUMBNAIL, 48, L"中图标"},    {FVM_ICON, 16, L"小图标"},
-    {FVM_LIST, 16, L"列表"},           {FVM_DETAILS, 16, L"详细信息"},
-    {FVM_TILE, 48, L"平铺"},           {FVM_CONTENT, 48, L"内容"},
-};
+// 视图档位表在 view_modes.h（唯一来源）——它的下标是 view.mode 命令的 arg 契约，
+// 不能在这里再写第二份。别名让本文件其余代码不必改动。
+inline constexpr const viewmode::ViewMode* kViewModes = viewmode::kModes;
+constexpr int kViewModeCount = viewmode::kCount;
 
 std::wstring ExePath() {
     wchar_t buf[MAX_PATH * 2] = L"";
@@ -63,7 +57,7 @@ void App::OpenPathInNewWindow(const std::wstring& path) {
 }
 
 void App::ApplyViewMode(int index) {
-    if (index < 0 || index >= static_cast<int>(_countof(kViewModes))) return;
+    if (index < 0 || index >= static_cast<int>(kViewModeCount)) return;
     Tab* t = Active();
     if (!t || !t->view) return;
     t->view->SetViewMode(kViewModes[index].fvm, kViewModes[index].icon);
@@ -131,7 +125,7 @@ bool App::TransferTargets(const Args& args, bool move) {
 }
 
 
-int App::ViewModeCount() { return static_cast<int>(_countof(kViewModes)); }
+int App::ViewModeCount() { return static_cast<int>(kViewModeCount); }
 
 int App::ViewModeIndexFor(int fvm, int iconPx) {
     const int n = ViewModeCount();
@@ -164,6 +158,23 @@ void App::ShowTabMenu(int index, int action) {
     case kTabMenuClone: NewTab(ref->path, NewTabIndex()); break;
     case kTabMenuToggleLock: ToggleLock(id); break;
     case kTabMenuCopyPath: CopyText(ref->path); break;
+    case kTabMenuCopyTitle: CopyText(core::DisplayTitle(*ref)); break;
+    case kTabMenuRename: {
+        std::wstring name = core::DisplayTitle(*ref);
+        // 输入框初值给"当前显示名"，用户直接改比较顺手；清空即取消改名。
+        if (PromptText(hwnd_, theme_, L"重命名标签页", L"标签名称", name, &name))
+            RenameTab(id, name);
+        break;
+    }
+    case kTabMenuDedup: {
+        const int closed = CloseDuplicates(id);
+        if (!closed) MessageBeep(MB_ICONASTERISK);  // 全被锁定挡住了，别静默
+        break;
+    }
+    case kTabMenuMoveLeft: MoveTab(id, tabSet_.IndexOf(id) - 1); break;
+    case kTabMenuMoveRight: MoveTab(id, tabSet_.IndexOf(id) + 1); break;
+    case kTabMenuMoveFirst: MoveTab(id, 0); break;
+    case kTabMenuMoveLast: MoveTab(id, tabSet_.Count() - 1); break;
     case kTabMenuReopen: {
         std::wstring path;
         if (tabSet_.PopClosed(&path)) NewTab(path);
@@ -172,6 +183,14 @@ void App::ShowTabMenu(int index, int action) {
     default:
         break;
     }
+}
+
+// 标签颜色：从 WM_APP_TAB_COLOR 来（颜色是"值"，不是"动作"）。
+// index 越界（菜单期间标签被关掉）时静默返回 —— SetColor 自己也会夹取值域。
+void App::ShowTabColor(int index, int color) {
+    const int id = tabSet_.IdAt(index);
+    if (!id) return;
+    SetTabColor(id, color);
 }
 
 void App::ShowStatusMenu(POINT screen) {

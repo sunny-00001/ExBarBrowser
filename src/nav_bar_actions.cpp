@@ -6,6 +6,7 @@
 #include "folder_tree.h"
 #include "icon_resolve.h"
 #include "popup_list.h"
+#include "view_modes.h"
 
 namespace {
 
@@ -23,22 +24,11 @@ void FreeRows(std::vector<PopupRow>& rows) {
     rows.clear();
 }
 
-struct ViewMode {
-    int fvm;
-    int icon;
-    const wchar_t* label;
-};
-
-const ViewMode kViews[] = {
-    {FVM_THUMBNAIL, 256, L"超大图标"},
-    {FVM_THUMBNAIL, 96, L"大图标"},
-    {FVM_THUMBNAIL, 48, L"中图标"},
-    {FVM_ICON, 16, L"小图标"},
-    {FVM_LIST, 16, L"列表"},
-    {FVM_DETAILS, 16, L"详细信息"},
-    {FVM_TILE, 48, L"平铺"},
-    {FVM_CONTENT, 48, L"内容"},
-};
+// 视图档位表在 view_modes.h（唯一来源）。这里原来有一份逐字相同的副本，
+// 而两份表的**下标**同时被菜单回传与配置持久化使用 —— 改一处忘另一处就是
+// "菜单显示的和实际切的不一致"，且无任何报错。
+inline constexpr const viewmode::ViewMode* kViews = viewmode::kModes;
+constexpr int kViewCount = viewmode::kCount;
 
 }  // namespace
 
@@ -274,7 +264,7 @@ void NavBar::ShowDropMenu(POINT screen) {
 
 void NavBar::ShowViewMenu(POINT screen) {    (void)screen;
     std::vector<PopupRow> rows;
-    for (int i = 0; i < static_cast<int>(_countof(kViews)); ++i)
+    for (int i = 0; i < static_cast<int>(kViewCount); ++i)
         rows.push_back({kViews[i].label, L"", nullptr, false, false, false, i});
     rows.push_back({L"", L"", nullptr, false, true, false, -1});
     static const wchar_t* kSorts[] = {L"按名称排序", L"按日期排序", L"按类型排序", L"按大小排序"};
