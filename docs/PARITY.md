@@ -1,6 +1,6 @@
 ---
 status: current
-baseline: 2026-11-20 18:40
+baseline: 2026-11-20 19:40
 ---
 
 # 能力对照：ExBar mod vs ExBarBrowser
@@ -132,10 +132,14 @@ mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
 
 ### 3.7 Window（12）—— 已实现 8
 
-新窗口、退出程序（`QuitExplorer` 重定义为关闭本程序）、文件夹选项、
+新窗口、退出程序（`QuitExplorer` 重定义为关闭本程序，点分名 `win.quit`）、文件夹选项、
 映射/断开网络驱动器、命令面板、快捷键管理器、聚焦地址栏。
 
 未实现：`FocusSearch`（无搜索框）、`Preferences`、`AiTogglePanel`、`AiStop`。
+
+> `QuitExplorer` 是本组唯一的命名债：mod 期它的行为是"重启 explorer.exe"，本工程里是"退出本程序"。
+> 2026-11-20 已把表里的主名改成 `win.quit`，枚举名 `CmdId::QuitExplorer` 按规则 C1 保留
+> （改枚举名会打断 keymap / 审计日志 / 脚本）。见 [NAMING.md](NAMING.md) §4.5。
 
 ### 3.8 External（4）—— 已实现 2
 

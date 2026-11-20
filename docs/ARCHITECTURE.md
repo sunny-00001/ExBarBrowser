@@ -1,15 +1,16 @@
 ---
 status: current
-baseline: 2026-11-20 18:40
+baseline: 2026-11-20 19:40
 ---
 
 # ExBarBrowser 架构
 
-> **注意（2026-11-20）**：模块清单已扩展到 **57 个 `.cpp` / 47 个 `.h`（18,388 行）**，
+> **注意（2026-11-20）**：模块清单已扩展到 **57 个 `.cpp` / 48 个 `.h`（18,486 行）**，
 > 最新目录以 [README §6](../README.md) 为准；本文的窗口树、导航时序、COM 所有权、ABI 补丁
-> 与不变量仍然有效，新增的 `ai_api`/`ai_server`/`nav_path`/`nav_history`/`shell_input`/`disk_scan`
-> 与基础设施收编（`platform_win`/`str`/`log`/`clipboard`/`tooltip_host`/`icon_glyph`）
+> 与不变量仍然有效，新增的 `ai_api`/`ai_server`/`nav_path`/`nav_history`/`shell_input`/`disk_scan`/
+> `identity.h` 与基础设施收编（`platform_win`/`str`/`log`/`clipboard`/`ui_draw`/`ui_palette`/`tooltip_host`/`icon_glyph`）
 > 见各自文件头注释与 [README §5](../README.md) 的架构图。
+> 命名约束（品牌串唯一来源、`eb` 待拆解）见 [NAMING.md](NAMING.md)。
 >
 > 目标读者：要改代码的人。看完应能回答三个问题——状态存在哪、消息怎么流、为什么这几处写法看起来"反常"。
 > 本文描述**当前实现**；**新增代码请遵守 [ARCHITECTURE-RULES.md](ARCHITECTURE-RULES.md)**（R1–R20 硬规则），
@@ -85,16 +86,26 @@ ExBarBrowser_Popup                   WS_POPUP | WS_EX_TOOLWINDOW | CS_DROPSHADOW
 
 ### 2.1 窗口类注册策略
 
-| 窗口 | 注册方式 | WndProc 绑定 |
+| 窗口 | 注册方式 | `this` 绑定 |
 |---|---|---|
-| `Main` | `App::CreateMainWindow` 直接 `wc.lpfnWndProc = WndProc` | 注册时确定 |
-| `TabStrip` / `NavBar` / `StatusBar` | 文件内 `RegisterXxxClass()`，`lpfnWndProc = DefWindowProcW` | `Create` 后 `SetWindowLongPtrW(GWLP_WNDPROC, ...)` |
-| `TabView` / `ViewArea` | 文件内注册，`DefWindowProcW` 或轻量 `ViewProc` | 注册时确定 |
-| `Popup` | `EnsureClass()`，`CS_DROPSHADOW` | 注册时确定（`PopupProc` 是静态函数） |
+| `Main` | `win::RegisterClassOnce(kMainClass, WndProc, 0, LoadAppIcon())` | 注册时确定 |
+| `TabStrip` / `NavBar` / `StatusBar` / `BookmarkBar` | `win::RegisterClassOnce(<类>, <类>::WndProc, CS_DBLCLKS?)`，全部以**真实成员 WndProc** 注册 | `win::CreateChild(类, parent, this, hPx)`，创建时经 `lpCreateParams`/`SetWindowLongPtrW` 挂上 |
+| `ViewArea` / `TabView` | `RegisterClassOnce`，`DefWindowProcW` 或轻量 `ViewProc` | 注册时确定 |
+| `Popup` / `Prompt` / `SeqHint` / `Hotkeys` | `RegisterClassOnce` + `win::CreatePopup(..., self, ...)` | 经 `CREATESTRUCTW::lpCreateParams`，在 `WM_NCCREATE` 里落 `GWLP_USERDATA` |
 
-后三个先注册成 `DefWindowProcW` 再替换，是因为 `WndProc` 是成员函数、需要 `this`，而注册类时实例还不存在。
+2026-11-20 之前的写法是"注册时填 `DefWindowProcW`，创建后用 `SetWindowLongPtrW(GWLP_WNDPROC)` 换掉"，
+**这不是必要手段**：窗口还没创建，直接注册真实 `WndProc` 即可。现在只剩一处例外 ——
+`NavBar` 给原生 `EDIT` 装子类（`SetWindowLongPtrW(edit_, GWLP_WNDPROC, EditProc)`），
+那是子类化别人的窗口类，本来就必须这么做。
+
+`CreatePopup` 必须用 `lpCreateParams` 传 `this` 而不是创建后补设：`WM_NCCREATE` 发生在
+`CreateWindowExW` **返回之前**，任何在该消息里就要用 `this` 的窗口过程会拿到空指针
+（`popup_list.cpp` / `prompt.cpp` 都在 `WM_NCCREATE` 里读它）。
+
 `this` 存在 `GWLP_USERDATA`（`SetThis` / `GetThis<T>`），`WndProc` 取不到就回退 `DefWindowProcW`——
-这条回退不是防御性代码，而是**创建过程中的真实路径**（`WM_CREATE` 早于 `SetThis`）。
+这条回退不是防御性代码，而是**创建过程中的真实路径**（`WM_CREATE` 早于子控件的 `SetThis`）。
+
+窗口类名全部来自 `src/identity.h`（11 个 `id::kXxxClass`），本文件不再定义任何字面量。
 
 ---
 
@@ -102,13 +113,19 @@ ExBarBrowser_Popup                   WS_POPUP | WS_EX_TOOLWINDOW | CS_DROPSHADOW
 
 | 文件 | 职责 | 明确不做 | 依赖 |
 |---|---|---|---|
-| `common.h` | 窗口类名、`WM_APP_*`、`CopyDataPayload`、`ComPtr`、`DpiOf`、PIDL/路径工具、`SystemIsDark`、`ApplyDarkTitleBar` | 任何业务 | 系统头 |
+| `identity.h` | **品牌串、11 个窗口类名、互斥体、管道前缀、日志文件名、`WM_COPYDATA` 魔数**的唯一来源（`namespace id`） | 任何行为、任何 I/O | `<windows.h>` |
+| `common.h` | `WM_APP_*`、`CopyDataPayload`、`ComPtr`、`DpiOf`、PIDL/路径工具、`SystemIsDark`、`ApplyDarkTitleBar`；并把 `identity.h` 的类名 `using` 出来供既有代码沿用 | 任何业务、品牌串定义 | 系统头、`identity.h` |
 | `theme.h/.cpp` | 颜色令牌、字体、DPI 缩放 `S()`、进程级深色 | 布局、绘制 | `common.h` |
+| `ui_draw.h/.cpp` | **绘制原语唯一实现**（`namespace ui`）：`MeasureText` / `DrawGlyph` / `DrawChevron` / `FillRectColor` / `FrameRectColor` / `FillRound` / `DrawSeparator` / `DrawIcon*` / `PaintBuffered`（`GetUiFont` / `GlyphFace` 在 `ui::detail`，不对外）。原 `eb_ui.*` + `namespace eb`（= Ex**B**ar，上一个项目的前缀），2026-11-20 改名 | 任何栏的业务布局、任何输入状态读取、色值 | `common.h`、`icon_glyph.h` |
+| `ui_palette.h` | 色值令牌表（`UiPalette`）：栏基础色 / 编辑框 / 选中 / 分隔线。原 `eb_theme.h` | 逻辑与布局 | `common.h` |
+| `tooltip_host.h/.cpp` | `ui::TooltipHost`：一次全量替换 tooltip 项，内部管好 id 与字符串生命周期 | 任何绘制 | `<windows.h>` |
+| `mouse_rules.h/.cpp` | 鼠标规则模型 + **`CurrentMods()` 唯一实现**（含 AltGr 特判：右 Alt+左 Ctrl 是字符输入，返回 0） | 绘制 | `common.h` |
+| `platform_win.h/.cpp` | `RegisterClassOnce` / `CreateChild` / `CreatePopup` / `ThemeControl` | 任何栏的业务 | `<windows.h>` |
 | `shell_view.h/.cpp` | 一个标签 = 一个 `IExplorerBrowser`；导航、刷新、显隐、尺寸、主题、事件接收 | 标签顺序、历史、标题 | `theme.h` |
 | `tab_strip.h/.cpp` | 标签栏生命周期与模型装配：建窗、吃 `core::TabRef`、图标缓存、`WM_APP_TAB_*` 投递 | 绘制、命中、几何、菜单（各自分片） | `theme.h`、`icon_resolve.h` |
 | `tab_strip_input.cpp` | 消息分发、悬停态、命中测试（谁被点到） | 标签状态 | `mouse_rules.h` |
 | `tab_strip_layout.cpp` | 标签宽度分配、溢出判定、滚动量、tooltip 热区 | 绘制 | `theme.h` |
-| `tab_strip_paint.cpp` | 底色/图标/标题/关闭钮/锁定字形/溢出箭头/新建 + | 任何状态写入 | `eb_ui.h` |
+| `tab_strip_paint.cpp` | 底色/图标/标题/关闭钮/锁定字形/溢出箭头/新建 + | 任何状态写入 | `ui_draw.h` |
 | `tab_strip_actions.cpp` | 标签右键菜单、溢出 » 菜单（只回传动作号） | 执行业务 | `popup_list.h` |
 | `nav_path.h` | **路径语义唯一实现**（纯字符串）：`IsNamespace`/`IsDriveRoot`/`Normalize`/`ParentOf`/`Leaf`/`UpTarget`/`CanNavigateUp`/`kThisPc` | 任何 I/O、Shell、窗口 | 无（只有 `<string>`） |
 | `nav_history.h/.cpp` | **历史栈组件**（每标签一份）：`Request`/`Goto`/`Complete`/`Fail`/`ClearKeepingHere`/`Restore`；压栈只有 `Push` 一处 | Shell、窗口 | `nav_path.h`（仅语义） |
@@ -130,7 +147,7 @@ ExBarBrowser_Popup                   WS_POPUP | WS_EX_TOOLWINDOW | CS_DROPSHADOW
 | `keymap.gen.h`（生成） | `data/keymap.json` 的 C++ 镜像：`kHotkeys` / `kSeqs`。**勿手改**，跑 `tools/gen_keymap.py` | 业务 | — |
 | `sequence.h/.cpp` | 序列键状态机（纯逻辑） | UI | `keymap.h` |
 | `sequence_hint.h/.cpp` | 序列候选弹层（无激活、置顶） | 状态机 | `theme.h` |
-| `mouse_rules.h/.cpp` | 鼠标规则模型 + 内置默认 + `mouse.json` 解析 | 时序 | `json.h` |
+| `mouse_rules.h/.cpp` | 鼠标规则模型 + 内置默认 + `mouse.json` 解析 + **`CurrentMods()` 唯一实现**（含 AltGr 特判：右 Alt+左 Ctrl 是字符输入，返回 0），因它读 `GetKeyState` 属输入端（R15） | 时序、绘制 | `json.h` |
 | `input_router.h/.cpp` | 键盘/序列/鼠标总路由：单击延迟、双击、长按、滚轮、超时 | 业务状态 | `commands.h`、`mouse_rules.h` |
 | `hotkey_manager.h/.cpp` | 快捷键管理器（筛选/改键/清除/恢复默认） | 键位表实现 | `input_router.h` |
 | `prompt.h/.cpp` | 文本输入对话框（书签重命名/新建分类） | 业务 | `theme.h` |
@@ -162,10 +179,10 @@ ExBarBrowser_Popup                   WS_POPUP | WS_EX_TOOLWINDOW | CS_DROPSHADOW
 |---|---:|---|
 | `shell_view.cpp` | 991 | IExplorerBrowser 托管 / 主题下传 / 窗格可见性 / 拖放接收 |
 | `shell_ops.cpp` | 934 | 选择族 / 文件操作 / 属性查询 |
-| `popup_list.cpp` | 695 | 布局命中 / 绘制 / 二级展开 |
-| `bookmark_bar.cpp` | 684 | 绘制 / 命中 / 菜单 |
+| `popup_list.cpp` | 692 | 布局命中 / 绘制 / 二级展开 |
+| `bookmark_bar.cpp` | 681 | 绘制 / 命中 / 菜单 |
 | `app_commands_files.cpp` | 557 | 文件操作 / 视图开关 |
-| `commands.cpp` | 534 | 目录表（纯数据）可以独立成 `.inc` |
+| `commands.cpp` | 545 | 目录表（纯数据）可以独立成 `.inc` |
 | `bookmarks.cpp` | 524 | Netscape 解析 / 树模型 / 持久化 |
 | `shell_input.cpp` | 500 | UIA 探测 / ListView 探测 / 子类生命周期 |
 | `input_router.cpp` | 493 | 键 / 序列 / 鼠标三条入口 |
@@ -463,6 +480,9 @@ mingw 头只声明 1 个。多出的参数走寄存器、被忽略即可，**不
 
 ## 12. 不变量（改动前逐条确认）
 
+> 前 10 条是"改代码不能破的语义"；11–13 是 2026-11-20 新增的**纯机械约束**
+> （已由 `tools/check_components.py` 强制，违反即 CI 红）。
+
 1. **状态只有一份**：标签历史/索引/标题/项目数只在 `App::Tab`；chrome 是纯投影，不缓存副本。
    历史栈的**唯一实现**是 `nav::History`（`App::Tab::nav`），路径语义的唯一实现是
    `nav_path.h` —— 任何地方都不得再手写 `hist.push_back` / `hist.resize` / 自算父目录。
@@ -476,11 +496,18 @@ mingw 头只声明 1 个。多出的参数走寄存器、被忽略即可，**不
 4. **chrome 不调 shell**：`TabStrip`/`StatusBar` 不认识 `ShellView`；`NavBar` 只经 `std::function` 回调。
 5. **`ShellView` 是唯一接触 `IExplorerBrowser` 的类**；其他模块不得包含 `shobjidl.h` 的浏览器接口。
 6. **视觉只走 `Theme`**：颜色、字号、间距、圆角、线宽都从 `theme_` 取。
-7. **窗口类名是外部契约**：`ExBarBrowser_*` 六个类名被脚本、单实例、自动化依赖。
+7. **窗口类名是外部契约**：`ExBarBrowser_*` 11 个类名被脚本、单实例、自动化依赖；
+   定义只在 `identity.h`，改一个名字要同步 `scripts/shot.py` 与文档（规则 R10）。
 8. **路径内部一律反斜杠**，命名空间保持原样；跨模块传递路径不做二次规范化。
 9. **`Theme` 的生命周期覆盖所有 `ShellView`**：析构顺序必须是"先视图后主题"。
 10. **下拉一律走 `ShowPopupList`**：不再新增 `TrackPopupMenu`；行图标由调用方创建与销毁，
     `rows` 必须活到函数返回。
+11. **品牌串只出现在 `identity.h`**：其他文件写 `L"ExBar…"` 会被 `tools/check_components.py` 判失败
+    （规则 B1，见 [NAMING.md](NAMING.md)）。
+12. **绘制原语只有一份**：量字 `ui::MeasureText`、填充/描边/分隔线 `ui::FillRectColor` 等、
+    双缓冲 `ui::PaintBuffered`、控件主题 `win::ThemeControl` —— 自写一份即失败。
+13. **命令名两个方向都要认**：读命令名一律经 `FindCommand`（旧名 ↔ 点分名），
+    不得直接字符串比较（规则 C3）。检查脚本也必须同口径，否则改名后整行被跳过。
 
 ---
 

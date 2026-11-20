@@ -5,20 +5,22 @@
 本仓库**自包含**（2026-11-20 起从 `D:\Windhawk` 主仓独立出来，见 §3.4）：不引用、不修改任何
 ExBar mod 分片，可并存、可整体拷走、可单独卸载。
 
-| 项 | 现状（2026-11-20 18:40，v0.2.1） |
+| 项 | 现状（2026-11-20 19:40，v0.2.1） |
 |---|---|
 | 阶段 | **P2 完成 + P3 起步**：标签/导航/书签/状态栏 + 键盘/序列/鼠标 + 命令契约 + AI 接口全部落地，日常浏览可用 |
-| 规模 | `src/` 18,388 行（57 个 `.cpp` + 47 个 `.h`）；`tests/` 20 个单测、354 项断言 |
-| 产物 | 单 exe ≈18.9 MB（含 `-g` 调试符号；`strip` 后 1.3 MB），静态链接 libstdc++/libgcc |
+| 规模 | `src/` 18,486 行（57 个 `.cpp` + 48 个 `.h`，含新增 `identity.h` / `ui_draw` / `ui_palette`）；`tests/` 20 个单测、354 项断言 |
+| 产物 | 单 exe ≈18.8 MB（含 `-g` 调试符号；`strip` 后 1.29 MB），静态链接 libstdc++/libgcc |
 | 命令 | 137 条目录 / **108 已实现** / 86 条对 AI 暴露（`tools/check_commands.py` 三方对账） |
 | 配置 | 便携模式，全部在 `<exe>\data`：`settings.json` / `bookmarks.html` / `keymap.json` / `mouse.json` / `audit.log` |
-| 验证 | clang++ 20.1.3 零警告；`build_fast.py --clean` 全量 29.8s；真实键鼠消息冒烟通过（`docs/MIGRATION-PLAN.md` §8.2） |
+| 验证 | clang++ 20.1.3 零警告；`build_fast.py --clean` 全量 **10.5s**；真实键鼠消息冒烟通过（`docs/MIGRATION-PLAN.md` §8.2） |
+| 检查 | 3 个静态检查全绿：21 条唯一性 + 2 条禁令 + 1 条接线（`check_components`）、14 组（`check_ai_meta`）、三方对账（`check_commands`） |
 | 版本控制 | **独立仓库**（`E:\ExBarBrowser`，分支 `main`）：源码/脚本/文档/生成头入库，构建与运行产物由 `.gitignore` 排除 |
 
-> 本文所有路径均相对仓库根。文档基线：**2026-11-20 18:40**（代码仍在快速演进，
+> 本文所有路径均相对仓库根。文档基线：**2026-11-20 19:40**（代码仍在快速演进，
 > `src/` 是唯一真相；发现文档与代码不符时先信代码，并顺手改文档）。
 > 想先看"为什么这么设计"，读 [docs/DECISIONS.md](docs/DECISIONS.md)；
-> 想知道"比 ExBar mod 少了什么"，读 [docs/PARITY.md](docs/PARITY.md)。
+> 想知道"比 ExBar mod 少了什么"，读 [docs/PARITY.md](docs/PARITY.md)；
+> 想知道"名字为什么这么起、哪些名字不许改"，读 [docs/NAMING.md](docs/NAMING.md)。
 
 ---
 
@@ -53,7 +55,7 @@ ExBarBrowser.exe（本进程）
 | 改造对象 | 系统资源管理器窗口 | 自己造窗口 |
 | 能做的事 | 改 explorer 的标签栏/导航栏/命令栏，加书签栏、搜索、命令面板、AI 面板 | 只能做自己窗口里的东西；改不了系统 explorer |
 | 崩溃面 | 崩了连带 explorer | 崩了只影响自己 |
-| 现状 | 约 7.7 万行（17 个分片）、127 条命令目录（`data/capabilities.json`） | 18,388 行、137 条命令目录（108 已实现 / 86 对 AI 暴露） |
+| 现状 | 约 7.7 万行（17 个分片）、127 条命令目录（`data/capabilities.json`） | 18,486 行、137 条命令目录（108 已实现 / 86 对 AI 暴露） |
 
 两者**共享设计口径而非代码**：主题色令牌、面包屑交互语义、标签栏视觉、快捷键习惯都对齐 ExBar mod
 （`ebnav` / `ebtab` / `ebstatus` 的行为），但一行代码都不互相引用，各自可独立演进、独立卸载。
@@ -93,7 +95,7 @@ ExBarBrowser.exe（本进程）
 | 鼠标规则 | `src/mouse_rules.cpp`、`src/shell_input.cpp` | 目标区 × 按钮 × 触发（单击/双击/长按/四向滚轮）× 修饰键；shell 视图命中经子类 + UIA 汇入同一条规则引擎 |
 | 快捷键管理器 | `src/hotkey_manager.cpp` | 范围筛选、改键/清除/恢复默认、冲突/系统占用/未实现标记 |
 | 命令管线 | `src/commands.cpp` | 137 条命令目录（108 已实现 / 29 未实现，与 mod 同 id 同组），参数对象化 `Invoke(id, Args, actor)`；`audit.log`；`tools/check_commands.py` 三方对账 |
-| 命令命名空间 | `src/cmd_naming.cpp` | 点分稳定名（`nav.back` / `fs.delete`）与旧名双向互通，既有 keymap/序列/脚本零改动 |
+| 命令命名空间 | `src/cmd_naming.cpp` | 137 条旧名 ↔ 点分名双向映射（`nav.back` / `fs.delete`），`FindCommand` 两个方向都认；既有 keymap/序列/脚本零改动 |
 | 前置条件与结构化结果 | `src/commands.h`、`src/ai_api.cpp` | 声明式 `Requirements` + `CanExecute()`；`RegisterWithResult` 通道返回 JSON（`OpListDir`/`OpStat`/`OpTopN`/`OpDiskUsage`） |
 | 磁盘统计 | `src/disk_scan.cpp` | `OpTopN`（谁最占空间）/ `OpDiskUsage`（这目录多大）；带 deadline、`truncated`/`timedOut`、不跟随重解析点 |
 | AI 操作接口 | `src/ai_api.cpp`、`src/ai_server.cpp` | JSON-RPC 2.0 over 命名管道：`initialize`/`tools/list`/`tools/call`/`exbar/state`；86 条工具；令牌 + 危险命令双门；见 `docs/AI-INTERFACE.md` |
@@ -101,9 +103,10 @@ ExBarBrowser.exe（本进程）
 | 配置与状态 | `src/config.cpp`、`src/json.cpp`、`src/text_file.cpp` | 便携模式写 `<exe>\data\settings.json`；窗口几何、会话、锁定标签、最近访问、状态栏段、视图/排序/分组、窗格偏好 |
 | 会话 | `src/app_commands_misc.cpp`、`src/config.cpp` | 启动恢复上次标签组与关闭历史；`SessionSave` / `SessionRestore` |
 | 深浅色 / 高 DPI | `src/theme.cpp`、`src/main.cpp` | 跟随系统；Per-Monitor V2；`WM_DPICHANGED` 重建令牌与字体 |
-| 单实例转发 | `src/main.cpp` | 命名互斥量 + `WM_COPYDATA`（magic `0xEBB1`） |
+| 单实例转发 | `src/main.cpp`、`src/identity.h` | 命名互斥量 + `WM_COPYDATA`（magic `0x45584242`，见 `id::kCopyDataMagic`） |
 | 命令行 | `src/main.cpp` | 目录参数、`/select,<文件>`（打开父目录） |
-| 基础设施收编 | `platform_win` / `str` / `log` / `clipboard` / `tooltip_host` / `icon_glyph` | 窗口类注册、字符串、日志轮转、剪贴板、tooltip、字形码位各只有一份实现；`tools/check_components.py` 拦回退 |
+| 基础设施收编 | `platform_win` / `str` / `log` / `clipboard` / `ui_draw` / `ui_palette` / `icon_glyph` | 窗口类注册、字符串、日志轮转、剪贴板、量字/填充/描边/双缓冲、色值令牌、字形码位各只有一份实现；`tools/check_components.py` 拦回退 |
+| 工程标识 | `src/identity.h` | 品牌串、11 个窗口类名、互斥体、管道、日志文件名、`WM_COPYDATA` 魔数的唯一来源；改名只动一个文件。规范见 `docs/NAMING.md` |
 | 右键菜单动词 | `scripts/install.ps1` | 可选接管；全部写 `HKCU`，不需要管理员 |
 
 ### 2.2 未实现（诚实清单）
@@ -137,7 +140,7 @@ bash build.sh          # 或 build.bat（cmd）
 - 工具链：Windhawk 自带 `C:\Program Files\Windhawk\Compiler\bin\clang++.exe`（20.1.3），
   `-target x86_64-w64-mingw32`，`-std=c++20 -O1 -g -mwindows`。
 - 构建由 `build_fast.py` 驱动（PCH + 分 TU 增量 + 并行），`build.sh`/`build.bat` 只是透传参数的薄包装。
-  实测全量 29.8s（PCH 14.1s 占大半）、改一行 ~1s、无改动 0.3s。常用：`--clean` 全量重建、
+  实测全量 10.5s（PCH 2.2s + 57 TU 并行）、改一行 ~1s、无改动 0.3s。常用：`--clean` 全量重建、
   `-j 16` 并行数、`--stats` 看耗时、`--objdir <dir>` 多会话隔离中间目录。
 - **换目录/搬机器后必须 `--clean`**：PCH 是 clang AST 二进制，里面记着绝对路径；
   仓库从 `D:\Windhawk\ExBarBrowser` 搬到 `E:\ExBarBrowser` 后，旧 `obj/common.h.gch`
@@ -195,6 +198,12 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
 
 `data/` 不入库意味着**新克隆的仓库首次启动没有配置文件** —— 这是预期行为：
 `keymap` 走 `src/keymap.gen.h` 的内置默认表，书签为空树，`settings.json` 首次保存时自动创建。
+
+**换行符目前是混的**（`.editorconfig` 声明 CRLF，仓库里 66 个文件纯 CRLF、89 个纯 LF）。
+编辑文档时如果编辑器按 `.editorconfig` 转成 CRLF，`git diff` 会把整文件算成改动。
+要消除这类幻影 diff，两条路选一条：① 加 `.gitattributes` 统一 `text=auto`，
+② 把 `.editorconfig` 的 `end_of_line` 改成 `lf` 并按仓库现状（LF 占多数）重排。
+本仓库尚未做这个统一，改文档前先看一眼 diff 规模。
 
 ---
 
@@ -277,7 +286,9 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
 ```
 main.cpp            进程级：DPI → COM(STA)/OLE → 单实例 → 命令行
   └ App            窗口/布局/标签生命周期/命令注册/消息路由
+      ├ identity.h 品牌串 / 11 个窗口类名 / 互斥体 / 管道 / 日志名 / 魔数（唯一来源）
       ├ Theme      颜色令牌 + 字体 + DPI 缩放（唯一视觉来源）
+      ├ ui::      量字 / 填充 / 描边 / 分隔线 / 圆角 / 字形 / 图标 / 双缓冲 / tooltip（各一份，`ui_draw` + `tooltip_host`）
       ├ platform_win / str / log / clipboard / tooltip_host / icon_glyph   基础设施（各一份）
       ├ TabStrip   只画 + 命中 + PostMessage，不持有标签状态
       ├ NavBar     ├ NavModel    路径 → 分段/父级/子目录枚举（语义走 nav_path）
@@ -294,7 +305,7 @@ main.cpp            进程级：DPI → COM(STA)/OLE → 单实例 → 命令行
              └ nav::History   每标签一份历史栈事务
 ```
 
-五条不变量（改代码前先读）：
+七条不变量（改代码前先读；完整 13 条见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §12）：
 
 1. **状态只有一份**：标签状态（历史、当前索引、显示名、项目数）只在 `App::Tab` 里；chrome 控件是纯投影。
 2. **chrome 不调 shell**：`TabStrip` / `StatusBar` 只发 `WM_APP_TAB_*`；`NavBar` 只回调 `std::function`。
@@ -302,6 +313,9 @@ main.cpp            进程级：DPI → COM(STA)/OLE → 单实例 → 命令行
 4. **`Theme` 是唯一视觉来源**：任何颜色、字号、间距都必须走 `theme_`，不许写死。
 5. **所有动作走 `CommandBus`**：按钮、热键、序列、鼠标规则、命令面板、AI 是同一条入口 ——
    任何"绕过总线直调"的分支都会造成"按钮能点、双击没反应"这类行为分裂（`docs/ARCHITECTURE-RULES.md` R1/R16）。
+6. **品牌串只出现在 `identity.h`**：其他文件写 `L"ExBar…"` 即失败（`docs/NAMING.md` B1）。
+7. **绘制原语只有一个入口**：量字 `ui::MeasureText`、主题 `win::ThemeControl`、双缓冲 `ui::PaintBuffered`、
+   填充/描边/分隔线 `ui::Fill*` —— 自写一份即失败（`tools/check_components.py`，21 条唯一性规则）。
 
 模块职责、消息流时序、COM 所有权与 ABI 补丁细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；
 写新代码前必读的硬规则见 [docs/ARCHITECTURE-RULES.md](docs/ARCHITECTURE-RULES.md)。
@@ -312,7 +326,7 @@ main.cpp            进程级：DPI → COM(STA)/OLE → 单实例 → 命令行
 
 ```
 ExBarBrowser/                       独立 git 仓库（main）
-├─ src/                             按职责命名（平铺，57 .cpp / 47 .h，18,388 行）
+├─ src/                             按职责命名（平铺，57 .cpp / 48 .h，18,486 行）
 │  ├─ main.cpp                      进程入口：DPI / COM+OLE / 单实例 / 命令行
 │  ├─ app.{h,cpp}                   装配：单例 / 窗口创建 / 生命周期 / 鼠标入口
 │  ├─ app_wnd / app_tabs / app_nav  主窗口过程、标签生命周期、导航与历史栈
@@ -330,14 +344,15 @@ ExBarBrowser/                       独立 git 仓库（main）
 │  ├─ bookmark_bar / bookmarks / bookmark_io / bookmark_drop               书签
 │  ├─ status_bar / view_stats                               状态栏 9 段与取数
 │  ├─ shell_view / shell_ops / disk_scan                    视图托管、文件操作、目录统计
-│  ├─ popup_list / eb_ui / theme / eb_theme                 弹层、字形/字体原语、主题
+│  ├─ popup_list / ui_draw / ui_palette / theme             弹层、绘制原语、色值令牌、主题
+│  ├─ identity.h                                            品牌串 / 窗口类名 / 进程级资源名（唯一来源）
 │  ├─ platform_win / str / log / clipboard / tooltip_host / icon_glyph     收编后的基础设施
 │  ├─ config / json / text_file                             配置、JSON、原子文本写
-│  └─ common.h                                              共享类型与常量
+│  └─ common.h                                              共享类型与常量（并转发 identity 的类名）
 ├─ tests/                           20 个单测 / 354 项断言（每个 .cpp 自带 main + Check）
 ├─ tools/                           check_commands / check_ai_meta / check_components / gen_keymap / gen_icon / probe_highlight
 ├─ scripts/                         shot.py / install.ps1 / uninstall.ps1
-├─ docs/                            见下表（13 篇）
+├─ docs/                            见下表（14 篇）
 ├─ resources/                       app.ico / app.rc / icon_preview.png
 ├─ data/                            运行期配置（**不入库**，首次启动自动生成）
 ├─ build.sh / build.bat             构建入口（薄包装，透传参数）
@@ -362,6 +377,7 @@ ExBarBrowser/                       独立 git 仓库（main）
 | [docs/OPERATION-MODEL.md](docs/OPERATION-MODEL.md) | 要定操作契约的人 | **操作模型**（已实现 1–10 步）：MCP / VS Code / Blender / Opus 四家的做法、七条原则、与现状的差距、迁移的做法与取舍 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 要排期的人 | P1 收尾 → P4 的里程碑、验收标准、风险与回退 |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 想推翻现有设计的人 | ADR：独立进程、托管视图、GDI chrome、单实例、无配置 |
+| [docs/NAMING.md](docs/NAMING.md) | 要起名/改名的人 | **命名与标识规范**：品牌串唯一来源、跨软件契约（不许改）、命名空间按领域、命令点分名与 legacy 规则、业界比对（Blender/VS Code/Qt/Opus/TC/Far/Chromium/Tauri） |
 | [CHANGELOG.md](CHANGELOG.md) | 所有人 | 变更记录（Keep a Changelog 中文版） |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献者 / AI Agent | 代码规范、提交规范、验证清单、禁止事项 |
 
@@ -377,10 +393,10 @@ ExBarBrowser/                       独立 git 仓库（main）
 | `Initialize` 崩溃或视图空白 | mingw 的 `shobjidl.h` 把第三参写成 `const FOLDERSETTINGS*`，真实 ABI 是 `FOLDERVIEWOPTIONS` 按值 | 已按 vtable 索引 3 直接调真实签名（`InitBrowser`），不要改回头文件声明 |
 | 第二次启动没开新窗口 | 单实例转发把路径给了已有窗口 | 预期行为；要并行比较就先把已有窗口关掉 |
 | 日志看起来是乱码/带空字符 | 日志是 UTF-16 LE 追加写、**无 BOM**，`cmd` 的 `type` 会按 ANSI 解释 | 用 `powershell -Command "Get-Content $env:TEMP\ExBarBrowser.log -Encoding Unicode -Tail 20"`，或 VS Code 手动选 UTF-16 LE |
-| 找不到窗口 | 脚本按类名 `ExBarBrowser_Main` 找 | 类名常量在 `src/common.h`，改名要同步 `scripts/shot.py` |
+| 找不到窗口 | 脚本按类名 `ExBarBrowser_Main` 找 | 类名常量在 `src/identity.h`（`id::kMainClass`），改名要同步 `scripts/shot.py` |
 | 下拉菜单点一下就没 | 弹层在 `WM_ACTIVATE(WA_INACTIVE)` 时自动关闭；前台锁定/焦点被抢会立刻触发 | 确认点击前主窗口是前台；排查见 `docs/DEVELOPMENT.md` §3.4 |
 | 弹层出现在屏幕角落 | 传了客户区坐标而不是屏幕坐标 | `ClientToScreen` 后再调 `ShowPopupList` |
-| 每个 TU 都报 `malformed or corrupted AST file` | `obj/common.h.gch` 里记着生成时的绝对路径；仓库搬目录后即失效 | `bash build.sh --clean` 重建 PCH（29.8s） |
+| 每个 TU 都报 `malformed or corrupted AST file` | `obj/common.h.gch` 里记着生成时的绝对路径；仓库搬目录后即失效 | `bash build.sh --clean` 重建 PCH（约 10s） |
 | 改了 `data/keymap.json` 但默认键没变 | 内置兜底表在 `src/keymap.gen.h`，需要重新生成 | `python tools/gen_keymap.py`；`check_commands.py` 会对账 |
 
 ---

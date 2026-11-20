@@ -19,7 +19,172 @@
 
 ## [Unreleased]
 
-（暂无。下一项动工前这里留空，见 [docs/ROADMAP.md](docs/ROADMAP.md) P3。）
+**命名与标识收编 + 已建入口接线。**
+这一轮不改行为，只做两件事：① 独立后遗留的旧命名（品牌串三套、`eb_` 来源前缀、
+`QuitExplorer` 语义错位）收口；② 上一轮建好却没人调用的入口（`MeasureText` /
+`CreateChild` / `CreatePopup` / `ThemeControl`）接线，并删掉 4 个零调用死入口。
+
+### 新增
+
+- **`src/identity.h`**：品牌串、11 个窗口类名、单实例互斥体、命名管道、
+  日志文件名、AI 服务名、环境变量、`WM_COPYDATA` 魔数的唯一来源。
+  此前这些字面量散在 9 个文件里，改名要动 9 处。
+- **`docs/NAMING.md`**：命名与标识规范。含"什么必须改、什么必须留"的处置表
+  （跨软件契约 `EXBAR_*` 书签属性、数据文件名永不改）、命名空间按领域的规则、
+  命令点分名与 legacy 名三条硬规则（稳定 id / 旧名永不删 / 消费方全覆盖），
+  以及 9 个业界项目的比对依据（Blender 强制点分、VS Code legacy 数组、
+  Qt 框架前缀归属、Opus 粗粒度命令、TC 前缀、Far 路由前缀、Chromium 三分载体、
+  Tauri 窗口类名教训、Emacs Lisp 双连字符）。
+- `tools/check_components.py` 从 15 条扩到 **24 条**（21 唯一性 + 2 禁令 + 1 接线）：
+  新增品牌串（正式名/显示名/窗口类名）三条唯一性（`docs/NAMING.md` B1）、`MeasureText`、
+  `SetWindowTheme`、`CurrentMods` 各一条，另新增 **`STALE` 段**——"入口已建但零调用"的检查
+  （这类问题查重抓不到、编译不报错）。`STALE` 分三态，只有"`home` 内也无人调用"才判失败；
+  "只有 `home` 内自用"降级为**提示**（该私有化，但代码是活的，不该让 CI 红）。
+  据此把 `GetUiFont` / `GlyphFace` 收进 `ui::detail`（公开等于开了"绕过 DrawGlyph 自己建字体"的口子），
+  `IconIdFromName` 登记为**预留**（数据驱动处按名字取图标，当前 keymap 不含图标名）。
+
+### 变更
+
+- **`eb` 命名空间整体拆解**（`docs/NAMING.md` §3.2 的落地）。`eb` = Ex**B**ar，是独立前那个
+  Windhawk mod 的缩写 —— 独立后继续用它等于"拿上一个项目的前缀写自己的代码"（Qt 社区对 `Q`
+  前缀的结论同此）。拆成两个领域入口 + 一个输入端：
+
+  | 原 | 现 | 说明 |
+  |---|---|---|
+  | `eb_ui.{h,cpp}` + `namespace eb` | `ui_draw.{h,cpp}` + `namespace ui` | 16 个绘制/量字/图标原语 |
+  | `eb_theme.h` | `ui_palette.h`（`UiPalette`） | 色值令牌是数据，绘制原语是动作，两者分开 |
+  | `eb::TooltipHost` | `ui::TooltipHost`（`tooltip_host.h`） | 同属 UI 原语 |
+  | `eb::CurrentMods` | `mouse_rules.h` 的全局 `CurrentMods()` | 读 `GetKeyState`，属输入端（R15） |
+
+- **`WM_COPYDATA` 魔数改回 `0xEBB1`**（撤销本轮早先的换值）。原打算换成 `0x45584242`，
+  理由只是"`EB`+`B1` 像 mod 期的玩笑"。但窗口类名 `ExBarBrowser_Main` 没变 —— 升级后若旧
+  进程还在跑，新进程会找到它、用新魔数发消息、被静默拒绝，用户看到"已有一个 ExBar 窗口
+  未响应"，而那个进程其实好好的。独立免除了"与 mod 兼容"的义务，但**同一程序的前后版本
+  之间仍要兼容**，这是当时漏掉的一层。换值只买到审美收益，代价是一次真实断裂，故撤销。
+
+  没有按原计划拆成 `Painter` / `Assets` / `Metrics` 三个类：本工程 16 个函数、约 200 行，
+  拆三个命名空间只是多一层跳转。**判断依据是规模，不是教条** —— 等真长到需要分组再拆。
+  全仓已无 `namespace eb` / `eb::` 残留，由 `check_components.py` 的 `N1/N2` 口径继续守着。
+- **`CurrentMods` 从 UI 层移到输入端**（`eb::CurrentMods` → `mouse_rules.h` 的全局函数）。
+  它读 `GetKeyState`，是**输入状态**而不是绘制资源；以前放在 `eb_ui`（绘制原语命名空间）里，
+  于是每个栏在自己的 `WM_MOUSEMOVE` 里调 UI 层的函数去问输入状态，分层方向是反的
+  （`ARCHITECTURE-RULES.md` R15）。顺带补上 **AltGr 特判**：右 Alt + 左 Ctrl 在德语/波兰语等
+  布局下是字符输入修饰（`AltGr+E` = 「ę」），不能被当成 `Ctrl+Alt+E` 吃掉 —— 以前没有这个判断，
+  非美式键盘上 `Ctrl+Alt+E`（切换扩展名）会在输入字符时误触发。
+  `input_router` 的成员版本因需按"当前聚焦控件"决定是否抑制，保留自身一份。
+- **`QuitExplorer` 主名改为 `win.quit`**。它的实际行为是"退出本程序"，而 mod 期
+  这个名字是"重启 explorer.exe"。枚举名保留（`CmdId` 值一经分配不改），
+  旧名作为 legacy 名仍可解析；`keymap.json` / `keymap.gen.h` / 校验器白名单同步。
+- **`FindCommand` 改为三路解析**：精确名 → 旧名转点分名 → 点分名转旧名。
+  此前是"先精确、再试点分"两段式，要求调用方知道自己手里是哪种名字；
+  迁移期间三种组合都会出现，必须对任何输入都试三条路。
+- `win::ThemeControl` 签名改为 `subApp` 后缀（`"Explorer"` / `"CFD"`），
+  深浅两套 SubAppName 由它统一拼装，不再让调用方写三元表达式。
+- `win::CreateChild` 参数 `h96` 改名 `heightPx`（它接收的是已缩放像素），
+  并开放 `style` 参数（`StatusBar` / `BookmarkBar` 不需要 `WS_CLIPCHILDREN`）。
+
+### 修复
+
+- **`win::CreatePopup` 的 this 指针设置时机晚于 `WM_NCCREATE`**。原实现在
+  `CreateWindowExW` 返回后才 `SetWindowLongPtrW(GWLP_USERDATA)`，而弹层/对话框的
+  窗口过程都在 `WM_NCCREATE` 里读 `CREATESTRUCTW::lpCreateParams`。改为直接用
+  `lpCreateParams` 传递，并保留零值兜底。
+- `log.cpp` 靠 `common.h` 间接取到 `identity.h`，单测独立编译时报
+  "use of undeclared identifier 'id'"。改为显式包含。
+- `tools/check_commands.py` 的三个盲点：
+  ① 主名正则 `L"(\w+)"` 不认点分名，`win.quit` 那行被静默跳过（137 条变 136）；
+  ② `implemented` 用主名比对处理器（处理器按 `CmdId` 枚举注册），改名后误报
+  "已实现但没处理器"；③ 不认 `cmd_naming` 表里的旧名，用户已有 keymap 会被判失效。
+- `tools/check_ai_meta.py` 第 11 项的两个缺陷（与 `check_commands.py` 同源）：
+  ① 命令名正则 `L"(\w+)"` 不认点分名，`win.quit` 被整行跳过，于是误报
+  "别名 QuitExplorer -> win.quit：源命令不存在"——**那恰恰是迁移完成的标志**；
+  ② 覆盖率只按别名表左列（旧名）统计，迁移后的命令会被算成"尚无显式别名"
+  （显示 1/137）。改为按两个方向取并集。修完输出 `137 条别名，全部有显式别名`。
+- `tests/naming_test.cpp` 同类误判：点分主名被当成"缺别名"。改为
+  "点分主名 + 旧名可解析 = 通过"。
+
+### 移除
+
+- `eb::FontPx` / `eb::Scale` / `eb::IconSize`（删除时的名字）：三个零调用的 DPI 换算入口。
+  真实缩放一律走 `Theme::S()`；一个概念两个公式是"两套观感"的成因。
+  其中 `FontPx` 还把枚举值当数字直接乘（`enum FontRole { FR_UI = 12 }`），
+  枚举名义上是"字号角色"，实际只承载一个 int 槽位，而建字体的
+  `GetUiFont` 又只收尺寸+字符串——角色在传递链上丢失，只能靠字体名反推。
+- `eb::IconGlyph`（删除时的名字）：字形表已由 `ico::Glyph` 统一，这个按名字取的中间层零调用
+  （`DrawChevron` 改为直接查 `ico::IconId`，不再经名字字符串绕一圈）。
+- `eb::CurrentMods`：不是删除，是**搬家**（移到 `mouse_rules.h` 的 `ui` 之外），见"变更"首条。
+
+### 文档
+
+- 全部文档基线重核到 **2026-11-20 19:40**，并按代码实测修正数字：
+  `src/` 18,462 行 / 57 `.cpp` + 48 `.h`；全量构建 10.5s（上一版误记为 29.8s，
+  那是冷 PCH 一次性开销，PCH 命中后是 2.2s）；`check_components` 规则数 23。
+- `docs/ARCHITECTURE.md` §2.1 重写窗口类注册策略（不再有"注册 `DefWindowProcW` 再替换"的
+  过时描述，只剩 `EDIT` 子类化一处例外）；§3 模块表补 `identity.h` / `eb_ui` / `platform_win`；
+  §12 不变量从 10 条扩到 13 条（新增 3 条纯机械约束）；§13 补 `ebop` 与 `ebai` 的对应关系。
+- `docs/DECISIONS.md` 补 **D8**（从主仓独立为自包含仓库）与 **D9**（品牌串收编到 `identity.h`）；
+  D4 补魔数换值；D7 标注"复检条件已触发但决策维持"及原因（不是引 CMake，而是把清单改成自动扫描）。
+- `docs/NAMING.md` 实施状态表按实际补全（`MeasureText`/`ThemeControl`/`CreateChild`/`CreatePopup`
+  接线、`QuitExplorer` → `win.quit`、三个校验器改动），并如实记录 1/137 的迁移进度。
+- `docs/DEVELOPMENT.md` 补"新增头文件必须自足"（PCH 会掩盖缺失的 `#include`，
+  单测单独编译才暴露 —— `log.cpp` 就是这样被发现的）；发布前检查补静态检查与基线更新两项。
+
+### 接线（建好但此前无人调用）
+
+- `eb::MeasureText` → 8 处裸调 `GetTextExtentPoint32W` 全部改用，
+  顺带删掉 6 处冗余的 `SelectObject` / 还原样板（每处都各自维护一个 `old`）。
+- `win::CreateChild` → 4 个栏的 `CreateWindowExW` + `SetThis` 两行变一行。
+- `win::CreatePopup` → 弹层 / 对话框 / 序列提示共 4 处。
+- `win::ThemeControl` → `nav_bar`（`CFD`）、`popup_list`（`Explorer`）共 3 处。
+
+### 第二轮：命名收尾 + 校验器补硬约束
+
+**① 命令主名全部迁到点分名（137/137）。**
+`commands.cpp` 的 `d.name` 从旧驼峰名改成点分名（`TabCloseOther` → `tab.close.others`），
+`Cmd` 前缀随之自然消失（零残留）。`legacyName` 改为 `cmdnaming::LegacyOf(name)` 反查 ——
+此前是直接取 `d.name`，主名迁移后会让 `name` 与 `legacyName` 变成同一个值，
+client 的"旧名对照"静默失效。
+
+**`file.*` 与 `fs.*` 不合并。** 原计划"`Cmd*` 15 条并入 `fs.*`"作废：`file.*` 是交互式
+（弹输入框/作用于当前选中），`fs.*` 是确定式（目标由参数点名）。`commands.h:39-47`
+早已论证两套语义应当共存，合并会丢掉这个区分，并改写已暴露给 AI 的 `fs.*` 名。
+`Cmd` 前缀去掉之后，两者的差异由第二段表达（`file.copy` vs `fs.copy.toclip`），足够清晰。
+
+**② `eb` 命名空间拆解。**
+`eb_ui.h/.cpp` → `ui_draw.h/.cpp`（`namespace eb` → `ui`）、`eb_theme.h` → `ui_palette.h`
+（`EbColors`/`EbPalette` → `UiPalette`/`PaletteFor`）。21 个文件、约 77 处调用点。
+`shell_view.cpp` 里同名的局部变量 `HWND eb`（ExplorerBrowser 缩写）一并改名为 `ebw` ——
+它和旧命名空间同名，读代码时容易误认。
+`ui::GetUiFont` / `ui::GlyphFace` 收进 `ui::detail`：它们本来零外部调用，
+公开等于给了"绕过 `DrawGlyph` 自己建字体"的口子。
+
+**③ `CurrentMods` 移到输入端并去重。**
+`eb::CurrentMods` → `mouse_rules.h` 的 `CurrentMods()`（它读 `GetKeyState`，属输入状态，
+放在 UI 层是分层反向）。同时发现 `input_router::CurrentMods` 与它**一字不差**（含 AltGr
+特判）—— 校验器此前以"需按焦点抑制"为由白名单放行，读代码后确认成员函数没有任何额外
+逻辑，改为 `return ::CurrentMods();`，白名单从 2 个文件收紧到 1 个。
+
+**④ 校验器补三条硬约束。**
+- **C1 命令 id 稳定**：`check_commands.py` 与 `data/commands-baseline.json` 比对枚举顺序。
+  `CmdId` 没有显式赋值，值 = 声明顺序；中间插一条会让后面所有 id 位移，外部脚本/AI
+  按 id 调用就会"调 A 执行 B"。现在只允许在末尾追加。
+- **C2 旧名只增不减**：基线的 `legacyNames` 集合只许扩大。用户已有的 `keymap.json`
+  写的是旧名，删一条就是静默丢键。
+- **`eb` 废弃前缀**：3 条 `FORBID`（`namespace eb` / `eb::` / `#include "eb_`），防回流。
+
+**⑤ `STALE` 检查从两态改三态。**
+原来"外部有调用就算通过"太宽：`GetUiFont` 只在 `ui_draw.cpp` 内自用也会被判通过。
+现在区分——外部有调用（通过）/ 仅内部自用（提示"应私有化"）/ 连内部都没调用（失败）。
+顺带修掉"同名 `.h` 的声明行被算作外部调用"的漏检。
+
+### 修复（第二轮）
+
+- `cmd_naming` 两个查表方向大小写不对称：`AliasOf` 用 `find`（区分大小写）、`LegacyOf`
+  先 `Lower` —— 表现为"`nav.back` 认、`NavBack` 认、`navback` 不认"。`naming_test.cpp`
+  的断言一直失败。两个方向统一改 `_wcsicmp`；局部 `Lower()`（第三个大小写归一实现）随之
+  删除，同类工具统一在 `str::Lower`。
+- `check_ai_meta.py` 四张硬编码旧名的表（`INDIRECT_ARGS` / `KNOWN_NO_TARGET` / `COVERS` /
+  `UI_ONLY`）在主名迁移后全部失配，一次误报 19 条。改为点分名（`c['name']` 现在就是这个值）。
 
 ---
 
@@ -47,9 +212,9 @@
 - **搬目录踩到 PCH 的绝对路径**：`obj/common.h.gch` 是 clang AST 二进制，里面记着
   `D:/Windhawk/ExBarBrowser/src/common.h`；搬完直接 `bash build.sh` 会得到 57 个 TU 全报
   `malformed or corrupted AST file`。`build_fast.py` 不会自动察觉路径变更，需要一次
-  `--clean`（实测 29.8s，其中 PCH 14.1s）。已写进 README §3.1 与 §8 坑表。
+  `--clean`（冷 PCH 实测 29.8s，其中 PCH 14.1s；PCH 命中后的全量重建是 10.5s）。已写进 README §3.1 与 §8 坑表。
 - **README / CHANGELOG 全量重核对**：现状表从"10,200 行 / 127 条命令 / 94 已实现 / exe 12 MB"
-  更新为实测值（18,388 行、137 条、108 已实现、86 对 AI 暴露、18.9 MB / strip 1.3 MB），
+  更新为实测值（当时 18,388 行、137 条、108 已实现、86 对 AI 暴露、18.9 MB / strip 1.3 MB），
   §3.4 版本控制整节重写，§5 架构图补 `ai_api`/`ai_server`/`shell_input`/`nav::History`/
   基础设施收编，§6 目录树补全 20 个新模块，§8 坑表补两条（PCH 路径、生成头不同步）。
 

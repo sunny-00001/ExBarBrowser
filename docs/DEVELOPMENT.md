@@ -1,6 +1,6 @@
 ---
 status: current
-baseline: 2026-11-19
+baseline: 2026-11-20 19:40
 ---
 
 # 开发与调试
@@ -23,8 +23,8 @@ baseline: 2026-11-19
 | 构建系统 | `build_fast.py` | Python 驱动的增量构建（PCH + 分 TU 缓存 + 并行）；`build.sh`/`build.bat` 是薄包装 |
 | Python | 3.x | 仅构建期依赖，运行产物是零依赖单 exe |
 
-**没有 CMake / Makefile 是刻意的**：保持无第三方构建系统的简洁，但用约 500 行 Python 实现增量，
-解决"改一行全量重编"的痛点（实测单命令全量 88s → PCH 增量：全量 29.8s、改一行 ~1s、无改动 0.3s）。
+**没有 CMake / Makefile 是刻意的**：保持无第三方构建系统的简洁，但用约 410 行 Python 实现增量，
+解决"改一行全量重编"的痛点（实测单命令全量 88s → PCH 增量：全量 10.5s、改一行 ~1s、无改动 0.3s）。
 清单只有**一份**（`build_fast.py` 顶部的 `EXCLUDE_PATTERNS`/`COMPILE_FLAGS`/`LIBS`），
 `build.sh`/`build.bat` 只做参数透传，不存在多套清单漂移（见 §3.1）。源文件由 `src/*.cpp` **自动扫描**
 （当前 57 个 TU），头文件依赖用 clang `-MMD` 精确追踪。
@@ -193,6 +193,13 @@ EXCLUDE_PATTERNS = [
 
 漏加清单已不可能，但**排除表会误伤**：文件名叫 `_foo.cpp` 不会进构建，链接期才暴露。
 
+**新增头文件必须自足**：PCH（`common.h`）会替所有 TU 补上 `<windows.h>` / `<string>` / `<vector>`，
+所以"`src/xxx.cpp` 只 include 了自己的头却用了 `std::wstring`"这类缺口在正常构建里**不会报错** ——
+一旦该文件被单独编进单测（`tests/*.cpp` 有些就是直接链 `src/xxx.cpp`），立刻链接失败。
+真实案例：`log.cpp` 用了 `std::wstring` 却没 `#include <string>`，靠 PCH 编过了几个月，
+2026-11-20 被单测链接暴露。**自检方法**：把该文件从测试里单独编一次，
+`clang++ -fsyntax-only -Isrc src/xxx.cpp`（不带 `-include-pch`）。
+
 ### 3.2 加日志
 
 统一用 `log.h` 的 `LogDbg(L"[模块] ...", ...)`（UTF-16 LE 追加到 `%TEMP%\ExBarBrowser.log`，
@@ -339,10 +346,12 @@ Get-Content "$env:TEMP\ExBarBrowser.log" -Tail 20 -Encoding Unicode
 ## 6. 发布前检查
 
 - [ ] `bash build.sh` 零警告
+- [ ] 三个静态检查全绿：`check_commands.py` / `check_ai_meta.py` / `check_components.py`
 - [ ] 冷启动 → 默认目录可浏览
 - [ ] 5 个标签连续开关 20 次，无残留、无崩溃
 - [ ] 深/浅色各截图一张（`scripts/shot.py`），视觉无明显错位
 - [ ] 100% / 150% DPI 各看一次
 - [ ] `install.ps1` → 右键菜单可用 → `uninstall.ps1` 干净还原
 - [ ] `CHANGELOG.md` 有对应版本条目，版本号与 `README.md` 状态表一致
+- [ ] 文档基线时间已更新（README / ARCHITECTURE / PARITY / ROADMAP 头部的 `baseline`）
 - [ ] 产物不入库（`git status` 里没有 exe/png/log）

@@ -43,7 +43,7 @@
 把 UI 命令硬暴露出去。
 
 同理不暴露的还有：弹系统对话框的（`FolderOptions` / `Preferences` / `MapDrive`
-——阻塞且语义不可控）、改进程形态的（`QuitExplorer` / `NewWindow`）、写剪贴板的
+——阻塞且语义不可控）、改进程形态的（`win.quit`（原名 `QuitExplorer`） / `NewWindow`）、写剪贴板的
 （`PathCopy*` ——修改外部状态却不产生可回退的记录）。
 
 当前暴露 **86 条**（137 条目录中已实现 108 条，扣除 22 条依赖选中或纯人机 UI 的命令），
