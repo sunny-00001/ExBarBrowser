@@ -11,6 +11,20 @@
 
 namespace {
 
+namespace {
+
+// 无参命令的 schema（119 条命令都用它）。
+//
+// 以前这一行 41 字符的字面量在表里抄了 119 遍，占全表体积的一半以上，
+// 也让"哪些命令真的带参数"变得看不出来 —— 扫一眼全是同一个串。
+// 提成常量后，带参数的条目会自然凸显。
+//
+// 语义：显式声明"不接受任何参数"（additionalProperties:false），
+// 这样 AI 多传一个字段会被 schema 校验拒绝，而不是被静默忽略。
+constexpr const char* kNoArgs = R"({"type":"object","additionalProperties":false})";
+
+}  // namespace
+
 const std::vector<CommandDef> kTable = {
     // ---- Tab ----
     {CmdId::TabNew, L"tab.new", L"Tab", L"标签栏", L"新建标签页", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要打开的目录；省略则沿用当前目录\"}},\"additionalProperties\":false}", true, false},
@@ -19,93 +33,93 @@ const std::vector<CommandDef> kTable = {
     // 理由是"退出程序不该由机器替人决定"。如果 tab.close 只要 HasTabs，
     // AI 就能用 tab.close 达成同一件事，把那条设计整个绕过去。
     // 单标签时关标签没有"关标签"的意义（等于退出），所以拒绝是语义正确的。
-    {CmdId::TabClose, L"tab.close", L"Tab", L"标签栏", L"关闭标签页", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs, Req::HasMultipleTabs}},
-    {CmdId::TabCloseOther, L"tab.close.others", L"Tab", L"标签栏", L"关闭其他标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::TabCloseLeft, L"tab.close.left", L"Tab", L"标签栏", L"关闭左侧标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::TabCloseRight, L"tab.close.right", L"Tab", L"标签栏", L"关闭右侧标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::TabClone, L"tab.clone", L"Tab", L"标签栏", L"复制当前标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::TabReopenClosed, L"tab.reopen", L"Tab", L"标签栏", L"重新打开关闭的标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasClosedTabs}},
-    {CmdId::TabMoveLeft, L"tab.move.left", L"Tab", L"标签栏", L"标签左移", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::CanMoveTabLeft}},
-    {CmdId::TabMoveRight, L"tab.move.right", L"Tab", L"标签栏", L"标签右移", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::CanMoveTabRight}},
-    {CmdId::TabMoveFirst, L"tab.move.first", L"Tab", L"标签栏", L"标签移到最前", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::CanMoveTabLeft}},
-    {CmdId::TabMoveLast, L"tab.move.last", L"Tab", L"标签栏", L"标签移到最后", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::CanMoveTabRight}},
-    {CmdId::TabPrevTab, L"tab.activate.mru", L"Tab", L"标签栏", L"回到上一个激活的标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::TabLast, L"tab.activate.last", L"Tab", L"标签栏", L"最后一个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::CloseLeftOne, L"tab.close.prev", L"Tab", L"标签栏", L"关闭左侧一个", true, Effects{0, 1, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs, Req::CanMoveTabLeft}},
-    {CmdId::CloseRightOne, L"tab.close.next", L"Tab", L"标签栏", L"关闭右侧一个", true, Effects{0, 1, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs, Req::CanMoveTabRight}},
+    {CmdId::TabClose, L"tab.close", L"Tab", L"标签栏", L"关闭标签页", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs, Req::HasMultipleTabs}},
+    {CmdId::TabCloseOther, L"tab.close.others", L"Tab", L"标签栏", L"关闭其他标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::TabCloseLeft, L"tab.close.left", L"Tab", L"标签栏", L"关闭左侧标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::TabCloseRight, L"tab.close.right", L"Tab", L"标签栏", L"关闭右侧标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::TabClone, L"tab.clone", L"Tab", L"标签栏", L"复制当前标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::TabReopenClosed, L"tab.reopen", L"Tab", L"标签栏", L"重新打开关闭的标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasClosedTabs}},
+    {CmdId::TabMoveLeft, L"tab.move.left", L"Tab", L"标签栏", L"标签左移", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true, false, Requirements{Req::CanMoveTabLeft}},
+    {CmdId::TabMoveRight, L"tab.move.right", L"Tab", L"标签栏", L"标签右移", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true, false, Requirements{Req::CanMoveTabRight}},
+    {CmdId::TabMoveFirst, L"tab.move.first", L"Tab", L"标签栏", L"标签移到最前", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true, false, Requirements{Req::CanMoveTabLeft}},
+    {CmdId::TabMoveLast, L"tab.move.last", L"Tab", L"标签栏", L"标签移到最后", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true, false, Requirements{Req::CanMoveTabRight}},
+    {CmdId::TabPrevTab, L"tab.activate.mru", L"Tab", L"标签栏", L"回到上一个激活的标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::TabLast, L"tab.activate.last", L"Tab", L"标签栏", L"最后一个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::CloseLeftOne, L"tab.close.prev", L"Tab", L"标签栏", L"关闭左侧一个", true, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs, Req::CanMoveTabLeft}},
+    {CmdId::CloseRightOne, L"tab.close.next", L"Tab", L"标签栏", L"关闭右侧一个", true, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs, Req::CanMoveTabRight}},
     {CmdId::TabActivate, L"tab.activate", L"Tab", L"标签栏", L"切换到第 N 个标签", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"index\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"0 起的标签序号\"}},\"required\":[\"index\"],\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::GoTab1, L"tab.goto.1", L"Tab", L"标签栏", L"切换到第 1 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::GoTab2, L"tab.goto.2", L"Tab", L"标签栏", L"切换到第 2 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::GoTab3, L"tab.goto.3", L"Tab", L"标签栏", L"切换到第 3 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::GoTab4, L"tab.goto.4", L"Tab", L"标签栏", L"切换到第 4 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::GoTab5, L"tab.goto.5", L"Tab", L"标签栏", L"切换到第 5 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::GoTab6, L"tab.goto.6", L"Tab", L"标签栏", L"切换到第 6 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::GoTab7, L"tab.goto.7", L"Tab", L"标签栏", L"切换到第 7 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::GoTab8, L"tab.goto.8", L"Tab", L"标签栏", L"切换到第 8 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::GoTab9, L"tab.goto.9", L"Tab", L"标签栏", L"切换到第 9 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::TabNext, L"tab.next", L"Tab", L"标签栏", L"下一个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::TabPrev, L"tab.prev", L"Tab", L"标签栏", L"上一个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
+    {CmdId::GoTab1, L"tab.goto.1", L"Tab", L"标签栏", L"切换到第 1 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::GoTab2, L"tab.goto.2", L"Tab", L"标签栏", L"切换到第 2 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::GoTab3, L"tab.goto.3", L"Tab", L"标签栏", L"切换到第 3 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::GoTab4, L"tab.goto.4", L"Tab", L"标签栏", L"切换到第 4 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::GoTab5, L"tab.goto.5", L"Tab", L"标签栏", L"切换到第 5 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::GoTab6, L"tab.goto.6", L"Tab", L"标签栏", L"切换到第 6 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::GoTab7, L"tab.goto.7", L"Tab", L"标签栏", L"切换到第 7 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::GoTab8, L"tab.goto.8", L"Tab", L"标签栏", L"切换到第 8 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::GoTab9, L"tab.goto.9", L"Tab", L"标签栏", L"切换到第 9 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::TabNext, L"tab.next", L"Tab", L"标签栏", L"下一个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::TabPrev, L"tab.prev", L"Tab", L"标签栏", L"上一个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
     // 单窗口模型下没有"合并 explorer 标签"这回事，保留在目录里只为让 keymap 不静默丢键。
-    {CmdId::TabMergeAll, L"tab.merge", L"Tab", L"标签栏", L"合并所有窗口标签（不适用）", false, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
+    {CmdId::TabMergeAll, L"tab.merge", L"Tab", L"标签栏", L"合并所有窗口标签（不适用）", false, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, false, false},
     // ---- Go ----
-    {CmdId::GoHome, L"go.home", L"Go", L"导航栏", L"回到主文件夹", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::GoDesktop, L"go.desktop", L"Go", L"导航栏", L"桌面", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::GoDownloads, L"go.downloads", L"Go", L"导航栏", L"下载", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::GoDocuments, L"go.documents", L"Go", L"导航栏", L"文档", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::GoConfigPath, L"go.config", L"Go", L"导航栏", L"配置目录", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::GoLocalAppData, L"go.localappdata", L"Go", L"导航栏", L"LocalAppData", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::GoControlPanel, L"go.controlpanel", L"Go", L"导航栏", L"控制面板", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::GoStartFolder, L"go.startfolder", L"Go", L"导航栏", L"开始菜单文件夹", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::GoThisPC, L"go.thispc", L"Go", L"导航栏", L"此电脑", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::GoPowerShell, L"go.powershell", L"Go", L"导航栏", L"PowerShell 目录", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
+    {CmdId::GoHome, L"go.home", L"Go", L"导航栏", L"回到主文件夹", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::GoDesktop, L"go.desktop", L"Go", L"导航栏", L"桌面", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::GoDownloads, L"go.downloads", L"Go", L"导航栏", L"下载", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::GoDocuments, L"go.documents", L"Go", L"导航栏", L"文档", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::GoConfigPath, L"go.config", L"Go", L"导航栏", L"配置目录", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::GoLocalAppData, L"go.localappdata", L"Go", L"导航栏", L"LocalAppData", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::GoControlPanel, L"go.controlpanel", L"Go", L"导航栏", L"控制面板", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::GoStartFolder, L"go.startfolder", L"Go", L"导航栏", L"开始菜单文件夹", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::GoThisPC, L"go.thispc", L"Go", L"导航栏", L"此电脑", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::GoPowerShell, L"go.powershell", L"Go", L"导航栏", L"PowerShell 目录", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
     // ---- Nav ----
-    {CmdId::NavBack, L"nav.back", L"Nav", L"导航栏", L"后退", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasHistoryBack}},
-    {CmdId::NavForward, L"nav.forward", L"Nav", L"导航栏", L"前进", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasHistoryForward}},
-    {CmdId::NavUp, L"nav.up", L"Nav", L"导航栏", L"向上一级", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::CanGoUp}},
-    {CmdId::NavRefresh, L"nav.refresh", L"Nav", L"导航栏", L"刷新", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
-    {CmdId::NavHome, L"nav.home", L"Nav", L"导航栏", L"回到主文件夹", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::NavViewMenu, L"nav.viewmenu", L"Nav", L"导航栏", L"视图菜单", true, Effects{0, 0, 0, 1, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
+    {CmdId::NavBack, L"nav.back", L"Nav", L"导航栏", L"后退", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{Req::HasHistoryBack}},
+    {CmdId::NavForward, L"nav.forward", L"Nav", L"导航栏", L"前进", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{Req::HasHistoryForward}},
+    {CmdId::NavUp, L"nav.up", L"Nav", L"导航栏", L"向上一级", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{Req::CanGoUp}},
+    {CmdId::NavRefresh, L"nav.refresh", L"Nav", L"导航栏", L"刷新", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{Req::HasTabs}},
+    {CmdId::NavHome, L"nav.home", L"Nav", L"导航栏", L"回到主文件夹", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::NavViewMenu, L"nav.viewmenu", L"Nav", L"导航栏", L"视图菜单", true, Effects{0, 0, 0, 1, 0, Scope::App}, kNoArgs, false, false},
     // ---- Path ----
-    {CmdId::PathCopy, L"path.copy", L"Path", L"导航栏", L"复制完整路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelection}},
-    {CmdId::PathCopyName, L"path.copy.name", L"Path", L"导航栏", L"复制文件名", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelection}},
-    {CmdId::PathCopyDir, L"path.copy.dir", L"Path", L"导航栏", L"复制当前目录", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::PathCopyUnc, L"path.copy.unc", L"Path", L"导航栏", L"复制 UNC 路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true},
-    {CmdId::PathCopyExt, L"path.copy.ext", L"Path", L"导航栏", L"复制扩展名", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true},
-    {CmdId::PathCopyTab, L"path.copy.tab", L"Path", L"导航栏", L"复制所有标签路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::PathCopyLink, L"path.copy.link", L"Path", L"导航栏", L"复制为快捷方式", false, Effects{0, 1, 0, 1, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
+    {CmdId::PathCopy, L"path.copy", L"Path", L"导航栏", L"复制完整路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, true, Requirements{Req::HasSelection}},
+    {CmdId::PathCopyName, L"path.copy.name", L"Path", L"导航栏", L"复制文件名", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, true, Requirements{Req::HasSelection}},
+    {CmdId::PathCopyDir, L"path.copy.dir", L"Path", L"导航栏", L"复制当前目录", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::PathCopyUnc, L"path.copy.unc", L"Path", L"导航栏", L"复制 UNC 路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, true},
+    {CmdId::PathCopyExt, L"path.copy.ext", L"Path", L"导航栏", L"复制扩展名", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, true},
+    {CmdId::PathCopyTab, L"path.copy.tab", L"Path", L"导航栏", L"复制所有标签路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::PathCopyLink, L"path.copy.link", L"Path", L"导航栏", L"复制为快捷方式", false, Effects{0, 1, 0, 1, 0, Scope::CurrentTab}, kNoArgs, false, false},
     // ---- File ----
-    {CmdId::CmdNewTextFile, L"file.new.text", L"File", L"文件视图", L"新建文本文件", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::CmdOpenWith, L"file.open.with", L"File", L"文件视图", L"打开方式", true, Effects{0, 0, 0, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelectionSingle}},
-    {CmdId::CmdNewFolder, L"file.new.folder", L"File", L"文件操作", L"新建文件夹", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::CmdCopy, L"file.copy", L"File", L"文件操作", L"复制", true, Effects{0, 0, 1, 1, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelection}},
-    {CmdId::CmdCut, L"file.cut", L"File", L"文件操作", L"剪切", true, Effects{0, 1, 0, 1, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelection}},
-    {CmdId::CmdPaste, L"file.paste", L"File", L"文件操作", L"粘贴", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasClipboard}},
-    {CmdId::CmdDelete, L"file.delete", L"File", L"文件操作", L"删除", true, Effects{0, 1, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelection}},
-    {CmdId::CmdRename, L"file.rename", L"File", L"文件操作", L"重命名", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelection}},
+    {CmdId::CmdNewTextFile, L"file.new.text", L"File", L"文件视图", L"新建文本文件", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::CmdOpenWith, L"file.open.with", L"File", L"文件视图", L"打开方式", true, Effects{0, 0, 0, 1, 0, Scope::System}, kNoArgs, false, true, Requirements{Req::HasSelectionSingle}},
+    {CmdId::CmdNewFolder, L"file.new.folder", L"File", L"文件操作", L"新建文件夹", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::CmdCopy, L"file.copy", L"File", L"文件操作", L"复制", true, Effects{0, 0, 1, 1, 0, Scope::CurrentTab}, kNoArgs, false, true, Requirements{Req::HasSelection}},
+    {CmdId::CmdCut, L"file.cut", L"File", L"文件操作", L"剪切", true, Effects{0, 1, 0, 1, 0, Scope::CurrentTab}, kNoArgs, false, true, Requirements{Req::HasSelection}},
+    {CmdId::CmdPaste, L"file.paste", L"File", L"文件操作", L"粘贴", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{Req::HasClipboard}},
+    {CmdId::CmdDelete, L"file.delete", L"File", L"文件操作", L"删除", true, Effects{0, 1, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, true, Requirements{Req::HasSelection}},
+    {CmdId::CmdRename, L"file.rename", L"File", L"文件操作", L"重命名", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, true, Requirements{Req::HasSelection}},
     // 【Effects 必须按物理后果声明，不按"这个命令看起来像什么"】
     // 打开属性对话框**能改东西**：只读位、隐藏属性、时间戳。所以 readOnly 必须是 0，
     // 与同义的 fs.properties 保持同一口径（那一行本来就是 0）。
     // 以前这里标 readOnly=1，而 AI 客户端正是按 annotations 决定"要不要先弹确认" ——
     // 两套口径等于契约不可信。
-    {CmdId::CmdProps, L"file.properties", L"File", L"文件操作", L"属性", true, Effects{0, 0, 1, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true, Requirements{Req::HasSelectionSingle}},
-    {CmdId::CmdUndo, L"file.undo", L"File", L"文件操作", L"撤销", false, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::CmdSelectAll, L"file.select.all", L"File", L"文件操作", L"全选", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::CmdOpen, L"file.open", L"File", L"文件操作", L"打开", true, Effects{0, 0, 0, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true},
-    {CmdId::CmdOpenInNewTab, L"file.open.tab", L"File", L"文件操作", L"在新标签打开", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true},
-    {CmdId::CmdOpenInNewWindow, L"file.open.window", L"File", L"文件操作", L"在新窗口打开", true, Effects{0, 0, 0, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true},
-    {CmdId::SelectInvert, L"file.select.invert", L"File", L"文件视图", L"反向选择", false, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::SelectFiles, L"file.select.files", L"File", L"文件视图", L"仅选文件", false, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::SelectFolders, L"file.select.folders", L"File", L"文件视图", L"仅选文件夹", false, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::SelectByType, L"file.select.type", L"File", L"文件视图", L"按类型选择", false, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::FileFocusTop, L"file.focus.top", L"File", L"文件视图", L"定位到第一项", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::FileFocusBottom, L"file.focus.bottom", L"File", L"文件视图", L"定位到最后一项", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::CmdRefresh, L"file.refresh", L"File", L"文件视图", L"刷新", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
+    {CmdId::CmdProps, L"file.properties", L"File", L"文件操作", L"属性", true, Effects{0, 0, 1, 1, 0, Scope::System}, kNoArgs, false, true, Requirements{Req::HasSelectionSingle}},
+    {CmdId::CmdUndo, L"file.undo", L"File", L"文件操作", L"撤销", false, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::CmdSelectAll, L"file.select.all", L"File", L"文件操作", L"全选", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::CmdOpen, L"file.open", L"File", L"文件操作", L"打开", true, Effects{0, 0, 0, 1, 0, Scope::System}, kNoArgs, false, true},
+    {CmdId::CmdOpenInNewTab, L"file.open.tab", L"File", L"文件操作", L"在新标签打开", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, false, true},
+    {CmdId::CmdOpenInNewWindow, L"file.open.window", L"File", L"文件操作", L"在新窗口打开", true, Effects{0, 0, 0, 1, 0, Scope::System}, kNoArgs, false, true},
+    {CmdId::SelectInvert, L"file.select.invert", L"File", L"文件视图", L"反向选择", false, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::SelectFiles, L"file.select.files", L"File", L"文件视图", L"仅选文件", false, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::SelectFolders, L"file.select.folders", L"File", L"文件视图", L"仅选文件夹", false, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::SelectByType, L"file.select.type", L"File", L"文件视图", L"按类型选择", false, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::FileFocusTop, L"file.focus.top", L"File", L"文件视图", L"定位到第一项", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::FileFocusBottom, L"file.focus.bottom", L"File", L"文件视图", L"定位到最后一项", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::CmdRefresh, L"file.refresh", L"File", L"文件视图", L"刷新", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{Req::HasTabs}},
     // 复制/移动到指定文件夹（IFileOperation + 目录选择器），与 mod 的同名命令对齐。
-    {CmdId::CopyToFolder, L"file.copy.to", L"File", L"文件操作", L"复制到文件夹", true, Effects{0, 1, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true},
-    {CmdId::MoveToFolder, L"file.move.to", L"File", L"文件操作", L"移动到文件夹", true, Effects{0, 1, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, true},
+    {CmdId::CopyToFolder, L"file.copy.to", L"File", L"文件操作", L"复制到文件夹", true, Effects{0, 1, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, true},
+    {CmdId::MoveToFolder, L"file.move.to", L"File", L"文件操作", L"移动到文件夹", true, Effects{0, 1, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, true},
     // 批量重命名交给 PowerRename，按模式选择需要"选中集"抽象，本轮不造。
-    {CmdId::BatchRename, L"file.rename.batch", L"File", L"文件操作", L"批量重命名", false, Effects{0, 1, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::SelectByPattern, L"file.select.pattern", L"File", L"文件视图", L"按模式选择", false, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
+    {CmdId::BatchRename, L"file.rename.batch", L"File", L"文件操作", L"批量重命名", false, Effects{0, 1, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::SelectByPattern, L"file.select.pattern", L"File", L"文件视图", L"按模式选择", false, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
     // ---- 确定式文件操作（P5：目标由参数点名，绝不弹框、绝不读选中）----
     // 与上面的 CmdRename/CmdDelete/CopyToFolder/MoveToFolder 是同一个业务的两种入口。
     // 之所以要单独一组而不是给旧命令加参数：旧命令的语义里"弹框问用户"是不可分割的
@@ -125,46 +139,46 @@ const std::vector<CommandDef> kTable = {
     {CmdId::ViewMode, L"view.mode", L"View", L"文件视图", L"视图模式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"preset\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":7,\"description\":\"0=超大图标 1=大图标 2=中图标 3=小图标 4=列表 5=详细信息 6=平铺 7=内容\"}},\"required\":[\"preset\"],\"additionalProperties\":false}", true, false},
     {CmdId::ViewSort, L"view.sort", L"View", L"文件视图", L"排序方式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"by\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":3,\"description\":\"0=名称 1=日期 2=类型 3=大小\"}},\"required\":[\"by\"],\"additionalProperties\":false}", true, false},
     {CmdId::ViewGroup, L"view.group", L"View", L"文件视图", L"分组方式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"by\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":3,\"description\":\"0=不分组 1=类型 2=日期 3=大小\"}},\"required\":[\"by\"],\"additionalProperties\":false}", true, false},
-    {CmdId::ToggleHidden, L"view.toggle.hidden", L"View", L"文件视图", L"显示隐藏文件", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::ToggleSystemFiles, L"view.toggle.system", L"View", L"文件视图", L"显示系统文件", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::ToggleExtensions, L"view.toggle.extensions", L"View", L"文件视图", L"显示扩展名", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::CycleHiddenSeg, L"view.cycle.hidden", L"View", L"文件视图", L"切换隐藏文件三态", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::TogglePreviewPane, L"view.toggle.preview", L"View", L"文件视图", L"预览窗格", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::ToggleNavPane, L"view.toggle.nav", L"View", L"文件视图", L"导航窗格", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::ToggleCheckboxes, L"view.toggle.checkboxes", L"View", L"文件视图", L"复选框", false, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::ViewNext, L"view.next", L"View", L"文件视图", L"下一个视图模式", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::ViewPrev, L"view.prev", L"View", L"文件视图", L"上一个视图模式", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
+    {CmdId::ToggleHidden, L"view.toggle.hidden", L"View", L"文件视图", L"显示隐藏文件", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::ToggleSystemFiles, L"view.toggle.system", L"View", L"文件视图", L"显示系统文件", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::ToggleExtensions, L"view.toggle.extensions", L"View", L"文件视图", L"显示扩展名", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::CycleHiddenSeg, L"view.cycle.hidden", L"View", L"文件视图", L"切换隐藏文件三态", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::TogglePreviewPane, L"view.toggle.preview", L"View", L"文件视图", L"预览窗格", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::ToggleNavPane, L"view.toggle.nav", L"View", L"文件视图", L"导航窗格", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::ToggleCheckboxes, L"view.toggle.checkboxes", L"View", L"文件视图", L"复选框", false, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::ViewNext, L"view.next", L"View", L"文件视图", L"下一个视图模式", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::ViewPrev, L"view.prev", L"View", L"文件视图", L"上一个视图模式", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
     // ---- Window ----
-    {CmdId::NewWindow, L"win.new", L"Window", L"窗口", L"新窗口", true, Effects{0, 0, 0, 0, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::QuitExplorer, L"win.quit", L"Window", L"全局", L"退出程序", true, Effects{0, 1, 0, 0, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::FolderOptions, L"win.folderoptions", L"Window", L"系统对话框", L"文件夹选项", true, Effects{0, 0, 1, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::MapDrive, L"win.mapdrive", L"Window", L"系统对话框", L"映射网络驱动器", true, Effects{0, 1, 0, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::UnmapDrive, L"win.unmapdrive", L"Window", L"系统对话框", L"断开网络驱动器", true, Effects{0, 1, 0, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::CommandPalette, L"win.palette", L"Window", L"窗口", L"命令面板", true, Effects{1, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::HotkeyManager, L"win.hotkeys", L"Window", L"窗口", L"快捷键管理器", true, Effects{0, 1, 0, 0, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::FocusAddress, L"win.focus.address", L"Window", L"导航栏", L"聚焦地址栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::FocusSearch, L"win.focus.search", L"Window", L"导航栏", L"聚焦搜索框", false, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::Preferences, L"win.preferences", L"Window", L"窗口", L"首选项", false, Effects{0, 1, 0, 0, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
+    {CmdId::NewWindow, L"win.new", L"Window", L"窗口", L"新窗口", true, Effects{0, 0, 0, 0, 0, Scope::System}, kNoArgs, true, false},
+    {CmdId::QuitExplorer, L"win.quit", L"Window", L"全局", L"退出程序", true, Effects{0, 1, 0, 0, 0, Scope::System}, kNoArgs, false, false},
+    {CmdId::FolderOptions, L"win.folderoptions", L"Window", L"系统对话框", L"文件夹选项", true, Effects{0, 0, 1, 1, 0, Scope::System}, kNoArgs, false, false},
+    {CmdId::MapDrive, L"win.mapdrive", L"Window", L"系统对话框", L"映射网络驱动器", true, Effects{0, 1, 0, 1, 0, Scope::System}, kNoArgs, false, false},
+    {CmdId::UnmapDrive, L"win.unmapdrive", L"Window", L"系统对话框", L"断开网络驱动器", true, Effects{0, 1, 0, 1, 0, Scope::System}, kNoArgs, false, false},
+    {CmdId::CommandPalette, L"win.palette", L"Window", L"窗口", L"命令面板", true, Effects{1, 0, 0, 0, 0, Scope::App}, kNoArgs, false, false},
+    {CmdId::HotkeyManager, L"win.hotkeys", L"Window", L"窗口", L"快捷键管理器", true, Effects{0, 1, 0, 0, 0, Scope::System}, kNoArgs, false, false},
+    {CmdId::FocusAddress, L"win.focus.address", L"Window", L"导航栏", L"聚焦地址栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false},
+    {CmdId::FocusSearch, L"win.focus.search", L"Window", L"导航栏", L"聚焦搜索框", false, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, false, false},
+    {CmdId::Preferences, L"win.preferences", L"Window", L"窗口", L"首选项", false, Effects{0, 1, 0, 0, 0, Scope::System}, kNoArgs, false, false},
     // ---- External ----
-    {CmdId::OpenTerminal, L"ext.terminal", L"External", L"导航栏", L"在此打开终端", true, Effects{0, 0, 0, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::OpenTerminalAdmin, L"ext.terminal.admin", L"External", L"导航栏", L"管理员终端", true, Effects{0, 1, 0, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::RunCommand, L"ext.run", L"External", L"全局", L"运行命令", false, Effects{0, 1, 0, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::SendKeys, L"ext.sendkeys", L"External", L"全局", L"发送按键", false, Effects{0, 1, 0, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
+    {CmdId::OpenTerminal, L"ext.terminal", L"External", L"导航栏", L"在此打开终端", true, Effects{0, 0, 0, 1, 0, Scope::System}, kNoArgs, true, false},
+    {CmdId::OpenTerminalAdmin, L"ext.terminal.admin", L"External", L"导航栏", L"管理员终端", true, Effects{0, 1, 0, 1, 0, Scope::System}, kNoArgs, true, false},
+    {CmdId::RunCommand, L"ext.run", L"External", L"全局", L"运行命令", false, Effects{0, 1, 0, 1, 0, Scope::System}, kNoArgs, false, false},
+    {CmdId::SendKeys, L"ext.sendkeys", L"External", L"全局", L"发送按键", false, Effects{0, 1, 0, 1, 0, Scope::System}, kNoArgs, false, false},
     // ---- Bookmark ----
-    {CmdId::BmkAddCurrent, L"bmk.add", L"Bookmark", L"书签栏", L"收藏当前目录", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::BmkShowBar, L"bmk.show", L"Bookmark", L"书签栏", L"显示书签栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::BmkHideBar, L"bmk.hide", L"Bookmark", L"书签栏", L"隐藏书签栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::BmkToggleBar, L"bmk.toggle", L"Bookmark", L"书签栏", L"切换书签栏", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
+    {CmdId::BmkAddCurrent, L"bmk.add", L"Bookmark", L"书签栏", L"收藏当前目录", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true, false},
+    {CmdId::BmkShowBar, L"bmk.show", L"Bookmark", L"书签栏", L"显示书签栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false},
+    {CmdId::BmkHideBar, L"bmk.hide", L"Bookmark", L"书签栏", L"隐藏书签栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false},
+    {CmdId::BmkToggleBar, L"bmk.toggle", L"Bookmark", L"书签栏", L"切换书签栏", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false},
     // ---- Session ----
-    {CmdId::SessionSave, L"session.save", L"Session", L"标签栏", L"保存标签组", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::SessionRestore, L"session.restore", L"Session", L"标签栏", L"恢复标签组", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", true, false},
-    {CmdId::SessionDelete, L"session.delete", L"Session", L"标签栏", L"删除标签组", false, Effects{0, 1, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::SessionList, L"session.list", L"Session", L"标签栏", L"列出标签组", false, Effects{1, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
+    {CmdId::SessionSave, L"session.save", L"Session", L"标签栏", L"保存标签组", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false},
+    {CmdId::SessionRestore, L"session.restore", L"Session", L"标签栏", L"恢复标签组", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false},
+    {CmdId::SessionDelete, L"session.delete", L"Session", L"标签栏", L"删除标签组", false, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, false, false},
+    {CmdId::SessionList, L"session.list", L"Session", L"标签栏", L"列出标签组", false, Effects{1, 0, 1, 0, 0, Scope::App}, kNoArgs, false, false},
     // ---- 占位（未实现）----
-    {CmdId::DupFinder, L"tool.dupfinder", L"Tool", L"文件视图", L"查找重复文件", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::FileHash, L"tool.hash", L"Tool", L"文件视图", L"计算哈希", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::FolderCompare, L"tool.compare", L"Tool", L"文件视图", L"比较文件夹", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::SearchEverything, L"search.everything", L"Search", L"导航栏", L"搜索", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
+    {CmdId::DupFinder, L"tool.dupfinder", L"Tool", L"文件视图", L"查找重复文件", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::FileHash, L"tool.hash", L"Tool", L"文件视图", L"计算哈希", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::FolderCompare, L"tool.compare", L"Tool", L"文件视图", L"比较文件夹", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::SearchEverything, L"search.everything", L"Search", L"导航栏", L"搜索", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
     // ---- 只读查询（P6：读操作返回结构化结果）----
     // 这两条是第一批带 outputSchema 的命令，用来验证返回值设计。
     // 它们列/查的是**当前视图**，而不是按路径另扫盘 —— 与用户看到的一致。
@@ -173,15 +187,27 @@ const std::vector<CommandDef> kTable = {
     {CmdId::OpStat, L"tool.stat", L"Tool", L"文件视图", L"查看单项属性", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"项目的完整路径（必须在当前目录内）\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"isFolder\":{\"type\":\"boolean\"},\"hidden\":{\"type\":\"boolean\"},\"readonly\":{\"type\":\"boolean\"},\"size\":{\"type\":\"integer\"},\"typeName\":{\"type\":\"string\"}},\"required\":[\"name\",\"isFolder\"]}"},
     {CmdId::OpTopN, L"tool.topn", L"Tool", L"文件视图", L"最大的 N 项", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要统计的目录；省略则用当前目录\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":5000,\"description\":\"返回前 N 项；默认 50\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒），超时则返回已统计部分；默认 1500\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"被统计的目录\"},\"totalBytes\":{\"type\":\"integer\",\"description\":\"目录内容总大小（含被 limit 截断的部分）\"},\"truncated\":{\"type\":\"boolean\",\"description\":\"结果被 limit 截断\"},\"timedOut\":{\"type\":\"boolean\",\"description\":\"到时间预算提前结束，数值不完整\"},\"elapsedMs\":{\"type\":\"integer\"},\"scannedFiles\":{\"type\":\"integer\"},\"scannedDirs\":{\"type\":\"integer\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"bytes\":{\"type\":\"integer\"},\"isFolder\":{\"type\":\"boolean\"},\"items\":{\"type\":\"integer\"},\"complete\":{\"type\":\"boolean\"}},\"required\":[\"name\",\"bytes\"]}}},\"required\":[\"path\",\"totalBytes\",\"entries\"]}"},
     {CmdId::OpDiskUsage, L"tool.diskusage", L"Tool", L"文件视图", L"目录占用", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要统计的目录；省略则用当前目录\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":5000,\"description\":\"返回前 N 项；默认 50\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒），超时则返回已统计部分；默认 1500\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"被统计的目录\"},\"totalBytes\":{\"type\":\"integer\",\"description\":\"目录内容总大小（含被 limit 截断的部分）\"},\"truncated\":{\"type\":\"boolean\",\"description\":\"结果被 limit 截断\"},\"timedOut\":{\"type\":\"boolean\",\"description\":\"到时间预算提前结束，数值不完整\"},\"elapsedMs\":{\"type\":\"integer\"},\"scannedFiles\":{\"type\":\"integer\"},\"scannedDirs\":{\"type\":\"integer\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"bytes\":{\"type\":\"integer\"},\"isFolder\":{\"type\":\"boolean\"},\"items\":{\"type\":\"integer\"},\"complete\":{\"type\":\"boolean\"}},\"required\":[\"name\",\"bytes\"]}}},\"required\":[\"path\",\"totalBytes\",\"entries\"]}"},
-    {CmdId::OpSearch, L"search.find", L"Search", L"文件视图", L"搜索", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::OpReadText, L"tool.readtext", L"Tool", L"文件视图", L"读取文本", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::OpNavigate, L"tool.navigate", L"Tool", L"导航栏", L"导航", false, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::OpReveal, L"tool.reveal", L"Tool", L"文件视图", L"定位", false, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::OpSelect, L"tool.select", L"Tool", L"文件视图", L"选择", false, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::OpOpen, L"tool.open", L"Tool", L"文件视图", L"打开", false, Effects{0, 0, 0, 1, 0, Scope::System}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::OpListCurrentView, L"tool.listview", L"Tool", L"文件视图", L"列出当前视图", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::AiTogglePanel, L"win.ai.toggle", L"Window", L"窗口", L"AI 助手", false, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
-    {CmdId::AiStop, L"win.ai.stop", L"Window", L"窗口", L"停止 AI", false, Effects{0, 1, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"additionalProperties\":false}", false, false},
+    {CmdId::OpSearch, L"search.find", L"Search", L"文件视图", L"搜索", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::OpReadText, L"tool.readtext", L"Tool", L"文件视图", L"读取文本", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::OpNavigate, L"tool.navigate", L"Tool", L"导航栏", L"导航", false, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::OpReveal, L"tool.reveal", L"Tool", L"文件视图", L"定位", false, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::OpSelect, L"tool.select", L"Tool", L"文件视图", L"选择", false, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::OpOpen, L"tool.open", L"Tool", L"文件视图", L"打开", false, Effects{0, 0, 0, 1, 0, Scope::System}, kNoArgs, false, false},
+    {CmdId::OpListCurrentView, L"tool.listview", L"Tool", L"文件视图", L"列出当前视图", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::AiTogglePanel, L"win.ai.toggle", L"Window", L"窗口", L"AI 助手", false, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, false, false},
+    {CmdId::AiStop, L"win.ai.stop", L"Window", L"窗口", L"停止 AI", false, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, false, false},
+
+    // ---- 标签个性化 ----
+    // 说明：这三条的命令名用 tab.* 域（与右键菜单里的动作一一对应），
+    // 但**归类为 Tab 组**而不是新开 "TabMeta" 组 —— 分组是给面板列菜单用的，
+    // 三条自成一体会让命令面板多出一个只有三行的组。
+    //
+    // aiExposed = true 的理由：改名/上色都是可逆、无破坏的窗口内状态变更（Write），
+    // 而且 schema 完整点名目标值，机器不需要猜用户选了什么。这正是 R20 想要的形态。
+    // 但**不加** HasTabs 之外的前置：改名对任意标签都成立（不像 move 有左右边界）。
+    {CmdId::TabRename, L"tab.rename", L"Tab", L"标签栏", L"重命名标签页", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"新的标签名；空串表示恢复为跟随目录的默认名\"}},\"required\":[\"name\"],\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
+    {CmdId::TabSetColor, L"tab.color", L"Tab", L"标签栏", L"设置标签页颜色", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"color\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":7,\"description\":\"0=无颜色，1 红 2 橙 3 黄 4 绿 5 蓝 6 紫 7 灰\"}},\"required\":[\"color\"],\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
+    {CmdId::TabCloseDuplicates, L"tab.close.duplicates", L"Tab", L"标签栏", L"关闭重复标签页", true, Effects{0, 1, 0, 0, 1, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
 };
 
 }  // namespace
