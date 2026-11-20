@@ -151,7 +151,10 @@ int InputRouter::CurrentMods() const {
 }
 
 std::wstring InputRouter::TokenOf(WPARAM vk) {
-    if (vk >= 'A' && vk <= 'Z') return std::wstring(1, static_cast<wchar_t>(towlower(vk)));
+    // 这里 vk 都是已判定过范围的虚拟键码（'A'..'Z' / '0'..'9' / VK_NUMPAD0..9），
+    // 全部 < 128，转 wint_t（= wchar_t 宽度）是明确的收窄。
+    if (vk >= 'A' && vk <= 'Z')
+        return std::wstring(1, static_cast<wchar_t>(towlower(static_cast<wint_t>(vk))));
     if (vk >= '0' && vk <= '9') return std::wstring(1, static_cast<wchar_t>(vk));
     if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9)
         return std::wstring(1, static_cast<wchar_t>(L'0' + (vk - VK_NUMPAD0)));
@@ -327,7 +330,9 @@ bool InputRouter::OnMouseDown(int target, int button, int mods, POINT screen, bo
     };
 
     const ULONGLONG now = GetTickCount64();
-    const int dblMs = GetDoubleClickTime();
+    // GetDoubleClickTime 返回 UINT，系统允许的最大值是 5000ms（控制面板上限），
+    // 转 int 安全；后面与 ULONGLONG 比较时会再转回无符号。
+    const int dblMs = static_cast<int>(GetDoubleClickTime());
 
     // 与 Exbar.cpp 一致：双击必须落在系统双击矩形内，且刚触发过双击后的第三击
     // 不能立刻再算一次双击（防三击）。只比时间会把滚动列表后的两次点击误判。
@@ -388,6 +393,14 @@ bool InputRouter::OnMouseUp(int target, int button, int mods) {
     const bool hadClaim = clickClaimed_;
     clickClaimed_ = false;
     if (!pending_.active || pending_.button != button) return hadClaim;
+    // 同一次物理点击不该在 DOWN 和 UP 落到两个不同的已知目标上。
+    // 真出现了（组件改了命中口径、或布局在按下后变了）就不能拿 DOWN 的
+    // claim 去吞 UP 所在控件的默认行为 —— 那正是"点 + 没反应"的成因。
+    // Shell DirectUI 的 UP 不判目标，传 MT_UNKNOWN，这里按沿用 pending 处理。
+    if (target != MT_UNKNOWN && pending_.target != MT_UNKNOWN && target != pending_.target) {
+        pending_ = PendingClick{};
+        return false;
+    }
     pending_.down = false;
     KillTimer(main_, kHoldTimer);
     if (pending_.holdFired) {

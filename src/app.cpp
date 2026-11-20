@@ -142,7 +142,10 @@ void App::OnCreate() {
         st.hasSelection = false;
         if (Tab* t = Active()) {
             if (t->view) {
-                st.selectionCount = t->view->SelectedCount();
+                // SelectedCount 返回 unsigned，selectionCount 是 int（HasSelectionSingle
+                // 用）。选中项数不可能接近 INT_MAX（那是同时选中 21 亿个文件），
+                // 显式转换表达"这里的有损是安全的"，而不是靠隐式转换混过去。
+                st.selectionCount = static_cast<int>(t->view->SelectedCount());
                 st.hasSelection = st.selectionCount > 0;
             }
         }

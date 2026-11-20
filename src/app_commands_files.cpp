@@ -197,7 +197,7 @@ void App::RegisterFileCommands() {
     //   · 想一步到位复制到某个目录，用 FsCopyTo —— 那才是真的落盘。
     //   · 之所以还提供这两个，是因为"先复制到剪贴板，再由用户/别的程序粘贴"
     //     是一种正当用法（比如机器准备好，人再确认粘到哪里）。
-    reg(CmdId::FsCopy, [this](const Args& args) {
+    reg(CmdId::FsCopy, [](const Args& args) {
         const std::vector<std::wstring> targets = args.StrArray(L"targets");
         if (targets.empty()) return false;
         for (const auto& p : targets) {
@@ -208,7 +208,7 @@ void App::RegisterFileCommands() {
         }
         return shellops::CopyPaths(targets, false);
     });
-    reg(CmdId::FsCut, [this](const Args& args) {
+    reg(CmdId::FsCut, [](const Args& args) {
         const std::vector<std::wstring> targets = args.StrArray(L"targets");
         if (targets.empty()) return false;
         for (const auto& p : targets) {
@@ -225,7 +225,7 @@ void App::RegisterFileCommands() {
     // 这是少数**故意弹 UI** 的确定式命令 —— 属性本身就是个对话框，
     // 没有"不弹框的属性"这种东西。所以它标 openWorld + scope=System，
     // 让调用方知道"这会打开一个窗口"。
-    reg(CmdId::FsProperties, [this](const Args& args) {
+    reg(CmdId::FsProperties, [](const Args& args) {
         const std::wstring target = args.Str(L"target");
         if (target.empty()) return false;
         if (!tf::Exists(target)) {
@@ -307,10 +307,10 @@ void App::RegisterFileCommands() {
         return true;
     });
     reg(CmdId::FileFocusTop, [this](const Args&) {
-        return WithView([this](IShellView* v) { return shellops::SelectIndex(v, 0); }, L"定位首项");
+        return WithView([](IShellView* v) { return shellops::SelectIndex(v, 0); }, L"定位首项");
     });
     reg(CmdId::FileFocusBottom, [this](const Args&) {
-        return WithView([this](IShellView* v) {
+        return WithView([](IShellView* v) {
             ViewStats st;
             if (CollectViewStats(v, &st) && st.total > 0)
                 return shellops::SelectIndex(v, static_cast<int>(st.total) - 1);

@@ -221,7 +221,7 @@ LRESULT NavBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         int seg = HitSeg(x, y);
         if (seg >= 0) {
-            if (onNavigate_) onNavigate_(model_.parts()[seg].path);
+            if (onNavigate_) onNavigate_(model_.parts()[static_cast<size_t>(seg)].path);
             return 0;
         }
         if (x >= fieldRc_.left) BeginEdit();
@@ -320,13 +320,14 @@ void NavBar::Layout() {
     const int startX = moreRc_.right;
     const int avail = dropRc_.left - startX;
     while (total > avail && firstShown_ + 1 < static_cast<int>(parts.size())) {
-        total -= widths[firstShown_];
+        total -= widths[static_cast<size_t>(firstShown_)];
         ++firstShown_;
     }
 
     int cx = startX;
     const int clipR = dropRc_.left;
-    for (size_t i = firstShown_; i < parts.size(); ++i) {
+    // firstShown_ 恒 >= 0（只在上面的循环里 ++），转到 size_t 是明确的非负转换。
+    for (size_t i = static_cast<size_t>(firstShown_); i < parts.size(); ++i) {
         if (cx >= clipR) break;
         int labelW = widths[i] - sepW;
         if (cx + labelW > clipR) labelW = clipR - cx;

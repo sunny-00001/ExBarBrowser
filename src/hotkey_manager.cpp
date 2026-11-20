@@ -164,9 +164,10 @@ LRESULT CALLBACK HotkeyProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             for (int id : {1001, 1002, 1003, 1004}) {
                 HWND b = GetDlgItem(h, id);
                 if (!b) continue;
-                const int w = (id == 1001 || id == 1003) ? st->theme->S(100) : st->theme->S(70);
-                MoveWindow(b, bx, btnY, w, btnH, TRUE);
-                bx += w + st->theme->S(8);
+                const int btnW = (id == 1001 || id == 1003) ? st->theme->S(100)
+                                                            : st->theme->S(70);
+                MoveWindow(b, bx, btnY, btnW, btnH, TRUE);
+                bx += btnW + st->theme->S(8);
             }
             MoveWindow(st->hint, pad, hintY, rc.right - pad * 2, st->theme->S(20), TRUE);
 

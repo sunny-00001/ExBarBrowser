@@ -33,11 +33,13 @@ void App::RegisterTabCommands() {
 
     // ---------------- 标签 ----------------
     reg(CmdId::TabNew, [this](const Args& args) {
-        // path 省略时沿用当前目录（与"新建标签"按钮的行为一致）。
-        // 以前这个参数只在 schema 里声明、handler 没读，属于"参数被静默丢弃"：
-        // 调用方传了 path 却得到当前目录，是排查成本很高的一类错误。
+        // 与"+"按钮（WM_APP_TAB_NEW）同一口径：省略 path 时打开此电脑，
+        // 不是沿用当前目录 —— 后者由 tab.clone 负责。两条路径语义分开，
+        // 人和 AI 说"新建标签"得到的是同一个结果（R20 人机等价）。
+        // path 参数照旧支持：调用方明确给了目录就按目录开（此前 handler 丢弃它，
+        // 现已修复；这里保留该能力，不因改默认值而回退）。
         std::wstring p = args.Str(L"path");
-        NewTab(p.empty() ? ActivePath() : p, NewTabIndex());
+        NewTab(p.empty() ? nav::kThisPc : p, NewTabIndex());
         return true;
     });
     reg(CmdId::TabClose, [this](const Args&) {
@@ -46,20 +48,39 @@ void App::RegisterTabCommands() {
         return CloseTab(activeId_);
     });
     reg(CmdId::TabCloseOther, [this](const Args&) {
-        CloseOthers(activeId_);
-        return true;
+        // 如实回传：所有其他标签都锁定时一个也没关，不能报 ok=true。
+        return CloseOthers(activeId_) > 0;
     });
     reg(CmdId::TabCloseLeft, [this](const Args&) {
-        CloseSide(activeId_, true);
-        return true;
+        return CloseSide(activeId_, true) > 0;
     });
     reg(CmdId::TabCloseRight, [this](const Args&) {
-        CloseSide(activeId_, false);
-        return true;
+        return CloseSide(activeId_, false) > 0;
     });
     reg(CmdId::TabClone, [this](const Args&) {
         NewTab(ActivePath(), NewTabIndex());
         return true;
+    });
+    // ---- 标签个性化：与右键菜单共用同一份实现（R6：动作只有一份）----
+    // 菜单路径直接调 RenameTab/SetTabColor；命令路径经这里转一道，
+    // 两条路上"改名的落盘口径"完全一致（否则会出现菜单改名能存、面板改名存不住）。
+    reg(CmdId::TabRename, [this](const Args& args) {
+        if (!tabSet_.Find(activeId_)) return false;
+        RenameTab(activeId_, args.Str(L"name"));
+        return true;
+    });
+    reg(CmdId::TabSetColor, [this](const Args& args) {
+        if (!tabSet_.Find(activeId_)) return false;
+        const int color = args.Int(L"color", 0);
+        if (color < 0 || color >= Theme::kTabColorCount) return false;  // 越界如实报错
+        SetTabColor(activeId_, color);
+        return true;
+    });
+    reg(CmdId::TabCloseDuplicates, [this](const Args&) {
+        if (!tabSet_.Find(activeId_)) return false;
+        // 返回"是否真的关掉了至少一个"：一个重复都没有时应当是 false（ok=0），
+        // 否则审计里会记成成功，AI 也以为自己清理过了。
+        return CloseDuplicates(activeId_) > 0;
     });
     reg(CmdId::TabReopenClosed, [this](const Args&) {
         std::wstring path;
@@ -149,16 +170,16 @@ void App::RegisterTabCommands() {
         if (!path.empty()) NavigateActive(path, true);
         return true;
     };
-    reg(CmdId::GoHome, [this, go](const Args&) { return go(KnownFolder(FOLDERID_Profile)); });
-    reg(CmdId::NavHome, [this, go](const Args&) { return go(KnownFolder(FOLDERID_Profile)); });
-    reg(CmdId::GoDesktop, [this, go](const Args&) { return go(KnownFolder(FOLDERID_Desktop)); });
-    reg(CmdId::GoDownloads, [this, go](const Args&) { return go(KnownFolder(FOLDERID_Downloads)); });
-    reg(CmdId::GoDocuments, [this, go](const Args&) { return go(KnownFolder(FOLDERID_Documents)); });
-    reg(CmdId::GoLocalAppData, [this, go](const Args&) { return go(KnownFolder(FOLDERID_LocalAppData)); });
-    reg(CmdId::GoStartFolder, [this, go](const Args&) { return go(KnownFolder(FOLDERID_StartMenu)); });
-    reg(CmdId::GoConfigPath, [this, go](const Args&) { return go(Config::Get().Dir()); });
-    reg(CmdId::GoThisPC, [this, go](const Args&) { return go(nav::kThisPc); });
-    reg(CmdId::GoControlPanel, [this, go](const Args&) {
+    reg(CmdId::GoHome, [go](const Args&) { return go(KnownFolder(FOLDERID_Profile)); });
+    reg(CmdId::NavHome, [go](const Args&) { return go(KnownFolder(FOLDERID_Profile)); });
+    reg(CmdId::GoDesktop, [go](const Args&) { return go(KnownFolder(FOLDERID_Desktop)); });
+    reg(CmdId::GoDownloads, [go](const Args&) { return go(KnownFolder(FOLDERID_Downloads)); });
+    reg(CmdId::GoDocuments, [go](const Args&) { return go(KnownFolder(FOLDERID_Documents)); });
+    reg(CmdId::GoLocalAppData, [go](const Args&) { return go(KnownFolder(FOLDERID_LocalAppData)); });
+    reg(CmdId::GoStartFolder, [go](const Args&) { return go(KnownFolder(FOLDERID_StartMenu)); });
+    reg(CmdId::GoConfigPath, [go](const Args&) { return go(Config::Get().Dir()); });
+    reg(CmdId::GoThisPC, [go](const Args&) { return go(nav::kThisPc); });
+    reg(CmdId::GoControlPanel, [go](const Args&) {
         return go(L"::{26EE0668-A00A-44D7-9371-BEB064C98683}");
     });
     reg(CmdId::GoPowerShell, [this](const Args&) {

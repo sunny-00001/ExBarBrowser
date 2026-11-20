@@ -282,11 +282,15 @@ json::Value Err(const wchar_t* msg) {
 // 令牌怎么带：MCP 没有这个概念，所以约定放在 params 里 __token 字段
 // （也接受顶层 token 以兼容旧格式）。不是加密，只是"别的进程不能随手乱调"。
 
-constexpr int kParseError = -32700;
+// JSON-RPC 2.0 标准错误码全集。kParseError / kInternalError 目前没有调用点，
+// 但**保留**而不是删掉：这张表是对外协议的一部分（客户端可能按 code 分派），
+// 缺两个会让下一个人以为"本实现不支持这两个码"而另发明一个。
+// 用 [[maybe_unused]] 明确"有意保留"，而不是靠注释躲过警告。
+[[maybe_unused]] constexpr int kParseError = -32700;
 constexpr int kInvalidRequest = -32600;
 constexpr int kMethodNotFound = -32601;
 constexpr int kInvalidParams = -32602;
-constexpr int kInternalError = -32603;
+[[maybe_unused]] constexpr int kInternalError = -32603;
 
 json::Value RpcError(const json::Value& id, int code, const wchar_t* message) {
     json::Value v = json::Value::MakeObject();

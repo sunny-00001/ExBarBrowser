@@ -6,6 +6,7 @@
 #include "folder_tree.h"
 #include "icon_resolve.h"
 #include "popup_list.h"
+#include "popup_toggle.h"
 #include "view_modes.h"
 
 namespace {
@@ -106,11 +107,11 @@ bool NavBar::DoComplete() {
     if (parent.empty()) parent = model_.path();
     std::wstring out = parent;
     if (!out.empty() && out.back() != L'\\') out += L'\\';
-    out += tabMatches_[tabIdx_];
+    out += tabMatches_[static_cast<size_t>(tabIdx_)];
 
     SetWindowTextW(edit_, out.c_str());
     int len = static_cast<int>(out.size());
-    SendMessageW(edit_, EM_SETSEL, len, len);
+    SendMessageW(edit_, EM_SETSEL, static_cast<WPARAM>(len), static_cast<LPARAM>(len));
     return true;
 }
 
@@ -122,7 +123,7 @@ void NavBar::ShowChildMenu(int partIndex, POINT screen) {
     // 分隔符归属于它**左边**那一级：列该级自己的直接子文件夹。
     // 例：D:\Windhawk 右侧的 › 列 Windhawk 的内容，而不是 D:\ 下的同级目录
     // （与 mod ShowCrumbMenu 的 EnumChildFoldersAt(crumbPidls[partIndex]) 同口径）。
-    const std::wstring target = parts[partIndex].path;
+    const std::wstring target = parts[static_cast<size_t>(partIndex)].path;
     if (target.empty()) return;
 
     // 顶层 = 该段的直接子文件夹；子节点由弹层按需懒加载、就地内联展开
@@ -132,9 +133,30 @@ void NavBar::ShowChildMenu(int partIndex, POINT screen) {
 
     // 对齐到该段的 chevron 区（不是鼠标点），否则菜单会"飘"在鼠标位置
     int k = partIndex - firstShown_;
-    RECT anchor = (k >= 0 && k < static_cast<int>(chevRects_.size())) ? chevRects_[k] : fieldRc_;
+    RECT anchor =
+        (k >= 0 && k < static_cast<int>(chevRects_.size())) ? chevRects_[static_cast<size_t>(k)]
+                                                            : fieldRc_;
     POINT at{anchor.left, fieldRc_.bottom};
     ClientToScreen(hwnd_, &at);
+
+    // 锚点键带段索引：不同级的 chevron 是不同锚点，不能互相干扰。
+    const std::wstring toggleKey = L"nav.crumb." + std::to_wstring(partIndex);
+
+    // 【先判再置位】弹层若还开着（= 用户点的是"收起"），立刻把箭头恢复 ›、不弹列表。
+    //
+    // 正常情况下这一支根本走不到 —— 关掉弹层的那一下点击已经被弹层自己吃掉了
+    // （见 popup_list.cpp 的捕获模型），锚点压根收不到它。这里留着是为了
+    // 键盘（Ctrl+L 后回车）/ 命令面板等**不经鼠标**的重入路径。
+    // 判据是"同键弹层此刻是否开着"，不是时间窗。
+    if (popup::IsOpen(toggleKey.c_str())) {
+        openChev_ = -1;
+        hotChev_ = -1;
+        if (hwnd_) {
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            UpdateWindow(hwnd_);
+        }
+        return;
+    }
 
     // 分隔符切到展开态「⌄」并立即重绘（模态菜单弹出前，用户能看到形态变化）
     openChev_ = partIndex;
@@ -144,7 +166,8 @@ void NavBar::ShowChildMenu(int partIndex, POINT screen) {
     }
     // 点击 folder 行 chevron 内联展开子树（与 exbar.cpp treeMode 一致），
     // 而不是向右弹出新菜单；整棵树的 icon 由 ShowFolderTree 统一销毁。
-    std::wstring picked = folder_tree::Show(hwnd_, *theme_, at, std::move(top));
+    std::wstring picked =
+        folder_tree::Show(hwnd_, *theme_, at, std::move(top), 0, toggleKey.c_str());
     // 与 mod 28756-28758 一致：恢复 › 的同时清掉悬停态，避免光标下高亮残留
     openChev_ = -1;
     hotChev_ = -1;
@@ -162,7 +185,8 @@ void NavBar::ShowFoldMenu(POINT screen) {
     if (firstShown_ > 0) {
         const auto& parts = model_.parts();
         for (int i = 0; i < firstShown_ && i < static_cast<int>(parts.size()); ++i)
-            top.push_back({parts[i].label, parts[i].path, IconFor(parts[i].path),
+            top.push_back({parts[static_cast<size_t>(i)].label, parts[static_cast<size_t>(i)].path,
+                           IconFor(parts[static_cast<size_t>(i)].path),
                            0, -1, {}, true, false, false});
     } else {
         // 没折叠时这个钮给"此电脑"的顶层（驱动器/用户文件夹），与 mod 一致
@@ -173,7 +197,7 @@ void NavBar::ShowFoldMenu(POINT screen) {
     POINT at{moreRc_.left, fieldRc_.bottom};
     ClientToScreen(hwnd_, &at);
     // 折叠菜单同样走内联树：点 chevron 就地展开，整棵树 icon 由弹层销毁
-    std::wstring picked = folder_tree::Show(hwnd_, *theme_, at, std::move(top));
+    std::wstring picked = folder_tree::Show(hwnd_, *theme_, at, std::move(top), 0, L"nav.fold");
     if (!picked.empty() && onNavigate_) onNavigate_(picked);
 }
 
@@ -195,7 +219,10 @@ void NavBar::ShowHistoryMenu(bool backward, POINT screen) {
         if (b.id == (backward ? kBack : kForward)) anchor = b.rc;
     POINT at{anchor.left, anchor.bottom};
     ClientToScreen(hwnd_, &at);
-    int pick = ShowPopupList(hwnd_, *theme_, at, rows, 0);
+    // 后退/前进各自一个锚点：两个按钮的下拉不能共用键，否则"关掉后退下拉、
+    // 马上点前进"会被误判成连点。
+    int pick = ShowPopupList(hwnd_, *theme_, at, rows, 0, false, 20,
+                             backward ? L"nav.hist.back" : L"nav.hist.forward");
     if (pick >= 0 && historyJump_) historyJump_(pick, backward);
     FreeRows(rows);
 }
@@ -245,7 +272,8 @@ void NavBar::ShowDropMenu(POINT screen) {
     // 地址框右侧 ⌄：严格与地址框同宽（左右边缘齐平），长路径靠省略号收
     LogDbg(L"[drop] field=%d..%d w=%d anchor=%d,%d", fieldRc_.left, fieldRc_.right,
            fieldRc_.right - fieldRc_.left, at.x, at.y);
-    int pick = ShowPopupList(hwnd_, *theme_, at, rows, fieldRc_.right - fieldRc_.left, true);
+    int pick = ShowPopupList(hwnd_, *theme_, at, rows, fieldRc_.right - fieldRc_.left, true, 20,
+                             L"nav.drop");
     if (pick >= 0 && pick < static_cast<int>(rows.size())) {
         int data = rows[static_cast<size_t>(pick)].data;
         if (data >= 3000) {
@@ -280,7 +308,7 @@ void NavBar::ShowViewMenu(POINT screen) {    (void)screen;
         if (b.id == kView) anchor = b.rc;
     POINT at{anchor.left, anchor.bottom};
     ClientToScreen(hwnd_, &at);
-    int pick = ShowPopupList(hwnd_, *theme_, at, rows, 0);
+    int pick = ShowPopupList(hwnd_, *theme_, at, rows, 0, false, 20, L"nav.view");
     if (pick >= 0 && pick < static_cast<int>(rows.size())) {
         int data = rows[static_cast<size_t>(pick)].data;
         if (data >= 200) {

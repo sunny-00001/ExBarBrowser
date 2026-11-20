@@ -150,10 +150,12 @@ void StatusBar::Layout(HWND h) {
         if (seg >= 0 && seg < Seg_Count) vis.push_back(seg);
 
     auto textW = [&](int seg) {
-        int w = ui::MeasureText(dc, theme_->font, model_.text[seg]);
+        // seg 已由调用方保证在 [0, Seg_Count) 内（见上面 vis.push_back 的条件）。
+        const auto si = static_cast<size_t>(seg);
+        int w = ui::MeasureText(dc, theme_->font, model_.text[si]);
         if (seg <= Seg_Chk || seg == Seg_Size || seg == Seg_Disk) {
-            if (w > stableW_[seg]) stableW_[seg] = w;
-            w = stableW_[seg];
+            if (w > stableW_[si]) stableW_[si] = w;
+            w = stableW_[si];
         }
         if (w > 0 && GlyphOf(seg)) w += glyphW + theme_->S(4);  // 没文字就不占字形位
         return w;

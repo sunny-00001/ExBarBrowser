@@ -80,8 +80,9 @@ void NavBar::DrawBreadcrumb(HDC dc, const RECT& rc) {
 
     const auto& parts = model_.parts();
     for (size_t k = 0; k < segRects_.size(); ++k) {
-        int pi = firstShown_ + static_cast<int>(k);
-        const CrumbPart& part = parts[pi];
+        const int pi = firstShown_ + static_cast<int>(k);
+        // segRects_ 由 layout 按 parts 的实际范围生成，pi 必在 [0, parts.size()) 内。
+        const CrumbPart& part = parts[static_cast<size_t>(pi)];
 
         if (hotSeg_ == pi) {
             RECT hr{segRects_[k].left - theme_->S(4), rc.top, segRects_[k].right + theme_->S(4),
@@ -103,9 +104,11 @@ void NavBar::DrawBreadcrumb(HDC dc, const RECT& rc) {
             // 与 mod 一致：展开态按 pressed 底色，悬停才是 hover
             ui::FillRectColor(dc, hr, chevOpen ? theme_->pressed : theme_->hover);
         }
-        int cx = (zone.left + zone.right) / 2;
-        int cy = (zone.top + zone.bottom) / 2;
-        ui::DrawChevron(dc, cx, cy, theme_->iconChevron(),
+        // 用 chev 前缀：cx/cy 在外层已经用于"沿栏推进的 x 坐标"，
+        // 同名会让读者以为这是同一个量。
+        const int chevCx = (zone.left + zone.right) / 2;
+        const int chevCy = (zone.top + zone.bottom) / 2;
+        ui::DrawChevron(dc, chevCx, chevCy, theme_->iconChevron(),
                         chevHot ? theme_->text : theme_->chevron, chevOpen ? 1 : 0);
     }
     RestoreDC(dc, save);
