@@ -1,5 +1,7 @@
 #include "bookmarks.h"
 
+#include "bmk_html.h"
+
 #include "common.h"
 #include "str.h"
 #include "config.h"
@@ -15,115 +17,16 @@ namespace {
 using str::Lower;
 using str::Trim;
 
-std::wstring HtmlEscape(const std::wstring& s) {
-    std::wstring out;
-    for (wchar_t c : s) {
-        switch (c) {
-        case L'&': out += L"&amp;"; break;
-        case L'<': out += L"&lt;"; break;
-        case L'>': out += L"&gt;"; break;
-        case L'"': out += L"&quot;"; break;
-        default: out.push_back(c);
-        }
-    }
-    return out;
-}
+// 词法层（Escape / Unescape / Attr / Tokenize / TagName / IsClosing）已抽到
+// bmk_html.h —— 这里曾与 bookmark_io.cpp 各有一份逐字相同的副本。
+using bmkhtml::Attr;
+using bmkhtml::IsClosing;
+using bmkhtml::TagName;
+using bmkhtml::Token;
+using bmkhtml::Tokenize;
+using bmkhtml::Escape;
+using bmkhtml::Unescape;
 
-std::wstring HtmlUnescape(const std::wstring& s) {
-    std::wstring out;
-    for (size_t i = 0; i < s.size(); ++i) {
-        if (s[i] != L'&') {
-            out.push_back(s[i]);
-            continue;
-        }
-        struct Ent {
-            const wchar_t* name;
-            wchar_t ch;
-        };
-        static const Ent kEnts[] = {{L"&amp;", L'&'}, {L"&lt;", L'<'}, {L"&gt;", L'>'},
-                                    {L"&quot;", L'"'}, {L"&apos;", L'\''}, {L"&nbsp;", L' '}};
-        bool done = false;
-        for (const auto& e : kEnts) {
-            size_t n = wcslen(e.name);
-            if (s.compare(i, n, e.name) == 0) {
-                out.push_back(e.ch);
-                i += n - 1;
-                done = true;
-                break;
-            }
-        }
-        if (!done) out.push_back(s[i]);
-    }
-    return out;
-}
-
-std::wstring Attr(const std::wstring& tag, const wchar_t* key) {
-    std::wstring lower = Lower(tag);
-    std::wstring k = Lower(key);
-    size_t p = 0;
-    while ((p = lower.find(k, p)) != std::wstring::npos) {
-        bool leftOk = p == 0 || !iswalnum(lower[p - 1]);
-        size_t after = p + k.size();
-        if (!leftOk || after >= lower.size() || lower[after] != L'=') {
-            p = after;
-            continue;
-        }
-        size_t v = after + 1;
-        if (v < tag.size() && (tag[v] == L'"' || tag[v] == L'\'')) {
-            wchar_t q = tag[v++];
-            size_t end = tag.find(q, v);
-            if (end == std::wstring::npos) end = tag.size();
-            return tag.substr(v, end - v);
-        }
-        size_t end = v;
-        while (end < tag.size() && !iswspace(tag[end]) && tag[end] != L'>') ++end;
-        return tag.substr(v, end - v);
-    }
-    return std::wstring();
-}
-
-struct Token {
-    bool tag = false;
-    std::wstring text;
-};
-
-std::vector<Token> Tokenize(const std::wstring& html) {
-    std::vector<Token> out;
-    size_t i = 0;
-    while (i < html.size()) {
-        if (html[i] == L'<') {
-            size_t end = html.find(L'>', i);
-            if (end == std::wstring::npos) break;
-            Token t;
-            t.tag = true;
-            t.text = html.substr(i + 1, end - i - 1);
-            out.push_back(std::move(t));
-            i = end + 1;
-        } else {
-            size_t next = html.find(L'<', i);
-            if (next == std::wstring::npos) next = html.size();
-            Token t;
-            t.tag = false;
-            t.text = html.substr(i, next - i);
-            if (!Trim(t.text).empty()) out.push_back(std::move(t));
-            i = next;
-        }
-    }
-    return out;
-}
-
-std::wstring TagName(const std::wstring& tag) {
-    std::wstring t = Trim(tag);
-    if (!t.empty() && t[0] == L'/') t = t.substr(1);
-    size_t end = 0;
-    while (end < t.size() && (iswalnum(t[end]) || t[end] == L'!' || t[end] == L'-')) ++end;
-    return Lower(t.substr(0, end));
-}
-
-bool IsClosing(const std::wstring& tag) {
-    std::wstring t = Trim(tag);
-    return !t.empty() && t[0] == L'/';
-}
 
 // 解析一层 DL；pos 指向 <DL> 之后的 token 下标
 void ParseLevel(const std::vector<Token>& toks, size_t& pos, BookmarkList& out, int depth) {
@@ -156,7 +59,7 @@ void ParseLevel(const std::vector<Token>& toks, size_t& pos, BookmarkList& out, 
             node.flags = _wtoi(Attr(inner, L"EXBAR_FLAGS").c_str());
             // H3 文本：标签内没有名字时取后续文本 token
             if (node.name.empty() && pos + 1 < toks.size() && !toks[pos + 1].tag)
-                node.name = HtmlUnescape(Trim(toks[pos + 1].text));
+                node.name = Unescape(Trim(toks[pos + 1].text));
             ++pos;
             while (pos < toks.size() && !(toks[pos].tag && TagName(toks[pos].text) == L"h3" &&
                                           IsClosing(toks[pos].text)))
@@ -175,12 +78,12 @@ void ParseLevel(const std::vector<Token>& toks, size_t& pos, BookmarkList& out, 
             BookmarkNode node;
             // HREF 属性值是 HTML 转义后的（& → &amp;），必须先还原实体再解 URL，
             // 否则含 & 的路径每存一次就多一层 &amp;，往返累积损坏。
-            node.path = BookmarkUrlToPath(HtmlUnescape(Attr(inner, L"HREF")));
+            node.path = BookmarkUrlToPath(Unescape(Attr(inner, L"HREF")));
             node.id = Attr(inner, L"EXBAR_ID");
             node.icon = Attr(inner, L"EXBAR_ICON");
             node.flags = _wtoi(Attr(inner, L"EXBAR_FLAGS").c_str());
             if (node.name.empty() && pos + 1 < toks.size() && !toks[pos + 1].tag)
-                node.name = HtmlUnescape(Trim(toks[pos + 1].text));
+                node.name = Unescape(Trim(toks[pos + 1].text));
             if (!node.path.empty()) out.push_back(std::move(node));
             ++pos;
             while (pos < toks.size() &&
@@ -198,16 +101,16 @@ std::wstring Serialize(const BookmarkList& list, int indent) {
     std::wstring out;
     for (const auto& n : list) {
         if (n.isFolder) {
-            out += pad + L"<DT><H3 EXBAR_ID=\"" + HtmlEscape(n.id) + L"\" EXBAR_FLAGS=\"" +
-                   std::to_wstring(n.flags) + L"\">" + HtmlEscape(n.name) + L"</H3>\r\n";
+            out += pad + L"<DT><H3 EXBAR_ID=\"" + Escape(n.id) + L"\" EXBAR_FLAGS=\"" +
+                   std::to_wstring(n.flags) + L"\">" + Escape(n.name) + L"</H3>\r\n";
             out += pad + L"<DL><p>\r\n";
             out += Serialize(n.children, indent + 1);
             out += pad + L"</DL><p>\r\n";
         } else if (!n.path.empty()) {
-            out += pad + L"<DT><A HREF=\"" + HtmlEscape(BookmarkPathToUrl(n.path)) + L"\" EXBAR_ID=\"" +
-                   HtmlEscape(n.id) + L"\"";
-            if (!n.icon.empty()) out += L" EXBAR_ICON=\"" + HtmlEscape(n.icon) + L"\"";
-            out += L" EXBAR_FLAGS=\"" + std::to_wstring(n.flags) + L"\">" + HtmlEscape(n.name) +
+            out += pad + L"<DT><A HREF=\"" + Escape(BookmarkPathToUrl(n.path)) + L"\" EXBAR_ID=\"" +
+                   Escape(n.id) + L"\"";
+            if (!n.icon.empty()) out += L" EXBAR_ICON=\"" + Escape(n.icon) + L"\"";
+            out += L" EXBAR_FLAGS=\"" + std::to_wstring(n.flags) + L"\">" + Escape(n.name) +
                    L"</A>\r\n";
         }
     }

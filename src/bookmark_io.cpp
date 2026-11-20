@@ -1,5 +1,7 @@
 #include "bookmark_io.h"
 
+#include "bmk_html.h"
+
 #include "bookmarks.h"
 #include "config.h"
 #include "prompt.h"
@@ -17,110 +19,19 @@ namespace {
 using str::Lower;
 inline std::wstring TrimWs(const std::wstring& s) { return str::Trim(s); }
 
-std::wstring HtmlEscapeLocal(const std::wstring& s) {
-    std::wstring out;
-    for (wchar_t c : s) {
-        switch (c) {
-        case L'&': out += L"&amp;"; break;
-        case L'<': out += L"&lt;"; break;
-        case L'>': out += L"&gt;"; break;
-        case L'"': out += L"&quot;"; break;
-        default: out.push_back(c);
-        }
-    }
-    return out;
-}
+// 词法层已抽到 bmk_html.h（与 bookmarks.cpp 共用）。
+//
+// 【注意：ParseLevel 故意不共用】本文件导入外部书签时**不读** EXBAR_ID /
+// EXBAR_ICON / EXBAR_FLAGS —— 否则导入的条目会与现有书签撞 id。
+// "导入不撞 id"正是靠这个差异成立的，合并会让两者之一出错。
+using bmkhtml::Attr;
+using bmkhtml::IsClosing;
+using bmkhtml::TagName;
+using bmkhtml::Tokenize;
+using Tok = bmkhtml::Token;
+using bmkhtml::Escape;
+using bmkhtml::Unescape;
 
-std::wstring HtmlUnescapeLocal(const std::wstring& s) {
-    std::wstring out;
-    for (size_t i = 0; i < s.size(); ++i) {
-        if (s[i] != L'&') {
-            out.push_back(s[i]);
-            continue;
-        }
-        static const struct {
-            const wchar_t* name;
-            wchar_t ch;
-        } kEnts[] = {{L"&amp;", L'&'}, {L"&lt;", L'<'}, {L"&gt;", L'>'},
-                     {L"&quot;", L'"'}, {L"&apos;", L'\''}, {L"&nbsp;", L' '}};
-        bool done = false;
-        for (const auto& e : kEnts) {
-            size_t n = wcslen(e.name);
-            if (s.compare(i, n, e.name) == 0) {
-                out.push_back(e.ch);
-                i += n - 1;
-                done = true;
-                break;
-            }
-        }
-        if (!done) out.push_back(s[i]);
-    }
-    return out;
-}
-
-// 从 HTML 提取属性值（带引号/不带引号都支持）。
-std::wstring AttrOf(const std::wstring& tag, const wchar_t* key) {
-    std::wstring lower = Lower(tag);
-    std::wstring k = Lower(key);
-    size_t p = 0;
-    while ((p = lower.find(k, p)) != std::wstring::npos) {
-        bool leftOk = p == 0 || !iswalnum(lower[p - 1]);
-        size_t after = p + k.size();
-        if (!leftOk || after >= lower.size() || lower[after] != L'=') {
-            p = after;
-            continue;
-        }
-        size_t v = after + 1;
-        if (v < tag.size() && (tag[v] == L'"' || tag[v] == L'\'')) {
-            wchar_t q = tag[v++];
-            size_t end = tag.find(q, v);
-            if (end == std::wstring::npos) end = tag.size();
-            return tag.substr(v, end - v);
-        }
-        size_t end = v;
-        while (end < tag.size() && !iswspace(tag[end]) && tag[end] != L'>') ++end;
-        return tag.substr(v, end - v);
-    }
-    return std::wstring();
-}
-
-struct Tok {
-    bool tag = false;
-    std::wstring text;
-};
-
-std::vector<Tok> TokenizeHtml(const std::wstring& html) {
-    std::vector<Tok> out;
-    size_t i = 0;
-    while (i < html.size()) {
-        if (html[i] == L'<') {
-            size_t end = html.find(L'>', i);
-            if (end == std::wstring::npos) break;
-            out.push_back({true, html.substr(i + 1, end - i - 1)});
-            i = end + 1;
-        } else {
-            size_t next = html.find(L'<', i);
-            if (next == std::wstring::npos) next = html.size();
-            std::wstring t = html.substr(i, next - i);
-            if (!TrimWs(t).empty()) out.push_back({false, t});
-            i = next;
-        }
-    }
-    return out;
-}
-
-std::wstring TagNameOf(const std::wstring& tag) {
-    std::wstring t = TrimWs(tag);
-    if (!t.empty() && t[0] == L'/') t = t.substr(1);
-    size_t end = 0;
-    while (end < t.size() && (iswalnum(t[end]) || t[end] == L'!' || t[end] == L'-')) ++end;
-    return Lower(t.substr(0, end));
-}
-
-bool IsClosingTag(const std::wstring& tag) {
-    std::wstring t = TrimWs(tag);
-    return !t.empty() && t[0] == L'/';
-}
 
 void ParseLevel(const std::vector<Tok>& toks, size_t& pos, BookmarkList& out, int depth) {
     if (depth > 32) return;
@@ -130,8 +41,8 @@ void ParseLevel(const std::vector<Tok>& toks, size_t& pos, BookmarkList& out, in
             ++pos;
             continue;
         }
-        const std::wstring name = TagNameOf(t.text);
-        if (name == L"dl" && IsClosingTag(t.text)) {
+        const std::wstring name = TagName(t.text);
+        if (name == L"dl" && IsClosing(t.text)) {
             ++pos;
             return;
         }
@@ -143,19 +54,19 @@ void ParseLevel(const std::vector<Tok>& toks, size_t& pos, BookmarkList& out, in
         while (pos < toks.size() && !toks[pos].tag) ++pos;
         if (pos >= toks.size()) return;
         const std::wstring inner = toks[pos].text;
-        const std::wstring iname = TagNameOf(inner);
+        const std::wstring iname = TagName(inner);
         if (iname == L"h3") {
             BookmarkNode node;
             node.isFolder = true;
             if (pos + 1 < toks.size() && !toks[pos + 1].tag)
-                node.name = HtmlUnescapeLocal(TrimWs(toks[pos + 1].text));
+                node.name = Unescape(TrimWs(toks[pos + 1].text));
             ++pos;
-            while (pos < toks.size() && !(toks[pos].tag && TagNameOf(toks[pos].text) == L"h3" &&
-                                          IsClosingTag(toks[pos].text)))
+            while (pos < toks.size() && !(toks[pos].tag && TagName(toks[pos].text) == L"h3" &&
+                                          IsClosing(toks[pos].text)))
                 ++pos;
             ++pos;
-            while (pos < toks.size() && !(toks[pos].tag && TagNameOf(toks[pos].text) == L"dl" &&
-                                          !IsClosingTag(toks[pos].text)))
+            while (pos < toks.size() && !(toks[pos].tag && TagName(toks[pos].text) == L"dl" &&
+                                          !IsClosing(toks[pos].text)))
                 ++pos;
             if (pos < toks.size()) {
                 ++pos;
@@ -164,16 +75,16 @@ void ParseLevel(const std::vector<Tok>& toks, size_t& pos, BookmarkList& out, in
             out.push_back(std::move(node));
         } else if (iname == L"a") {
             // HREF 是 HTML 转义过的，先还原实体再解 URL（与 BookmarkStore 同口径）。
-            std::wstring href = HtmlUnescapeLocal(AttrOf(inner, L"HREF"));
+            std::wstring href = Unescape(Attr(inner, L"HREF"));
             BookmarkNode node;
             node.path = BookmarkUrlToPath(href);
             if (pos + 1 < toks.size() && !toks[pos + 1].tag)
-                node.name = HtmlUnescapeLocal(TrimWs(toks[pos + 1].text));
+                node.name = Unescape(TrimWs(toks[pos + 1].text));
             if (node.name.empty()) node.name = node.path;
             if (!node.path.empty()) out.push_back(std::move(node));
             ++pos;
-            while (pos < toks.size() && !(toks[pos].tag && TagNameOf(toks[pos].text) == L"a" &&
-                                          IsClosingTag(toks[pos].text)))
+            while (pos < toks.size() && !(toks[pos].tag && TagName(toks[pos].text) == L"a" &&
+                                          IsClosing(toks[pos].text)))
                 ++pos;
             ++pos;
         } else {
@@ -186,13 +97,13 @@ void SerializeLevel(const BookmarkList& list, int indent, std::wstring& out) {
     std::wstring pad(static_cast<size_t>(indent * 4), L' ');
     for (const auto& n : list) {
         if (n.isFolder) {
-            out += pad + L"<DT><H3>" + HtmlEscapeLocal(n.name) + L"</H3>\r\n";
+            out += pad + L"<DT><H3>" + Escape(n.name) + L"</H3>\r\n";
             out += pad + L"<DL><p>\r\n";
             SerializeLevel(n.children, indent + 1, out);
             out += pad + L"</DL><p>\r\n";
         } else if (!n.path.empty()) {
-            out += pad + L"<DT><A HREF=\"" + HtmlEscapeLocal(BookmarkPathToUrl(n.path)) +
-                   L"\">" + HtmlEscapeLocal(n.name) + L"</A>\r\n";
+            out += pad + L"<DT><A HREF=\"" + Escape(BookmarkPathToUrl(n.path)) +
+                   L"\">" + Escape(n.name) + L"</A>\r\n";
         }
     }
 }
@@ -281,12 +192,12 @@ int BmkImportHtml(HWND owner, const Theme& theme) {
 
                 std::wstring html;
                 if (tf::ReadText(file, &html)) {
-                    std::vector<Tok> toks = TokenizeHtml(html);
+                    std::vector<Tok> toks = Tokenize(html);
                     BookmarkList imported;
                     size_t pos = 0;
                     while (pos < toks.size() && !(toks[pos].tag &&
-                                                  TagNameOf(toks[pos].text) == L"dl" &&
-                                                  !IsClosingTag(toks[pos].text)))
+                                                  TagName(toks[pos].text) == L"dl" &&
+                                                  !IsClosing(toks[pos].text)))
                         ++pos;
                     if (pos < toks.size()) {
                         ++pos;
