@@ -18,6 +18,7 @@ struct PopupState {
     bool done = false;
     bool wasActive = false;
     bool downInList = false;  // 必须先在本列表按下，抬起才算选中（否则开菜单那一下的抬起会立刻误触发）
+    bool downOutside = false; // 按下点落在列表外（= 要收起）；等 UP 再关，见 WM_LBUTTONDOWN
     int picked = -1;
     int itemH = 24;
     int sepPx = 2;   // 分隔线只占 2px：它只是分组提示，不该和普通条目一样高
@@ -35,9 +36,6 @@ struct PopupState {
 
     // 「再点即收」的锚点键（见 popup_toggle.h）。空 = 不参与判定。
     std::wstring toggleKey;
-    // 用户主动结束（选中 / Esc / Enter）→ 关掉时要清掉连点记录。外部点击关闭不清，
-    // 那条记录正是给紧随其后的重入 Show* 判"这一下是收起"用的。
-    bool deliberateClose = false;
 };
 
 // ---------- 树模式辅助（对齐 Exbar.cpp 18371-19312） ----------
@@ -198,7 +196,6 @@ static void PickRow(PopupState* st, HWND hList, int vi) {
         if (RowInert(st, vi)) return;
         st->picked = vi;
     }
-    st->deliberateClose = true;   // 选中 = 主动结束，关掉时清连点记录
     st->done = true;
     PostMessageW(st->self, WM_CLOSE, 0, 0);
 }
@@ -246,6 +243,22 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
             InvalidateRect(h, nullptr, FALSE);
         }
         return 0;
+    case WM_CAPTURECHANGED:
+        // 捕获转移。**必须区分两种情形**，否则会把正常点击变成"菜单自己关掉"：
+        //
+        //   lParam == 本列表 —— 原生 LISTBOX 按下时会自己 SetCapture（为了支持
+        //     拖选）。那是我们自己这一侧的内部行为，捕获仍在列表手里，忽略即可。
+        //   其他 —— 被系统弹窗 / 另一个程序抢走。此时弹层既收不到后续鼠标、
+        //     也不会再失活关闭，会变成"关不掉的菜单"，必须跟着关。
+        //
+        // 主动关闭的路径（点在列表外、Esc、选中行）都是**先**置 done 再
+        // ReleaseCapture，所以这里看到 done=true 不会重复 Post。
+        if (reinterpret_cast<HWND>(l) == h) return 0;
+        if (!st->done) {
+            st->done = true;
+            PostMessageW(st->self, WM_CLOSE, 0, 0);
+        }
+        return 0;
     case WM_MOUSEWHEEL: {
         // 滚动让行在静止光标下移动，hover 必须按真实光标重算
         LRESULT r = DefSubclassProc(h, m, w, l);
@@ -253,10 +266,45 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
         InvalidateRect(h, nullptr, FALSE);
         return r;
     }
-    case WM_LBUTTONDOWN:
+    case WM_LBUTTONDOWN: {
+        // 【再点即收的核心】列表持有鼠标捕获（见 RunModal 的 SetCapture），
+        // 所以弹层开着期间**所有**鼠标按下都先送到这里 —— 不管光标在列表内
+        // 还是跑到下面的锚点控件上（这正是捕获的语义，也是拖拽能跑出窗口的原因）。
+        //
+        //   点在列表内 → 正常按下，等 UP 选行。
+        //   点在列表外 → 这就是"要收起"的那一下。
+        //
+        // 【为什么 DOWN 里不直接关】必须等到 UP 再关并释放捕获，否则 UP 会落到
+        // 被点的控件上，而本工程各栏（书签/标签/状态栏/面包屑）都在 UP 里执行动作
+        // —— 于是"点一下收起菜单"会顺带打开那个书签、切走那个标签。
+        // 这就是资源管理器"菜单开着时点别处只关菜单、不触发别的"的语义。
+        POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+        RECT rc;
+        GetClientRect(h, &rc);
+        if (!PtInRect(&rc, pt)) {
+            // 只记下"这一下是外点"，捕获继续保持到 UP。
+            st->downOutside = true;
+            return 0;
+        }
+        st->downOutside = false;
         st->downInList = true;
         break;
+    }
     case WM_LBUTTONUP: {
+        POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+        RECT rc;
+        GetClientRect(h, &rc);
+        const bool outside = st->downOutside || !PtInRect(&rc, pt);
+        if (outside) {
+            // 先置 done 再 ReleaseCapture：ReleaseCapture 会**同步**派发
+            // WM_CAPTURECHANGED，那里的处理看到 done=true 就不会再 Post 一次。
+            st->downOutside = false;
+            st->downInList = false;
+            st->done = true;
+            if (GetCapture() == h) ReleaseCapture();
+            PostMessageW(st->self, WM_CLOSE, 0, 0);
+            return 0;
+        }
         if (!st->downInList) return 0;
         st->downInList = false;
         int idx = ItemFromPoint(h, GET_X_LPARAM(l), GET_Y_LPARAM(l));
@@ -283,7 +331,6 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
     case WM_KEYDOWN: {
         int count = RowCount(st);
         if (w == VK_ESCAPE) {
-            st->deliberateClose = true;
             st->done = true;
             PostMessageW(st->self, WM_CLOSE, 0, 0);
             return 0;
@@ -316,7 +363,6 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
         if (w == VK_RETURN || w == VK_SPACE) {
             if (st->curSel >= 0) PickRow(st, h, st->curSel);
             else {
-                st->deliberateClose = true;
                 st->done = true;
                 PostMessageW(st->self, WM_CLOSE, 0, 0);
             }
@@ -503,9 +549,21 @@ LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (!st) return 0;
         if (LOWORD(w) == WA_ACTIVE || LOWORD(w) == WA_CLICKACTIVE) {
             st->wasActive = true;
-        } else if (LOWORD(w) == WA_INACTIVE && st->wasActive) {
-            st->done = true;
-            PostMessageW(h, WM_CLOSE, 0, 0);
+        } else if (LOWORD(w) == WA_INACTIVE && st->wasActive && !st->done) {
+            // 【不能一失活就关】判据见 popup_toggle.h。
+            //
+            // 点本程序自己的书签栏/标签栏时，系统**同步**发 WA_INACTIVE，
+            // 而这次点击的 DOWN/UP 还没派发。若在这里就 PostMessage(WM_CLOSE)，
+            // WM_CLOSE 会排在 DOWN 之前被处理 → 弹层先被销毁 → 捕获释放 →
+            // UP 落到锚点控件 → 锚点在 UP 里又调一次 Show* → 菜单"关了又开"。
+            // 这就是"每次点击都是重新弹出"的真因（不是时间窗、不是点击间隔）。
+            //
+            // 持有捕获 + 前景窗同线程（= 点的是本程序另一个窗口）时不关：
+            // 那一组 DOWN/UP 由 ListSubclass 吞着，UP 判到"点在列表外"再关。
+            if (popup::ShouldCloseOnDeactivate(st->self, st->list)) {
+                st->done = true;
+                PostMessageW(h, WM_CLOSE, 0, 0);
+            }
         }
         return 0;
     case WM_CLOSE:
@@ -561,6 +619,16 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
     MONITORINFO mi{};
     mi.cbSize = sizeof(mi);
     GetMonitorInfoW(mon, &mi);
+
+    // 高度必须先夹进工作区，再算 y —— 顺序反了会出下面这个洞：
+    //   先按原高度决定"向上还是向下展开"，再把 y 推回 rcWork.top，
+    //   于是 rcWork.top + height 越过工作区底边，最后几行和滚动条一起画到屏幕外，
+    //   用户既点不到也滚不到（listbox 能滚，但滚动条本身在屏幕外）。
+    // 标签右键菜单 22 行 × 24dp：125% DPI 下 660px，768 高的屏幕再去掉任务栏
+    // 就顶到了边 —— 这不是理论风险。
+    const int workH = static_cast<int>(mi.rcWork.bottom - mi.rcWork.top);
+    if (height > workH) height = workH;
+
     int x = screen.x;
     int y = screen.y;
     if (x + width > mi.rcWork.right) x = static_cast<int>(mi.rcWork.right) - width;
@@ -627,8 +695,18 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
     SetForegroundWindow(st.self);
     SetFocus(st.list);
 
-    // 窗口真的建起来了才记"这一锚点刚开过" —— 记在建窗前会在创建失败时留下
-    // 脏记录，让用户下一次点击白白被吃掉。
+    // 【再点即收的机制所在】把鼠标捕获交给列表。
+    //
+    // 弹层开着期间，**所有**鼠标按下都先送到列表（捕获的语义就是如此），
+    // 不管光标落在列表内还是跑到下面的锚点控件上：
+    //   · 列表内 → 正常选行（ListSubclass 的 WM_LBUTTONUP）。
+    //   · 列表外 → ListSubclass 的 WM_LBUTTONDOWN 认出"在客户区之外"，
+    //              吃掉这一下并关窗。锚点**收不到**这次点击 → 不会重入 Show*。
+    //
+    // 这就是 TrackPopupMenu / 组合框下拉 / 资源管理器菜单的行为：菜单开着时点别处，
+    // 那一下只用来关菜单，不会同时触发被点的控件。与时间无关，因此不存在
+    // "用户想收回时窗口早过期"的问题。
+    SetCapture(st.list);
     popup::NoteOpened(st.toggleKey.c_str());
 
     // 对齐 mod 19298-19301：GetMessage 返回 -1 是错误（不能继续循环），
@@ -641,13 +719,12 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
     }
     if (gm == 0) PostQuitMessage(static_cast<int>(msg.wParam));
 
+    if (GetCapture() == st.list) ReleaseCapture();
     RemoveWindowSubclass(st.list, ListSubclass, 1);
+    // 注销要无条件做：不管这次是"选中/Esc"主动结束，还是"点外部/失活"被动结束，
+    // 弹层没了的下一瞬间，同键的 Show* 都必须能正常打开。
+    popup::NoteClosed(st.toggleKey.c_str());
     if (IsWindow(st.self)) DestroyWindow(st.self);
-
-    // 主动结束（选中 / Esc / Enter）要清掉连点记录：否则"Esc 关掉、马上又想看"
-    // 会被下一次 WasJustOpened 误判成连点，第一下没反应。
-    // 外部点击关闭不清 —— 那条记录正是留给紧随其后的重入 Show* 判"这一下是收起"的。
-    if (st.deliberateClose) popup::NoteClosedDeliberate(st.toggleKey.c_str());
 }
 
 void FreeTree(std::vector<TreeNode>& tree) {
@@ -663,9 +740,10 @@ int ShowPopupList(HWND owner, const Theme& theme, POINT screen,
                   int maxRows, const wchar_t* toggleKey) {
     if (rows.empty()) return -1;
 
-    // 「再点即收」：连点第二下直接当"取消"返回，不建窗口、不改任何状态。
-    // 判定必须在这里（建窗口之前），见 popup_toggle.h 关于消息顺序的说明。
-    if (popup::WasJustOpened(toggleKey)) return -1;
+    // 「再点即收」的兜底：正常情况下捕获模型已经让第二次点击到不了这里
+    // （它被列表吃掉了）。但主窗口若通过键盘/命令重入调 Show*，这里也要挡住，
+    // 否则会叠出两个菜单。判据是"同键的弹层此刻还开着"，与时间无关。
+    if (popup::IsOpen(toggleKey)) return -1;
 
     EnsureClass();
 
@@ -691,7 +769,9 @@ std::wstring ShowFolderTree(HWND owner, const Theme& theme, POINT screen,
                             std::vector<TreeNode> topNodes, TreeChildrenFn children,
                             int minWidthPx, const wchar_t* toggleKey) {
     if (topNodes.empty()) return std::wstring();
-    if (popup::WasJustOpened(toggleKey)) {
+    // 与 ShowPopupList 同一理由：捕获模型已让第二次点击到不了这里，这条只是
+    // 键盘/命令重入时的兜底。
+    if (popup::IsOpen(toggleKey)) {
         // 收起路径也要释放调用方移交的 icon，否则每次"再点收起"漏一批 HICON。
         FreeTree(topNodes);
         return std::wstring();
