@@ -612,8 +612,10 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
             Navigate(index);
         break;
     case 2:
-        // 剪贴板写入唯一实现（clipboard.cpp）
-        if (!it.path.empty()) SetClipboardText(hwnd_, it.path);
+        // 剪贴板写入唯一实现（clipboard.cpp）。失败要留痕 ——
+        // 否则用户"点了复制、粘贴出旧内容"时无从判断是复制没成功。
+        if (!it.path.empty() && !SetClipboardText(hwnd_, it.path))
+            LogDbg(L"[bmk] 复制路径失败（剪贴板被占用？）：%s", it.path.c_str());
         break;
     case 3: {
         // 编辑：名称 + 路径双字段（纯分类节点只有名称一项可改）。
