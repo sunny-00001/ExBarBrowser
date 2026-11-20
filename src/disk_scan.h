@@ -32,6 +32,10 @@ struct Result {
     unsigned long long totalBytes = 0; // 该目录下所有内容总大小
     unsigned scannedFiles = 0;         // 实际访问了多少个文件
     unsigned scannedDirs = 0;
+    // 打不开的目录数（权限不足/被占用）。>0 表示结果**偏小**，
+    // 上层必须能把它与"真的就这么大"区分开 —— 文件头硬约束第 2 条要求
+    // "必须报告完整性"，静默跳过就无法报告。
+    unsigned deniedDirs = 0;
     bool timedOut = false;             // 到 deadline 提前结束
     bool truncated = false;            // 结果被 limit 截断
     unsigned long long elapsedMs = 0;

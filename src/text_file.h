@@ -15,6 +15,21 @@ bool ReadAllBytes(const std::wstring& path, std::string* out);
 bool ReadText(const std::wstring& path, std::wstring* out);   // 自动识别 BOM
 bool WriteText(const std::wstring& path, const std::wstring& text);  // UTF-8 无 BOM
 
+// 把路径转成 Win32 的"扩展长度"形式，绕过 MAX_PATH(260) 限制。
+//
+// 【为什么需要】本工程的导航层（nav_path.h）早就把路径语义从 MAX_PATH 里解放
+// 出来了，但执行层没跟上：CreateFileW / FindFirstFileW / GetFileAttributesExW
+// 拿到 >260 字符的路径会直接失败，而调用方往往把失败当成"文件不存在"或
+// "权限不足" —— 表现为深目录静默读不到、体积统计把它计成 0。
+//
+// 规则（照 Win32 文档）：
+//   · 已是 \\?\ 或 \\.\ 前缀 → 原样返回（幂等，可重复调用）
+//   · UNC 路径 \\server\share\x → \\?\UNC\server\share\x
+//   · 普通绝对路径 C:\x        → \\?\C:\x
+//   · 相对路径、shell: / ::{GUID} 这类命名空间 → 原样返回
+//     （扩展前缀只对文件系统路径有效，套在命名空间上会让它彻底打不开）
+std::wstring ToExtended(const std::wstring& path);
+
 // 追加一行（含换行）到文件，并按大小轮转（只保留一份 .1）。
 //
 // bytes 是**已编码好的字节**：调用方自己决定 UTF-8 还是 UTF-16。

@@ -18,8 +18,11 @@ std::wstring FromUtf8(const std::string& s) { return str::FromUtf8(s); }
 bool ReadAllBytes(const std::wstring& path, std::string* out) {
     if (!out) return false;
     out->clear();
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // ToExtended：绕过 MAX_PATH(260)。深路径以前在这里直接返回 false，
+    // 而调用方把它当成"文件不存在/读不出"。
+    HANDLE h = CreateFileW(ToExtended(path).c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
     LARGE_INTEGER size{};
     if (!GetFileSizeEx(h, &size) || size.QuadPart < 0 || size.QuadPart > (64LL << 20)) {
@@ -101,7 +104,7 @@ bool WriteText(const std::wstring& path, const std::wstring& text) {
     swprintf(suffix, 32, L".%lu.tmp", static_cast<unsigned long>(GetCurrentProcessId()));
     const std::wstring tmp = path + suffix;
 
-    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+    HANDLE h = CreateFileW(ToExtended(tmp).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
     DWORD written = 0;
@@ -112,17 +115,52 @@ bool WriteText(const std::wstring& path, const std::wstring& text) {
     if (ok) ok = FlushFileBuffers(h) != FALSE;   // 落盘后再改名，否则断电得到空文件
     CloseHandle(h);
     if (!ok) {
-        DeleteFileW(tmp.c_str());
+        DeleteFileW(ToExtended(tmp).c_str());
         return false;
     }
-    if (!MoveFileExW(tmp.c_str(), path.c_str(),
+    if (!MoveFileExW(ToExtended(tmp).c_str(), ToExtended(path).c_str(),
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        DeleteFileW(tmp.c_str());
+        DeleteFileW(ToExtended(tmp).c_str());
         return false;
     }
     return true;
 }
 
+
+std::wstring ToExtended(const std::wstring& path) {
+    if (path.size() < 2) return path;
+
+    // 幂等：已经加过前缀的直接返回，调用方可以无脑套。
+    if (path.rfind(L"\\\\?\\", 0) == 0 || path.rfind(L"\\\\.\\", 0) == 0) return path;
+
+    // 命名空间（shell:、::{GUID}、搜索: 之类）不是文件系统路径 ——
+    // 加 \\?\ 前缀会让它彻底打不开，所以原样放过。
+    if (path.rfind(L"::", 0) == 0) return path;
+    const size_t colon = path.find(L':');
+    if (colon != std::wstring::npos && colon > 0) {
+        // "C:\..." 是盘符（colon==1 且后面跟分隔符）；其余 "xx:yyy" 视作命名空间。
+        const bool driveLetter =
+            (colon == 1) && (path.size() == 2 || path[2] == L'\\' || path[2] == L'/');
+        if (!driveLetter) return path;
+    }
+
+    // 相对路径（不以盘符、也不以分隔符开头）：扩展前缀要求绝对路径，原样返回。
+    const bool absolute = (colon == 1) || path[0] == L'\\' || path[0] == L'/';
+    if (!absolute) return path;
+
+    // 【必须把 / 换成 \】扩展长度路径**不做任何规范化** —— 这正是它绕开
+    // MAX_PATH 与 . / .. 处理的原因，也意味着正斜杠不会被自动转换。
+    // 而本工程的路径来源混合（SHGetKnownFolderPath 给反斜杠，用户输入/配置
+    // 里可能有正斜杠），不转换就会得到"加了前缀却打不开"的路径。
+    std::wstring p = path;
+    for (auto& c : p)
+        if (c == L'/') c = L'\\';
+
+    // UNC：\\server\share  ->  \\?\UNC\server\share
+    if (p.rfind(L"\\\\", 0) == 0) return L"\\\\?\\UNC\\" + p.substr(2);
+
+    return L"\\\\?\\" + p;
+}
 
 bool AppendLine(const std::wstring& path, const std::string& bytes,
                 unsigned long long rotateAtBytes, int checkEveryN) {
@@ -134,15 +172,16 @@ bool AppendLine(const std::wstring& path, const std::string& bytes,
     if (checkEveryN > 0 && ++sinceCheck >= checkEveryN) {
         sinceCheck = 0;
         WIN32_FILE_ATTRIBUTE_DATA fad{};
-        if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
+        if (GetFileAttributesExW(ToExtended(path).c_str(), GetFileExInfoStandard, &fad) &&
             ((static_cast<unsigned long long>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow) >
                 rotateAtBytes) {
             const std::wstring old = path + L".1";
-            MoveFileExW(path.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING);
+            MoveFileExW(ToExtended(path).c_str(), ToExtended(old).c_str(),
+                        MOVEFILE_REPLACE_EXISTING);
         }
     }
 
-    HANDLE h = CreateFileW(path.c_str(), FILE_APPEND_DATA,
+    HANDLE h = CreateFileW(ToExtended(path).c_str(), FILE_APPEND_DATA,
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
@@ -156,17 +195,17 @@ bool AppendLine(const std::wstring& path, const std::string& bytes,
 }
 
 bool Exists(const std::wstring& path) {
-    return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+    return GetFileAttributesW(ToExtended(path).c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
 bool IsDirectory(const std::wstring& path) {
-    const DWORD a = GetFileAttributesW(path.c_str());
+    const DWORD a = GetFileAttributesW(ToExtended(path).c_str());
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
 bool EnsureDir(const std::wstring& path) {
     if (path.empty()) return false;
-    DWORD attr = GetFileAttributesW(path.c_str());
+    DWORD attr = GetFileAttributesW(ToExtended(path).c_str());
     if (attr != INVALID_FILE_ATTRIBUTES) return (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
     std::wstring parent = path;
     size_t slash = parent.find_last_of(L"\\/");

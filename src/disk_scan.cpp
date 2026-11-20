@@ -7,6 +7,7 @@
 #include <chrono>
 
 #include "common.h"
+#include "text_file.h"   // tf::ToExtended：>260 字符路径需要扩展长度前缀
 
 namespace diskscan {
 namespace {
@@ -31,25 +32,37 @@ bool IsReparse(const WIN32_FIND_DATAW& fd) {
 
 // 统计 dir 子树。返回 false 表示因超时/出错没算完（bytes 仍是已算到的部分）。
 bool SumSubtree(const std::wstring& dir, const Options& opt, Clock::time_point deadline,
-                unsigned long long* bytes, unsigned* files, unsigned* dirs) {
+                unsigned long long* bytes, unsigned* files, unsigned* dirs,
+                unsigned* deniedOut = nullptr) {
     *bytes = 0;
     *files = 0;
     *dirs = 0;
+    unsigned denied = 0;
 
     std::vector<std::wstring> stack;
     stack.push_back(dir);
 
     while (!stack.empty()) {
         // 每进入一个目录检查一次时间：足够细，开销可忽略。
-        if (Clock::now() > deadline) return false;
+        if (Clock::now() > deadline) {
+            if (deniedOut) *deniedOut = denied;
+            return false;
+        }
 
         const std::wstring cur = stack.back();
         stack.pop_back();
 
         WIN32_FIND_DATAW fd{};
-        const std::wstring pattern = cur + L"\\*";
+        // ToExtended：>260 字符的目录以前 FindFirstFileW 直接失败，被下面那行
+        // 当成"权限不足"跳过 —— 于是它的体积计成 0，而 complete 仍是 true。
+        // 用户看到的是一个"空"的大目录，与"真的就这么大"无法区分。
+        const std::wstring pattern = tf::ToExtended(cur) + L"\\*";
         HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
-        if (h == INVALID_HANDLE_VALUE) continue;   // 权限不足等：跳过，不算"不完整"
+        if (h == INVALID_HANDLE_VALUE) {
+            // 真的枚举不了（权限/被占用）：计数并上报，不要静默跳过。
+            ++denied;
+            continue;
+        }
         ++*dirs;
 
         do {
@@ -69,6 +82,7 @@ bool SumSubtree(const std::wstring& dir, const Options& opt, Clock::time_point d
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
+    if (deniedOut) *deniedOut = denied;
     return true;
 }
 
@@ -96,7 +110,7 @@ bool Scan(const std::wstring& path, const Options& opt, Result* out, std::wstrin
     std::vector<Entry> found;
     {
         WIN32_FIND_DATAW fd{};
-        const std::wstring pattern = path + L"\\*";
+        const std::wstring pattern = tf::ToExtended(path) + L"\\*";
         HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
         if (h == INVALID_HANDLE_VALUE) {
             if (err) *err = L"无法枚举目录内容";
@@ -128,7 +142,9 @@ bool Scan(const std::wstring& path, const Options& opt, Result* out, std::wstrin
         if (e.isFolder) {
             unsigned long long b = 0;
             unsigned f = 0, d = 0;
-            const bool ok = SumSubtree(e.path, opt, deadline, &b, &f, &d);
+            unsigned denied = 0;
+            const bool ok = SumSubtree(e.path, opt, deadline, &b, &f, &d, &denied);
+            out->deniedDirs += denied;
             e.bytes = b;
             e.items = f + d;
             e.complete = ok;
@@ -137,7 +153,8 @@ bool Scan(const std::wstring& path, const Options& opt, Result* out, std::wstrin
             if (!ok) out->timedOut = true;
         } else {
             WIN32_FILE_ATTRIBUTE_DATA fad{};
-            if (GetFileAttributesExW(e.path.c_str(), GetFileExInfoStandard, &fad)) {
+            if (GetFileAttributesExW(tf::ToExtended(e.path).c_str(), GetFileExInfoStandard,
+                                     &fad)) {
                 e.bytes = (static_cast<unsigned long long>(fad.nFileSizeHigh) << 32) |
                           fad.nFileSizeLow;
                 out->scannedFiles += 1;

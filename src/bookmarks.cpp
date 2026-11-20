@@ -442,7 +442,8 @@ bool BookmarkStore::Undo() {
 
 FILETIME BookmarkStore::LastWriteOf(const std::wstring& path) const {
     FILETIME ft{};
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
+    // ToExtended：书签文件可能放在深目录（用户自定义数据位置）。
+    HANDLE h = CreateFileW(tf::ToExtended(path).c_str(), GENERIC_READ,
                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return ft;

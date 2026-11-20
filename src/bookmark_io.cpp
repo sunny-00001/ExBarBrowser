@@ -151,7 +151,8 @@ int BmkExportHtml(HWND owner, const Theme& theme) {
                 html += L"</DL><p>\r\n";
 
                 std::string u8 = tf::ToUtf8(html);
-                HANDLE h = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                HANDLE h = CreateFileW(tf::ToExtended(file).c_str(), GENERIC_WRITE, 0, nullptr,
+                                       CREATE_ALWAYS,
                                        FILE_ATTRIBUTE_NORMAL, nullptr);
                 if (h != INVALID_HANDLE_VALUE) {
                     DWORD written = 0;

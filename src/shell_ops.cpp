@@ -423,7 +423,9 @@ bool NewTextFile(IShellView* view, HWND owner, std::wstring* created) {
         std::wstring name = dir + L"\\" + LocalizedNewTextName();
         if (i > 0) name += L" (" + std::to_wstring(i) + L")";
         name += L".txt";
-        HANDLE h = CreateFileW(name.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        // ToExtended：新建的目标目录可能在深路径下（shell 的 NewItem 已处理，
+        // 这条回退路径也必须处理，否则两个分支行为不一致）。
+        HANDLE h = CreateFileW(tf::ToExtended(name).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                                FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h != INVALID_HANDLE_VALUE) {
             CloseHandle(h);

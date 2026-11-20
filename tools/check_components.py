@@ -215,6 +215,19 @@ UNIQUE = [
          allow={"text_file.cpp"},
          why="统一用 tf::AppendLine(path, bytes, rotateAtBytes, checkEveryN)；"
              "编码由调用方给，轮转逻辑只一份"),
+
+    # ---- 长路径（2026-11-21 本轮新增）----
+    # >260 字符的路径在 CreateFileW / FindFirstFileW / GetFileAttributesExW 上
+    # 会直接失败，而调用方常把失败当成"文件不存在"或"权限不足" ——
+    # 深目录静默读不到、体积统计算成 0 且仍标记完整。
+    # 唯一入口是 tf::ToExtended(path)（加 \\?\ 前缀，UNC 转 \\?\UNC\，幂等，
+    # 命名空间原样跳过）。
+    #
+    # ai_server.cpp 的 CreateFileW 开的是命名管道（\\.\pipe\...），
+    # 不是文件系统路径，加扩展前缀会彻底打不开 —— 白名单放行。
+    dict(name="长路径前缀", pat=r"\bCreateFileW\s*\(\s*(?!tf::ToExtended|ToExtended)",
+         allow={"text_file.cpp", "ai_server.cpp"},
+         why="文件 API 一律传 tf::ToExtended(path)；否则 >260 字符路径静默失败"),
 ]
 
 # ---------------------------------------------------------------------------
