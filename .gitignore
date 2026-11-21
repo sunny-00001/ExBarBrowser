@@ -64,6 +64,12 @@ data/audit.log.1
 data/ai-token.txt
 data/ai-pipe.txt
 data/.write-probe
+# 每实例发现文件（多实例并存时各写一份）与测试 profile：运行期产物，不入库
+data/ai-token.*.txt
+data/ai-pipe.*.txt
+data/profile-multi/
+# 程序自动生成的书签备份（含用户数据，绝不入库）
+data/*.backup-*.html
 
 # 已废弃的旧命名（曾用 browser- 前缀，已合并进 keymap.json / mouse.json）
 data/browser.json
@@ -71,3 +77,5 @@ data/browser-keymap.json
 data/browser-mouse.json
 data/bookmarks.default.html
 data/*.from-appdata
+# Agent 工作区（随会话上下文）
+.workbuddy/

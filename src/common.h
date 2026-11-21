@@ -83,6 +83,10 @@ enum : UINT {
     WM_APP_BMK_NAV,
     WM_APP_REFOCUS,      // 模态窗口/地址编辑结束后，把焦点还给当前视图
     WM_APP_NAV_REPLAY,   // shell_view 内部：ERROR_BUSY 排队导航的重放
+    // AI 通道热插拔：config.set aiEnabled 之后由 UI 线程真正启停服务。
+    // 必须走"投递到消息队列"而不是在命令 handler 里直接调 StopServer ——
+    // 关通道的请求本身就可能来自该通道，同步 join 监听线程会让响应写不回去。
+    WM_APP_SYNC_AI,
 
     // Shell 的 WM_PARENTNOTIFY 只有 DOWN、没有配对 UP；用独立消息告诉 InputRouter
     // 派发后立刻释放 clickClaimed_，避免残留 claim 吞掉下一次组件点击。
@@ -96,7 +100,7 @@ enum : UINT {
 // WM_APP_MOUSE_*_NOUP 表示无配对抬起的 Shell PARENTNOTIFY 路径。
 using MouseSink = std::function<bool(int target, UINT msg, int button, int mods, POINT screen)>;
 
-// 单实例转发（WM_COPYDATA）
+// 路径转发（WM_COPYDATA）。已有窗口收到后在新标签里打开；没有窗口则调用方新开进程。
 using id::kCopyDataMagic;
 struct CopyDataPayload {
     ULONG_PTR magic;

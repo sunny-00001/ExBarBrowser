@@ -7,11 +7,12 @@
 // MCP 客户端可在此之上做薄封装（tools/list 与 tools/call 的形状已经在 ai_api 里
 // 对上 MCP 规范），不需要在 A 侧塞 JSON-RPC 状态机。
 //
-// 安全口径（fail-closed）：
+// 安全口径：
 //   · 只监听当前用户会话（Local\ 前缀 = 当前登录会话）。
-//   · 默认不监听（需 settings.json 的 aiEnabled=true 显式开启）。
+//   · 默认开启（settings.json 缺省即监听），可随时热插拔启停。
 //   · 每个连接先发 HELLO，校验令牌；令牌每次启动随机生成，写在
-//     %LOCALAPPDATA%\ExBar\ai-token.txt（仅当前用户可读）。
+//     数据目录的 ai-token.txt（仅当前用户可读；另有 ai-token.<pid>.txt
+//     供多实例并存时逐个发现）。
 //     这不是加密，只是"别的进程不能随手乱调"的护栏。
 #pragma once
 #include <string>
@@ -40,6 +41,10 @@ void StopServer();
 
 // 是否正在监听。供诊断与单测判断"服务真的起来了/真的停了"。
 bool IsRunning();
+
+// 当前是否有事件订阅者。供 UI 线程决定要不要每 100ms 生成一次状态快照 ——
+// 没有订阅者时那份快照没有任何接收方，纯属浪费（多实例下尤其明显）。
+bool HasSubscribers();
 
 // UI 线程调用：处理所有挂起的请求（命令 handler 只能在 UI 线程跑）。
 // 返回本次处理了几个；0 = 没活干。由 App 的定时器驱动即可，不需要更复杂的唤醒。

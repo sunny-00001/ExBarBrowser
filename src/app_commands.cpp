@@ -210,8 +210,10 @@ std::vector<std::wstring> App::SelectedOrFolder() {
 
 void App::OpenPathInNewWindow(const std::wstring& path) {
     if (path.empty()) return;
-    ShellExecuteW(hwnd_, L"open", ExePath().c_str(), (L"\"" + path + L"\"").c_str(), nullptr,
-                  SW_SHOWNORMAL);
+    // 必须带 --new-window：新进程默认会"转发给已有窗口并激活"，不开新窗口。
+    // 这条命令的语义就是"再开一个窗口"，所以显式要求新实例（共享同一份用户数据）。
+    const std::wstring args = std::wstring(id::kNewWindowArg) + L" \"" + path + L"\"";
+    ShellExecuteW(hwnd_, L"open", ExePath().c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
 }
 
 void App::ApplyViewMode(int index) {

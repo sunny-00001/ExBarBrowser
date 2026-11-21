@@ -303,15 +303,9 @@ int App::Run(HINSTANCE hInst, const std::wstring& initialPath) {
     Layout();
 
     // AI 通道：标签就绪后才启（状态快照要能取到活动标签）。
-    // 默认关闭；只有 settings.json 里 aiEnabled=true 才监听管道。
-    if (Config::Get().s().aiEnabled) {
-        ai::StartServer(nullptr);
-        // 泵定时器：命令 handler 必须在 UI 线程跑，监听线程只排队。
-        // 100ms 足够（人感知不到），又不会占 CPU。
-        SetTimer(hwnd_, kAiTimer, 100, nullptr);
-    } else {
-        LogDbg(L"[ai] 通道未启用（aiEnabled=false）");
-    }
+    // 默认开启；settings.json 的 aiEnabled=false 才关闭。
+    // 运行中改 aiEnabled 立即生效（WM_APP_SYNC_AI -> SyncAiChannel），无需重启。
+    SyncAiChannel();
 
     MSG msg;
     int gm;
@@ -396,6 +390,25 @@ void App::OnDestroy() {
     ai::SetStateProvider(nullptr);
     input_.Cancel();
     tabs_.clear();  // 字体仍有效，Shell 视图可安全销毁
+}
+
+void App::SyncAiChannel() {
+    const bool want = Config::Get().AiChannelEnabled();
+    const bool running = ai::IsRunning();
+    if (want == running) return;
+
+    if (want) {
+        ai::StartServer(nullptr);
+        // 泵定时器：命令 handler 必须在 UI 线程跑，监听线程只排队。
+        // 100ms 足够（人感知不到），且无订阅者时不做状态轮询（见 PumpRequests）。
+        SetTimer(hwnd_, kAiTimer, 100, nullptr);
+        LogDbg(L"[ai] 通道已启用（热插拔）");
+    } else {
+        // 先停定时器再停服务：反过来的话，下一次 WM_TIMER 会对已停的管道泵请求。
+        KillTimer(hwnd_, kAiTimer);
+        ai::StopServer();
+        LogDbg(L"[ai] 通道已停用（热插拔）");
+    }
 }
 
 void App::FocusActiveView() {

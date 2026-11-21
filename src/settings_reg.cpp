@@ -334,11 +334,12 @@ const std::vector<Entry>& Table() {
                      L"快捷键覆盖（只读：改 data\\keymap.json，或用键位相关命令）"});
 
         // ---- AI 通道 ----
-        // aiEnabled 只在启动时读（app.cpp 按它决定是否监听管道）：运行中改它
-        // 不会启停服务，所以只读，doc 说清"重启生效"。
+        // aiEnabled 支持热插拔：config.set 之后命令层会调 App::SyncAiChannel
+        // 立即启停管道服务（UI 线程、响应写回之后），无需重启。
         v.push_back({L"aiEnabled", Kind::Bool,
-                     [&cfg] { return json::Value::MakeBool(cfg.s().aiEnabled); }, nullptr,
-                     L"启用 AI 通道（只读：仅启动时读取，改后需重启）"});
+                     [&cfg] { return json::Value::MakeBool(cfg.s().aiEnabled); },
+                     BoolSet(&m.aiEnabled, L"aiEnabled"),
+                     L"启用 AI 通道（立即生效：开启后监听管道，关闭后停止监听）"});
         // aiAllowDanger 每次危险命令都现读，改了立刻生效 —— 这是唯一允许
         // 运行中修改的"安全开关"。
         v.push_back({L"aiAllowDanger", Kind::Bool,

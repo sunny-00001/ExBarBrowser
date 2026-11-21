@@ -86,10 +86,11 @@ struct Settings {
     std::vector<std::pair<std::wstring, std::wstring>> hotkeyOverrides;
 
     // ---- AI 操作通道 ----
-    // 默认关闭：这是"让外部程序驱动本窗口"的能力，不该默认对外开放。
+    // 默认开启：这是"让外部程序驱动本窗口"的能力，人机等价（命令表是唯一真源）。
     // 开启后监听一个本地命名管道（名与令牌见 data\ai-pipe.txt / ai-token.txt，
-    // 停服即删）。人机等价：管道能做的每件事人也能做，命令表是唯一真源。
-    bool aiEnabled = false;
+    // 停服即删）。**支持热插拔**：config.set aiEnabled 会立即启停服务，无需重启
+    // （见 App::SyncAiChannel）；关闭后不再监听任何连接。
+    bool aiEnabled = true;
     // 是否允许 AI 执行 Risk::Danger 命令。关闭时这类命令一律拒绝（即使调用方
     // 带 approve=true）—— 相当于"人类保留最终授权"的硬开关。
     bool aiAllowDanger = false;
@@ -107,6 +108,14 @@ public:
 
     const Settings& s() const { return s_; }
     Settings& mutableSettings() { return s_; }
+
+    // 启动时强制开启 AI 通道（来自 --ai / EXBARBROWSER_AI）。
+    // 【为什么不塞进 Settings】那是会被 Save() 全量写回 settings.json 的；
+    // 一旦写回，测试实例关闭就把用户的 aiEnabled 永久翻成 true —— 正是要消灭的污染。
+    // 这个标志纯进程内：只参与"要不要 StartServer"的判断，永不落盘。
+    // 热插拔时若用户显式设置了 aiEnabled，会先清掉它（人的动作优先于测试开关）。
+    void SetAiForceEnabled(bool v) { aiForceEnabled_ = v; }
+    bool AiChannelEnabled() const { return aiForceEnabled_ || s_.aiEnabled; }
 
     // 路径
     std::wstring Dir() const;          // exe\data（便携模式，见文件头说明）
@@ -133,6 +142,8 @@ private:
     mutable std::wstring dir_;
     Settings s_;
     bool loaded_ = false;
+    // 进程内启动开关，不随 SetProfileDir 重置（它在 main 每次启动只设一次），也不落盘。
+    bool aiForceEnabled_ = false;
     // settings.json 存在但解析失败 → 禁止 Save 覆盖（否则用户手改打错一个逗号，
     // 下次任何一次 Save 都会把 recentPaths / sessionPaths / lockedPaths / closedTabs /
     // hotkeyOverrides 全部抹掉）。见 config.cpp Load() 的注释。

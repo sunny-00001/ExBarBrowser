@@ -1,9 +1,11 @@
-// ExBarBrowser 入口：DPI、COM、单实例转发、命令行解析。
+// ExBarBrowser 入口：DPI、COM、路径转发、命令行解析。
 //
 // 形态（360 文件夹路线）：
 //   · 每个窗口是本进程自己的顶层窗口，explorer 完全不参与；
 //   · 视图用 IExplorerBrowser 在本进程内托管真实 Shell 视图；
-//   · 再次"打开文件夹"时不新起进程，而是把路径转发给已存在的窗口开新标签。
+//   · 默认启动：已有窗口就把路径转发过去开新标签并激活它；没有就新开进程。
+//     显式多开（--new-window / EXBARBROWSER_MULTI）则不查找、不转发，直接新起一个。
+//   · 【没有单实例锁】不存在"已在运行 → 拒绝启动"的分支；多实例是允许的常态。
 #include <cstddef>   // offsetof
 #include <cstring>   // memcpy
 
@@ -32,6 +34,39 @@ void EnableDpiAwareness() {
 std::wstring StripQuotes(std::wstring s) {
     if (s.size() >= 2 && s.front() == L'"' && s.back() == L'"') return s.substr(1, s.size() - 2);
     return s;
+}
+
+// 是否强制开启 AI 通道：--ai 命令行开关，或 EXBARBROWSER_AI 环境变量（"0"/空=否）。
+// 这是进程内启动开关，只改内存标志、不写 settings.json —— 测试实例关闭不会污染用户设置。
+bool AiForceRequested() {
+    wchar_t buf[8] = L"";
+    const DWORD n = GetEnvironmentVariableW(id::kAiForceEnv, buf, _countof(buf));
+    if (n > 0 && n < _countof(buf) && buf[0] != L'\0' && buf[0] != L'0') return true;
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    bool found = false;
+    if (argv) {
+        for (int i = 1; i < argc; ++i) {
+            if (str::IEquals(argv[i], id::kAiForceArg)) { found = true; break; }
+        }
+        LocalFree(argv);
+    }
+    return found;
+}
+
+// 显式要求新实例：--new-window 命令行（"在新窗口打开"命令用它启动子进程）。
+// 不读环境变量 —— MULTI 的语义是"换独立 profile"，由调用方单独处理。
+bool NewWindowRequested() {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    bool found = false;
+    if (argv) {
+        for (int i = 1; i < argc; ++i) {
+            if (str::IEquals(argv[i], id::kNewWindowArg)) { found = true; break; }
+        }
+        LocalFree(argv);
+    }
+    return found;
 }
 
 // 相对路径（`ExBarBrowser.exe sub`）直接交给 shell 解析必然失败：
@@ -65,7 +100,7 @@ std::wstring InitialPath() {
                 if (path.empty()) path = full;
                 break;
             }
-            if (a[0] == L'/') continue;  // 其他开关忽略
+            if (a[0] == L'/' || a[0] == L'-') continue;  // 其他开关忽略（含 --ai）
             path = NormalizePath(StripQuotes(a));
             break;
         }
@@ -76,15 +111,22 @@ std::wstring InitialPath() {
     return path;
 }
 
+// 查找已有主窗口。timeoutMs 只用于覆盖"首实例还在建窗口"的启动竞态；
+// 它**不是**单实例判定的代价 —— 找不到就立即新开进程，绝不在这里等候或阻断。
+HWND FindMainWindow(DWORD timeoutMs) {
+    const ULONGLONG deadline = GetTickCount64() + timeoutMs;
+    for (;;) {
+        if (HWND h = FindWindowW(kMainClass, nullptr)) return h;
+        if (GetTickCount64() >= deadline) return nullptr;
+        Sleep(25);
+    }
+}
+
 // 已有实例：把路径转发过去，由它开新标签（360 行为）。
 // 必须用 SendMessageTimeout 并校验处理结果：目标卡在模态框时 SendMessage 会无限挂起，
-// 而"无条件返回 true"会让新进程误以为已转发而退出（用户点了打开却什么都没发生）。
-bool ForwardToExisting(const std::wstring& path) {
-    HWND target = nullptr;
-    for (int i = 0; i < 200 && !target; ++i) {  // 最长 10s：首实例可能还在建窗口
-        target = FindWindowW(kMainClass, nullptr);
-        if (!target) Sleep(50);
-    }
+// 而"无条件返回 true"会让调用方误以为已转发而退出（用户点了打开却什么都没发生）。
+bool ForwardToExisting(const std::wstring& path, DWORD findTimeoutMs) {
+    HWND target = FindMainWindow(findTimeoutMs);
     if (!target) return false;
 
     // 【按实际长度发送，不用固定 1024 截断】
@@ -133,8 +175,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
     const std::wstring path = InitialPath();
 
-    // 调试用：设置 EXBARBROWSER_MULTI=1 可绕过单实例，便于与用户正在运行的实例并存
+    // 显式多开（--new-window）或独立 profile（EXBARBROWSER_MULTI）：不查找、不转发。
     const bool multi = GetEnvironmentVariableW(id::kMultiInstanceEnv, nullptr, 0) > 0;
+    const bool forceNew = multi || NewWindowRequested();
 
     // 测试隔离（优先级4）：显式 profile 优先；只给 MULTI=1 时落到固定子目录。
     // 必须在任何 Config::Get().s()/Load() 之前 —— Config 只在第一次访问时读盘，
@@ -148,29 +191,24 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         Config::Get().SetProfileDir(tf::Join(tf::ExeDir(), L"data\\profile-multi"));
     }
 
-    HANDLE mutex = multi ? nullptr : CreateMutexW(nullptr, TRUE, id::kInstanceMutex);
-    const bool alreadyRunning = mutex && GetLastError() == ERROR_ALREADY_EXISTS;
+    // 强制开启 AI 通道的启动开关（--ai / EXBARBROWSER_AI）：只置进程内标志，
+    // 不写 settings.json。必须在 App::Run（读 AiChannelEnabled）之前设好。
+    Config::Get().SetAiForceEnabled(AiForceRequested());
 
-    if (alreadyRunning) {
-        if (ForwardToExisting(path)) {
-            CloseHandle(mutex);
+    if (!forceNew) {
+        // 默认行为：已开着的窗口就激活它（顺带把路径作为新标签打开）；
+        // 没有窗口则继续往下走，正常新开 —— 这里等不到窗口不会报错，更不会阻断。
+        //
+        // 400ms 只用来吃掉"双击第二次时首实例还没建好窗口"的窄窗口期；
+        // 超时就当没有实例，直接新起一个（多实例是允许的）。
+        if (ForwardToExisting(path, 400)) {
             ico::ClearCache();
             OleUninitialize();
             return 0;
         }
-        // 已有实例但转发失败：绝不降级再起一个——两个进程会同时写 settings.json，
-        // 后写的整体覆盖前写的（会话/几何/热键全部丢失）。
-        MessageBoxW(nullptr,
-                    L"已有一个 ExBar 窗口未响应，无法转发打开请求。\n请关闭它后重试。",
-                    id::kBrandShort, MB_ICONWARNING | MB_SETFOREGROUND);
-        CloseHandle(mutex);
-        ico::ClearCache();
-        OleUninitialize();
-        return 1;
     }
 
     int rc = App::Get().Run(hInst, path);
-    if (mutex) CloseHandle(mutex);
     ico::ClearCache();
     OleUninitialize();
     return rc;

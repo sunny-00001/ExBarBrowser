@@ -2,7 +2,7 @@
 //
 // 【为什么单独一个文件】独立前（2026-11-20 前）这些名字散在 9 个文件里，且三套写法并存：
 //   L"ExBar"          —— 窗口标题、对话框标题（4 处）
-//   L"ExBarBrowser"   —— 窗口类名（11 处）、命名管道、日志、互斥体
+//   L"ExBarBrowser"   —— 窗口类名（11 处）、命名管道、日志
 //   EXBAR_*           —— 书签属性（跨软件契约，必须保留）
 // 独立后这些名字全部是"自用"，没有兼容义务，唯一的理由是"改起来要动 9 个文件"。
 // 收到这里之后，未来改名只需动本文件。
@@ -16,7 +16,7 @@
 
 namespace id {
 
-// 正式名：窗口类名、互斥体、管道、日志文件、环境变量。改它 = 改工程名。
+// 正式名：窗口类名、管道、日志文件、环境变量。改它 = 改工程名。
 constexpr wchar_t kBrand[] = L"ExBarBrowser";
 
 // 显示名：窗口标题、对话框标题（用户可见）。允许与正式名不同。
@@ -40,8 +40,14 @@ constexpr wchar_t kHotkeysClass[] = L"ExBarBrowser_Hotkeys";
 constexpr wchar_t kReportClass[] = L"ExBarBrowser_Report";
 
 // ---- 进程级资源名 ----
-// 单实例互斥体（Local\ 前缀 = 每用户会话隔离）
-constexpr wchar_t kInstanceMutex[] = L"Local\\ExBarBrowser.Instance";
+//
+// 【不再有单实例互斥体】旧实现用 Local\ExBarBrowser.Instance 把程序锁成单实例，
+// 第二个实例只能把路径转发给第一个再退出，"打开新窗口"实际上开不出来。
+// 现在的契约是：
+//   · 默认启动 —— 找得到已有窗口就把路径转发过去并激活它，找不到才新开进程；
+//   · 显式多开 —— --new-window（进程内命令要走这条）或 EXBARBROWSER_MULTI 直接新开，
+//     不查找、不转发、不阻断。
+// 因此不存在任何"进程已存在 → 拒绝启动"的分支。
 
 // 诊断日志文件名（落在 %TEMP%）
 constexpr wchar_t kLogFileName[] = L"ExBarBrowser.log";
@@ -52,12 +58,20 @@ constexpr wchar_t kPipePrefix[] = L"\\\\.\\pipe\\ExBarBrowser_ai_";
 // AI 服务标识（MCP initialize 回给客户端）
 constexpr wchar_t kAiServiceName[] = L"exbarbrowser";
 
-// 调试用环境变量：设为非空可绕过单实例（便于与被占用的实例并存）
+// 显式多开：设非空即跳过"转发给已有窗口"，直接新起一个实例；
+// 同时把数据目录切到 data\profile-multi，避免两个实例抢同一份 settings.json。
 constexpr wchar_t kMultiInstanceEnv[] = L"EXBARBROWSER_MULTI";
+// 显式多开的命令行形式（"在新窗口打开"命令用它启动子进程）。
+// 与上面的环境变量不同：共享同一份用户数据（书签/设置），只是多一个窗口。
+constexpr wchar_t kNewWindowArg[] = L"--new-window";
 // 显式指定用户数据目录（相对/绝对均可）。测试用独立 profile，避免污染用户数据。
 constexpr wchar_t kProfileEnv[] = L"EXBARBROWSER_PROFILE";
+// 启动时强制开启 AI 通道（覆盖 settings.json 的 aiEnabled，但不写回）。
+// 值为 "0"/空 = 不强制；其它非空值 = 强制开启。配合 EXBARBROWSER_PROFILE 做隔离测试。
+constexpr wchar_t kAiForceEnv[] = L"EXBARBROWSER_AI";
+constexpr wchar_t kAiForceArg[] = L"--ai";
 
-// WM_COPYDATA 单实例路径转发的魔数。
+// WM_COPYDATA 路径转发的魔数。
 //
 // 【为什么保留 0xEBB1】曾打算换成"无语义的固定值"，理由是它长得像 mod 期的玩笑
 // （"EB"+"B1"）。但换值有真实成本：新旧版本窗口类名相同（ExBarBrowser_Main），

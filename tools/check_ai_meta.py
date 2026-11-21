@@ -1263,7 +1263,12 @@ def main():
         ('切目录重置内存配置', 'loaded_ = false' in cfg_cpp and 's_ = Settings{}' in cfg_cpp),
         ('MULTI 与 PROFILE 都参与判定', 'kMultiInstanceEnv' in main_cpp and 'kProfileEnv' in main_cpp),
         ('显式 profile 真的传给 Config', 'SetProfileDir(profileBuf)' in main_cpp),
-        ('目录切换早于单实例互斥', main_cpp.find('SetProfileDir(') < main_cpp.find('CreateMutexW(')),
+        ('不再有单实例互斥（多实例允许）', 'CreateMutexW' not in main_cpp and
+         'kInstanceMutex' not in ident),
+        ('显式多开走 --new-window', 'kNewWindowArg' in ident and
+         'NewWindowRequested' in main_cpp),
+        ('目录切换早于配置被读取', main_cpp.find('SetProfileDir(profileBuf)') <
+         main_cpp.find('App::Get().Run(')),
         ('路径全部从 Dir() 派生', all(f'Dir()' in cfg_cpp for _ in range(1)) and
          'SettingsPath() const { return tf::Join(Dir()' in cfg_cpp and
          'BookmarksPath() const { return tf::Join(Dir()' in cfg_cpp),

@@ -390,6 +390,13 @@ void App::RegisterMiscCommands() {
         // ApplyPersistedViewState，不另写一份。
         if (AffectsActiveView(key)) ApplyPersistedViewState(Active() ? Active()->view.get() : nullptr);
         SyncChrome();
+        // AI 通道热插拔：设置已落盘，真正启停交给独立的 WM_APP_SYNC_AI。
+        // 不能在这里直接 StopServer —— 关闭请求本身可能来自该通道，
+        // 同步 join 监听线程会让响应写不回去。人的显式设置优先于 --ai 强制开关。
+        if (key == L"aiEnabled") {
+            Config::Get().SetAiForceEnabled(false);
+            PostMessageW(hwnd_, WM_APP_SYNC_AI, 0, 0);
+        }
         return true;
     });
 

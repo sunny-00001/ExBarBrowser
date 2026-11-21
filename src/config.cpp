@@ -166,7 +166,8 @@ void Config::Load() {
     s_.showNavPane = root.GetBool(L"showNavPane", s_.showNavPane);
     s_.showPreviewPane = root.GetBool(L"showPreviewPane", s_.showPreviewPane);
 
-    // AI 通道：默认关闭，只有配置里明确写了 true 才开。
+    // AI 通道：默认开启（缺省即监听），配置里显式写 false 才关。
+    // 运行中可经 config.set 热插拔，见 App::SyncAiChannel。
     s_.aiEnabled = root.GetBool(L"aiEnabled", s_.aiEnabled);
     s_.aiAllowDanger = root.GetBool(L"aiAllowDanger", s_.aiAllowDanger);
 

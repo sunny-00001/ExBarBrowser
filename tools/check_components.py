@@ -379,7 +379,7 @@ INPUT_GUARD = [
 
     dict(name="自动化抢前台（R21）",
          # 作用域 automation：只管脚本。src/ 里的 SetForegroundWindow 是**产品行为**
-         # （单实例转发激活已有窗口、弹层取得键盘输入），触发源是用户不是脚本，
+         # （路径转发激活已有窗口、弹层取得键盘输入），触发源是用户不是脚本，
          # 不在 R21 管辖范围内 —— 删掉它反而让"第二次启动"看起来没反应。
          scope="automation",
          pat=r"\b(SetForegroundWindow|SetActiveWindow|BringWindowToTop|"

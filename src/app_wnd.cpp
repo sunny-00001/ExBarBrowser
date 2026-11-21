@@ -39,6 +39,12 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             self.input_.OnTimer(w);
         return 0;
 
+    // AI 通道热插拔：命令 handler 已把设置写回，这里再做真正的启停。
+    // 单独的（非嵌套的）消息保证 StopServer 不会在响应写回之前 join 监听线程。
+    case WM_APP_SYNC_AI:
+        self.SyncAiChannel();
+        return 0;
+
     case WM_APP_TAB_SELECT:
         self.Activate(self.tabSet_.IdAt(static_cast<int>(w)));
         return 0;

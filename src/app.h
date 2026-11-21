@@ -112,6 +112,9 @@ private:
     int ActiveIndex() const;
     std::wstring ActivePath() const;
     void SyncChrome();
+    // AI 通道热插拔：按当前配置启停管道服务与请求泵定时器（幂等）。
+    // 启动时调一次；运行中 config.set aiEnabled 之后由 WM_APP_SYNC_AI 再调。
+    void SyncAiChannel();
     void RefreshStats();
     // 把配置里的视图偏好（模式/排序/分组/窗格）套到指定标签。
     void ApplyPersistedViewState(ShellView* view);

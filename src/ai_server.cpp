@@ -33,6 +33,8 @@ constexpr const wchar_t* kPipePrefix = id::kPipePrefix;
 constexpr size_t kMaxLineBytes = 64 * 1024;   // 一行上限，防被灌爆
 
 std::atomic<bool> g_running{false};
+// 事件订阅者计数：只有 >0 时 UI 线程才值得每 100ms 生成状态快照。
+std::atomic<int> g_subscribers{0};
 std::thread g_thread;
 HANDLE g_pipe = INVALID_HANDLE_VALUE;
 std::wstring g_token;
@@ -85,10 +87,33 @@ std::wstring MakeToken() {
 //   · pid 是必须的 —— 无窗口进程（单测 / headless e2e / 启动早期）原来全用
 //     "default"，两个并发实例串到同一个管道，各自拿自己的令牌去连对方的管道，
 //     表现为随机 bad_token（实测：先起一个占位进程，pipe_e2e 立刻 12 条失败）。
+//
+// 【多实例】句柄必须是**本进程自己**的主窗口：FindWindowW 会返回系统里第一个
+// 同类窗口（可能是别的实例），那样两个实例的管道名只靠 pid 区分，日志里也会
+// 指错窗口。这里按进程 id 枚举，找不到才退化成 default_<pid>。
+BOOL CALLBACK FindOwnMainProc(HWND h, LPARAM lp) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(h, &pid);
+    if (pid != GetCurrentProcessId()) return TRUE;
+    wchar_t cls[64] = L"";
+    if (GetClassNameW(h, cls, _countof(cls)) &&
+        wcscmp(cls, id::kMainClass) == 0) {
+        *reinterpret_cast<HWND*>(lp) = h;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+HWND OwnMainWindow() {
+    HWND h = nullptr;
+    EnumWindows(FindOwnMainProc, reinterpret_cast<LPARAM>(&h));
+    return h;
+}
+
 std::wstring PipeName() {
     const unsigned long pid = GetCurrentProcessId();
     wchar_t buf[80];
-    if (HWND h = FindWindowW(id::kMainClass, nullptr))
+    if (HWND h = OwnMainWindow())
         swprintf(buf, 80, L"%llx_%lu",
                  static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(h)), pid);
     else
@@ -96,14 +121,40 @@ std::wstring PipeName() {
     return std::wstring(kPipePrefix) + buf;
 }
 
+std::wstring PipePath() { return tf::Join(Config::Get().Dir(), L"ai-pipe.txt"); }
+
+// 每实例一份发现文件（ai-token.<pid>.txt / ai-pipe.<pid>.txt）。
+// 多实例共享同一个 profile 时，规范文件 ai-token.txt 只能指向"最后启动的实例"；
+// 每实例文件让客户端可以枚举出全部正在监听的窗口，而不是只能看到最后一个。
+std::wstring InstanceDiscoveryPath(const wchar_t* stem) {
+    wchar_t buf[64];
+    swprintf(buf, 64, L"%ls.%lu.txt", stem, static_cast<unsigned long>(GetCurrentProcessId()));
+    return tf::Join(Config::Get().Dir(), buf);
+}
+
+// 删除内容仍属于自己的发现文件；内容已被别的实例覆盖就不动。
+// 否则"关闭本实例"会把另一个实例的令牌删掉，客户端随即全部 bad_token。
+void DeleteDiscoveryIfOwned(const std::wstring& path, const std::wstring& expected) {
+    std::wstring cur;
+    if (!tf::ReadText(path, &cur)) return;
+    while (!cur.empty() && (cur.back() == L'\n' || cur.back() == L'\r')) cur.pop_back();
+    if (cur != expected) return;
+    DeleteFileW(tf::ToExtended(path).c_str());
+}
+
 void WriteDiscoveryFiles(const std::wstring& token, const std::wstring& pipe) {
-    // 客户端从这两个文件拿到"连哪里、用什么令牌"。
-    // 权限：目录在 %APPDATA%\ExBar 下，按用户隔离；这不是加密，只是护栏。
+    // 客户端从这些文件拿到"连哪里、用什么令牌"。
+    // 权限：文件在便携数据目录下，天然按用户隔离；这不是加密，只是护栏。
     tf::EnsureDir(Config::Get().Dir());
     if (!tf::WriteText(TokenPath(), token))
         LogDbg(L"[ai] 令牌写入失败：%s", TokenPath().c_str());
-    if (!tf::WriteText(tf::Join(Config::Get().Dir(), L"ai-pipe.txt"), pipe))
+    if (!tf::WriteText(PipePath(), pipe))
         LogDbg(L"[ai] 管道名写入失败");
+    // 每实例副本：多实例并存时客户端可以逐个发现，不互相覆盖。
+    if (!tf::WriteText(InstanceDiscoveryPath(L"ai-token"), token))
+        LogDbg(L"[ai] 实例令牌写入失败");
+    if (!tf::WriteText(InstanceDiscoveryPath(L"ai-pipe"), pipe))
+        LogDbg(L"[ai] 实例管道名写入失败");
 }
 
 // 把请求交给 UI 线程并同步等结果。超时返回空（调用方回错误）。
@@ -195,8 +246,10 @@ void ServeLoop() {
             if (!send(resp)) return false;
             // 订阅确认已经写回去，才切模式：确认之前产生的事件排在后面推，
             // 客户端看到的顺序永远是「订阅成功 → 事件」。
-            if (IsSubscribeRequest(line)) {
+            // 计数用于 UI 线程判断"还有没有人要状态快照"。
+            if (!subscribed && IsSubscribeRequest(line)) {
                 subscribed = true;
+                ++g_subscribers;
                 after = AfterOfRequest(line);
             }
             return true;
@@ -225,28 +278,40 @@ void ServeLoop() {
         DWORD read = 0;
         while (g_running) {
             if (subscribed) {
-                // 推事件：先排空当前队列，再回去看有没有客户端请求。
-                // WaitFor(...,0) 不阻塞；没有新事件时用 Peek + Sleep 让出 CPU。
+                // 推事件：阻塞等新事件（最多 20ms），有则立刻醒来 ——
+                // 不再用 Sleep(20) 轮询，空闲订阅者不占 CPU。
+                // 同一个 20ms 窗口里也顺便看客户端有没有新请求（订阅期间仍可发命令）。
+                bool failed = false;
                 std::wstring line;
-                while (events::WaitFor(after, &line, 0)) {
+                for (bool first = true; events::WaitFor(after, &line, first ? 20 : 0); first = false) {
                     const uint64_t seq = SeqOfLine(line);
-                    if (!send(WideToLine(line) + "\n")) { subscribed = false; break; }
+                    if (!send(WideToLine(line) + "\n")) { failed = true; break; }
                     if (seq > after) after = seq;
                     line.clear();
                 }
+                if (failed) break;
                 DWORD avail = 0;
-                if (PeekNamedPipe(g_pipe, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+                // 【客户端断开必须在这里被发现】PeekNamedPipe 对已断开的管道返回
+                // FALSE。以前这个返回值被忽略，订阅者一断开，服务端就在订阅分支
+                // 里永远空转：既不重建监听实例，也不释放唯一那个管道实例，
+                // 之后所有客户端都拿到 ERROR_PIPE_BUSY（实测 err=231），
+                // 直到重启程序才恢复 —— 一个订阅动作就能把通道彻底堵死。
+                if (!PeekNamedPipe(g_pipe, nullptr, 0, nullptr, &avail, nullptr)) break;
+                if (avail > 0) {
                     char chunk[4096];
                     const DWORD n = std::min<DWORD>(avail, sizeof(chunk));
                     if (!ReadFile(g_pipe, chunk, n, &read, nullptr) || read == 0) break;
                     if (!feed(chunk, read)) break;
                 }
-                Sleep(20);
                 continue;
             }
 
             if (!ReadFile(g_pipe, buf, sizeof(buf), &read, nullptr) || read == 0) break;
             if (!feed(buf, read)) break;
+        }
+        if (subscribed) {
+            subscribed = false;
+            --g_subscribers;
         }
         FlushFileBuffers(g_pipe);
         DisconnectNamedPipe(g_pipe);
@@ -275,6 +340,8 @@ bool StartServer(void (*postToUi)(const std::wstring& requestLine)) {
 
 bool IsRunning() { return g_running.load(); }
 
+bool HasSubscribers() { return g_subscribers.load() > 0; }
+
 void StopServer() {
     if (!g_running) return;
     g_running = false;
@@ -296,17 +363,24 @@ void StopServer() {
         g_thread.join();
     }
     g_pipe = INVALID_HANDLE_VALUE;
+    g_subscribers = 0;
 
-    // 令牌只对"本次运行的管道"有效，停服后必须删掉发现文件：
-    // 否则 aiEnabled 关掉后旧令牌仍躺在磁盘上，看起来像通道还开着。
-    DeleteFileW(tf::ToExtended(TokenPath()).c_str());
-    DeleteFileW(tf::ToExtended(tf::Join(Config::Get().Dir(), L"ai-pipe.txt")).c_str());
+    // 发现文件清理：
+    //   · 每实例副本 ai-token.<pid>.txt / ai-pipe.<pid>.txt 无条件删；
+    //   · 规范文件 ai-token.txt / ai-pipe.txt 只删"内容仍是自己"的 ——
+    //     多实例共存时别的实例可能已经覆盖了它们，删掉等于把对方的令牌也删了。
+    DeleteFileW(tf::ToExtended(InstanceDiscoveryPath(L"ai-token")).c_str());
+    DeleteFileW(tf::ToExtended(InstanceDiscoveryPath(L"ai-pipe")).c_str());
+    DeleteDiscoveryIfOwned(TokenPath(), g_token);
+    DeleteDiscoveryIfOwned(PipePath(), g_pipe_name);
 }
 
 // UI 线程调用：处理挂起的请求。返回处理了几个（0 = 没活干）。
 int PumpRequests() {
     // 状态变化由 UI 线程定时检测、由管道推给订阅者；客户端因此不需要轮询 state。
-    events::PollStateChanges();
+    // 没有订阅者时跳过：生成整份状态快照（含选中路径/标签列表）没有接收方，
+    // 而 AI 通道现在默认开启，这份开销不该在没人看的时候每 100ms 付一次。
+    if (HasSubscribers()) events::PollStateChanges();
     int n = 0;
     for (;;) {
         Job* job = nullptr;
