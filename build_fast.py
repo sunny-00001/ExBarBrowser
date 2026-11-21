@@ -86,6 +86,12 @@ COMPILE_FLAGS = [
     "-D_WIN32_IE=0x0A00", "-DNTDDI_VERSION=0x0A000008", "-Isrc",
     # 历史代码里有一些"未使用参数/字段初始化"噪音，先只开高价值警告组。
     "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-missing-field-initializers",
+    # -Wshadow / -Wconversion 于 2026-11-21 清零后开启（当时 53 -> 0）。
+    # 开着的意义是**让新警告立刻可见**：原来 53 条里大多无害，但真正危险的
+    # 那一条会被淹没。这两组是本次清理中唯一抓到过真实隐患的：
+    #   · shadow -> 内外层同名导致"看着是同一个量"的误读
+    #   · conversion -> int 下标传给收 WPARAM 的 ListBox 消息
+    "-Wshadow", "-Wconversion",
 ]
 
 LIBS = [
