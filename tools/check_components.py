@@ -253,13 +253,15 @@ UNIQUE = [
     #
     # ai_server.cpp 的 CreateFileW 开的是命名管道（\\.\pipe\...），
     # 不是文件系统路径，加扩展前缀会彻底打不开 —— 白名单放行。
+    # mcp_stdio.cpp 同理：它连的是 MCP stdio 的命名管道
+    # （ai::CurrentPipeName() 返回的已是 "\\\\.\\pipe\\ExBarBrowser_ai_*"）。
     # 除命名管道外，所有文件系统 API 都必须过 tf::ToExtended。
     # ai_server.cpp 的 CreateFileW 开的是 \\.\pipe\...，加扩展前缀会彻底打不开，
     # 只对这一处放行；同文件的 DeleteFileW（令牌/发现文件）已走 ToExtended。
     # L"NUL" 同理：它是**设备名**不是文件系统路径（\\?\NUL 打不开），
     # dev_proc.cpp 用它给子进程的 stdin 一个空设备 —— 只放行这个字面量。
     dict(name="长路径前缀", pat=r"\bCreateFileW\s*\(\s*(?!tf::ToExtended|ToExtended|L\"NUL\")",
-         allow={"ai_server.cpp"},
+         allow={"ai_server.cpp", "mcp_stdio.cpp"},
          why="文件 API 一律传 tf::ToExtended(path)；命名管道与 NUL 设备是唯一例外"
              "（它们不是文件系统路径）"),
     dict(name="长路径前缀（其余文件 API）",
