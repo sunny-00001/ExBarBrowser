@@ -11,10 +11,58 @@
 #include "disk_scan.h"
 #include "file_hash.h"
 #include "file_tools.h"
+#include "path_util.h"
 #include "text_file.h"
 #include "view_stats.h"
 
 namespace {
+
+// fs.* 的路径参数来自外部（AI / 脚本 / 命令行），统一归一化后再用。
+//
+// 【为什么必须归一化】SHCreateItemFromParsingName 只认**反斜杠**，
+// 收到 "C:/dir/file.txt" 直接返回 E_INVALIDARG(0x80070057)。
+// 而正斜杠在 Windows 里是完全合法的路径写法（CreateFile 也接受），
+// AI 也天然会这么写。不归一化的后果不是"报错"，而是"报一个错的错"——
+// "无法定位源文件（HRESULT=0x80070057）"，使用者根本看不出是分隔符的问题。
+//
+// 【为什么不只在 shell_ops 里做一次】shell_ops 那一层已经做了（防御性），
+// 但命令层也要做，因为**撤销记录与回执里存的是路径**：存进去的是
+// "C:/dir/a.txt"，撤销时再归一化虽然也能work，但审计日志与
+// 撤销记录里就会出现两种写法 —— 同一件事两种表示，是 bug 不是风格。
+//
+// 唯一实现是 pathutil::ToShellPath（与导航路径共用同一套规则）。
+std::wstring NormPath(const std::wstring& p) { return pathutil::ToShellPath(p); }
+
+std::vector<std::wstring> NormPaths(const std::vector<std::wstring>& ps) {
+    std::vector<std::wstring> out;
+    out.reserve(ps.size());
+    for (const auto& p : ps) out.push_back(NormPath(p));
+    return out;
+}
+
+// 目录清单里的名字集合（用于交互式改名后做差集）。
+std::vector<std::wstring> NamesOf(const shellops::DirListing& listing) {
+    std::vector<std::wstring> names;
+    names.reserve(listing.entries.size());
+    for (const auto& e : listing.entries)
+        if (!e.name.empty()) names.push_back(e.name);
+    return names;
+}
+
+// 集合差集：after 里多出来的 = added，before 里多出来的 = removed。
+void DiffNames(const std::vector<std::wstring>& before, const std::vector<std::wstring>& after,
+               std::vector<std::wstring>* added, std::vector<std::wstring>* removed) {
+    if (added) added->clear();
+    if (removed) removed->clear();
+    for (const auto& n : after) {
+        if (std::find(before.begin(), before.end(), n) == before.end() && added)
+            added->push_back(n);
+    }
+    for (const auto& n : before) {
+        if (std::find(after.begin(), after.end(), n) == after.end() && removed)
+            removed->push_back(n);
+    }
+}
 
 // 选目标文件夹（复制到/移动到）。用 IFileOpenDialog 的 FOS_PICKFOLDERS，
 // 与系统一致（支持新建文件夹、地址栏、网络位置），比 SHBrowseForFolder 稳。
@@ -87,9 +135,51 @@ void App::RegisterFileCommands() {
             return ok;
         }, L"删除");
     });
+    reg(CmdId::CmdDeletePermanent, [this](const Args&) {
+        return WithView([this](IShellView* v) {
+            // 不记 fileundo：这条命令刻意绕过回收站/撤销栈，
+            // 记一条撤不回去的"撤销记录"只会骗人。
+            bool ok = shellops::DeleteSelectionPermanently(v, hwnd_);
+            RefreshActive();
+            return ok;
+        }, L"永久删除");
+    });
     reg(CmdId::CmdRename, [this](const Args&) {
         return WithView([this](IShellView* v) {
-            return shellops::InvokeSelectionVerb(v, hwnd_, "rename");
+            // 撤销栈需要知道"旧名 → 新名"。
+            // 交互式改名走 shell 的重命名框（InvokeSelectionVerb），新名字
+            // 是人在框里敲的，**拿不到** —— 只能在前后各取一次目录清单做差集：
+            //   多出来的名字 = 新名；消失的名字 = 旧名。
+            // 差集不是 1:1（用户中途改了主意、或清单在改名期间变了）就不记 ——
+            // 宁可少一条撤销记录，也不要记一条错的（错的记录撤回去会毁文件）。
+            std::wstring oldPath;
+            if (!shellops::SelectedSinglePath(v, &oldPath)) return false;
+            std::vector<std::wstring> before;
+            {
+                shellops::DirListing listing;
+                if (shellops::ListView(v, 0, &listing)) before = NamesOf(listing);
+            }
+            const bool ok = shellops::InvokeSelectionVerb(v, hwnd_, "rename");
+            if (!ok) return false;
+            std::vector<std::wstring> after;
+            {
+                shellops::DirListing listing;
+                if (shellops::ListView(v, 0, &listing)) after = NamesOf(listing);
+            }
+            std::vector<std::wstring> added, removed;
+            DiffNames(before, after, &added, &removed);
+            if (added.size() == 1 && removed.size() == 1) {
+                const std::wstring dir = ParentOf(oldPath);
+                fileundo::Item item;
+                item.beforePath = dir.empty() ? removed[0] : tf::Join(dir, removed[0]);
+                item.afterPath = dir.empty() ? added[0] : tf::Join(dir, added[0]);
+                item.beforeName = removed[0];
+                NoteFileOp(fileundo::Op::Rename, {item}, L"重命名");
+            } else {
+                LogDbg(L"[undo] 交互式改名未能推出新旧名（差集 %zu/%zu），不记撤销记录",
+                       added.size(), removed.size());
+            }
+            return true;
         }, L"重命名");
     });
 
@@ -186,19 +276,35 @@ void App::RegisterFileCommands() {
             json::Value failures = json::Value::MakeArray();
             std::wstring dir = ViewFolderPath(v);
             unsigned okCount = 0;
+            // 撤销记录：一次批量 = 一条（不是每个文件一条）——
+            // 人按一次 Ctrl+Z 期望退掉整批，而不是退一个文件。
+            std::vector<fileundo::Item> undoItems;
             for (const auto& p : plan) {
                 const std::wstring from = dir.empty() ? p.from : tf::Join(dir, p.from);
-                if (shellops::RenameTo(v, hwnd_, from, p.to)) {
+                std::wstring why;
+                if (shellops::RenameTo(v, hwnd_, from, p.to, &why)) {
                     ++okCount;
+                    fileundo::Item item;
+                    item.beforePath = from;
+                    item.afterPath = dir.empty() ? p.to : tf::Join(dir, p.to);
+                    item.beforeName = p.from;
+                    undoItems.push_back(std::move(item));
                     json::Value o = json::Value::MakeObject();
                     o.Set(L"from", json::Value::MakeStr(p.from));
                     o.Set(L"to", json::Value::MakeStr(p.to));
                     renamed.arr.push_back(std::move(o));
                 } else {
-                    failures.arr.push_back(json::Value::MakeStr(p.from));
+                    // 失败项要带**原因**，不能只报文件名：
+                    // "a.txt 失败"对使用者没用 —— 是被占用？权限不足？还是重名？
+                    json::Value f = json::Value::MakeObject();
+                    f.Set(L"from", json::Value::MakeStr(p.from));
+                    f.Set(L"reason", json::Value::MakeStr(why.empty() ? L"未知原因" : why));
+                    failures.arr.push_back(std::move(f));
                 }
             }
             if (okCount) RefreshActive();
+            if (!undoItems.empty()) NoteFileOp(fileundo::Op::Rename, std::move(undoItems),
+                                               L"批量重命名");
 
             result->Set(L"pattern", json::Value::MakeStr(pattern));
             result->Set(L"renamed", renamed);
@@ -218,7 +324,7 @@ void App::RegisterFileCommands() {
             // 部分失败必须如实报失败，不能因为"改了一些"就算成功
             CommandBus::Get().NoteFailure(L"改了 " + std::to_wstring(okCount) + L" 项，" +
                                           std::to_wstring(failures.arr.size()) +
-                                          L" 项失败（被占用/权限不足）");
+                                          L" 项失败（原因见 failed[].reason）");
             return false;
         }, L"批量重命名");
     });
@@ -239,27 +345,42 @@ void App::RegisterFileCommands() {
     // 「目标在当前视图里吗」「删完要不要刷新」这类细节两边都得维护。
     // 先选中则天然复用视图的认知。
     reg(CmdId::FsRename, [this](const Args& args) {
-        const std::wstring target = args.Str(L"target");
+        const std::wstring target = NormPath(args.Str(L"target"));
         const std::wstring newName = args.Str(L"newName");
         if (target.empty() || newName.empty()) return false;
         return WithView([&](IShellView* v) {
-            // RenameTo 内部会校验"目标在当前视图里"，失败原因却只能返回 false。
+            // RenameTo 内部会校验"目标在当前视图里"。
             // 先用同一份 shell 枚举（StatItem）确认存在性，把"不在视图"与
             // "名字非法/被占用"区分开 —— 两者对调用方意味着完全不同的下一步。
+            // 更细的原因（HRESULT）由 RenameTo 自己的 why 参数给出。
             shellops::ItemInfo probe;
             if (!shellops::StatItem(v, target, &probe)) {
                 CommandBus::Get().NoteFailure(L"目标不在当前视图：" + target);
                 return false;
             }
-            bool ok = shellops::RenameTo(v, hwnd_, target, newName);
-            if (!ok) CommandBus::Get().NoteFailure(L"重命名失败（名称非法或目标被占用）：" + newName);
-            if (ok) RefreshActive();
+            std::wstring why;
+            bool ok = shellops::RenameTo(v, hwnd_, target, newName, &why);
+            if (!ok)
+                CommandBus::Get().NoteFailure(
+                    why.empty() ? (L"重命名失败：" + newName) : why);
+            if (ok) {
+                // 撤销记录：旧名 → 新名。撤销 = 改回旧名。
+                // afterPath 用**父目录 + 新名**算出来（不是问 shell 要）——
+                // RenameTo 在目标已存在时会失败，所以这里不存在"落点另有其名"的情况。
+                const std::wstring dir = ParentOf(target);
+                fileundo::Item item;
+                item.beforePath = target;
+                item.afterPath = dir.empty() ? newName : tf::Join(dir, newName);
+                item.beforeName = nav::Leaf(target);
+                NoteFileOp(fileundo::Op::Rename, {item}, L"重命名");
+                RefreshActive();
+            }
             return ok;
         }, L"重命名");
     });
 
     reg(CmdId::FsDelete, [this](const Args& args) {
-        const std::vector<std::wstring> targets = args.StrArray(L"targets");
+        const std::vector<std::wstring> targets = NormPaths(args.StrArray(L"targets"));
         if (targets.empty()) return false;
         return WithView([&](IShellView* v) {
             // 一次选中全部目标、一次删除。
@@ -297,7 +418,7 @@ void App::RegisterFileCommands() {
     // revealInExplorer 三条独立命令，而不是一条带 mode 的。理由是它们代表
     // 三种不同意图，各自值得一个名字；塞进一个枚举会让调用方先查"有哪些 mode"。
     reg(CmdId::FsOpen, [this](const Args& args) {
-        const std::wstring path = args.Str(L"path");
+        const std::wstring path = NormPath(args.Str(L"path"));
         if (path.empty()) {
             CommandBus::Get().NoteFailure(L"缺少必填参数：path");
             return false;
@@ -331,7 +452,7 @@ void App::RegisterFileCommands() {
     // 判断参数是否被取用。抽成共用函数会让它看不见，只能登记进例外表 ——
     // 而例外表越长，检查能挡住的问题越少。重复三行换检查覆盖，值得。
     reg(CmdId::FsOpenInNewTab, [this](const Args& args) {
-        const std::wstring path = args.Str(L"path");
+        const std::wstring path = NormPath(args.Str(L"path"));
         if (path.empty() || !tf::Exists(path)) {
             if (!path.empty()) {
                 LogDbg(L"[cmd] FsOpenInNewTab 目标不存在：%s", path.c_str());
@@ -344,7 +465,7 @@ void App::RegisterFileCommands() {
         return NewTab(path) != 0;
     });
     reg(CmdId::FsOpenInNewWindow, [this](const Args& args) {
-        const std::wstring path = args.Str(L"path");
+        const std::wstring path = NormPath(args.Str(L"path"));
         if (path.empty() || !tf::Exists(path)) {
             if (!path.empty()) {
                 LogDbg(L"[cmd] FsOpenInNewWindow 目标不存在：%s", path.c_str());
@@ -366,7 +487,7 @@ void App::RegisterFileCommands() {
     //   · 之所以还提供这两个，是因为"先复制到剪贴板，再由用户/别的程序粘贴"
     //     是一种正当用法（比如机器准备好，人再确认粘到哪里）。
     reg(CmdId::FsCopy, [](const Args& args) {
-        const std::vector<std::wstring> targets = args.StrArray(L"targets");
+        const std::vector<std::wstring> targets = NormPaths(args.StrArray(L"targets"));
         if (targets.empty()) return false;
         for (const auto& p : targets) {
             if (!tf::Exists(p)) {
@@ -377,7 +498,7 @@ void App::RegisterFileCommands() {
         return shellops::CopyPaths(targets, false);
     });
     reg(CmdId::FsCut, [](const Args& args) {
-        const std::vector<std::wstring> targets = args.StrArray(L"targets");
+        const std::vector<std::wstring> targets = NormPaths(args.StrArray(L"targets"));
         if (targets.empty()) return false;
         for (const auto& p : targets) {
             if (!tf::Exists(p)) {
@@ -394,7 +515,7 @@ void App::RegisterFileCommands() {
     // 没有"不弹框的属性"这种东西。所以它标 openWorld + scope=System，
     // 让调用方知道"这会打开一个窗口"。
     reg(CmdId::FsProperties, [](const Args& args) {
-        const std::wstring target = args.Str(L"target");
+        const std::wstring target = NormPath(args.Str(L"target"));
         if (target.empty()) return false;
         if (!tf::Exists(target)) {
             LogDbg(L"[cmd] 属性目标不存在：%s", target.c_str());
@@ -436,9 +557,48 @@ void App::RegisterFileCommands() {
         return true;
     });
 
-    // 撤销（Ctrl+Z）：转发给 shell 视图自己的撤销栈。
-    // 本工程所有落盘操作都带 FOF_ALLOWUNDO，已经进了系统栈 —— 自己再记一份会错位。
+    // 撤销（Ctrl+Z）：两层，先撤自己的，再落 shell 的。
+    //
+    // 【为什么要有自己的一层】
+    // shell 的撤销谓词只能向视图的背景 IContextMenu 要，而宿主 IExplorerBrowser
+    // 的背景菜单里**没有** undo 行（2026-11-21 实测：删除/改名之后这条路恒失败）。
+    // 于是我们自己的文件操作（改名/移动/复制）记一份"做过什么"，
+    // 撤的时候按逆操作做回去（见 src/file_undo.h）。
+    //
+    // 【顺序不能反】
+    // 先撤自己的栈；栈空（或撤不动）才落 shell 的撤销。
+    // 反过来的话，shell 那个"永远撤不掉"的 undo 谓词会把我们自己的记录挡住，
+    // 于是"能撤的也撤不掉"。
+    //
+    // 【边界】机器的撤销不穿透人工操作：栈顶是人工做的，机器撤不了
+    //（同 bmk.* 的口径，见 file_undo.h）。
     reg(CmdId::CmdUndo, [this](const Args&) {
+        const bool machine = CommandBus::Get().fromMachine();
+        if (fileUndo_.CanUndo()) {
+            std::wstring why;
+            const bool ok = fileUndo_.Undo(
+                machine,
+                [this](fileundo::Entry& e, std::wstring* w) { return ApplyFileUndo(e, w); },
+                &why);
+            if (ok) {
+                RefreshActive();
+                return true;
+            }
+            CommandBus::Get().NoteFailure(why.empty() ? L"撤销失败" : why);
+            // 栈非空但撤不动 → **到此为止，不落回 shell**。
+            //
+            // 两种情形都必须停在这里：
+            //   ① 栈顶是人工操作而调用方是机器 → 让机器去撤 shell 里的
+            //      操作 = 穿透人工操作，这正是双门机制要防的。
+            //   ② 撤销执行本身失败（文件被占用、权限不足）→ 那条记录**还在栈里**
+            //      （失败不弹栈），此时落回 shell 会去撤**另一件不相干的事**：
+            //      "撤 A 失败 → 居然撤了 B"。那比失败更糟 —— 用户以为退回了 A，
+            //      实际丢的是 B。
+            //
+            // 只有"我们的栈本来就是空的"才轮到 shell 的撤销栈。
+            return false;
+        }
+        // 自己没有可撤的 → 落 shell 的撤销栈（用户右键菜单做的操作在那里）。
         const bool ok = WithView([this](IShellView* v) {
             const bool r = shellops::Undo(v);
             if (r) RefreshActive();   // 撤销后的列表必须立刻反映出来
@@ -446,12 +606,10 @@ void App::RegisterFileCommands() {
         }, L"撤销");
         // 撤销走的是视图背景菜单里的 undo 谓词（不自建栈）。谓词不存在时
         // shellops::Undo 返回 false，调用方只看到"命令执行失败" —— 分不清是
-        // "真的没有可撤的"还是"撤销执行失败"。2026-11-21 实测：删除/改名之后
-        // 这条路径在 IExplorerBrowser 里拿不到 undo 行，撤销无效（缺陷未修，
-        // 见 docs/FULL-COVERAGE 的已知缺口）；这里至少把话说清楚。
+        // "真的没有可撤的"还是"撤销执行失败"。这里至少把话说清楚。
         if (!ok) {
             CommandBus::Get().NoteFailure(
-                L"当前视图没有可撤销的操作（系统撤销栈为空，或视图已重建）");
+                L"没有可撤销的操作（应用内撤销栈为空，系统的撤销栈里也没有可撤的项）");
         }
         return ok;
     });
@@ -585,8 +743,33 @@ void App::RegisterFileCommands() {
         IShellView* view = ActiveView();
         if (!view) return false;
         std::wstring target;
-        bool ok = PickFolder(hwnd_, ActivePath(), &target) &&
-                  shellops::TransferToFolder(view, hwnd_, target, move);
+        if (!PickFolder(hwnd_, ActivePath(), &target)) {
+            view->Release();
+            return false;
+        }
+        // 撤销记录要在**搬走之前**取源路径（搬完之后原路径已不存在）。
+        const std::vector<std::wstring> sel = shellops::SelectedPaths(view);
+        const bool ok = shellops::TransferToFolder(view, hwnd_, target, move);
+        if (ok) {
+            // 落点 = 目标目录 + 原文件名。冲突时 shell 会自动改名
+            //（FOF_RENAMEONCOLLISION），那种情况下算出来的落点并不存在 ——
+            // 不记（记一条指向不存在路径的撤销 = 给用户一个假的"能撤"承诺）。
+            std::vector<fileundo::Item> items;
+            for (const std::wstring& p : sel) {
+                const std::wstring leaf = nav::Leaf(p);
+                if (leaf.empty()) continue;
+                const std::wstring after = tf::Join(target, leaf);
+                if (!tf::Exists(after)) continue;
+                fileundo::Item item;
+                item.beforePath = p;
+                item.afterPath = after;
+                item.beforeName = leaf;
+                items.push_back(std::move(item));
+            }
+            if (!items.empty())
+                NoteFileOp(move ? fileundo::Op::Move : fileundo::Op::Copy, std::move(items),
+                           move ? L"移动到" : L"复制到");
+        }
         view->Release();
         if (ok) RefreshActive();
         return ok;
@@ -714,45 +897,21 @@ void App::RegisterFileCommands() {
         RefreshStats();
         return true;
     });
+    reg(CmdId::NavTreeExpandAll, [this](const Args&) {
+        Tab* t = Active();
+        if (!t || !t->view) return false;
+        const bool ok = t->view->ExpandNavTree();
+        if (!ok) CommandBus::Get().NoteFailure(L"没找到可展开的原生导航树（窗格可能被隐藏）");
+        return ok;
+    });
 
     // ---------------- 搜索 ----------------
     //
-    // 把"视图里能搜"变成"命令能搜"：搜索框在导航栏上，命令面板 / 键位 / agent
-    // 以前完全够不着，命令目录里 search.find 一直是 implemented=false。
-    //
-    // 这条**不是只读查询**：搜索是导航，结果落在同一个 IShellView 里，
-    // 会换掉当前标签看到的内容（这也是原声明 Effects.readOnly=1 写错的地方）。
-    // 退出搜索 = 再搜一次空串（回到来源目录），导航栏搜索框留空即此语义。
-    regR(CmdId::OpSearch, [this](const Args& args, json::Value* result) {
-        if (!result) return false;
-        const bool human = IsHumanCall(args);
-
-        std::wstring query = args.Str(L"query");
-        if (human) {
-            std::wstring input;
-            if (!PromptText(hwnd_, theme_, L"搜索", L"搜索词（留空＝退出搜索）", input, &input))
-                return false;
-            query = input;
-        }
-
-        // 范围必须在 RunSearch 之前取：它会把来源目录记进 searchFrom_。
-        // 查询词也在这里规范化：返回给调用方的必须是**实际搜的那个词**，
-        // 而不是带首尾空格的原文（否则 agent 会拿一个没搜过的串去对账）。
-        query = searchurl::Trim(query);
-        const std::wstring scope =
-            searchFrom_.empty() ? (Active() ? Active()->path() : std::wstring()) : searchFrom_;
-        std::wstring url;
-        if (!RunSearch(query, &url)) {
-            CommandBus::Get().NoteFailure(L"搜索视图没有接受这个查询：" + url);
-            return false;
-        }
-
-        result->Set(L"query", json::Value::MakeStr(query));
-        result->Set(L"scope", json::Value::MakeStr(scope));
-        result->Set(L"url", json::Value::MakeStr(url));
-        result->Set(L"searching", json::Value::MakeBool(!searchFrom_.empty()));
-        return true;
-    });
+    // search.find 已于 2026-11-21 降级为 implemented=false：
+    // 宿主 IExplorerBrowser 没有搜索带，RunSearch 走 search-ms: 必然失败。
+    // 处理器一并移除（check_commands.py 要求 implemented=false 不能有处理器），
+    // 让"搜索"在命令面板/快捷键/AI 侧都显示为未实现，而不是每次都失败。
+    // 导航栏搜索框仍保留，提交时由 App::RunSearch 给出明确提示。
 
     // ---------------- 只读查询（P6：读操作返回结构化结果）----------------
     //

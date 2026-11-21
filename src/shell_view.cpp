@@ -1,5 +1,6 @@
 #include "shell_view.h"
 
+#include "path_util.h"
 #include "shell_ops.h"
 #include "str.h"
 
@@ -407,13 +408,15 @@ bool ShellView::DoNavigate(const std::wstring& path) {
     CapturePreviewPaneBeforeNavigation();
 
     // 正斜杠在 SHCreateItemFromParsingName 里是 E_INVALIDARG（实测），
-    // 而用户/命令行经常给 C:/x/y 形式，这里统一成反斜杠。
-    std::wstring p = path;
-    if (p.rfind(L"shell:", 0) != 0 && p.rfind(L"::", 0) != 0) {
-        for (auto& c : p)
-            if (c == L'/') c = L'\\';
-        while (p.size() > 3 && p.back() == L'\\') p.pop_back();
-    }
+    // 而用户/命令行经常给 C:/x/y 形式 —— 统一走 pathutil::ToShellPath
+    // （正斜杠→反斜杠、折叠连续分隔符、去尾分隔符；命名空间路径原样）。
+    //
+    // 【为什么收口到 pathutil】这条规则以前只写在这里（导航路径），
+    // fs.* 那一组命令**没有**对应的收口，于是同一类输入：
+    //   导航 "C:/x"      → 正常
+    //   fs.rename "C:/x" → E_INVALIDARG(0x80070057)，报"无法定位源文件"
+    // 同一件事两种表现，是 bug 不是特性。现在唯一实现是 pathutil::ToShellPath。
+    const std::wstring p = pathutil::ToShellPath(path);
 
     // search-ms: 是**协议处理器 URL**，不是可浏览的 folder。IExplorerBrowser 没有
     // 搜索带（search band），BrowseToObject 对它返回 S_OK 却把视图留在原地 ——
@@ -962,6 +965,49 @@ HWND FindNavTree(HWND container) {
     return found;
 }
 
+// 真正的 SysTreeView32 藏在 NamespaceTreeControl 里面；先在该控件内找，
+// 找不到再退回整个容器（兼容不同 Win11 构建上 DirectUI 层级差异）。
+BOOL CALLBACK FindSysTreeProc(HWND h, LPARAM p) {
+    wchar_t cls[64] = L"";
+    GetClassNameW(h, cls, 64);
+    if (str::IEquals(cls, L"SysTreeView32")) {
+        *reinterpret_cast<HWND*>(p) = h;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+HWND FindNavSysTree(HWND container) {
+    HWND found = nullptr;
+    HWND host = FindNavTree(container);
+    if (host) EnumChildWindows(host, FindSysTreeProc, reinterpret_cast<LPARAM>(&found));
+    if (!found && container)
+        EnumChildWindows(container, FindSysTreeProc, reinterpret_cast<LPARAM>(&found));
+    return found;
+}
+
+struct TreeWalk {
+    int visited = 0;
+    int expanded = 0;
+};
+
+// 逐节点展开，并递归进入刚展开出来的子节点。
+// 上限是护栏：文件系统里有循环链接/超大树时不能把 UI 线程卡死。
+constexpr int kMaxNavTreeNodes = 10000;
+void ExpandTreeBranch(HWND tree, HTREEITEM item, TreeWalk* walk) {
+    for (HTREEITEM cur = item;
+         cur && walk->visited < kMaxNavTreeNodes;
+         cur = reinterpret_cast<HTREEITEM>(
+             SendMessageW(tree, TVM_GETNEXTITEM, TVGN_NEXT, reinterpret_cast<LPARAM>(cur)))) {
+        ++walk->visited;
+        if (SendMessageW(tree, TVM_EXPAND, TVE_EXPAND, reinterpret_cast<LPARAM>(cur)))
+            ++walk->expanded;
+        HTREEITEM child = reinterpret_cast<HTREEITEM>(
+            SendMessageW(tree, TVM_GETNEXTITEM, TVGN_CHILD, reinterpret_cast<LPARAM>(cur)));
+        if (child) ExpandTreeBranch(tree, child, walk);
+    }
+}
+
 }  // namespace
 
 void ShellView::ToggleNavPane() {
@@ -999,6 +1045,25 @@ void ShellView::ApplyNavPaneWanted() {
 bool ShellView::NavPaneVisible() const {
     // 读我们自己的状态，不读 GetOptions：那是"意图"，关过一次后永远和真实状态相反。
     return navPaneWanted_;
+}
+
+bool ShellView::ExpandNavTree() {
+    if (!browser_ || !navPaneWanted_) return false;
+    HWND tree = FindNavSysTree(container_);
+    if (!tree) return false;
+
+    TreeWalk walk;
+    for (HTREEITEM root = reinterpret_cast<HTREEITEM>(
+             SendMessageW(tree, TVM_GETNEXTITEM, TVGN_ROOT, 0));
+         root && walk.visited < kMaxNavTreeNodes;
+         root = reinterpret_cast<HTREEITEM>(
+             SendMessageW(tree, TVM_GETNEXTITEM, TVGN_NEXT, reinterpret_cast<LPARAM>(root)))) {
+        ExpandTreeBranch(tree, root, &walk);
+    }
+    if (!walk.visited) return false;
+    RedrawWindow(tree, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+    LogDbg(L"[nav] 导航树已展开：访问 %d 项，展开 %d 项", walk.visited, walk.expanded);
+    return true;
 }
 
 void ShellView::ApplyTheme() {

@@ -169,4 +169,43 @@ bool HashFile(const std::wstring& path, Algo algo, Result* out,
     return true;
 }
 
+bool HashBytes(const void* data, size_t len, Algo algo, std::wstring* hex) {
+    if (!hex || (!data && len)) return false;
+    hex->clear();
+
+    HashCtx ctx;
+    NTSTATUS st = BCryptOpenAlgorithmProvider(&ctx.alg, AlgoId(algo), nullptr, 0);
+    if (!NtOk(st)) return false;
+
+    DWORD objLen = 0, got = 0;
+    st = BCryptGetProperty(ctx.alg, BCRYPT_OBJECT_LENGTH,
+                           reinterpret_cast<PUCHAR>(&objLen), sizeof(objLen), &got, 0);
+    if (!NtOk(st) || objLen == 0) return false;
+
+    std::vector<unsigned char> obj(objLen);
+    st = BCryptCreateHash(ctx.alg, &ctx.hash, obj.data(), objLen, nullptr, 0, 0);
+    if (!NtOk(st)) return false;
+
+    // len==0 时 BCryptHashData 收到空指针会报参数错；给一个非空的哑指针。
+    static const unsigned char kDummy = 0;
+    const unsigned char* p = len ? static_cast<const unsigned char*>(data) : &kDummy;
+    if (!NtOk(BCryptHashData(ctx.hash, const_cast<PUCHAR>(p), static_cast<ULONG>(len), 0)))
+        return false;
+
+    unsigned char digest[64]{};
+    DWORD digestLen = 0;
+    st = BCryptGetProperty(ctx.alg, BCRYPT_HASH_LENGTH,
+                           reinterpret_cast<PUCHAR>(&digestLen), sizeof(digestLen), &got, 0);
+    if (!NtOk(st) || digestLen == 0 || digestLen > sizeof(digest)) return false;
+    if (!NtOk(BCryptFinishHash(ctx.hash, digest, digestLen, 0))) return false;
+
+    static const wchar_t* kHex = L"0123456789abcdef";
+    hex->reserve(static_cast<size_t>(digestLen) * 2);
+    for (DWORD i = 0; i < digestLen; ++i) {
+        hex->push_back(kHex[digest[i] >> 4]);
+        hex->push_back(kHex[digest[i] & 0xF]);
+    }
+    return true;
+}
+
 }  // namespace filehash

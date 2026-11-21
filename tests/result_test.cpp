@@ -46,7 +46,7 @@ int main() {
 
         json::Value r;
         const bool ok = CommandBus::Get().InvokeResult(CmdId::OpListDir, Args::Empty(), &r,
-                                                       L"test");
+                                                       Actor{ActorKind::Ai, L"test"});
         Check(ok, "调用成功");
         Check(r.GetStr(L"path") == L"D:\\demo", "path 被填入");
         Check(r.GetBool(L"truncated", true) == false, "truncated 被填入");
@@ -78,7 +78,7 @@ int main() {
         json::Value r;
         r.Set(L"stale", json::Value::MakeStr(L"不该出现"));
         const bool ok = CommandBus::Get().InvokeResult(CmdId::NavRefresh, Args::Empty(), &r,
-                                                       L"test");
+                                                       Actor{ActorKind::Ai, L"test"});
         Check(ok, "调用成功");
         Check(!r.Find(L"stale"), "旧字段被清掉（不残留上次结果）");
         Check(r.IsObject() && r.obj.empty(), "结果为空对象");
@@ -87,9 +87,9 @@ int main() {
     std::printf("\nresult 指针可以为空（只要成败）\n");
     {
         bool ok = CommandBus::Get().InvokeResult(CmdId::OpListDir, Args::Empty(), nullptr,
-                                                 L"test");
+                                                 Actor{ActorKind::Ai, L"test"});
         Check(ok, "传 nullptr 不崩溃");
-        ok = CommandBus::Get().Invoke(CmdId::OpListDir, Args::Empty(), L"test");
+        ok = CommandBus::Get().Invoke(CmdId::OpListDir, Args::Empty(), Actor{ActorKind::Ai, L"test"});
         Check(ok, "Invoke 走同一 handler");
     }
 
@@ -100,7 +100,7 @@ int main() {
         json::Value r;
         r.Set(L"stale", json::Value::MakeStr(L"x"));
         const bool ok = CommandBus::Get().InvokeResult(CmdId::NavBack, Args::Empty(), &r,
-                                                       L"test");
+                                                       Actor{ActorKind::Ai, L"test"});
         Check(!ok, "前置不满足 -> 失败");
         Check(!r.Find(L"stale"), "旧字段被清掉");
     }
@@ -114,9 +114,9 @@ int main() {
             return s;
         });
         CommandBus::Get().Register(CmdId::NavBack, [](const Args&) { return true; });
-        Check(CommandBus::Get().Invoke(CmdId::NavBack, Args::Empty(), L"test"),
+        Check(CommandBus::Get().Invoke(CmdId::NavBack, Args::Empty(), Actor{ActorKind::Ai, L"test"}),
               "普通 Invoke 正常");
-        Check(CommandBus::Get().InvokeByName(L"NavBack", Args::Empty(), L"test"),
+        Check(CommandBus::Get().InvokeByName(L"NavBack", Args::Empty(), Actor{ActorKind::Ai, L"test"}),
               "InvokeByName 正常");
     }
 

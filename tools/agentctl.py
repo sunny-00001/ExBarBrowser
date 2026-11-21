@@ -482,6 +482,12 @@ def cmd_call(a):
     summary = {"command": a.name, "attempts": attempt, "ok": last.get("ok"),
                "verdict": last.get("verdict", last.get("ok")),
                "error": last.get("error"), "assertions": last.get("assertions")}
+    # errorCode 必须带上：它是**机器可读**的失败类别（bad_args / blocked /
+    # danger_disabled / not_implemented…），而 error 是人读的中文。
+    # 丢掉它，调用方就只能去匹配中文字符串 —— 文档一改就断（AGENTS.md §8.3）。
+    # 本文件自己的 `gap` 子命令正是按 errorCode 分类的，没有它那条路走不通。
+    if last.get("errorCode"):
+        summary["errorCode"] = last.get("errorCode")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     if last.get("error") == "channel_down":
         return 2

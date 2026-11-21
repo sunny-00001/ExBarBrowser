@@ -1,4 +1,4 @@
-// 运行时键位表自测：确认能读 data/keymap.json（当前 84 热键 + 38 序列）。
+// 运行时键位表自测：确认能读 data/keymap.json（当前 100 热键 + 38 序列）。
 // 编译（在 ExBarBrowser/ 下）：
 //   clang++ -std=c++20 -O1 -DUNICODE -D_UNICODE -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 \
 //     -D_WIN32_IE=0x0A00 -Isrc tests/keymap_test.cpp src/keymap.cpp src/json.cpp \
@@ -22,7 +22,27 @@
 // 原来那两条重复绑定没有意义）。**不是随手改数字**：改完后
 // `check_commands.py` 的"命令目录 / keymap / 处理器三方一致"仍是绿的，
 // 说明没有命令因此失去入口。
-constexpr size_t kExpectedHotkeys = 84;
+//
+// 82 → 84 → 85（2026-11-21）：新增 GoTab9 热键（Ctrl+9），原来的"最后一个标签"
+// （TabLast）顺移到 Ctrl+0，让 Ctrl+1..Ctrl+9 与 Ctrl+0 连续对应
+// 1..9 与"最后"。**不是随手改数字**：改完后 `check_commands.py` 的
+// "命令目录 / keymap / 处理器三方一致"仍是绿的，说明没有命令因此失去入口。
+//
+// 85 → 98（2026-11-21，P2）：把 input_router.cpp 里隐藏的 kExtra 收编进
+// data/keymap.json，并补齐 Alt+Enter / Ctrl+E / Alt+D / F2 / Ctrl+L /
+// Ctrl+Shift+1..8 等 Explorer 常用键位。这些键从此可见、可配，并和所有
+// 其他键位走同一套先到先得逻辑；不是随手改数字，`check_commands.py`
+// 的"命令目录 / keymap / 处理器三方一致"仍是绿的。
+//
+// 98 → 100（2026-11-21，P2 尾）：补两个需要真实实现的 Explorer 键位：
+// Shift+Delete（CmdDeletePermanent，永久删除）与 Ctrl+Shift+E
+// （NavTreeExpandAll，展开导航树）。二者都有命令表条目与处理器。
+//
+// 【注意】这个数字跟**本机**的 data/keymap.json 走 —— 而 data/keymap.json
+// 是 .gitignore 掉的个人配置（见 .gitignore "便携模式的用户数据"）。
+// 换一台机器跑这个测试，数字可能不同；那不是代码坏了，是个人键位不同。
+// 仓库里入库的 src/keymap.gen.h 才是"所有人共用的兜底表"。
+constexpr size_t kExpectedHotkeys = 100;
 constexpr size_t kExpectedSequences = 38;
 
 int main(int argc, char** argv) {

@@ -16,6 +16,7 @@
 #include "commands.h"
 #include "common.h"
 #include "config.h"
+#include "file_undo.h"
 #include "input_router.h"
 #include "nav_bar.h"
 #include "nav_history.h"
@@ -139,6 +140,17 @@ private:
     void TogglePin(int id);
     // Ctrl+Tab / Ctrl+Shift+Tab：按 MRU 循环（forward=false 时反向）。
     bool CycleMru(bool forward);
+
+    // ---- 文件操作撤销栈 ----
+    //
+    // 记一条可撤销的文件操作（唯一写入口）。
+    // byMachine 取自本次调用的 actor —— AI 做的与人工做的必须分得开，
+    // 否则机器一次批量撤销能把用户的手工整理全部滚掉。
+    void NoteFileOp(fileundo::Op op, std::vector<fileundo::Item> items,
+                    const std::wstring& label);
+    // 真正执行撤销（逆操作）。返回 false = 没撤成（原因写进 why）。
+    // 失败时会把"已经撤成功"的项从记录里剔掉，让重试只试剩下的。
+    bool ApplyFileUndo(fileundo::Entry& e, std::wstring* why);
     // 标签切换器（Ctrl+Shift+A）：列出全部标签，支持键入前缀定位。
     // 选中后激活；取消不改状态。
     void ShowTabSwitcher();
@@ -271,4 +283,12 @@ private:
     // 当前生效的搜索词。与 searchFrom_ 同生同灭：只给观测面（state.searchQuery）用，
     // 不参与判定 —— 判定一律看 searchFrom_ 是否为空。
     std::wstring searchQuery_;
+    // 文件操作撤销栈（唯一一份）。
+    //
+    // 为什么需要它：shell 的撤销谓词在 IExplorerBrowser 宿主里取不到
+    // （背景菜单没有 undo 行），于是"可撤销"要么是兑现不了的声明，
+    // 要么就得自己记一份"做过什么"。见 src/file_undo.h。
+    //
+    // 边界：机器的撤销不穿透人工操作（栈顶是人工做的就不给机器撤）。
+    fileundo::Stack fileUndo_;
 };

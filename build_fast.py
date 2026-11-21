@@ -48,6 +48,7 @@ EXE = ROOT / "ExBarBrowser.exe"
 NEW_EXE = ROOT / "ExBarBrowser.new.exe"
 PCH_H = SRC / "common.h"
 PCH = OBJ / "common.h.gch"
+PCH_DEPS_SIG = OBJ / "common.h.gch.deps"
 SIG = OBJ / ".build_sig"
 RES_RC = RES / "app.rc"
 RES_ICO = RES / "app.ico"
@@ -141,12 +142,49 @@ def pch_deps():
 
 
 def pch_needed(use_pch):
+    """PCH 是否需要重建。
+
+    【为什么不能只看 mtime】只看 mtime 会漏掉一种情况：**内容变了但 mtime 没变新**。
+    典型来源是 `git checkout` / 解压覆盖 / 某些同步工具 —— 它们把文件内容换掉，
+    却留下一个比 PCH 更早的时间戳。于是 PCH 被判成"新鲜"，接着每个直接
+    include 了 PCH 里那些头的 TU 都报重定义（"redefinition of ..."），
+    而报错指向的是 str.h 这种**根本没被改过**的文件 —— 排查方向完全被带偏。
+
+    2026-11-21 实测踩到：临时测试 obj 目录里的 PCH 是上一轮留下的，
+    str.h 之后被换过内容但时间戳更早，于是整轮测试构建失败，报错却指向 str.h。
+
+    所以这里改成**内容指纹**：把 PCH 依赖集里每个文件的内容哈希写进 sidecar，
+    对不上就重建。哈希 15 个小头文件不到 1ms，比重新生成 PCH（5s）便宜两个数量级。
+    """
     if not use_pch:
         return False
     if not PCH.exists():
         return True
-    pch_mtime = PCH.stat().st_mtime_ns
-    return any(h.stat().st_mtime_ns > pch_mtime for h in pch_deps() if h.exists())
+    if not PCH_DEPS_SIG.exists():
+        return True
+    try:
+        want = PCH_DEPS_SIG.read_text(encoding="utf-8").strip()
+    except OSError:
+        return True
+    return want != pch_deps_hash()
+
+
+def pch_deps_hash():
+    """PCH 依赖集的内容指纹（路径 + 内容，一处改动就变）。"""
+    h = hashlib.sha256()
+    for f in sorted(pch_deps()):
+        try:
+            rel = f.relative_to(ROOT).as_posix()
+        except ValueError:
+            rel = str(f)
+        h.update(rel.encode("utf-8"))
+        h.update(b"\0")
+        try:
+            h.update(hashlib.sha256(f.read_bytes()).digest())
+        except OSError:
+            h.update(b"<missing>")
+        h.update(b"\0")
+    return h.hexdigest()
 
 
 def build_pch(flags):
@@ -305,10 +343,11 @@ def main():
 
     # 中间目录隔离：两个会话共用 obj/ 时会互相把对方的 .obj 判成"过期/被改"，
     # 更糟的是 PCH 被一方重建、另一方正拿旧 PCH 编译。给每个会话一套即可。
-    global OBJ, PCH, SIG, RES_OBJ
+    global OBJ, PCH, PCH_DEPS_SIG, SIG, RES_OBJ
     if args.objdir:
         OBJ = Path(args.objdir).resolve()
         PCH = OBJ / "common.h.gch"
+        PCH_DEPS_SIG = OBJ / "common.h.gch.deps"
         SIG = OBJ / ".build_sig"
         RES_OBJ = OBJ / "app.res.obj"
 
@@ -323,7 +362,7 @@ def main():
             p.unlink()
         for p in OBJ.glob("*.d"):
             p.unlink()
-        for p in (PCH, SIG, RES_OBJ):
+        for p in (PCH, PCH_DEPS_SIG, SIG, RES_OBJ):
             if p.exists():
                 p.unlink()
 
@@ -333,6 +372,7 @@ def main():
     if pch_needed(use_pch):
         print("[PCH] 生成预编译头 ...", flush=True)
         pch_dt = build_pch(COMPILE_FLAGS)
+        PCH_DEPS_SIG.write_text(pch_deps_hash(), encoding="utf-8")
         print(f"[PCH] 完成 {pch_dt:.1f}s ({PCH.stat().st_size / 1e6:.0f} MB)", flush=True)
     elif use_pch:
         print("[PCH] 复用已有 common.h.gch", flush=True)

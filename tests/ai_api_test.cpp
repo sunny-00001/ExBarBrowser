@@ -158,6 +158,37 @@ int main() {
     Check(navDef && !navDef->effects.readOnly, "nav.back 不是只读（它会改导航状态）");
     Check(navDef && navDef->aiExposed, "nav.back 已暴露");
 
+    // ---- 5b. dev.build / dev.test 必须走危险双门 ----
+    //
+    // 【为什么单独立这一条】参数面收窄（target 枚举、filter 白名单）只挡住了
+    // "往命令行里注入外部命令"，挡不住"仓库本身被改成会干坏事的程序" ——
+    // 编译与测试都会真的执行仓库里的代码（测试二进制、build_fast.py 的 Python）。
+    // 所以它们的判据不是"参数合法"，而是"人有没有批准在这一轮执行代码"。
+    // 一旦有人把它改回 destructive=0，这条测试就是唯一会响的地方。
+    std::printf("\n开发面双门\n");
+    {
+        const CommandDef* build = FindCommand(L"dev.build");
+        const CommandDef* test = FindCommand(L"dev.test");
+        Check(build && build->effects.destructive, "dev.build 声明 destructive（会执行仓库代码）");
+        Check(test && test->effects.destructive, "dev.test 声明 destructive（会执行仓库代码）");
+        Check(build && build->effects.openWorld, "dev.build 声明 openWorld（起外部进程）");
+
+        // 设置未允许时，即使 approve=true 也必须拒绝（与 TabCloseOther 同一条门）。
+        ai::CallResult rb = ai::Call(L"dev.build", empty, true);
+        Check(!rb.ok, "dev.build 在 aiAllowDanger=false 时拒绝（即使 approve=true）");
+        Check(rb.errorCode == L"danger_disabled", "dev.build -> errorCode=danger_disabled");
+
+        ai::CallResult rt = ai::Call(L"dev.test", empty, true);
+        Check(!rt.ok, "dev.test 在 aiAllowDanger=false 时拒绝（即使 approve=true）");
+        Check(rt.errorCode == L"danger_disabled", "dev.test -> errorCode=danger_disabled");
+
+        // 只读的兄弟不该被连带误判：dev.snapshot / dev.job 不执行代码。
+        const CommandDef* snap = FindCommand(L"dev.snapshot");
+        const CommandDef* job = FindCommand(L"dev.job");
+        Check(snap && !snap->effects.destructive, "dev.snapshot 不是破坏性（只读工作树）");
+        Check(job && !job->effects.destructive, "dev.job 不是破坏性（只查作业结果）");
+    }
+
     // ---- 6. JSON 输出形状 ----
     std::printf("\nJSON 输出\n");
     std::wstring toolsJson = ai::ToolsToJson();

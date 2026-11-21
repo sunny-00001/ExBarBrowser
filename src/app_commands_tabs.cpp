@@ -208,7 +208,14 @@ void App::RegisterTabCommands() {
     });
     reg(CmdId::TabPrevTab, [this](const Args&) {
         int prev = tabSet_.PrevMru(activeId_);
-        if (prev) Activate(prev);
+        if (!prev) {
+            // 没有上一个 MRU 时必须如实失败：以前这里恒返回 true，
+            // 于是"回到上一个标签"在只有一个标签时也报成功 ——
+            // 调用方以为切走了，其实还在原地。
+            CommandBus::Get().NoteFailure(L"没有上一个激活过的标签");
+            return false;
+        }
+        Activate(prev);
         return true;
     });
     reg(CmdId::TabLast, [this](const Args&) {
@@ -255,7 +262,14 @@ void App::RegisterTabCommands() {
     // 结果 9 条序列全是空动作（按了没反应、审计里只有"未知命令"）。
     // 显式逐个注册（而不是循环 + 数组）：tools/check_commands.py 按 reg(CmdId::X) 审计。
     auto goTab = [this](int i) {
-        if (i < tabSet_.Count()) Activate(tabSet_.IdAt(i));
+        // 越界必须如实失败：以前是 `if (i < count) Activate(...); return true;` ——
+        // 标签不够时"切到第 5 个"返回成功却什么都没切，
+        // 调用方据此以为已经切走，后续操作全在错的标签上做。
+        if (i >= tabSet_.Count()) {
+            CommandBus::Get().NoteFailure(L"没有第 " + std::to_wstring(i + 1) + L" 个标签");
+            return false;
+        }
+        Activate(tabSet_.IdAt(i));
         return true;
     };
     reg(CmdId::GoTab1, [goTab](const Args&) { return goTab(0); });

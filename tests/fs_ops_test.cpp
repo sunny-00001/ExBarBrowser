@@ -118,14 +118,28 @@ int main() {
         const CommandDef* del = FindCommand(L"FsDelete");
         Check(del && del->effects.destructive, "FsDelete 标了 destructive");
         Check(del && !del->effects.readOnly, "FsDelete 不是只读");
-        // 删除到回收站可撤销，但网络盘会永久删 -> undoable 与 destructive 可共存
-        Check(del && del->effects.undoable, "FsDelete 标了 undoable（回收站可撤销）");
+        // 删除**撤不回来**：我们自己的撤销栈只记改名/移动/复制，
+        // 删除要么进回收站（还原不可靠）、要么在网络盘上被永久删。
+        // 所以 undoable 必须是 0 —— 声明 1 就是骗 AI"错了能退"。
+        // 2026-11-21（P0-3）由 1 改成 0。
+        Check(del && !del->effects.undoable, "FsDelete 不标 undoable（撤不回来，如实声明）");
 
         const CommandDef* ren = FindCommand(L"FsRename");
         Check(ren && !ren->effects.destructive, "FsRename 不是破坏性（改名可逆）");
-        Check(ren && ren->effects.undoable, "FsRename 可撤销");
+        Check(ren && ren->effects.undoable, "FsRename 可撤销（有自己的撤销栈）");
         // 重命名同一目标同一新名两次：第二次目标已不存在 -> 不幂等
         Check(ren && !ren->effects.idempotent, "FsRename 不幂等");
+
+        // 移动会让源文件消失（破坏性），但能移回去（可撤销）—— 两者可以同时为真。
+        // 注意命令名是 FsMoveTo/FsCopyTo（名字里带 To = 目标由参数指定）；
+        // FsCopy/FsCut 是"复制到剪贴板/剪切到剪贴板"，不是磁盘复制。
+        const CommandDef* mov = FindCommand(L"FsMoveTo");
+        Check(mov && mov->effects.destructive, "FsMoveTo 标了 destructive（源文件消失）");
+        Check(mov && mov->effects.undoable, "FsMoveTo 可撤销（移回原目录）");
+        // 复制不破坏任何东西，但副本要删掉才能撤销 —— 也算可撤销。
+        const CommandDef* cp = FindCommand(L"FsCopyTo");
+        Check(cp && !cp->effects.destructive, "FsCopyTo 不是破坏性");
+        Check(cp && cp->effects.undoable, "FsCopyTo 可撤销（删掉副本）");
     }
 
     std::printf("\n全量命令表仍自洽（新命令没破坏结构）\n");

@@ -386,7 +386,7 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) continue;
             json::Value a = json::Value::MakeObject();
             a.Set(L"path", json::Value::MakeStr(path));
-            CommandBus::Get().Invoke(CmdId::BmkAdd, Args::FromJson(a), L"drop");
+            CommandBus::Get().Invoke(CmdId::BmkAdd, Args::FromJson(a), Actor::Drop());
         }
         ::DragFinish(drop);  // 成员同名，必须显式全局作用域
         Reload();
@@ -668,7 +668,7 @@ void BookmarkBar::DragFinish(HWND h, bool commit) {
             InvalidateRect(h, nullptr, FALSE);
             return;
         }
-        if (!CommandBus::Get().Invoke(CmdId::BmkMove, Args::FromJson(a), L"ui")) {
+        if (!CommandBus::Get().Invoke(CmdId::BmkMove, Args::FromJson(a), Actor::Ui())) {
             // MoveTo 会拒绝"拖到自己 / 拖进自己的子孙"—— 那是正确行为，留痕即可。
             LogDbg(L"[bmk] 拒绝移动：%s -> %d (into=%d)", id.c_str(), to, into);
         }
@@ -680,7 +680,7 @@ void BookmarkBar::FocusBar() {
     if (!hwnd_) return;
     // 栏被隐藏时先让它可见：热键触发"聚焦书签栏"却什么也没发生是最糟的反馈。
     if (!IsWindowVisible(hwnd_)) {
-        CommandBus::Get().InvokeLegacy(CmdId::BmkShowBar, L"", L"ui");
+        CommandBus::Get().InvokeLegacy(CmdId::BmkShowBar, L"", Actor::Ui());
         if (!IsWindowVisible(hwnd_)) return;
     }
     SetFocus(hwnd_);
@@ -916,7 +916,7 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
         // 分类无路径时不要传 path（否则会把"没有路径"改成"路径是空串"，
         // 对 BookmarkStore 来说两者不同：后者会显式清掉 path）。
         if (!it.folder || !path.empty()) a.Set(L"path", json::Value::MakeStr(path));
-        CommandBus::Get().Invoke(CmdId::BmkEdit, Args::FromJson(a), L"ui");
+        CommandBus::Get().Invoke(CmdId::BmkEdit, Args::FromJson(a), Actor::Ui());
         break;
     }
     case 4:
@@ -924,7 +924,7 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
                         MB_YESNO | MB_ICONQUESTION) == IDYES) {
             json::Value a = json::Value::MakeObject();
             a.Set(L"id", json::Value::MakeStr(it.id));
-            CommandBus::Get().Invoke(CmdId::BmkRemove, Args::FromJson(a), L"ui");
+            CommandBus::Get().Invoke(CmdId::BmkRemove, Args::FromJson(a), Actor::Ui());
         }
         break;
     case 5: {
@@ -932,26 +932,26 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
         if (PromptText(hwnd_, *theme_, L"新建分类", L"分类名称", L"新建分类", &name)) {
             json::Value a = json::Value::MakeObject();
             a.Set(L"name", json::Value::MakeStr(name));
-            CommandBus::Get().Invoke(CmdId::BmkNewFolder, Args::FromJson(a), L"ui");
+            CommandBus::Get().Invoke(CmdId::BmkNewFolder, Args::FromJson(a), Actor::Ui());
         }
         break;
     }
     case 6:
-        CommandBus::Get().InvokeLegacy(CmdId::BmkAddCurrent, L"", L"ui");
+        CommandBus::Get().InvokeLegacy(CmdId::BmkAddCurrent, L"", Actor::Ui());
         break;
     case 7:  // 撤销：恢复上一次删除/重排/清空前的快照（store 内部维护，≤20 步）
-        CommandBus::Get().Invoke(CmdId::BmkUndo, Args::Empty(), L"ui");
+        CommandBus::Get().Invoke(CmdId::BmkUndo, Args::Empty(), Actor::Ui());
         break;
     case 8:  // 清除全部书签：可撤销（ReplaceAll 已入快照栈）
         if (MessageBoxW(hwnd_, L"确定清除全部书签？可在“撤销删除”中恢复。", id::kBrandShort,
                         MB_YESNO | MB_ICONWARNING) == IDYES) {
-            CommandBus::Get().Invoke(CmdId::BmkClearAll, Args::Empty(), L"ui");
+            CommandBus::Get().Invoke(CmdId::BmkClearAll, Args::Empty(), Actor::Ui());
         }
         break;
     case 9: {  // 复制书签（分类连子树）：与 bmk.copy 同一命令，AI/面板可达同一动作
         json::Value a = json::Value::MakeObject();
         a.Set(L"id", json::Value::MakeStr(it.id));
-        CommandBus::Get().Invoke(CmdId::BmkCopy, Args::FromJson(a), L"ui");
+        CommandBus::Get().Invoke(CmdId::BmkCopy, Args::FromJson(a), Actor::Ui());
         break;
     }
     default:
@@ -982,12 +982,12 @@ void BookmarkBar::ShowEmptyMenu(POINT screen) {
     if (action < 0) return;
     switch (action) {
     case 1:
-        CommandBus::Get().InvokeLegacy(CmdId::BmkAddCurrent, L"", L"ui");
+        CommandBus::Get().InvokeLegacy(CmdId::BmkAddCurrent, L"", Actor::Ui());
         break;
     case 11: {  // 收藏所有打开标签页（与 bmk.add.tabs 同一命令）
         // 与 dedupe 同款反馈：批量动作必须报数，不能静默。
         json::Value result;
-        const bool ok = CommandBus::Get().InvokeResult(CmdId::BmkAddTabs, Args::Empty(), &result, L"ui");
+        const bool ok = CommandBus::Get().InvokeResult(CmdId::BmkAddTabs, Args::Empty(), &result, Actor::Ui());
         const int added = ok ? result.GetInt(L"added", 0) : -1;
         const int skipped = ok ? result.GetInt(L"skipped", 0) : 0;
         if (added > 0)
@@ -1008,18 +1008,18 @@ void BookmarkBar::ShowEmptyMenu(POINT screen) {
         if (PromptText(hwnd_, *theme_, L"新建分类", L"分类名称", L"新建分类", &name)) {
             json::Value a = json::Value::MakeObject();
             a.Set(L"name", json::Value::MakeStr(name));
-            CommandBus::Get().Invoke(CmdId::BmkNewFolder, Args::FromJson(a), L"ui");
+            CommandBus::Get().Invoke(CmdId::BmkNewFolder, Args::FromJson(a), Actor::Ui());
         }
         break;
     }
     case 3:
         // 递归排序（含分类内部）。原实现只排顶层 —— 用户点"按名称排序"后
         // 分类里的顺序纹丝不动，那不是排序，只排了一半。排序入撤销栈（可能误触）。
-        CommandBus::Get().Invoke(CmdId::BmkSort, Args::Empty(), L"ui");
+        CommandBus::Get().Invoke(CmdId::BmkSort, Args::Empty(), Actor::Ui());
         break;
     case 10: {
         const size_t before = store.Flatten().size();
-        CommandBus::Get().Invoke(CmdId::BmkDedupe, Args::Empty(), L"ui");
+        CommandBus::Get().Invoke(CmdId::BmkDedupe, Args::Empty(), Actor::Ui());
         const size_t after = store.Flatten().size();
         if (after < before) {
             MessageBoxW(hwnd_,
@@ -1036,12 +1036,12 @@ void BookmarkBar::ShowEmptyMenu(POINT screen) {
         ReloadFromDisk();
         break;
     case 8:
-        CommandBus::Get().Invoke(CmdId::BmkUndo, Args::Empty(), L"ui");
+        CommandBus::Get().Invoke(CmdId::BmkUndo, Args::Empty(), Actor::Ui());
         break;
     case 9:
         if (MessageBoxW(hwnd_, L"确定清除全部书签？可在“撤销删除”中恢复。", id::kBrandShort,
                         MB_YESNO | MB_ICONWARNING) == IDYES) {
-            CommandBus::Get().Invoke(CmdId::BmkClearAll, Args::Empty(), L"ui");
+            CommandBus::Get().Invoke(CmdId::BmkClearAll, Args::Empty(), Actor::Ui());
         }
         break;
     case 6: {
@@ -1065,7 +1065,7 @@ void BookmarkBar::ShowEmptyMenu(POINT screen) {
         break;
     }
     case 5:
-        CommandBus::Get().InvokeLegacy(CmdId::BmkToggleBar, L"", L"ui");
+        CommandBus::Get().InvokeLegacy(CmdId::BmkToggleBar, L"", Actor::Ui());
         break;
     default:
         break;

@@ -41,13 +41,11 @@ void Theme::Init(HWND hwnd, int dpiOverride) {
     dark = SystemIsDark();
 
     const UiPalette& T = PaletteFor(dark);
-    if (dark) {
-        bg = RGB(0x14, 0x14, 0x14);              // 视图容器底（shell 自己会画）
-        bar = RGB(32, 32, 32);                    // 工具栏底
-    } else {
-        bg = RGB(0xff, 0xff, 0xff);
-        bar = GetSysColor(COLOR_WINDOW);          // 工具栏底 = 系统窗口色
-    }
+    // 深色/浅色的视图底与工具栏底也来自 UiPalette —— 色值单一来源，
+    // 不在 Theme 里写第二份 RGB（2026-11-21 收编；此前这里硬编码且浅色
+    // 取 GetSysColor(COLOR_WINDOW)=纯白，与注释实测的 #f3f3f3 不符）。
+    bg = T.viewBg;
+    bar = T.bar;
     // 其余令牌一律取 UiPalette，禁止自造
     barAlt = T.editBg;
     hover = T.hover;
@@ -143,41 +141,21 @@ COLORREF Mix(COLORREF base, COLORREF color, int pct) {
     return RGB(r, g, b);
 }
 
-// 下标 0 = 无颜色；1..7 = 红/橙/黄/绿/蓝/紫/灰。
-const COLORREF kTabColorsDark[8] = {
-    0,
-    RGB(0xE0, 0x5A, 0x5A),  // 红
-    RGB(0xE0, 0x93, 0x3F),  // 橙
-    RGB(0xD6, 0xC0, 0x4A),  // 黄
-    RGB(0x5F, 0xB8, 0x6A),  // 绿
-    RGB(0x4C, 0xA0, 0xFF),  // 蓝
-    RGB(0xA0, 0x7C, 0xE0),  // 紫
-    RGB(0x8A, 0x8A, 0x8A),  // 灰
-};
-
-const COLORREF kTabColorsLight[8] = {
-    0,
-    RGB(0xC0, 0x39, 0x2B),  // 红
-    RGB(0xC4, 0x70, 0x0C),  // 橙
-    RGB(0xA8, 0x8A, 0x00),  // 黄（浅底上纯黄看不见，必须压暗）
-    RGB(0x2E, 0x7D, 0x32),  // 绿
-    RGB(0x00, 0x78, 0xD7),  // 蓝
-    RGB(0x6A, 0x3D, 0x9A),  // 紫
-    RGB(0x60, 0x60, 0x60),  // 灰
-};
-
 }  // namespace
+
+// 下标 0 = 无颜色；1..7 = 红/橙/黄/绿/蓝/紫/灰。
+// 色值表已收进 ui_palette.h 的 TabColorsFor —— 这里不再有硬编码 RGB。
 
 COLORREF Theme::TabColorFill(int idx) const {
     if (idx <= 0 || idx >= kTabColorCount) return CLR_INVALID;
-    const COLORREF c = dark ? kTabColorsDark[idx] : kTabColorsLight[idx];
+    const COLORREF c = TabColorsFor(dark).colors[idx];
     // 填充只上 22%：再重就会与文字争对比度（实测深色 30% 时 sub 色标题已看不清）。
     return Mix(bar, c, dark ? 26 : 18);
 }
 
 COLORREF Theme::TabColorBar(int idx) const {
     if (idx <= 0 || idx >= kTabColorCount) return CLR_INVALID;
-    return dark ? kTabColorsDark[idx] : kTabColorsLight[idx];
+    return TabColorsFor(dark).colors[idx];
 }
 
 const wchar_t* Theme::TabColorName(int idx) {

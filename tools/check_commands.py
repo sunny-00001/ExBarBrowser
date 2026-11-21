@@ -86,6 +86,226 @@ def EnumOrder():
     return out
 
 
+# ---- 快捷键 chord 的 Python 复刻（与 src/chord.cpp 同口径）----
+#
+# 【为什么要复刻而不是抄一份名字表】运行时判重用的是 chord 对象
+# （mods 位 + 虚拟键码），不是字符串。于是 "Ctrl+A" 与 "ctrl+a"、
+# "Ctrl+Alt+Delete" 与 "Ctrl+Alt+Del" 在运行时是**同一个 chord**，
+# 但在字符串上看着不同 —— 只比字符串的检查会漏掉这两类真冲突。
+#
+# 下面这张表与 src/chord.cpp 的 kKeys 一一对应（虚拟键码取 Win32 常量值）。
+VK_KEYS = {
+    "backspace": 0x08, "tab": 0x09, "enter": 0x0D, "return": 0x0D,
+    "esc": 0x1B, "escape": 0x1B, "space": 0x20,
+    "insert": 0x2D, "ins": 0x2D, "delete": 0x2E, "del": 0x2E,
+    "home": 0x24, "end": 0x23,
+    "pgup": 0x21, "pageup": 0x21, "pgdn": 0x22, "pagedown": 0x22,
+    "left": 0x25, "←": 0x25, "right": 0x27, "→": 0x27,
+    "up": 0x26, "↑": 0x26, "down": 0x28, "↓": 0x28,
+    "capslock": 0x14, "numlock": 0x90, "scrolllock": 0x91,
+    "pause": 0x13, "printscreen": 0x2C, "prtsc": 0x2C,
+    "apps": 0x5D,
+    "num0": 0x60, "num1": 0x61, "num2": 0x62, "num3": 0x63, "num4": 0x64,
+    "num5": 0x65, "num6": 0x66, "num7": 0x67, "num8": 0x68, "num9": 0x69,
+    "num*": 0x6A, "num+": 0x6B, "num-": 0x6D, "num.": 0x6E, "num/": 0x6F,
+}
+
+# 单字符按键（src/chord.cpp 的 VkFromName 第一段）。
+VK_SYMBOLS = {
+    "+": 0xBB, "-": 0xBD, ",": 0xBC, ".": 0xBE, "/": 0xBF, ";": 0xBA,
+    "'": 0xDE, "[": 0xDB, "]": 0xDD, "\\": 0xDC, "`": 0xC0,
+}
+
+MOD_CTRL, MOD_SHIFT, MOD_ALT, MOD_WIN = 1, 2, 4, 8
+
+# 修饰键别名归一（与 chord::Parse 的 if/else 链同序）。
+# 注意 "menu" 在 chord::Parse 里**先**当修饰键判（→ Alt），所以永远不是 VK_APPS。
+MOD_ALIASES = {
+    "ctrl": MOD_CTRL, "control": MOD_CTRL,
+    "shift": MOD_SHIFT,
+    "alt": MOD_ALT, "menu": MOD_ALT,
+    "win": MOD_WIN, "windows": MOD_WIN, "super": MOD_WIN,
+}
+
+# 系统保留组合：InputRouter::BuildBindings 的 add() 直接跳过它们
+# （chord::IsReserved），所以撞上它们**不算冲突**（谁也抢不到）。
+RESERVED = {
+    (MOD_ALT, 0x73),    # Alt+F4
+    (MOD_ALT, 0x09),    # Alt+Tab
+    (MOD_CTRL, 0x1B),   # Ctrl+Esc
+    (MOD_CTRL | MOD_ALT, 0x2E),  # Ctrl+Alt+Del
+}
+
+
+def _vk_of(name):
+    """按键名 → 虚拟键码；认不出返回 0（与 VkFromName 的 0 语义一致）。
+
+    【单字符要"落穿"到别名表】src/chord.cpp 的 VkFromName 里，
+    `if (name.size() == 1)` 那段对没命中的字符是 `default: break` —— **不返回**，
+    会继续往下走 kKeys 表。而 kKeys 表里有 "←" "→" "↑" "↓" 这四个单字符。
+    所以 "Alt+←" 在运行时能解析成 VK_LEFT。
+    如果这里在单字符分支直接 return 0，就会漏掉全部方向键组合
+    （kSysKeys 里就有 "Alt+←" / "Alt+→" / "Alt+↑"）。
+    """
+    if len(name) == 1:
+        c = name[0]
+        if "a" <= c <= "z":
+            return ord(c.upper())
+        if "0" <= c <= "9":
+            return ord(c)
+        if c in VK_SYMBOLS:
+            return VK_SYMBOLS[c]
+        # 不 return —— 落到下面的别名表（与 C++ 的 default: break 同义）
+    if name in VK_KEYS:
+        return VK_KEYS[name]
+    m = re.fullmatch(r"f(\d+)", name)
+    if m and 1 <= int(m.group(1)) <= 24:
+        return 0x70 + int(m.group(1)) - 1
+    return 0
+
+
+def parse_chord(text):
+    """"Ctrl+Shift+A" → (mods, vk) 的规范形式；解析不出来返回 None。
+
+    与 src/chord.cpp 的 chord::Parse 同口径：trim → 按 '+' 切 → 逐段小写 →
+    修饰键走别名表、其余走按键表；最后一个非修饰键即 vk。
+    """
+    s = (text or "").strip()
+    if not s:
+        return None
+    parts, cur = [], ""
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == "+":
+            parts.append(cur)
+            cur = ""
+            if i + 1 == len(s):
+                cur = "+"          # "Ctrl++"
+        else:
+            cur += c
+        i += 1
+    if cur:
+        parts.append(cur)
+
+    mods, vk = 0, 0
+    for part in parts:
+        p = part.strip().lower()
+        if not p:
+            continue
+        if p in MOD_ALIASES:
+            mods |= MOD_ALIASES[p]
+        else:
+            v = _vk_of(p)
+            if not v:
+                return None
+            vk = v
+    if not vk:
+        return None
+    return (mods, vk)
+
+
+def _read_sys_keys():
+    """src/keymap.cpp 的 kSysKeys 表：setting → 系统原生键。
+
+    这张表是 keymap.json 里"key 为空"的兜底 —— json 没写键的条目最终落到这里，
+    所以它也是冲突源之一（查 json 单独一份是查不出来的）。
+    """
+    path = ROOT / "src" / "keymap.cpp"
+    if not path.exists():
+        return {}
+    src = strip_comments(path.read_text(encoding="utf-8"))
+    body = re.search(r"kSysKeys\[\]\s*=\s*\{(.*?)\};", src, re.S)
+    if not body:
+        return {}
+    return dict(re.findall(r'\{L"([^"]*)",\s*L"([^"]*)"\}', body.group(1)))
+
+
+def _read_extra_keys():
+    """src/input_router.cpp 的 kExtra 表：应用内补充分配。
+
+    在运行时它是**最后**才 add 的，而 add 是"先到先得" —— 所以它撞上
+    前面任何一条（json / kSysKeys）时，是**它自己**被丢弃。
+    """
+    path = ROOT / "src" / "input_router.cpp"
+    if not path.exists():
+        return []
+    src = strip_comments(path.read_text(encoding="utf-8"))
+    body = re.search(r"kExtra\[\]\s*=\s*\{(.*?)\};", src, re.S)
+    if not body:
+        return []
+    return re.findall(r'\{L"([^"]*)",\s*L"([^"]*)"\}', body.group(1))
+
+
+def find_chord_conflicts(km):
+    """返回冲突描述列表；空列表表示没有冲突。
+
+    合成的顺序与运行时一致：json 的 hotkeys（空键落到 kSysKeys）→ kExtra。
+    同一 chord 第二次出现即为冲突（先到先得，后一条被静默丢弃）。
+    """
+    sys_keys = _read_sys_keys()
+    seen = {}                       # (mods, vk) → 来源描述
+
+    def claim(chord, where):
+        if chord is None:
+            return
+        mods, vk = chord
+        if mods & MOD_WIN:
+            return                 # Win 组合一律交系统，应用内抢不到
+        if (mods, vk) in RESERVED:
+            return                 # 系统保留键，谁也抢不到
+        prev = seen.get((mods, vk))
+        if prev:
+            seen[(mods, vk)] = prev + " 与 " + where
+        else:
+            seen[(mods, vk)] = where
+
+    for h in km.get("hotkeys", []):
+        setting = h.get("setting", "")
+        key = (h.get("key", "") or "").strip()
+        if key == "-":
+            continue               # 哨兵 = 用户显式解绑（src/config.h kHotkeyDisabled）
+        if not key:
+            key = sys_keys.get(setting, "")
+        chord = parse_chord(key)
+        claim(chord, f"{setting or '?'}（{h.get('command', '')}）← {key or '无键'}")
+
+    for key, cmd in _read_extra_keys():
+        chord = parse_chord(key)
+        claim(chord, f"kExtra {cmd} ← {key}")
+
+    return [f"{key_label(c)}：{desc}"
+            for c, desc in sorted(seen.items()) if " 与 " in desc]
+
+
+def key_label(chord):
+    """把 (mods, vk) 还原成可读的组合串（仅用于报错信息）。"""
+    mods, vk = chord
+    parts = []
+    if mods & MOD_CTRL:
+        parts.append("Ctrl")
+    if mods & MOD_SHIFT:
+        parts.append("Shift")
+    if mods & MOD_ALT:
+        parts.append("Alt")
+    if mods & MOD_WIN:
+        parts.append("Win")
+    rev = {v: k for k, v in VK_KEYS.items()}
+    if vk in rev:
+        parts.append(rev[vk])
+    elif 0x70 <= vk <= 0x87:
+        parts.append("F%d" % (vk - 0x70 + 1))
+    elif 0x60 <= vk <= 0x69:
+        parts.append("Num%d" % (vk - 0x60))
+    elif 0x41 <= vk <= 0x5A:
+        parts.append(chr(vk))
+    elif 0x30 <= vk <= 0x39:
+        parts.append(chr(vk))
+    else:
+        parts.append("VK_%02X" % vk)
+    return "+".join(parts)
+
+
 def main():
     table_src = strip_comments(TABLE_SRC.read_text(encoding="utf-8"))
     # 命令表条目现在带结构化元数据（Effects{...}/argsSchema/aiExposed/needsSelection/
@@ -290,6 +510,51 @@ def main():
         if gen_hk != want_hk or gen_sq != want_sq:
             errors.append("src/keymap.gen.h 与 data/keymap.json 不一致（改完 json 没重新生成）："
                           "跑 python tools/gen_keymap.py")
+
+    # ---- 快捷键冲突（同一个 chord 被绑了两次）----
+    #
+    # 【为什么必须查】运行时 InputRouter::BuildBindings 的 add() 是"先到先得"：
+    # 同一个 chord 第二次出现就被**静默丢弃**（src/input_router.cpp 的
+    # `for (const auto& b : chords_) if (b.chord == c) return;`）。
+    # 于是重复绑定的后果是：后一条命令**永远按不出来**，而且**没有任何提示** ——
+    # 用户只看到"按了没反应"，排查时根本想不到是冲突。
+    #
+    # 历史上真出过：`Ctrl+Shift+A` 同时绑了 TabSwitcher 与 CopyToFolder
+    # （2026-11-21 修掉，见 docs/COMPETITIVE-GAP-2026-11-21.md E6）。
+    # 修掉的是**那一处**，不是**那一类** —— 所以这里补上机器能查的那一半。
+    #
+    # 【冲突源有三处，缺一不可】
+    #   ① data/keymap.json 的 hotkeys（key 为空 → 落到 ②）
+    #   ② src/keymap.cpp 的 kSysKeys（系统原生键兜底）
+    #   ③ src/input_router.cpp 的 kExtra（应用内补充分配）
+    # 只查 ① 会漏掉 ①② 撞车，也会漏掉 ①③ 撞车。
+    #
+    # 【口径必须与运行时一致】parse_chord 是 src/chord.cpp 的 chord::Parse 的
+    # Python 复刻（同样的别名表、同样的修饰键归一）。口径不一致的检查等于没有：
+    # 要么漏报真冲突，要么报一堆假冲突。
+    chord_conflicts = find_chord_conflicts(km)
+    if chord_conflicts:
+        errors.append("快捷键冲突（同一组合被绑了两次，后一条永远按不出来）：" +
+                      "; ".join(chord_conflicts))
+
+    # ---- 序列重复 ----
+    # 序列表里同一个 seq 出现两次 = 后一条永远触发不了（SequenceMachine::SetEntries
+    # 是 add() 语义，见 src/sequence.cpp）。前缀关系（`x l` 与 `x l a`）**不算错**：
+    # 引擎会等超时再提交短的那个（src/input_router.cpp 的 kSeqTimer → TakePendingExact），
+    # 所以那种只在输出里提示，不报错。
+    seq_seen = {}
+    dup_seqs = []
+    for s in km.get("sequences", []):
+        q = (s.get("seq", "") or "").lower()
+        if not q:
+            continue
+        if q in seq_seen:
+            dup_seqs.append(f"{q}（{seq_seen[q]} 与 {s.get('command','')}）")
+        else:
+            seq_seen[q] = s.get("command", "")
+    if dup_seqs:
+        errors.append("序列重复（同一个序列被绑了两次，后一条永远触发不了）：" +
+                      "; ".join(dup_seqs))
 
     print(f"命令表 {len(rows)} 条，已实现 {len(implemented)}，处理器 {len(handlers)}，"
           f"keymap 引用 {len(set(specs))} 条")

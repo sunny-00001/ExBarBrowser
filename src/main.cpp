@@ -12,6 +12,7 @@
 #include "app.h"
 #include "config.h"
 #include "icon_resolve.h"
+#include "mcp_stdio.h"   // --mcp-stdio：以 MCP 服务器身份启动
 #include "text_file.h"
 #include "str.h"
 
@@ -177,7 +178,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
     // 显式多开（--new-window）或独立 profile（EXBARBROWSER_MULTI）：不查找、不转发。
     const bool multi = GetEnvironmentVariableW(id::kMultiInstanceEnv, nullptr, 0) > 0;
-    const bool forceNew = multi || NewWindowRequested();
+    // --mcp-stdio：MCP 客户端拉起本进程，**这个进程就是服务器**。
+    // 必须不转发 —— 转发意味着"把路径塞给已有窗口然后自己退出"，
+    // 而 MCP 客户端等的是 stdin 上的 JSON-RPC 响应，进程立刻退出 = 客户端只看到
+    // 管道断开。于是这里等价于 --new-window：自己开一个窗口，自己当服务器。
+    const bool mcpMode = mcpstdio::Requested();
+    const bool forceNew = multi || NewWindowRequested() || mcpMode;
 
     // 测试隔离（优先级4）：显式 profile 优先；只给 MULTI=1 时落到固定子目录。
     // 必须在任何 Config::Get().s()/Load() 之前 —— Config 只在第一次访问时读盘，
@@ -193,7 +199,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
     // 强制开启 AI 通道的启动开关（--ai / EXBARBROWSER_AI）：只置进程内标志，
     // 不写 settings.json。必须在 App::Run（读 AiChannelEnabled）之前设好。
-    Config::Get().SetAiForceEnabled(AiForceRequested());
+    //
+    // --mcp-stdio 同样强制开启：客户端用 stdio 拉起本进程，本身就说明它要 AI 通道；
+    // 而 stdio 桥接要连的正是那条通道 —— 通道关着，桥接就无处可连。
+    Config::Get().SetAiForceEnabled(AiForceRequested() || mcpMode);
 
     if (!forceNew) {
         // 默认行为：已开着的窗口就激活它（顺带把路径作为新标签打开）；

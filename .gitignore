@@ -73,6 +73,10 @@ data/profile-multi/
 data/profile-*/
 # agentctl 记录的"自己启的实例"（用于只关自己的窗口，不入库）
 data/.agentctl.pid
+# dev.snapshot 落盘的工作树快照（改动文件的内容副本 + 清单）。
+# 它是**兜底**不是备份：里面存的是工作树里当时的内容，入库等于把
+# 未提交的改动塞进仓库历史。不入库，但**不能删** —— dev.rollback 靠它还原。
+snapshots/
 # 程序自动生成的书签备份（含用户数据，绝不入库）
 data/*.backup-*.html
 

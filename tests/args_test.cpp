@@ -116,10 +116,10 @@ int main() {
             return true;
         });
 
-        CommandBus::Get().InvokeByNameLegacy(L"ViewMode:3", L"", L"test");
+        CommandBus::Get().InvokeByNameLegacy(L"ViewMode:3", L"", Actor{ActorKind::Ai, L"test"});
         const int fromLegacy = g_last.Int(L"preset", -999);
 
-        CommandBus::Get().InvokeByName(L"ViewMode", From(L"{\"preset\":3}"), L"test");
+        CommandBus::Get().InvokeByName(L"ViewMode", From(L"{\"preset\":3}"), Actor{ActorKind::Ai, L"test"});
         const int fromObject = g_last.Int(L"preset", -999);
 
         Check(fromLegacy == 3, "旧入口 \"ViewMode:3\" 得到 preset=3");
@@ -130,7 +130,7 @@ int main() {
     std::printf("\n审计描述不崩（参数摘要）\n");
     {
         // 只验证一轮调用能正常返回；审计内部会 Stringify 参数
-        bool ok = CommandBus::Get().InvokeByName(L"ViewMode", From(L"{\"preset\":5}"), L"test");
+        bool ok = CommandBus::Get().InvokeByName(L"ViewMode", From(L"{\"preset\":5}"), Actor{ActorKind::Ai, L"test"});
         Check(ok, "带审计的调用正常返回");
     }
 

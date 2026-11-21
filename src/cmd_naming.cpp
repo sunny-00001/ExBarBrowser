@@ -115,6 +115,7 @@ const Alias kAliases[] = {
     {L"CmdCut",            L"file.cut"},
     {L"CmdPaste",          L"file.paste"},
     {L"CmdDelete",         L"file.delete"},
+    {L"CmdDeletePermanent", L"file.delete.permanent"},
     {L"CmdRename",         L"file.rename"},
     {L"CmdProps",          L"file.properties"},
     {L"CmdUndo",           L"file.undo"},
@@ -156,6 +157,7 @@ const Alias kAliases[] = {
     {L"ToggleExtensions",  L"view.toggle.extensions"},
     {L"TogglePreviewPane", L"view.toggle.preview"},
     {L"ToggleNavPane",     L"view.toggle.nav"},
+    {L"NavTreeExpandAll",  L"nav.tree.expand.all"},
     {L"ToggleCheckboxes",  L"view.toggle.checkboxes"},
     {L"CycleHiddenSeg",    L"view.cycle.hidden"},
 

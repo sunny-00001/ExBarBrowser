@@ -40,4 +40,11 @@ struct Result {
 bool HashFile(const std::wstring& path, Algo algo, Result* out,
               const std::atomic<bool>* cancel = nullptr);
 
+// 计算一段内存的摘要（十六进制小写，进 out->hex）。
+//
+// 【为什么要这个】评估面的 selfSeal 是对"清单正文"算哈希，正文在内存里、
+// 不在磁盘上（它由清单字段重新拼出来）。没有这条就只能落一个临时文件，
+// 那既慢又留下垃圾，还会被"临时文件被谁改了"这类噪声淹没。
+bool HashBytes(const void* data, size_t len, Algo algo, std::wstring* hex);
+
 }  // namespace filehash

@@ -12,6 +12,7 @@
 
 #include "ai_api.h"
 #include "ai_events.h"
+#include "ai_queue.h"
 #include "common.h"
 #include "config.h"
 #include "json.h"
@@ -20,10 +21,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdlib>   // rand_s
-#include <deque>
-#include <mutex>
 #include <thread>
 
 namespace ai {
@@ -41,15 +39,14 @@ std::wstring g_token;
 std::wstring g_pipe_name;
 
 // ---- UI 线程与监听线程之间的请求队列 ----
-struct Job {
-    std::wstring request;
-    std::wstring response;
-    bool done = false;
-};
-std::mutex g_mu;
-std::condition_variable g_cv;
-std::deque<Job*> g_queue;      // 待处理（UI 线程消费）
-Job* g_inflight = nullptr;     // 正在处理的那一个（UI 线程处理完置 done）
+//
+// 队列本体在 ai_queue.{h,cpp}：那里的不变式（请求对象共享所有权、
+// 超时后 UI 线程仍可安全处理完）是这块最容易写错的地方，值得单独单测。
+aiqueue::Queue g_queue;
+
+// UI 线程处理一个请求的上限（毫秒）。超时后客户端收到 error=timeout，
+// 但 UI 线程仍会把那个请求处理完 —— 命令已经在跑了。
+constexpr int kUiWaitMs = 10000;
 
 // UTF-8 转换唯一实现在 str.cpp
 std::wstring LineToWide(const std::string& s) { return str::FromUtf8(s); }
@@ -158,26 +155,15 @@ void WriteDiscoveryFiles(const std::wstring& token, const std::wstring& pipe) {
 }
 
 // 把请求交给 UI 线程并同步等结果。超时返回空（调用方回错误）。
+//
+// 【为什么超时不是"取消"】超时之后 UI 线程**仍会**把那个请求处理完
+// （命令已经在跑了，中途掐掉会留下半截状态）。所以请求对象必须由
+// 提交方与 UI 线程**共享所有权** —— 提交方放手不等于对象没了。
+// 详见 ai_queue.h。
 std::wstring RunOnUiThread(const std::wstring& request) {
-    Job job;
-    job.request = request;
-    {
-        std::lock_guard<std::mutex> lk(g_mu);
-        g_queue.push_back(&job);
-    }
-    g_cv.notify_one();
-
-    std::unique_lock<std::mutex> lk(g_mu);
-    // 等 UI 线程处理完。带超时：UI 线程若在模态对话框里，不能让客户端无限挂。
-    if (!g_cv.wait_for(lk, std::chrono::seconds(10), [&] { return job.done; })) {
-        // 超时：把它从各自的容器里摘掉，避免 UI 线程之后写悬空指针
-        for (auto it = g_queue.begin(); it != g_queue.end(); ++it) {
-            if (*it == &job) { g_queue.erase(it); break; }
-        }
-        if (g_inflight == &job) g_inflight = nullptr;
-        return std::wstring();
-    }
-    return job.response;
+    std::wstring out;
+    if (!g_queue.Submit(request, kUiWaitMs, &out)) return std::wstring();
+    return out;
 }
 
 // 订阅请求识别与游标提取。放在管道线程用，只解析不执行任何命令。
@@ -196,6 +182,37 @@ uint64_t AfterOfRequest(const std::string& line) {
     if (const json::Value* p = req.Find(L"params"))
         after = static_cast<uint64_t>(p->GetInt(L"after", static_cast<int>(after)));
     return after;
+}
+
+// 超时响应：**按请求的格式**给。
+//
+// 【为什么不能一律回旧格式】{"ok":false,"error":"timeout"} 对 JSON-RPC 客户端
+// 是个**非法响应**：没有 id，客户端无法把它认成"我那条请求的回复" ——
+// 要么当成乱码丢掉，要么当成服务端推送，然后永远等一个不会来的结果（挂死）。
+// MCP stdio 桥接更是直接栽在这：它靠"有 id、无 method"判响应，
+// 旧格式的超时响应两条都不满足 → 被当成推送转发给客户端，客户端那头就一直挂着。
+//
+// 【JSON-RPC 的 code 用 -32000】那是 JSON-RPC 留给实现自定义的区间；
+// 语义是"服务端没能在时限内处理完"，不是"请求不合法"（那是 -32600）。
+// errorCode 一并带上：项目口径是 errorCode 才是给机器分支的稳定标识。
+std::string TimeoutResponse(const std::string& line) {
+    json::Value req;
+    std::wstring err;
+    if (json::Parse(str::FromUtf8(line), req, &err) && req.IsObject() &&
+        req.Find(L"jsonrpc") != nullptr) {
+        const json::Value* id = req.Find(L"id");
+        json::Value v = json::Value::MakeObject();
+        v.Set(L"jsonrpc", json::Value::MakeStr(L"2.0"));
+        // id 缺失时按 JSON-RPC 规范回 null（"请求的 id 不知道"）。
+        v.Set(L"id", id ? *id : json::Value());
+        json::Value e = json::Value::MakeObject();
+        e.Set(L"code", json::Value::MakeInt(-32000));
+        e.Set(L"message", json::Value::MakeStr(L"请求超时：UI 线程未在时限内处理完"));
+        e.Set(L"errorCode", json::Value::MakeStr(L"timeout"));
+        v.Set(L"error", e);
+        return WideToLine(json::Stringify(v, 0)) + "\n";
+    }
+    return "{\"ok\":false,\"error\":\"timeout\"}\n";
 }
 
 uint64_t SeqOfLine(const std::wstring& line) {
@@ -240,8 +257,7 @@ void ServeLoop() {
                 resp = "{\"ok\":false,\"error\":\"line_too_large\"}\n";
             } else {
                 std::wstring out = RunOnUiThread(LineToWide(line));
-                resp = out.empty() ? std::string("{\"ok\":false,\"error\":\"timeout\"}\n")
-                                   : WideToLine(out) + "\n";
+                resp = out.empty() ? TimeoutResponse(line) : WideToLine(out) + "\n";
             }
             if (!send(resp)) return false;
             // 订阅确认已经写回去，才切模式：确认之前产生的事件排在后面推，
@@ -323,6 +339,10 @@ void ServeLoop() {
 
 std::wstring TokenPath() { return tf::Join(Config::Get().Dir(), L"ai-token.txt"); }
 
+std::wstring CurrentPipeName() { return g_pipe_name; }
+
+std::wstring CurrentToken() { return g_token; }
+
 bool StartServer(void (*postToUi)(const std::wstring& requestLine)) {
     (void)postToUi;   // 队列 + 条件变量足够，不需要 PostMessage
     if (g_running) return true;
@@ -359,11 +379,13 @@ void StopServer() {
             DisconnectNamedPipe(h);
             CloseHandle(h);
         }
-        g_cv.notify_all();
         g_thread.join();
     }
     g_pipe = INVALID_HANDLE_VALUE;
     g_subscribers = 0;
+    // 排队里还没被 UI 线程取走的请求：没人会再处理它们了，直接清掉；
+    // 正在等结果的监听线程也一并唤醒（不必干等到超时）。
+    g_queue.Interrupt();
 
     // 发现文件清理：
     //   · 每实例副本 ai-token.<pid>.txt / ai-pipe.<pid>.txt 无条件删；
@@ -381,27 +403,26 @@ int PumpRequests() {
     // 没有订阅者时跳过：生成整份状态快照（含选中路径/标签列表）没有接收方，
     // 而 AI 通道现在默认开启，这份开销不该在没人看的时候每 100ms 付一次。
     if (HasSubscribers()) events::PollStateChanges();
-    int n = 0;
+    int total = 0;
     for (;;) {
-        Job* job = nullptr;
-        {
-            std::lock_guard<std::mutex> lk(g_mu);
-            if (g_queue.empty()) break;
-            job = g_queue.front();
-            g_queue.pop_front();
-            g_inflight = job;
-        }
-        std::wstring resp = HandleRequestLine(job->request);
-        {
-            std::lock_guard<std::mutex> lk(g_mu);
-            job->response = std::move(resp);
-            job->done = true;
-            if (g_inflight == job) g_inflight = nullptr;
-        }
-        g_cv.notify_all();
-        ++n;
+        // 队列在 ai_queue：请求对象由提交方与 UI 线程共享所有权，
+        // 所以提交方超时走人后，这里处理它依然安全。
+        const int n = g_queue.Pump([](const std::wstring& req) {
+            return HandleRequestLine(req);
+        });
+        if (n == 0) break;
+        total += n;
     }
-    return n;
+    // 客户端在时限内没等到结果的请求有几个 —— 这就是"界面卡了多久"的账。
+    // 只在**账变了**时报：定时器每 100ms 跑一次，每次都报会刷爆日志。
+    static size_t last_abandoned = 0;
+    const size_t abandoned = g_queue.Abandoned();
+    if (abandoned > last_abandoned) {
+        LogDbg(L"[ai] 有 %zu 个请求在客户端超时之后才处理完（命令跑得比等待时限长）",
+               abandoned);
+        last_abandoned = abandoned;
+    }
+    return total;
 }
 
 // ---------------------------------------------------------------- 请求处理

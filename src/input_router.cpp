@@ -60,30 +60,9 @@ void InputRouter::BuildBindings() {
         add(c, hk.command, hk.setting, def->scopeUi);
     }
 
-    // 应用内补充分配（mod 里属于系统原生行为，这里必须自己绑）。
-    // 8 档视图模式必须各自带第几档：只写 "ViewMode" 会让 8 个键全落到第 0 档。
-    struct Extra {
-        const wchar_t* key;
-        const wchar_t* command;
-    };
-    static const Extra kExtra[] = {
-        {L"Ctrl+L", L"FocusAddress"},
-        {L"F2", L"CmdRename"},
-        {L"Ctrl+Shift+1", L"ViewMode:0"},
-        {L"Ctrl+Shift+2", L"ViewMode:1"},
-        {L"Ctrl+Shift+3", L"ViewMode:2"},
-        {L"Ctrl+Shift+4", L"ViewMode:3"},
-        {L"Ctrl+Shift+5", L"ViewMode:4"},
-        {L"Ctrl+Shift+6", L"ViewMode:5"},
-        {L"Ctrl+Shift+7", L"ViewMode:6"},
-        {L"Ctrl+Shift+8", L"ViewMode:7"},
-    };
-    for (const auto& e : kExtra) {
-        KeyChord c;
-        if (!chord::Parse(e.key, &c)) continue;
-        std::wstring setting = L"app." + std::wstring(e.key);
-        add(c, e.command, setting, L"全局");
-    }
+    // 应用内补充分配已于 2026-11-21 收编进 data/keymap.json：
+    // F2 / Ctrl+L / Ctrl+Shift+1..8 现在和所有键位一样可见可配，且走同一份
+    // 先到先得逻辑。以前这里的 kExtra 是第二套真相：用户改键会静默失效。
     (void)s;
 }
 
@@ -140,6 +119,39 @@ void InputRouter::BuildRows() {
         KeyChord c;
         if (chord::Parse(r.key, &c) && counts[chord::Format(c)] > 1) r.conflict = true;
     }
+
+    // ---- 冲突写日志（不是只标在管理器界面上）----
+    //
+    // 【为什么要有这一段】BuildBindings 的 add() 是"先到先得"：同一个 chord
+    // 第二次出现就被**静默丢弃**（上面那个 `if (b.chord == c) return;`）。
+    // 于是冲突的真实后果是"后一条命令永远按不出来"，
+    // 而用户能看到的只有快捷键管理器里那一列"冲突"字样 ——
+    // 不打开那个窗口，就完全不知道自己的键位为什么没反应。
+    //
+    // 日志是**只读证据**（AGENTS.md §7 的验证口径）：出问题时看一眼日志就知道
+    // 是不是键位撞了，而不是去猜"是不是命令没实现"。
+    //
+    // 【为什么放在 BuildRows 之后】这里已经把三件事都算准了：
+    // 用户覆盖（Config 的 override）、系统默认键兜底（SystemKeyFor）、
+    // 以及未绑定哨兵（kHotkeyDisabled）的排除 —— 与判定"冲突"用的是同一份数据，
+    // 不会出现"界面说冲突、日志说没冲突"的两套口径。
+    //
+    // 【为什么只报一次】Reload 会在配置变化时反复调用，逐次刷屏没意义；
+    // 只在第一次见到某个组合时记一条。
+    for (auto it = counts.begin(); it != counts.end(); ++it) {
+        if (it->second < 2) continue;
+        std::wstring who;
+        for (const auto& r : rows_) {
+            if (r.isSequence || r.key.empty()) continue;
+            KeyChord c;
+            if (!chord::Parse(r.key, &c)) continue;
+            if (chord::Format(c) != it->first) continue;
+            if (!who.empty()) who += L" / ";
+            who += r.setting + L"→" + r.command;
+        }
+        LogDbg(L"[keymap] 快捷键冲突：%ls 被绑了 %d 次（先到先得，后一条永远按不出来）：%ls",
+               it->first.c_str(), it->second, who.c_str());
+    }
 }
 
 int InputRouter::CurrentMods() const {
@@ -174,7 +186,7 @@ bool InputRouter::FeedSequence(const std::wstring& token) {
     case SequenceMachine::kMatched:
         hint_.Hide();
         KillTimer(main_, kSeqTimer);
-        CommandBus::Get().InvokeByNameLegacy(cmd, L"", L"seq");
+        CommandBus::Get().InvokeByNameLegacy(cmd, L"", Actor::Seq());
         return true;
     case SequenceMachine::kPending:
         ShowSequenceHint();
@@ -267,7 +279,7 @@ bool InputRouter::HandleKey(WPARAM vk, HWND focus, LPARAM keyInfo) {
             if (!tabCycle) return true;
         }
         LogDbg(L"[key] %s -> %s", b.setting.c_str(), b.command.c_str());
-        CommandBus::Get().InvokeByNameLegacy(b.command, L"", L"key");
+        CommandBus::Get().InvokeByNameLegacy(b.command, L"", Actor::Key());
         return true;
     }
 
@@ -288,7 +300,7 @@ bool InputRouter::DispatchMouse(int target, int button, int trigger, int mods) {
     const MouseRule* r = MouseRules::Get().Find(target, button, trigger, mods);
     if (!r) return false;
     if (r->action == L"command")
-        return CommandBus::Get().InvokeByNameLegacy(r->command, L"", L"mouse");
+        return CommandBus::Get().InvokeByNameLegacy(r->command, L"", Actor::Mouse());
     if (r->action == L"none") return true;  // 显式吞掉默认行为
     LogDbg(L"[mouse] 未支持的 action=%s（target=%s）", r->action.c_str(),
            MouseTargetName(target));
@@ -463,7 +475,7 @@ void InputRouter::OnTimer(UINT_PTR id) {
         std::wstring cmd;
         if (seq_.TakePendingExact(&cmd)) {
             hint_.Hide();
-            CommandBus::Get().InvokeByNameLegacy(cmd, L"", L"seq");
+            CommandBus::Get().InvokeByNameLegacy(cmd, L"", Actor::Seq());
         } else {
             Cancel();
         }

@@ -24,6 +24,8 @@
     python tools/check_components.py --list    # 只列出当前计数
 退出码：0 = 通过；1 = 有违例。
 """
+import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -218,6 +220,30 @@ UNIQUE = [
          why="统一用 tf::AppendLine(path, bytes, rotateAtBytes, checkEveryN)；"
              "编码由调用方给，轮转逻辑只一份"),
 
+    # ---- actor 身份类型（2026-11-21 收编）----
+    #
+    # 以前 actor 是 `const wchar_t*`，"是不是机器"只认 `actor != L"ui"`。
+    # 于是「系统菜单点的」「快捷键触发的」「拖进来的」全被判成**机器** ——
+    # 而 fromMachine() 是撤销边界、审计归类、审批强度、人工改写率的共同前提。
+    # 后果是用户按 Ctrl+Z 撤书签时被"只撤到机器那一步"的规则拦住（撤销看起来坏了）。
+    #
+    # 现在 actor 是 `Actor`（kind + 来源标签），判定只看 `ActorKind`。
+    # 下面两条规则守的是"别退回去"：
+    #   ① 调用点的 actor 必须是 Actor::Xxx()，不能是字符串字面量；
+    #   ② fromMachine() 的定义只能有一处（不能在别处按字符串重新判一次）。
+    dict(name="actor 身份判定（唯一定义）",
+         pat=r"\bbool\s+fromMachine\s*\(\s*\)\s*const",
+         allow={"commands.h"},
+         why="统一用 CommandBus::fromMachine()（判 ActorKind，不看字符串）；"
+             "任何地方重新按字符串判\"是不是机器\"，都会把键盘/系统菜单/拖拽误判成机器"),
+
+    dict(name="actor 传字符串字面量",
+         pat=r"\bInvoke(?:Legacy|ByName|ByNameLegacy|ByNameResult|Result)?\s*\("
+             r"[^;]*?,\s*L\"[^\"]*\"\s*\)",
+         allow=set(),
+         why="actor 必须是 Actor::Ui()/Actor::Key()/Actor::Ai()… —— "
+             "传字符串字面体会让\"是不是机器\"的判定退化成字符串比较（此前就是这么错的）"),
+
     # ---- 长路径（2026-11-21 本轮新增）----
     # >260 字符的路径在 CreateFileW / FindFirstFileW / GetFileAttributesExW 上
     # 会直接失败，而调用方常把失败当成"文件不存在"或"权限不足" ——
@@ -230,9 +256,12 @@ UNIQUE = [
     # 除命名管道外，所有文件系统 API 都必须过 tf::ToExtended。
     # ai_server.cpp 的 CreateFileW 开的是 \\.\pipe\...，加扩展前缀会彻底打不开，
     # 只对这一处放行；同文件的 DeleteFileW（令牌/发现文件）已走 ToExtended。
-    dict(name="长路径前缀", pat=r"\bCreateFileW\s*\(\s*(?!tf::ToExtended|ToExtended)",
+    # L"NUL" 同理：它是**设备名**不是文件系统路径（\\?\NUL 打不开），
+    # dev_proc.cpp 用它给子进程的 stdin 一个空设备 —— 只放行这个字面量。
+    dict(name="长路径前缀", pat=r"\bCreateFileW\s*\(\s*(?!tf::ToExtended|ToExtended|L\"NUL\")",
          allow={"ai_server.cpp"},
-         why="文件 API 一律传 tf::ToExtended(path)；命名管道是唯一例外（它不是文件系统路径）"),
+         why="文件 API 一律传 tf::ToExtended(path)；命名管道与 NUL 设备是唯一例外"
+             "（它们不是文件系统路径）"),
     dict(name="长路径前缀（其余文件 API）",
          pat=r"\b(CreateDirectoryW|CopyFileW|DeleteFileW|MoveFileExW|FindFirstFileW|"
              r"GetFileAttributesW|GetFileAttributesExW|SetFileAttributesW)\s*\(\s*"
@@ -465,8 +494,62 @@ ICON_TOKEN = {
 # 不参与扫描的文件（备份/生成物）
 SKIP = {"common.h.gch", "keymap.gen.h"}
 
+# ---- 单文件行数上限（AGENTS.md §3「单文件 ≤500 行」）----
+#
+# 【为什么单独立一条】上面的唯一性/禁令规则管的是"**同一件事只能有一处实现**"，
+# 它们看不出"一个文件塞了太多职责"。而超长文件正是职责不分的**结果**：
+# shell_ops.cpp 一千多行里既有删除/移动，又有哈希/比较，还有撤销 ——
+# 三件事要一起改、一起测、一起 review，改任何一件都要读全文。
+#
+# 【口径】只查 src/ 下的 .cpp/.h（与 sources() 的集合一致）：
+# 规则约束的是**产品源码**的职责划分，不是脚本与测试的组织方式。
+#
+# 【为什么带"历史欠账基线"】2026-11-21 盘点时已有 18 个文件超限。
+# 一次性把它们全劈开是**独立的一轮重构**（每个都要重新划清边界 + 补测试），
+# 混在别的改动里做，等于在重构的半路上叠加新功能 —— 出事时没人分得清是谁的锅。
+# 所以这里采取**棘轮**：
+#   · 历史超限文件按**记账时的行数**放行，不是"上限"——
+#     涨过记账行数就报错，降下来就自动收紧（欠账只能变少，不能变多）；
+#   · 不在账里的文件超过 500 行直接报错（新文件从一开始就要达标）。
+#
+# 【基线为什么放在 data/ 而不是脚本里】基线是**账**，账要能被 diff 看见。
+# 写进脚本里，改账和改规则混在同一个文件里，review 时看不出哪次是"改规则"、
+# 哪次是"销账"；放进 data/ 的独立文件（与 data/commands-baseline.json 同一套路），
+# 每次销账就是一次独立提交，git diff 里一目了然。
+#
+# 【销账怎么做】确认某文件真的拆干净了，跑：
+#   python tools/check_components.py --update-length-baseline
+FILE_LENGTH_MAX = 500
+LENGTH_BASELINE = ROOT / "data" / "file-length-baseline.json"
+
+
+def load_length_baseline():
+    """读历史欠账基线；没有就返回空账（全部文件按 500 行判）。"""
+    if not LENGTH_BASELINE.exists():
+        return {}
+    try:
+        data = json.loads(LENGTH_BASELINE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    files = data.get("files", {})
+    return files if isinstance(files, dict) else {}
+
+
+def current_lengths():
+    """src/ 下每个源文件的当前行数。"""
+    out = {}
+    for p in sources():
+        out[p.name] = sum(
+            1 for _ in p.read_text(encoding="utf-8", errors="replace").splitlines())
+    return out
+
+
 # 非致命提示（"应该私有化"这类），不影响退出码
 stale_warn: list[str] = []
+# 单文件行数的历史欠账（见 FILE_LENGTH_GRANDFATHERED 的说明）：
+# 已记账但仍超 500 行的文件，每次跑检查都列出来 —— 欠账要一直看得见，
+# 否则它就是一条「改了就没人记得」的静默债。
+length_debt: list[str] = []
 
 
 def strip_comments(text: str, hash_comments: bool = False) -> str:
@@ -545,6 +628,7 @@ def scan():
              for p in sources()}
     fails = []
     stale_warn.clear()
+    length_debt.clear()
 
     for rule in UNIQUE + FORBID:
         hits = []
@@ -559,6 +643,27 @@ def scan():
         stray = [(n, c) for n, c in hits if n not in rule["allow"]]
         if stray:
             fails.append((rule, stray))
+
+    # ---- 单文件行数上限（AGENTS.md §3）----
+    # 走棘轮：历史超限文件按基线里的记账行数放行（涨过就报错，降下来自动收紧），
+    # 不在账里的文件一律以 FILE_LENGTH_MAX 为准。
+    length_hits = []
+    baseline = load_length_baseline()
+    for name, n in sorted(current_lengths().items()):
+        allowed = baseline.get(name)
+        limit = allowed if isinstance(allowed, int) else FILE_LENGTH_MAX
+        if n > limit:
+            length_hits.append((name, n))
+        elif isinstance(allowed, int) and n > FILE_LENGTH_MAX:
+            # 还在欠账里、但没涨过记账行数 —— 列出来，让欠账保持可见。
+            length_debt.append(f"{name}  {n} 行（记账 {allowed}）")
+    if length_hits:
+        fails.append((
+            dict(name=f"单文件 ≤{FILE_LENGTH_MAX} 行",
+                 unit="行",
+                 why=f"一个文件只做一件事（AGENTS.md §3）。"
+                     f"历史超限文件按记账行数棘轮收紧，涨过记账行数即报错"),
+            length_hits))
 
     # R21：输入纪律。扫描集与上面不同（跨目录），因此单独一趟。
     # 注释先剥掉 —— 文档里写"禁止 SendInput"不能自己触发失败。
@@ -642,9 +747,106 @@ def scan():
     return fails, files
 
 
+def check_eval_surface():
+    """评估面清单是否与仓库现状一致，且清单自身可信、重签留痕。
+
+    【为什么这是一条规则】构建器、测试源、静态校验器合起来就是"判据"。
+    自我迭代的闭环是「改代码 → 编译 → 跑测试 → 看结果」，判据被改软之后，
+    "测试通过"就不再说明代码是对的 —— Darwin Gödel Machine 论文把这叫
+    objective hacking，并把"如何防止模型改 evaluator"列为公开问题。
+
+    规则是「只许签发，不许自改」。**三道关，缺一不可**：
+
+      1. selfSeal  —— 清单正文未被直接编辑（防"手改清单"）；
+      2. diff      —— 受保护文件未被改动（防"改了判据"）；
+      3. git 跟踪  —— 重签必然以"未提交改动"出现（防"改了并同步重签"）。
+
+    第 3 道是本轮补的：前两道都在"清单说什么"，只有第 3 道保证
+    "清单的变化有人看得见"。清单不入库时，重签在 git 里没有任何痕迹 ——
+    那等于允许 agent 自己放宽判据。
+    """
+    try:
+        import gen_eval_baseline as geb
+    except Exception:
+        return None
+    if not os.path.isfile(geb.MANIFEST):
+        return [(dict(name="评估面清单缺失",
+                      why="构建器/测试/校验器是判据。清单缺失 = 没有设防。"
+                          "由人跑：python tools/gen_eval_baseline.py --human-confirm"),
+                 [("data/eval-surface.json", 0)])]
+    try:
+        with open(geb.MANIFEST, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+    except Exception as e:
+        return [(dict(name="评估面清单解析失败", why=str(e)),
+                 [("data/eval-surface.json", 0)])]
+
+    # ---- 第 1 道：清单自身未被手改 ----
+    seal = manifest.get("selfSeal", "")
+    if not seal:
+        return [(dict(name="评估面清单缺少 selfSeal",
+                      why="旧版签发或被人删掉了这一项。清单自身不可验 = 前两道关都失效。"
+                          "由人重签：python tools/gen_eval_baseline.py --human-confirm"),
+                 [("data/eval-surface.json", 0)])]
+    if geb.compute_seal(manifest) != seal:
+        return [(dict(name="评估面清单被直接改过（selfSeal 不符）",
+                      why="没走重签就改了清单正文 —— 这比\"评估面被改\"更可疑。"
+                          "用 git diff data/eval-surface.json 看改了什么。"),
+                 [("data/eval-surface.json", 0)])]
+
+    # ---- 第 2 道：受保护文件未被改动 ----
+    problems = geb.diff(None, manifest)
+    if problems:
+        return [(dict(name=f"评估面被改动（{len(problems)} 项，未重新签发）",
+                      why="判据被改软时，\"测试通过\"不代表代码对。"
+                          "确认改动是有意的后，由人重签："
+                          "python tools/gen_eval_baseline.py --human-confirm"),
+                 [(p, 1) for p in problems[:20]])]
+
+    # ---- 第 3 道：重签痕迹必须被 git 记住 ----
+    ok, why = geb.check_git_tracked()
+    if not ok:
+        return [(dict(name="评估面清单重签不留痕（git 未跟踪或有未提交改动）",
+                      why=why), [("data/eval-surface.json", 0)])]
+    return []
+
+
 def main():
     list_only = "--list" in sys.argv
+
+    # ---- 销账：重写单文件行数基线 ----
+    #
+    # 只在**确认某文件确实拆干净了**之后才跑。跑一次就把该文件从账上抹掉，
+    # 之后它就回到 500 行的硬上限。基线是 git 跟踪的文件（data/ 下），
+    # 所以销账是一次独立提交，review 时一眼看得见。
+    if "--update-length-baseline" in sys.argv:
+        cur = current_lengths()
+        old = load_length_baseline()
+        # 只记仍然超限的文件：已经降到 500 行以下的，自然从账上消失。
+        files_out = {k: v for k, v in sorted(cur.items()) if v > FILE_LENGTH_MAX}
+        payload = {
+            "max": FILE_LENGTH_MAX,
+            "note": "单文件行数历史欠账基线（棘轮）：涨过记账行数即报错，"
+                    "降下来自动收紧。销账：python tools/check_components.py "
+                    "--update-length-baseline",
+            "updatedAt": __import__("datetime").datetime.now().astimezone().isoformat(
+                timespec="seconds"),
+            "files": files_out,
+        }
+        LENGTH_BASELINE.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        changed = [k for k in set(old) | set(files_out) if old.get(k) != files_out.get(k)]
+        print(f"已写入基线 {LENGTH_BASELINE.relative_to(ROOT)}"
+              f"（账上 {len(files_out)} 个文件）")
+        if changed:
+            print("  变化：" + ", ".join(
+                f"{k} {old.get(k, '-')}→{files_out.get(k, '-')}" for k in sorted(changed)))
+        else:
+            print("  无变化")
+        return 0
+
     fails, files = scan()
+    eval_fails = check_eval_surface() or []
 
     if list_only:
         for rule in UNIQUE + FORBID:
@@ -678,25 +880,42 @@ def main():
             print(f"[接线/{rule['name']}] 外部调用 {ext} 次（home={rule['home']}）")
         if TOKEN_TABLE.get("file"):
             print(f"[令牌消费] {TOKEN_TABLE['struct']} 的字段必须被 {TOKEN_TABLE['consumer']} 取用")
+        # 单文件行数：非正则类规则，单独列，让 --list 覆盖全部检查
+        bl = load_length_baseline()
+        over = [(n, v) for n, v in sorted(current_lengths().items()) if v > FILE_LENGTH_MAX]
+        debt = [f"{n}×{v}" for n, v in over if isinstance(bl.get(n), int)]
+        print(f"[单文件 ≤{FILE_LENGTH_MAX} 行] 账上 " +
+              (", ".join(debt) or "（无）") +
+              f"（共 {len(over)} 个超限；不在账里的超限 = 违规）")
         return 0
 
-    if not fails:
+    if not fails and not eval_fails:
         # 令牌检查是单条规则（TOKEN_TABLE 有定义就启用），一并报出来
         token_n = 1 if TOKEN_TABLE.get("file") else 0
         print(f"OK：{len(UNIQUE)} 条唯一性规则、{len(FORBID)} 条禁令、"
               f"{len(STALE)} 条接线检查、{token_n} 条令牌消费、"
-              f"{len(INPUT_GUARD)} 条输入纪律，全部通过。")
+              f"{len(INPUT_GUARD)} 条输入纪律、1 条评估面完整性，全部通过。")
         for w in stale_warn:
             print(f"  提示  {w}")
+        if length_debt:
+            print(f"  欠账  {len(length_debt)} 个文件仍超 {FILE_LENGTH_MAX} 行"
+                  f"（AGENTS.md §3，棘轮记账，涨过即报错）：")
+            for d in sorted(length_debt):
+                print(f"        {d}")
         return 0
 
-    print(f"FAIL：{len(fails)} 条规则被违反\n")
-    for item in fails:
+    print(f"FAIL：{len(fails) + len(eval_fails)} 条规则被违反"
+          + (f"（另有 {len(length_debt)} 个文件仍超 {FILE_LENGTH_MAX} 行，记在欠账里）"
+             if length_debt else "") + "\n")
+    for item in fails + eval_fails:
         rule, stray = item[0], item[1]
         detail = item[2] if len(item) > 2 else None
         print(f"  ✗ {rule['name']}")
+        unit = rule.get("unit", "")
         for name, cnt in stray:
-            if cnt == 0:
+            if unit:
+                print(f"      {name}  {cnt} {unit}")
+            elif cnt == 0:
                 print(f"      {name}  外部调用 0 次")
             else:
                 print(f"      {name}  ×{cnt}")

@@ -137,19 +137,19 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         const UINT id = LOWORD(w);
         switch (id) {
         case kSysViewMenu:
-            CommandBus::Get().Invoke(CmdId::NavViewMenu, Args::Empty(), L"sysmenu");
+            CommandBus::Get().Invoke(CmdId::NavViewMenu, Args::Empty(), Actor::SysMenu());
             return 0;
         case kSysPalette:
-            CommandBus::Get().Invoke(CmdId::CommandPalette, Args::Empty(), L"sysmenu");
+            CommandBus::Get().Invoke(CmdId::CommandPalette, Args::Empty(), Actor::SysMenu());
             return 0;
         case kSysPrefs:
-            CommandBus::Get().Invoke(CmdId::Preferences, Args::Empty(), L"sysmenu");
+            CommandBus::Get().Invoke(CmdId::Preferences, Args::Empty(), Actor::SysMenu());
             return 0;
         case kSysHotkeys:
-            CommandBus::Get().Invoke(CmdId::HotkeyManager, Args::Empty(), L"sysmenu");
+            CommandBus::Get().Invoke(CmdId::HotkeyManager, Args::Empty(), Actor::SysMenu());
             return 0;
         case kSysQuit:
-            CommandBus::Get().Invoke(CmdId::QuitExplorer, Args::Empty(), L"sysmenu");
+            CommandBus::Get().Invoke(CmdId::QuitExplorer, Args::Empty(), Actor::SysMenu());
             return 0;
         default:
             break;

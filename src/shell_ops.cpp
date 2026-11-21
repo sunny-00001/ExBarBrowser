@@ -3,6 +3,7 @@
 
 #include <propkey.h>
 
+#include "path_util.h"
 #include "text_file.h"
 #include "view_stats.h"
 
@@ -22,10 +23,27 @@ ComPtr<IShellFolder> ShellFolder(IFolderView2* fv2) {
 }
 namespace {
 
+// HRESULT 的十六进制文本（给"文件操作失败"这类回执用）。
+// 为什么自己转：Windows 没有现成的 wchar_t 版本格式化函数，
+// 而这些代码路径上不能引入 CRT 格式化的 locale 差异。
+std::wstring HexHr(HRESULT hr) {
+    static const wchar_t* kDigits = L"0123456789ABCDEF";
+    unsigned v = static_cast<unsigned>(hr);
+    wchar_t buf[9];
+    for (int i = 7; i >= 0; --i) {
+        buf[i] = kDigits[v & 0xF];
+        v >>= 4;
+    }
+    buf[8] = L'\0';
+    return std::wstring(buf);
+}
+
 // 实现在本文件的公开区（见下方 FolderView2 / ShellFolder）；这里只放别名，
 // 让本文件内既有调用点零改动。
 ComPtr<IFolderView2> GetFv2(IShellView* view) { return FolderView2(view); }
 ComPtr<IShellFolder> GetFolder(IFolderView2* fv2) { return ShellFolder(fv2); }
+
+bool RunOpEx(IFileOperation* op, std::wstring* why);
 
 // 执行 IFileOperation 并**同时**检查两件事：
 //   1. PerformOperations 的 HRESULT
@@ -37,11 +55,40 @@ ComPtr<IShellFolder> GetFolder(IFolderView2* fv2) { return ShellFolder(fv2); }
 // 直接 return SUCCEEDED(...) —— 于是"用户取消了删除"在审计里被记成 ok=1，
 // 调用方也以为文件已经没了。
 bool RunOp(IFileOperation* op) {
-    if (!op) return false;
-    if (FAILED(op->PerformOperations())) return false;
+    std::wstring why;
+    return RunOpEx(op, &why);
+}
+
+// 同上，但把失败原因写进 why。
+//
+// 为什么单独留一个 Ex 版本：shell 的失败原因**只存在于 HRESULT 里**
+// （"目标已存在" / "访问被拒绝" / "名称非法"），返回 bool 就等于把
+// 三种完全不同的下一步压成同一个 false —— 调用方只能给出一句
+// "重命名失败（名称非法或目标被占用）"，这句话对每一种原因都不算错，
+// 但对使用者毫无用处（该换名？该关掉占用它的程序？还是权限问题？）。
+bool RunOpEx(IFileOperation* op, std::wstring* why) {
+    if (!op) {
+        if (why) *why = L"文件操作对象创建失败";
+        return false;
+    }
+    const HRESULT hr = op->PerformOperations();
+    if (FAILED(hr)) {
+        if (why) *why = L"文件操作失败（HRESULT=0x" + HexHr(hr) + L"）";
+        LogDbg(L"[shellops] PerformOperations 失败 hr=0x%08X", static_cast<unsigned>(hr));
+        return false;
+    }
     BOOL aborted = FALSE;
-    if (FAILED(op->GetAnyOperationsAborted(&aborted))) return false;
-    return aborted ? false : true;
+    const HRESULT hr2 = op->GetAnyOperationsAborted(&aborted);
+    if (FAILED(hr2)) {
+        if (why) *why = L"文件操作状态查询失败";
+        return false;
+    }
+    if (aborted) {
+        // S_OK 但 aborted=TRUE：通常是目标在过程中消失、或被别的程序占用。
+        if (why) *why = L"文件操作被中止（目标可能被占用或已消失）";
+        return false;
+    }
+    return true;
 }
 
 // FOF_RENAMEONCOLLISION 只会把名字改成 "<base> (2).txt" 这类形式。
@@ -160,6 +207,21 @@ bool CopySelection(IShellView* view, bool cut) {
 bool CopyPaths(const std::vector<std::wstring>& paths, bool cut) {
     if (paths.empty()) return false;
 
+    // 外部路径 → shell 能解析的形式。
+    //
+    // 为什么必须在这里归一化：SHCreateItemFromParsingName / SHParseDisplayName
+    // 只认**反斜杠**，收到正斜杠直接返回 E_INVALIDARG(0x80070057)。
+    // 而正斜杠在外部输入里完全合法（Win32 的 CreateFile 也接受，
+    // AI 也天然会写 "C:/dir/file.txt"）。不归一化的后果是：
+    //   fs.copy.toclip {"targets":["C:/a/b.txt"]} → 整批失败，
+    //   报错却是"无法解析 C:/a/b.txt"，看不出真正原因是分隔符。
+    //
+    // 归一化之后，这一批路径就是后面**唯一**使用的形式 ——
+    // 解析、比较、日志、撤销记录看到的都是它，不会出现"一处反斜杠一处正斜杠"。
+    std::vector<std::wstring> sp;
+    sp.reserve(paths.size());
+    for (const auto& p : paths) sp.push_back(pathutil::ToShellPath(p));
+
     // 按路径造 IDataObject：用 SHCreateItemFromParsingName 拿 IShellItem，
     // 再交给 SHCreateDataObject —— 这是 shell 官方支持的"用指定项造 data object"。
     //
@@ -169,8 +231,8 @@ bool CopyPaths(const std::vector<std::wstring>& paths, bool cut) {
     ComPtr<IShellItemArray> arr;
     {
         std::vector<ComPtr<IShellItem>> items;
-        items.reserve(paths.size());
-        for (const auto& p : paths) {
+        items.reserve(sp.size());
+        for (const auto& p : sp) {
             ComPtr<IShellItem> it;
             if (FAILED(SHCreateItemFromParsingName(p.c_str(), nullptr, IID_IShellItem,
                                                    reinterpret_cast<void**>(&it))) ||
@@ -203,14 +265,14 @@ bool CopyPaths(const std::vector<std::wstring>& paths, bool cut) {
             //
             // 跨目录的副本得用 IDataObject 逐项聚合，那是另一套写法；在没实现它之前，
             // 明确拒绝并留日志，好过静默做错。
-            const std::wstring parent0 = ParentOf(paths[0]);
-            for (size_t i = 1; i < paths.size(); ++i) {
-                const std::wstring pi = ParentOf(paths[i]);
+            const std::wstring parent0 = ParentOf(sp[0]);
+            for (size_t i = 1; i < sp.size(); ++i) {
+                const std::wstring pi = ParentOf(sp[i]);
                 // CompareStringOrdinal + 忽略大小写：与 SamePath（本文件后部）同口径，
                 // 这里不能用 _wcsicmp —— 它依赖 locale，土耳其语等区域会把 i/I 判错。
                 if (CompareStringOrdinal(pi.c_str(), -1, parent0.c_str(), -1, TRUE) != CSTR_EQUAL) {
                     LogDbg(L"[shell] CopyPaths: 跨目录多选不支持（%s 与 %s 不同父）",
-                           paths[0].c_str(), paths[i].c_str());
+                           sp[0].c_str(), sp[i].c_str());
                     return false;
                 }
             }
@@ -222,8 +284,8 @@ bool CopyPaths(const std::vector<std::wstring>& paths, bool cut) {
                 return false;
 
             std::vector<PCUITEMID_CHILD> children;
-            children.reserve(paths.size());
-            for (const auto& p : paths) {
+            children.reserve(sp.size());
+            for (const auto& p : sp) {
                 PIDLIST_ABSOLUTE abs = nullptr;
                 if (FAILED(SHParseDisplayName(p.c_str(), nullptr, &abs, 0, &attr)) || !abs) {
                     for (const auto* c : children) CoTaskMemFree(const_cast<ITEMIDLIST*>(c));
@@ -284,7 +346,11 @@ bool Paste(IShellView* view, HWND owner) {
     return Invoke(cm.get(), owner, "paste");
 }
 
-bool DeleteSelection(IShellView* view, HWND owner) {
+namespace {
+
+// DeleteSelection 与 DeleteSelectionPermanently 的唯一差别是 FOF_ALLOWUNDO。
+// 抽成一份实现，避免"回收站版"和"永久版"日后在选中集/错误处理上分叉。
+bool DeleteSelectionImpl(IShellView* view, HWND owner, bool permanent) {
     ComPtr<IFolderView2> fv2 = GetFv2(view);
     if (!fv2) return false;
     ComPtr<IShellItemArray> sel;
@@ -298,9 +364,10 @@ bool DeleteSelection(IShellView* view, HWND owner) {
                                 reinterpret_cast<void**>(&op))) ||
         !op)
         return false;
-    // FOF_WANTNUKEWARNING：文件进不了回收站（网络盘/U 盘/超配额/回收站关闭）时
-    // 必须弹警告，否则 IFileOperation 会静默永久删除。这是数据安全底线。
-    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_WANTNUKEWARNING);
+    DWORD flags = FOF_NOCONFIRMMKDIR | FOF_WANTNUKEWARNING;
+    // 普通 Delete 进回收站，系统撤销栈能退；Shift+Delete 不带这一位。
+    if (!permanent) flags |= FOF_ALLOWUNDO;
+    op->SetOperationFlags(flags);
     op->SetOwnerWindow(owner);
     for (DWORD i = 0; i < n; ++i) {
         ComPtr<IShellItem> item;
@@ -308,6 +375,16 @@ bool DeleteSelection(IShellView* view, HWND owner) {
         op->DeleteItem(item.get(), nullptr);
     }
     return RunOp(op.get());   // 同时查 GetAnyOperationsAborted
+}
+
+}  // namespace
+
+bool DeleteSelection(IShellView* view, HWND owner) {
+    return DeleteSelectionImpl(view, owner, false);
+}
+
+bool DeleteSelectionPermanently(IShellView* view, HWND owner) {
+    return DeleteSelectionImpl(view, owner, true);
 }
 
 bool InvokeSelectionVerb(IShellView* view, HWND owner, const char* verb) {
@@ -676,6 +753,21 @@ int CycleHiddenState(IShellView* view, HWND owner) {
     (void)owner;
     if (view) view->Refresh();
     return next;
+}
+
+HiddenFlagsState GetHiddenFlags() {
+    // 与 ToggleHidden / CycleHiddenState **同一个掩码**（HiddenFlags 在上面，
+    // 同一 TU 内共用）。掩码不一致就会出现"读到的是另一个开关"。
+    SHELLSTATE ss{};
+    SHGetSetSettings(&ss, HiddenFlags(), FALSE);
+    HiddenFlagsState st;
+    st.showAllObjects = ss.fShowAllObjects != FALSE;
+    st.showSuperHidden = ss.fShowSuperHidden != FALSE;
+    st.showExtensions = ss.fShowExtensions != FALSE;
+    // 三态口径与 CycleHiddenState 的编码完全一致（否则读到的三态与写出的三态
+    // 不是同一个刻度，断言 view.cycle.hidden=$changed 就会误判）。
+    st.triState = !st.showAllObjects ? 2 : (!st.showSuperHidden ? 1 : 0);
+    return st;
 }
 
 // ---------------------------------------------------------------- 显式目标
@@ -1091,12 +1183,20 @@ bool Undo(IShellView* view) {
 }
 
 bool RenameTo(IShellView* view, HWND owner, const std::wstring& fullPath,
-              const std::wstring& newName) {
-    if (fullPath.empty() || newName.empty()) return false;
+              const std::wstring& newName, std::wstring* why) {
+    // 外部路径 → shell 能解析的形式（正斜杠会让 SHCreateItemFromParsingName
+    // 返回 E_INVALIDARG）。归一化之后 path 就是后面唯一使用的形式。
+    const std::wstring path = pathutil::ToShellPath(fullPath);
+    if (path.empty() || newName.empty()) {
+        if (why) *why = L"参数为空（路径或新名）";
+        return false;
+    }
     // 名字里不能带路径分隔符 —— 那是"移动"，不是"重命名"。
     // 静默接受会让调用方以为挪了位置。
-    if (newName.find(L'\\') != std::wstring::npos || newName.find(L'/') != std::wstring::npos)
+    if (newName.find(L'\\') != std::wstring::npos || newName.find(L'/') != std::wstring::npos) {
+        if (why) *why = L"新名含路径分隔符（那是移动，不是重命名）";
         return false;
+    }
 
     // 校验目标在当前视图里（避免用路径凭空操作视图外的目录）。
     //
@@ -1117,21 +1217,125 @@ bool RenameTo(IShellView* view, HWND owner, const std::wstring& fullPath,
                         PITEMID_CHILD pidl = nullptr;
                         if (FAILED(fv2->Item(i, &pidl)) || !pidl) continue;
                         std::wstring p;
-                        inView = ItemFullPath(folder.get(), pidl, &p) && SamePath(p, fullPath);
+                        inView = ItemFullPath(folder.get(), pidl, &p) && SamePath(p, path);
                         CoTaskMemFree(pidl);
                     }
                 }
             }
         }
     }
-    if (!inView) return false;
+    if (!inView) {
+        if (why) *why = L"目标不在当前视图：" + path;
+        LogDbg(L"[shellops] RenameTo：目标不在当前视图 %s", path.c_str());
+        return false;
+    }
 
-    std::wstring dir = ParentOf(fullPath);
+    std::wstring dir = ParentOf(path);
     std::wstring dest = dir.empty() ? newName : tf::Join(dir, newName);
 
     // 冲突检测：目标已存在则拒绝。IFileOperation 默认会问用户，
     // 但"确定式"调用不该弹框 —— 明确的失败比弹出对话框更可预期。
-    if (tf::Exists(dest) && !SamePath(dest, fullPath)) return false;
+    if (tf::Exists(dest) && !SamePath(dest, path)) {
+        if (why) *why = L"目标已存在：" + dest;
+        LogDbg(L"[shellops] RenameTo：目标已存在 %s", dest.c_str());
+        return false;
+    }
+
+    ComPtr<IShellItem> item;
+    const HRESULT hrItem = SHCreateItemFromParsingName(
+        path.c_str(), nullptr, IID_IShellItem, reinterpret_cast<void**>(&item));
+    if (FAILED(hrItem) || !item) {
+        if (why) *why = L"无法定位源文件（HRESULT=0x" + HexHr(hrItem) + L"）：" + path;
+        LogDbg(L"[shellops] RenameTo：SHCreateItemFromParsingName 失败 hr=0x%08X path=%s",
+               static_cast<unsigned>(hrItem), path.c_str());
+        return false;
+    }
+
+    ComPtr<IFileOperation> op;
+    const HRESULT hrOp = CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL,
+                                          IID_IFileOperation, reinterpret_cast<void**>(&op));
+    if (FAILED(hrOp) || !op) {
+        if (why) *why = L"无法创建文件操作对象（HRESULT=0x" + HexHr(hrOp) + L"）";
+        return false;
+    }
+
+    // 不要 UI：确定式操作遇到问题应当失败返回，而不是卡在一个没人看的对话框上。
+    // FOF_ALLOWUNDO 让重命名可撤销（用户按 Ctrl+Z 能回去）。
+    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI);
+    op->SetOwnerWindow(owner);
+    const HRESULT hrRename = op->RenameItem(item.get(), newName.c_str(), nullptr);
+    if (FAILED(hrRename)) {
+        if (why) *why = L"重命名请求被拒（HRESULT=0x" + HexHr(hrRename) + L"）：" + newName;
+        LogDbg(L"[shellops] RenameTo：RenameItem 失败 hr=0x%08X new=%s",
+               static_cast<unsigned>(hrRename), newName.c_str());
+        return false;
+    }
+    std::wstring opWhy;
+    if (!RunOpEx(op.get(), &opWhy)) {
+        if (why) *why = opWhy;
+        LogDbg(L"[shellops] RenameTo：执行失败 %s", opWhy.c_str());
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------- 按路径的文件操作
+//
+// 【为什么单独有一组】
+// 撤销时，目标**已经不在当前视图里**了：移动过的文件到了别的目录，
+// 复制出来的副本在别处。于是：
+//   · "Selection" 语义（作用于用户碰巧选中的东西）用不了；
+//   · RenameTo 的"目标必须在当前视图里"校验也过不了 ——
+//     而那条校验的用意是"不要凭空操作视图外的目录"，撤销恰恰必须操作视图外。
+//
+// 所以这里另开一组**按完整路径**的文件操作，只被撤销栈调用，
+// 不参与命令路径 —— 命令路径（file.* / fs.*）仍然只有一份实现。
+//
+// 共同点：都走 IFileOperation、都不弹 UI、冲突时**改名**而不是覆盖
+//（FOF_RENAMEONCOLLISION），绝不静默覆盖用户文件。
+
+namespace {
+
+// 把一个完整路径的项移动/复制到目标目录（按路径，不依赖当前选中）。
+bool TransferPath(HWND owner, const std::wstring& srcPathIn, const std::wstring& dstDirIn,
+                   bool move) {
+    // 路径归一化：撤销栈里的路径来自"当初那次操作"的记录，
+    // 那里存的是归一化后的形式；这里再归一化一次是防御性的，
+    // 保证"任何路径进 shell 都先过 ToShellPath"这条规则没有例外。
+    const std::wstring srcPath = pathutil::ToShellPath(srcPathIn);
+    const std::wstring dstDir = pathutil::ToShellPath(dstDirIn);
+    if (srcPath.empty() || dstDir.empty()) return false;
+    ComPtr<IShellItem> item;
+    if (FAILED(SHCreateItemFromParsingName(srcPath.c_str(), nullptr, IID_IShellItem,
+                                           reinterpret_cast<void**>(&item))) ||
+        !item)
+        return false;
+    ComPtr<IShellItem> dest;
+    if (FAILED(SHCreateItemFromParsingName(dstDir.c_str(), nullptr, IID_IShellItem,
+                                           reinterpret_cast<void**>(&dest))) ||
+        !dest)
+        return false;
+    ComPtr<IFileOperation> op;
+    if (FAILED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_IFileOperation,
+                                reinterpret_cast<void**>(&op))) ||
+        !op)
+        return false;
+    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION);
+    op->SetOwnerWindow(owner);
+    const HRESULT hr = move ? op->MoveItem(item.get(), dest.get(), nullptr, nullptr)
+                            : op->CopyItem(item.get(), dest.get(), nullptr, nullptr);
+    if (FAILED(hr)) return false;
+    return RunOp(op.get());
+}
+
+}  // namespace
+
+bool RenamePath(HWND owner, const std::wstring& fullPathIn, const std::wstring& newName) {
+    const std::wstring fullPath = pathutil::ToShellPath(fullPathIn);
+    if (fullPath.empty() || newName.empty()) return false;
+    // 名字里不能带路径分隔符 —— 那是"移动"，不是"重命名"。
+    if (newName.find(L'\\') != std::wstring::npos || newName.find(L'/') != std::wstring::npos)
+        return false;
 
     ComPtr<IShellItem> item;
     if (FAILED(SHCreateItemFromParsingName(fullPath.c_str(), nullptr, IID_IShellItem,
@@ -1144,12 +1348,39 @@ bool RenameTo(IShellView* view, HWND owner, const std::wstring& fullPath,
                                 reinterpret_cast<void**>(&op))) ||
         !op)
         return false;
-
-    // 不要 UI：确定式操作遇到问题应当失败返回，而不是卡在一个没人看的对话框上。
-    // FOF_ALLOWUNDO 让重命名可撤销（用户按 Ctrl+Z 能回去）。
-    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI);
+    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION |
+                          FOF_NOCONFIRMATION | FOF_NOERRORUI);
     op->SetOwnerWindow(owner);
     if (FAILED(op->RenameItem(item.get(), newName.c_str(), nullptr))) return false;
+    return RunOp(op.get());
+}
+
+bool MovePathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir) {
+    return TransferPath(owner, srcPath, dstDir, /*move=*/true);
+}
+
+bool CopyPathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir) {
+    return TransferPath(owner, srcPath, dstDir, /*move=*/false);
+}
+
+bool DeletePath(HWND owner, const std::wstring& fullPathIn) {
+    const std::wstring fullPath = pathutil::ToShellPath(fullPathIn);
+    if (fullPath.empty()) return false;
+    ComPtr<IShellItem> item;
+    if (FAILED(SHCreateItemFromParsingName(fullPath.c_str(), nullptr, IID_IShellItem,
+                                           reinterpret_cast<void**>(&item))) ||
+        !item)
+        return false;
+    ComPtr<IFileOperation> op;
+    if (FAILED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_IFileOperation,
+                                reinterpret_cast<void**>(&op))) ||
+        !op)
+        return false;
+    // FOF_WANTNUKEWARNING：超配额/网络盘时 shell 必须弹警告，不能静默永久删除。
+    // 撤销"复制"就是删副本 —— 副本回回收站，随时能还原。
+    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_WANTNUKEWARNING);
+    op->SetOwnerWindow(owner);
+    if (FAILED(op->DeleteItem(item.get(), nullptr))) return false;
     return RunOp(op.get());
 }
 

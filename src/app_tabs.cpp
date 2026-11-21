@@ -336,8 +336,13 @@ std::wstring App::FocusPaneOf(HWND focus) {
     if (bookmarkBar_.hwnd() &&
         (focus == bookmarkBar_.hwnd() || IsChild(bookmarkBar_.hwnd(), focus)))
         return L"bookmark_bar";
-    if (navBar_.hwnd() && (focus == navBar_.hwnd() || IsChild(navBar_.hwnd(), focus)))
+    if (navBar_.hwnd() && (focus == navBar_.hwnd() || IsChild(navBar_.hwnd(), focus))) {
+        // 搜索框与地址框分开报：两者都在导航栏里，但"聚焦搜索框"与
+        // "聚焦地址栏"是两件不同的事。合成一个值的话，
+        // 调用方无法确认 win.focus.search 到底生效了没有。
+        if (navBar_.searchHwnd() && focus == navBar_.searchHwnd()) return L"search_box";
         return L"address_bar";
+    }
     wchar_t cls[64] = {};
     GetClassNameW(focus, cls, _countof(cls));
     if (lstrcmpW(cls, L"SysTreeView32") == 0) return L"nav_tree";

@@ -7,10 +7,13 @@
 #include "app_commands.h"
 #include "view_modes.h"
 #include "clipboard.h"
+#include "file_undo.h"
+#include "path_util.h"
 #include "shell_ops.h"
 #include "hotkey_manager.h"
 #include "menu.h"
 #include "prompt.h"
+#include "text_file.h"
 
 #include <string>
 
@@ -276,8 +279,14 @@ bool App::WithView(const std::function<bool(IShellView*)>& fn, const wchar_t* wh
 
 
 bool App::TransferTargets(const Args& args, bool move) {
-    const std::vector<std::wstring> targets = args.StrArray(L"targets");
-    const std::wstring to = args.Str(L"to");
+    // 路径归一化（正斜杠→反斜杠、折叠连续分隔符）：
+    // 外部给的 "C:/dir/file.txt" 在 Windows 里是合法写法，但 shell 的
+    // 解析 API 只认反斜杠 —— 不归一化会得到 E_INVALIDARG，而报错完全
+    // 指不出真正原因。撤销记录里存的也必须是归一化后的形式。
+    std::vector<std::wstring> targets;
+    targets.reserve(args.StrArray(L"targets").size());
+    for (const auto& p : args.StrArray(L"targets")) targets.push_back(pathutil::ToShellPath(p));
+    const std::wstring to = pathutil::ToShellPath(args.Str(L"to"));
     if (targets.empty() || to.empty()) return false;
 
     return WithView([&](IShellView* v) {
@@ -298,6 +307,34 @@ bool App::TransferTargets(const Args& args, bool move) {
         if (hit < static_cast<int>(targets.size()))
             LogDbg(L"[cmd] %ls 只命中 %d/%zu 个目标", move ? L"FsMoveTo" : L"FsCopyTo", hit,
                    targets.size());
+        // 撤销记录：源路径 → 目标路径。撤销移动 = 移回原目录；撤销复制 = 删副本。
+        //
+        // 落点按"目标目录 + 原文件名"算出来。冲突时 shell 会自动改名
+        //（FOF_RENAMEONCOLLISION，比如 "a (2).txt"）—— 那种情况下算出来的
+        // 落点并不存在，**不记**这一项：记一条指向不存在路径的撤销记录，
+        // 等于给用户一个"撤销会失败"的假承诺。
+        if (ok) {
+            const std::vector<std::wstring> sel = shellops::SelectedPaths(v);
+            std::vector<fileundo::Item> items;
+            for (const std::wstring& p : sel) {
+                const std::wstring leaf = nav::Leaf(p);
+                if (leaf.empty()) continue;
+                const std::wstring after = tf::Join(to, leaf);
+                if (!tf::Exists(after)) {
+                    LogDbg(L"[undo] %ls 的落点与预期不符（%s），不记撤销记录",
+                           move ? L"FsMoveTo" : L"FsCopyTo", after.c_str());
+                    continue;
+                }
+                fileundo::Item item;
+                item.beforePath = p;
+                item.afterPath = after;
+                item.beforeName = leaf;
+                items.push_back(std::move(item));
+            }
+            if (!items.empty())
+                NoteFileOp(move ? fileundo::Op::Move : fileundo::Op::Copy, std::move(items),
+                           move ? L"移动到" : L"复制到");
+        }
         return ok;
     }, move ? L"移动到" : L"复制到");
 }
@@ -434,7 +471,7 @@ void App::ShowStatusMenu(POINT screen) {
     const int data = menu.Show(hwnd_, theme_, screen, opt);
     if (data < 0) return;
     if (data == 100) {
-        CommandBus::Get().Invoke(CmdId::PathCopyDir, Args::Empty(), L"ui");
+        CommandBus::Get().Invoke(CmdId::PathCopyDir, Args::Empty(), Actor::Ui());
         return;
     }
     if (data == 101) {
@@ -502,7 +539,7 @@ void App::ShowCommandPalette() {
 
     // 无必填参数：直接以空参调用（与原来一致）。
     if (!HasRequiredParams(d)) {
-        CommandBus::Get().Invoke(d.id, Args::Empty(), L"palette");
+        CommandBus::Get().Invoke(d.id, Args::Empty(), Actor::Palette());
         return;
     }
 
@@ -514,7 +551,7 @@ void App::ShowCommandPalette() {
         if (!schemaErr.empty()) LogDbg(L"[palette] %s 的参数收集失败：%s", d.name, schemaErr.c_str());
         return;   // 用户取消/参数被拒：不调用，什么也不做
     }
-    CommandBus::Get().Invoke(d.id, Args::FromJson(args), L"palette");
+    CommandBus::Get().Invoke(d.id, Args::FromJson(args), Actor::Palette());
 }
 
 void App::ShowViewMenuAt() { navBar_.ShowViewMenuNow(); }

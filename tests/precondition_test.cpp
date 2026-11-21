@@ -148,11 +148,11 @@ int main() {
         });
         SetStateProbe([] { return MakeState(0, 0, false, 1, false, true); });
 
-        CommandBus::Get().Invoke(CmdId::CmdDelete, Args::Empty(), L"test");
+        CommandBus::Get().Invoke(CmdId::CmdDelete, Args::Empty(), Actor{ActorKind::Ai, L"test"});
         Check(!g_called, "前置不满足时 handler 没有被调用");
 
         SetStateProbe([] { return MakeState(0, 0, true, 1, false, true); });
-        CommandBus::Get().Invoke(CmdId::CmdDelete, Args::Empty(), L"test");
+        CommandBus::Get().Invoke(CmdId::CmdDelete, Args::Empty(), Actor{ActorKind::Ai, L"test"});
         Check(g_called, "前置满足时 handler 被调用");
     }
 

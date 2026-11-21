@@ -124,6 +124,26 @@ public:
     // 扁平化（只含有 path 的叶子），供序列键/命令面板使用
     std::vector<std::pair<std::wstring, std::wstring>> Flatten() const;
 
+    // 叶子条目总数（Flatten 的长度，不分配）。
+    //
+    // 为什么单独给一个计数：状态快照每次 AI 调用都要取一次，
+    // 用 Flatten().size() 会为了一个数字分配一整个 vector。
+    // 口径与 Flatten 一致（只数有 path 的叶子，不数分类）。
+    size_t CountLeaves() const;
+
+    // 分类（文件夹）总数（不分配）。
+    //
+    // 与 CountLeaves 分开的原因：新建分类只加分类、不加叶子 ——
+    // 两者的变化方向不同，合成一个数字就写不出"新建分类成功了吗"。
+    size_t CountFolders() const;
+
+    // 节点总数（叶子 + 分类，不分配）。
+    //
+    // 为什么还要第三个口径：删掉一个**空分类**时叶子数不变、
+    // 删掉一个叶子时分类数不变 —— 任何一个单独的口径都写不出
+    // "删除成功了吗"。节点总数是唯一在两种删除下都变化的量。
+    size_t CountNodes() const;
+
     const std::wstring& file() const { return file_; }
     bool dirty() const { return dirty_; }
     void MarkDirty() { dirty_ = true; }

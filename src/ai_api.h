@@ -43,6 +43,16 @@ struct ToolSpec {
     std::wstring outputSchema; // 结果 schema；空 = 该命令只回报成败
     Effects effects;
     bool needsSelection = false;
+    // 自断言表达式（"tabCount=$changed"）。空 = 该命令没有断言。
+    // 暴露给 tools/list 是为了让调用方知道"这条命令的**预期效果**是什么"——
+    // 没有它，调用方只能靠猜，而猜错的后果就是拿回一个假的成功。
+    std::wstring assertion;
+    // 显式豁免理由（非空 = 这条命令写不出断言，理由是什么）。
+    //
+    // 为什么也要暴露出去：调用方必须知道"这条命令的成败信号**不可独立回读验证**"。
+    // 不知道的话，它会把 ok=true 当成"效果确实达成"，而这条命令恰好是那种
+    // "handler 说成了、但没人能核对"的情况。知道之后它可以自己补一次核对。
+    std::wstring assertionExempt;
 };
 
 // 列出所有可暴露给 AI 的命令（aiExposed && implemented）。
@@ -152,6 +162,71 @@ struct StateSnapshot {
     bool selectionTruncated = false;      // paths 被上限截断
     std::wstring focus;                   // 焦点面板：file_view / nav_tree /
                                           // bookmark_bar / address_bar / unknown
+
+    // ---- 标签组的可回读面（补齐"能改就必须能读"）----
+    //
+    // 为什么加这四个：tab.new / tab.close / tab.clone / tab.rename 这些命令
+    // 改的是标签集合，但快照里原来只有 activePath / tabs（路径数组）——
+    // 于是"新开了几个标签""当前标签叫什么"这类问题**读不回来**，
+    // 自断言也就无从写起（只能写 activeTab=…，而那对新建无效）。
+    //
+    // tabCount 与 tabPaths 同源（同一个 TabSet），只是把"长度"显式化；
+    // activeTabTitle 取 core::DisplayTitle（改名 > Shell 名 > 路径末级），
+    // 与标签栏画的是同一份 —— 改了它就能断言"改名真的生效了"。
+    int tabCount = 0;                     // 当前标签数
+    std::wstring activeTabTitle;          // 当前标签显示名（含用户改名）
+
+    // activeTabIsLast：当前标签是不是**最后一个**。
+    //
+    // 为什么需要这个派生布尔：断言语言没有算术，写不出 "activeTab=tabCount-1"。
+    // 而 "tab.activate.last" 的正确判据正是"激活后它就是最后一个"——
+    // 用 activeTab=$changed 表达不了（它本来就可能是最后一个，
+    // 此时激活它不会让 activeTab 变化，$changed 会误判成失败）。
+    bool activeTabIsLast = false;
+
+    // ---- 书签的可回读面 ----
+    // bmk.add / bmk.remove / bmk.clear 改的是书签树，但快照里没有计数，
+    // 于是"我加了书签到底加没加上"只能靠命令自述 —— 那正是假绿的高发区。
+    // 计数取 store 的**扁平叶子数**（Flatten 口径），与 bmk.list 的输出同源。
+    int bookmarkCount = 0;                // 书签条目总数（叶子）
+
+    // 书签**节点总数**（叶子 + 分类）。单独一个字段的原因：
+    // bookmarkCount 只数叶子（有路径的条目），而"新建分类"加的正是分类 ——
+    // 它的叶子数一个都不变；反过来"删掉一个空分类"叶子数也不变。
+    // 于是按 bookmarkCount 断言 bmk.newfolder / bmk.remove，
+    // 写出来的断言要么恒为真、要么在合法场景下误判。
+    // 节点总数是这两类操作唯一诚实的期望值。
+    int bookmarkTotalCount = 0;          // 书签节点总数（叶子 + 分类）
+
+    // ---- 会话的可回读面 ----
+    // session.save / session.delete 改的是"已保存的标签组"。
+    // sessionSaved 说的是"当前有没有可恢复的会话"，与 session.list 的 count 字段同源。
+    bool sessionSaved = false;            // 是否存在已保存的会话
+
+    // 命名会话的条数。sessionSaved 说的是"那一条匿名会话"，
+    // 而命名会话是另一组（多条并存、按名字定位）—— 两者的计数必须分开，
+    // 否则 session.named.* 这一族一条都写不出断言。
+    int namedSessionCount = 0;            // 已保存的命名会话条数
+
+    // ---- 标签改名的可回读面 ----
+    //
+    // 为什么单独一个字段而不用 activeTabTitle：改名命令的入参是"新名字"，
+    // 而标题是**派生值**（改名 > Shell 名 > 路径末级）。传空串表示"取消改名"，
+    // 此时标题会退回 Shell 名 —— 于是 "activeTabTitle=$arg:name" 在取消改名时
+    // 必然失败（期望空串、实际是系统名），那是断言写错，不是功能坏了。
+    // activeTabAlias 是**被写入的那一份原值**，与入参同一口径。
+    std::wstring activeTabAlias;          // 当前标签的用户改名（空 = 未改名）
+
+    // ---- shell 隐藏项设置的可回读面 ----
+    //
+    // view.toggle.hidden / system / extensions 与 view.cycle.hidden 改的是
+    // **进程级 shell 设置**，改完立刻生效，但快照里原来没有对应字段 ——
+    // 于是"隐藏文件开关到底翻了没有"只能信命令自述。
+    // 与写侧同源（同一个 SHELLSTATE 掩码，见 shell_ops::GetHiddenFlags）。
+    bool showHiddenFiles = true;          // 显示隐藏文件
+    bool showSystemFiles = true;          // 显示系统文件
+    bool showExtensions = true;           // 显示文件扩展名
+    int shellHiddenState = 0;             // 三态：0 全显 / 1 隐系统 / 2 隐全部
 };
 using StateFn = std::function<StateSnapshot()>;
 void SetStateProvider(StateFn fn);

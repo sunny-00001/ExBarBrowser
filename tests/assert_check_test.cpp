@@ -111,6 +111,90 @@ int main() {
                j.arr[0].Find(L"expect") && j.arr[0].Find(L"actual"),
            "ToJson 含 ok/expr/expect/actual");
 
+    // ================================================================
+    // ④ 不等运算符 !=
+    // ================================================================
+    // 为什么单列一节：求值器支持 !=，而**静态检查一度不支持** ——
+    // 检查里按第一个 '=' 切表达式，于是 "x!=0" 被切成左值 "x!"，
+    // 报"左值不在 state 里"。结果就是：能写的断言被检查判成非法，
+    // 于是这条能力事实上被封掉了。求值器与检查必须同时支持同一套语法。
+    Expect(assert_check::Check(L"sortMode!=1", args, state).ok, "!= 成立时通过");
+    Expect(!assert_check::Check(L"sortMode!=2", args, state).ok, "!= 不成立时失败");
+    // 字符串同样走 !=（不区分大小写）
+    Expect(assert_check::Check(L"activePath!=C:\\OTHER", args, state).ok,
+           "!= 对字符串也成立");
+    Expect(!assert_check::Check(L"activePath!=c:\\WORK", args, state).ok,
+           "!= 对字符串按 Windows 语义比较（大小写不敏感）");
+
+    // ================================================================
+    // ⑤ $changed / $unchanged
+    // ================================================================
+    // 为什么需要：只有 $arg 时，能断言的只有"状态等于我传的参数"这一类命令。
+    // 而"关掉一个标签之后标签数应该变少"、"后退之后路径应该变了"这类断言 ——
+    // 也就是**最能暴露假动作**的那一类 —— 表达不出来：
+    // 期望值不是任何一个入参，而是"和刚才不一样"。
+    const json::Value before = StateOf(LR"({
+        "sortMode": 2, "groupBy": 0, "viewMode": 4, "tabCount": 2,
+        "bookmarkBarVisible": true, "activePath": "C:\\Work"
+    })");
+    Expect(assert_check::Check(L"tabCount=$changed", args, state, &before).ok,
+           "$changed：值确实变了");
+    // sortMode 在 before 与 after 里都是 2 —— 没变，所以 $changed 必须失败。
+    // （这里刻意选"相等"的那一项：拿 viewMode（before=4 / after=5）做反例的话，
+    //   它其实是**变了**的，断言本就该通过 —— 期望写反了会让人以为实现有问题。）
+    Expect(!assert_check::Check(L"sortMode=$changed", args, state, &before).ok,
+           "$changed：值没变时失败");
+    Expect(assert_check::Check(L"sortMode=$unchanged", args, state, &before).ok,
+           "$unchanged：值没变");
+    Expect(!assert_check::Check(L"tabCount=$unchanged", args, state, &before).ok,
+           "$unchanged：值变了时失败");
+    // before 里必须也有这个字段，否则没法比 —— 判 malformed 而不是假绿。
+    const json::Value other = StateOf(LR"({"sortMode": 1})");
+    auto noBeforeField = assert_check::Check(L"tabCount=$changed", args, state, &other);
+    Expect(!noBeforeField.ok && noBeforeField.malformed,
+           "$changed：before 缺字段 → malformed");
+    // 完全没有 before（调用方没采执行前状态）→ 判 malformed，
+    // 绝不能当成"没变化所以通过"（那是最典型的假绿）。
+    auto noBefore = assert_check::Check(L"tabCount=$changed", args, state, nullptr);
+    Expect(!noBefore.ok && noBefore.malformed, "$changed：没有 before → malformed");
+    // 结果里要带上执行前的值，调用方才知道"从几变到几"
+    auto changed = assert_check::Check(L"tabCount=$changed", args, state, &before);
+    Expect(changed.before == L"2" && changed.actual == L"3", "$changed 结果带 before/actual");
+
+    // ================================================================
+    // ⑥ $arg:xxx.trim
+    // ================================================================
+    // 为什么需要：入参会被产品逻辑规范化时，断言必须按**规范化后**的值比。
+    // 两个真实例子：tab.rename 存的是去首尾空白后的名字；
+    // search.find 搜的是去空白后的查询词。没有 trim，这两条明明可以断言的
+    // 命令就只能退化成"写不出断言"。
+    const json::Value trimArgs = ArgsOf(LR"({"name": "  项目 A  ", "query": "  txt  "})");
+    const json::Value trimState = StateOf(LR"({
+        "activeTabAlias": "项目 A", "searchQuery": "txt"
+    })");
+    Expect(assert_check::Check(L"activeTabAlias=$arg:name.trim", trimArgs, trimState).ok,
+           "$arg:xxx.trim 去首尾空白后比较");
+    Expect(!assert_check::Check(L"activeTabAlias=$arg:name", trimArgs, trimState).ok,
+           "不写 .trim 时按原文比较（带空白）→ 不等");
+    Expect(assert_check::Check(L"searchQuery=$arg:query.trim", trimArgs, trimState).ok,
+           "$arg:xxx.trim 对另一键同样成立");
+    // .trim 对非字符串入参不该崩：数字 trim 后仍是数字
+    const json::Value numArgs = ArgsOf(LR"({"n": 2})");
+    Expect(assert_check::Check(L"sortMode=$arg:n.trim", numArgs, state).ok,
+           "$arg:xxx.trim 对数值入参不改变取值");
+
+    // ================================================================
+    // ⑦ 左值取长度
+    // ================================================================
+    const json::Value arrState = StateOf(LR"({"tabs": ["a","b","c"], "activeTabTitle": "abc"})");
+    Expect(assert_check::Check(L"tabs.length=3", args, arrState).ok, "左值取数组长度");
+    Expect(!assert_check::Check(L"tabs.length=2", args, arrState).ok, "数组长度不符时失败");
+    Expect(assert_check::Check(L"activeTabTitle.length=3", args, arrState).ok,
+           "左值取字符串长度");
+    // 左值带 .length 但字段不是数组/字符串 → malformed
+    auto badLen = assert_check::Check(L"sortMode.length=2", args, arrState);
+    Expect(!badLen.ok && badLen.malformed, "非数组字段取 length → malformed");
+
     std::printf("\n%s（失败 %d 项）\n", g_fail == 0 ? "全部通过" : "有失败", g_fail);
     return g_fail == 0 ? 0 : 1;
 }

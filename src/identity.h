@@ -70,6 +70,10 @@ constexpr wchar_t kProfileEnv[] = L"EXBARBROWSER_PROFILE";
 // 值为 "0"/空 = 不强制；其它非空值 = 强制开启。配合 EXBARBROWSER_PROFILE 做隔离测试。
 constexpr wchar_t kAiForceEnv[] = L"EXBARBROWSER_AI";
 constexpr wchar_t kAiForceArg[] = L"--ai";
+// 以 MCP 服务器身份启动：标准输入输出接到本进程的命名管道上，
+// 让任何 MCP 客户端（Claude Desktop / VS Code / Cursor…）能直接驱动本程序。
+// 见 src/mcp_stdio.h。
+constexpr wchar_t kMcpStdioArg[] = L"--mcp-stdio";
 
 // WM_COPYDATA 路径转发的魔数。
 //

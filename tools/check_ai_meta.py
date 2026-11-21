@@ -72,6 +72,10 @@ INDIRECT_ARGS = {
 KNOWN_NO_TARGET = {
     'file.cut', 'file.delete', 'file.copy.to', 'file.move.to', 'file.rename.batch',
     'path.copy.link',
+    # Shift+Delete 的人用入口：与 file.delete 同一份"当前选中"设计债务，
+    # 同样 aiExposed=false。机器侧要永久删必须走 fs.delete + approve，
+    # 不能靠这条无目标参数的键盘命令来表达。
+    'file.delete.permanent',
 }
 
 # R20 的判定分两条路，因为"可达"有两种不同含义：
@@ -163,6 +167,77 @@ AI_ONLY_QUERIES = {
     'tool.diskusage': '返回目录总占用；界面上没有这个读数',
 }
 
+# 同义命令配对：两条命令做的是**同一件事**，走的是同一批底层实现
+# （shellops::DeleteSelection / RenameTo / TransferToFolder / CopyPaths），
+# 只是入口不同 —— `file.*` 作用于用户当前选中，`fs.*` 由参数点名目标。
+#
+# 【为什么它们必须声明同一份 Effects】
+# 历史上它们各抄了一份，于是同一个事实有两个源头，而且**暴露给 AI 的那份
+# 恰好是更乐观的那份**：
+#     fs.delete   undoable=1（实际没有撤销栈）
+#     fs.move     destructive=0（移动确实让源文件消失）
+#     fs.copy     destructive=0 而 file.copy.to destructive=1（同一件事，相反）
+# AI 依据这些声明决定"敢不敢试错"，声明错了它就是**基于错的认知**行动。
+#
+# 修法不是把两份改成一样（下一个人加命令时又会分叉），而是引用同一份
+# Effects 常量 —— 编译期就绑死。本表是那条约束的**兜底**：即使有人绕开
+# 常量直接写了字面量，这里也会红。
+#
+# 这张表同时是"确定式版本覆盖了哪些交互式命令"的唯一登记处
+# （第 9 项的覆盖进度、第 24 项的契约一致性都用它）——
+# 两处各写一份 inevitably 会分叉。
+SAME_OPERATION_PAIRS = {
+    'file.rename': 'fs.rename',
+    'file.delete': 'fs.delete',
+    'file.copy.to': 'fs.copy',
+    'file.move.to': 'fs.move',
+    'file.open': 'fs.open',
+    'file.open.tab': 'fs.open.tab',
+    'file.open.window': 'fs.open.window',
+    'file.cut': 'fs.cut.toclip',
+    'file.copy': 'fs.copy.toclip',
+    'file.properties': 'fs.properties',
+}
+
+# 真实撤销机制登记表：命令名 → 撤销栈在哪（供人核对）。
+#
+# 【为什么要有这张表】
+# `undoable=1` 是**给 AI 看的承诺** —— 它据此决定"敢不敢试错"。
+# 2026-11-21 实测：全表 24 条声明 undoable，其中只有 13 条 bmk.* 真的有栈，
+# 其余 11 条（tab.move.* / tab.pin / file.undo / session.named.*）全是空承诺。
+# 空承诺比不声明更坏：AI 会以为"错了能退"，于是放心地做破坏性尝试。
+#
+# 【判据】声明 undoable=1 的命令必须在这张表里；表里的命令也必须真的声明了
+# undoable=1 —— 两处必须同步。登记表不是"允许清单"，是**事实清单**：
+# 往里加一行 = 承诺"这里真的有栈"，那就要真的去实现一个栈。
+UNDO_MECHANISM = {
+    # 书签：BookmarkStore::undo_（整树快照栈，上限 20，带 actor 标签）
+    'bmk.add.current': 'BookmarkStore::undo_（快照栈 ≤20）',
+    'bmk.edit': 'BookmarkStore::undo_（快照栈 ≤20）',
+    'bmk.remove': 'BookmarkStore::undo_（快照栈 ≤20）',
+    'bmk.newfolder': 'BookmarkStore::undo_（快照栈 ≤20）',
+    'bmk.undo': 'BookmarkStore::undo_（快照栈 ≤20）',
+    'bmk.clear': 'BookmarkStore::undo_（快照栈 ≤20）',
+    'bmk.sort': 'BookmarkStore::undo_（快照栈 ≤20）',
+    'bmk.dedupe': 'BookmarkStore::undo_（快照栈 ≤20）',
+    'bmk.add.path': 'BookmarkStore::undo_（快照栈 ≤20）',
+    'bmk.add.selection': 'BookmarkStore::undo_（快照栈 ≤20）',
+    'bmk.add.tabs': 'BookmarkStore::undo_（快照栈 ≤20）',
+    'bmk.copy': 'BookmarkStore::undo_（快照栈 ≤20）',
+    'bmk.move': 'BookmarkStore::undo_（快照栈 ≤20）',
+    # 标签：core::TabSet 的关闭历史（tab.reopen 就是还原路径）
+    'tab.close': 'core::TabSet 关闭历史（tab.reopen 还原）',
+    'tab.close.duplicates': 'core::TabSet 关闭历史（tab.reopen 还原）',
+    # 文件：App::fileUndo_（2026-11-21 新增，src/file_undo.h）
+    'file.rename': 'App::fileUndo_（改名逆操作：交互式改名靠目录清单差集推新旧名）',
+    'file.rename.batch': 'App::fileUndo_（改名逆操作：旧名→新名）',
+    'file.copy.to': 'App::fileUndo_（复制逆操作：撤销=删副本）',
+    'file.move.to': 'App::fileUndo_（移动逆操作：源→目标）',
+    'fs.rename': 'App::fileUndo_（改名逆操作：旧名→新名）',
+    'fs.move': 'App::fileUndo_（移动逆操作：源→目标）',
+    'fs.copy': 'App::fileUndo_（复制逆操作：撤销=删副本）',
+}
+
 # 界面上存在的动作 → 覆盖它的命令别名（None = 已知缺口，待补命令）。
 #
 # 【为什么需要这张表】前 15 项检查的是 **AI → 人**：暴露出去的每条命令
@@ -187,6 +262,23 @@ WRITABLE_STATE = [
     # 搜索态：search.find 改它。没有回读时"搜索成功"只能信命令自己的回执，
     # 而宿主视图不换页也会返回 ok（2026-11-21 实测的假成功就是这样漏掉的）。
     ('searching', 'search.find'),
+    ('searchQuery', 'search.find'),
+    # ---- 以下是第 1 档第 2 步（P0-4）补的断言回读面 ----
+    # 每个都是"某条命令能改，但改完读不回来"的那一类。
+    # 它们的共同点：以前这类命令**只能靠命令自述**证明自己生效了，
+    # 而命令自述正是假绿的高发区。
+    ('tabCount', 'tab.new / tab.close / tab.clone / tab.reopen'),
+    ('activeTabTitle', 'tab.rename（派生显示名）'),
+    ('activeTabAlias', 'tab.rename（被写入的原值）'),
+    ('activeTabIsLast', 'tab.activate.last'),
+    ('bookmarkCount', 'bmk.add / bmk.remove（叶子口径）'),
+    ('bookmarkTotalCount', 'bmk.add / bmk.remove / bmk.newfolder（节点口径）'),
+    ('sessionSaved', 'session.save / session.delete'),
+    ('namedSessionCount', 'session.named.save / session.named.delete'),
+    ('showHiddenFiles', 'view.toggle.hidden'),
+    ('showSystemFiles', 'view.toggle.system'),
+    ('showExtensions', 'view.toggle.extensions'),
+    ('shellHiddenState', 'view.cycle.hidden'),
 ]
 
 MENU_ACTIONS = {
@@ -354,11 +446,17 @@ def _string_constants(text):
     for m in re.finditer(
             r'constexpr\s+const\s+char\*\s*(\w+)\s*=\s*(R"\((.*?)\)"|"((?:[^"\\]|\\.)*)")',
             text, re.S):
-        name, raw, lit = m.group(1), m.group(2), m.group(3)
-        if raw is not None:
+        name = m.group(1)
+        # 【修】以前这里判的是 group(2)（整个"字面量"分支），于是**普通字符串**
+        # （`= "..."`）也被当成 raw 分支，取到 group(3)=None ——
+        # 常量表里存的是 None，任何引用它的字段都解析不到值。
+        # 只有 R"(...)" 形式（kNoArgs）才恰好能用，所以这个缺陷一直没被发现：
+        # 全表只有那一个 raw 字符串常量。
+        # 现在按"哪个分支真的匹配了"来判断：group(3) 有值 = raw 形式。
+        if m.group(3) is not None:
             consts[name] = m.group(3)
         else:
-            consts[name] = lit.replace('\\"', '"').replace('\\\\', '\\')
+            consts[name] = (m.group(4) or '').replace('\\"', '"').replace('\\\\', '\\')
     return consts
 
 
@@ -413,10 +511,38 @@ def _state_selection_observable():
 _SEL_OBS = None
 
 
+def _effects_constants(text):
+    """收集 `constexpr Effects NAME{ro, de, idem, ow, undo, Scope::X};` 常量。
+
+    【为什么需要】命令表里同一操作的两条入口（file.* 与 fs.*）必须引用
+    **同一份** Effects 常量 —— 否则"同一事实两个源头"的问题会重新长出来
+    （历史上就是这样：fs.delete 说可撤销、file.delete 说不可撤销，
+    而暴露给 AI 的恰好是错的那份）。
+
+    解析器必须能认出常量名，否则所有引用常量的命令会被当成
+    "readOnly=0 / scope=App" 的默认值 —— 检查器就会对着假数据报错。
+    """
+    consts = {}
+    pat = re.compile(
+        r'constexpr\s+Effects\s+(\w+)\s*\{\s*([^}]*)\}\s*;')
+    for m in pat.finditer(text):
+        nums = [x.strip() for x in m.group(2).split(',') if x.strip()]
+        if len(nums) < 6:
+            continue
+        sm = re.search(r'Scope::(\w+)', nums[5])
+        consts[m.group(1)] = {
+            'readOnly': nums[0] == '1', 'destructive': nums[1] == '1',
+            'idempotent': nums[2] == '1', 'openWorld': nums[3] == '1',
+            'undoable': nums[4] == '1', 'scope': sm.group(1) if sm else 'App',
+        }
+    return consts
+
+
 def parse_commands():
     raw = COMMANDS.read_text(encoding='utf-8')
     text = _strip_comments(raw)
     consts = _string_constants(text)
+    eff_consts = _effects_constants(text)
 
     m = re.search(r'std::vector<CommandDef>\s+kTable\s*=\s*\{', text)
     if not m:
@@ -458,21 +584,40 @@ def parse_commands():
             ro, de, idem, ow, undo = nums[:5]
             sm = re.search(r'Scope::(\w+)', nums[5])
             scope = sm.group(1) if sm else 'App'
+        # Effects 写成具名常量（kEffectDelete 之类）时按常量表解析。
+        # 解析不到就当"全默认" —— 那样会让这条命令看起来像 readOnly=0/App，
+        # 后面所有基于 Effects 的检查都会对着假数据说话。
+        eff_const = eff.strip()
+        if eff_const in eff_consts:
+            e = eff_consts[eff_const]
+            ro = '1' if e['readOnly'] else '0'
+            de = '1' if e['destructive'] else '0'
+            idem = '1' if e['idempotent'] else '0'
+            ow = '1' if e['openWorld'] else '0'
+            undo = '1' if e['undoable'] else '0'
+            scope = e['scope']
         schema = _string_literal(fields[7], consts) if len(fields) > 7 else None
         exposed = fields[8].strip() == 'true' if len(fields) > 8 else False
         sel = fields[9].strip() == 'true' if len(fields) > 9 else False
 
         # 尾部可选字段按**位置**解析，不按"最后一个字符串"猜。
         #
-        # struct 声明顺序固定为：requires_ / outputSchema / assertion。
+        # struct 声明顺序固定为：requires_ / outputSchema / assertion / assertionExempt。
         # 关键：`nullptr` 是 outputSchema 的显式占位（"这条不产出结果"），
         # 它必须占掉一个位置 —— 否则后面的 assertion 会顶上来被当成结果 schema，
         # 报出"outputSchema 非法 JSON"这种指向错误的假错误。
         #
+        # assertion 后面还有第四个槽 assertionExempt（显式豁免理由）：
+        # 有豁免的条目形如 `..., nullptr, nullptr, "理由"` ——
+        # 第二个 nullptr 是"这条没有断言"，第三个位置才是豁免理由。
+        # 同样必须按位置读，否则豁免理由会被当成断言，
+        # 报出"左值不在 state 里"这种指向错误的假错误。
+        #
         # 例：
         #   ..., false, false, Requirements{}, "outputSchema", "assert"    → 12 字段
         #   ..., false, false, Requirements{}, nullptr,       "assert"     → 13 字段
-        reqs, outschema, assertion = [], None, None
+        #   ..., false, false, Requirements{}, nullptr,       nullptr, "理由" → 14 字段
+        reqs, outschema, assertion, exempt = [], None, None, None
         tail = [x.strip() for x in fields[10:]]
         tail = [x for x in tail if x]                      # 去掉空的尾逗号残余
         pos = 0
@@ -489,10 +634,18 @@ def parse_commands():
                 if v is not None:
                     outschema = v
                     pos += 1
+        if pos < len(tail) and tail[pos] == 'nullptr':
+            pos += 1                                       # 占位，明确表示"无断言"
+        else:
+            if pos < len(tail):
+                v = _string_literal(tail[pos], consts)
+                if v is not None:
+                    assertion = v
+                    pos += 1
         if pos < len(tail):
             v = _string_literal(tail[pos], consts)
             if v is not None:
-                assertion = v
+                exempt = v
 
         out.append({
             'id': cid, 'name': name, 'group': group, 'title': title,
@@ -502,6 +655,8 @@ def parse_commands():
             'undoable': undo == '1', 'scope': scope,
             'schema': schema, 'exposed': exposed, 'needsSelection': sel,
             'requires': reqs, 'outputSchema': outschema, 'assertion': assertion,
+            'assertionExempt': exempt,
+            'effectsConst': eff_const if eff_const in eff_consts else None,
             'nfields': len(fields),
         })
     return out, text, consts
@@ -829,18 +984,9 @@ def main():
         ok(f'{len(fs)} 条确定式命令都有目标参数，且不依赖选中')
 
     # 债务消化进度：每个旧的"只能作用于选中"的命令，是否已有确定式对应
-    COVERS = {
-        'file.rename': 'fs.rename',
-        'file.delete': 'fs.delete',
-        'file.copy.to': 'fs.copy',
-        'file.move.to': 'fs.move',
-        'file.open': 'fs.open',
-        'file.open.tab': 'fs.open.tab',
-        'file.open.window': 'fs.open.window',
-        'file.cut': 'fs.cut.toclip',
-        'file.copy': 'fs.copy.toclip',
-        'file.properties': 'fs.properties',
-    }
+    # 配对表是模块级的 SAME_OPERATION_PAIRS（唯一登记处）——
+    # 这里不再抄一份，两份各自演化必然分叉。
+    COVERS = SAME_OPERATION_PAIRS
     names = {c['name'] for c in cmds}
     impl_names = {c['name'] for c in cmds if c['implemented']}
     # 注意：这里遍历 COVERS 全体，不筛 KNOWN_NO_TARGET。
@@ -861,9 +1007,13 @@ def main():
     # outputSchema 声明了"我会返回这个形状"，就必须由 RegisterWithResult 注册 ——
     # 否则调用方按 schema 去取字段会全落空，且没有任何报错。
     #
-    # 判据有两条，缺一不可：
+    # 判据有三条，缺一不可：
     #   a. 有 outputSchema 的必须用 regR/RegisterWithResult 注册；
-    #   b. outputSchema 本身必须是合法 JSON 对象（否则客户端校验必失败）。
+    #   b. outputSchema 本身必须是合法 JSON 对象（否则客户端校验必失败）；
+    #   c. **未实现的命令不得声明 outputSchema** —— 它根本不会执行，
+    #      schema 是兑现不了的承诺（search.find 就踩过：implemented 降级成 false
+    #      时只翻了 implemented 一个字段，outputSchema 还留着，
+    #      于是"恒失败"与"有结构化结果"同时成立）。
     src_text = ''
     for path in sorted((ROOT / 'src').glob(HANDLERS_GLOB)):
         src_text += _strip_comments(path.read_text(encoding='utf-8'))
@@ -875,6 +1025,10 @@ def main():
         if not c['outputSchema']:
             continue
         with_output.append(c['name'])
+        if not c['implemented']:
+            fail(f'{c["name"]} 声明了 outputSchema 但 implemented=false'
+                 f'（命令不会执行，结果承诺兑现不了）')
+            bad += 1
         if c['id'] not in result_regs:
             fail(f'{c["name"]} 声明了 outputSchema 但没有用 RegisterWithResult 注册'
                  f'（结果永远是空的）')
@@ -1244,17 +1398,31 @@ def main():
         if not a:
             continue
         checked_assert += 1
-        if '=' not in a:
-            bad_assert.append((c['name'], a, '缺少 ='))
+        # 运算符有两种：= 与 !=。以前这里只按第一个 '=' 切，
+        # 于是 "selectionCount!=0" 被切成 lhs="selectionCount!" ——
+        # 报"左值不在 state 里"，指向的是一个根本不存在的字段。
+        # 断言语言早就支持 !=，检查却没跟上，等于**禁止使用 !=**。
+        m_op = re.search(r'(!=|=)', a)
+        if not m_op:
+            bad_assert.append((c['name'], a, '缺少 = 或 !='))
             continue
-        lhs, rhs = a.split('=', 1)
-        lhs, rhs = lhs.strip(), rhs.strip()
-        if lhs not in state_fields:
-            bad_assert.append((c['name'], a, '左值 %s 不在 exbar/state 里' % lhs))
+        lhs = a[:m_op.start()].strip()
+        rhs = a[m_op.end():].strip()
+        if not lhs:
+            bad_assert.append((c['name'], a, '左值为空'))
+            continue
+        # 左值可以是 "<字段>" 或 "<字段>.length"（取数组/字符串长度）。
+        lhs_field = lhs[:-len('.length')] if lhs.endswith('.length') else lhs
+        if lhs_field not in state_fields:
+            bad_assert.append((c['name'], a, '左值 %s 不在 exbar/state 里' % lhs_field))
+        # 右值三种形态：字面量 / $arg:<key>[.length|.trim] / $changed / $unchanged
+        if rhs in ('$changed', '$unchanged'):
+            continue
         if rhs.startswith('$arg:'):
             key = rhs[5:]
-            if key.endswith('.length'):
-                key = key[:-len('.length')]
+            for suffix in ('.length', '.trim'):
+                if key.endswith(suffix):
+                    key = key[:-len(suffix)]
             schema_txt = c.get('schema') or ''
             needed = '"' + key + '"'
             if needed not in schema_txt:
@@ -1390,6 +1558,128 @@ def main():
             fail('缺口面缺：' + label)
     else:
         ok('失败按 10 类机器码返回；能力面（总数/已实现/已暴露/两张缺口清单）由产品自述')
+
+    # ---------------------------------------------------------------- 23
+    print('\n23. 自断言覆盖率门槛（每条要么有断言，要么有**带理由**的豁免）')
+    # 为什么要有门槛：
+    #   `ok=true` 只说明 handler 返回了 true，不说明"效果对吗"。
+    #   断言是唯一能把这两件事分开的机制 —— 而覆盖率上不来时，
+    #   没人能看出"哪些命令还没写断言"，因为没写和写不出来长得一模一样。
+    #
+    # 门槛的形式不是"必须 100% 有断言"（那不现实：磁盘、剪贴板、进程外
+    # 根本没有回读面），而是"**必须有交代**"：
+    #   要么给一条真能求值的断言，要么给一条显式豁免 + 为什么。
+    # 于是覆盖率上不来的部分变成一份有名有姓的债务清单，而不是一片沉默。
+    #
+    # 豁免理由还有两条硬要求：
+    #   · 不能太短（"不知道""以后再说"这类等于没写）；
+    #   · 必须对调用方可见（tools/list 里给出 assertionExempt）——
+    #     否则调用方会把 ok=true 当成"效果确实达成"。
+    target = [c for c in cmds if c['exposed'] and c['implemented']]
+    with_a = [c for c in target if c.get('assertion')]
+    with_e = [c for c in target if c.get('assertionExempt')]
+    both = [c for c in target if c.get('assertion') and c.get('assertionExempt')]
+    neither = [c for c in target if not c.get('assertion') and not c.get('assertionExempt')]
+    cover_missing = []
+    for c in target:
+        ex = c.get('assertionExempt')
+        if ex is not None and len(ex.strip()) < 8:
+            cover_missing.append((c['name'], '豁免理由太短（少于 8 字）：' + ex))
+    # 豁免理由必须真的被暴露给调用方（否则这份清单只有开发者看得见）
+    api_exposes_exempt = 'L"assertionExempt"' in api_cpp_text
+    if not api_exposes_exempt:
+        cover_missing.append(('（全表）', 'tools/list 未输出 assertionExempt：豁免对调用方不可见'))
+    for c in both:
+        cover_missing.append((c['name'], '同时有断言与豁免（自相矛盾）'))
+    for c in neither:
+        cover_missing.append((c['name'], '既无断言也无豁免'))
+    if cover_missing:
+        for name, why in cover_missing:
+            fail('%s：%s' % (name, why))
+    else:
+        pct = (100.0 * len(with_a) / len(target)) if target else 0
+        ok('%d 条暴露命令：%d 条有自断言（%.0f%%）、%d 条显式豁免（理由非空且已暴露给调用方）'
+           % (len(target), len(with_a), pct, len(with_e)))
+
+    # ---------------------------------------------------------------- 24
+    print('\n24. 同义命令配对的 Effects 必须一致（契约单一来源）')
+    # 为什么要有这一项：
+    #   `file.*` 与 `fs.*` 做的是同一件事、走同一批实现，却各抄了一份 Effects。
+    #   于是同一个事实有两个源头，而**暴露给 AI 的那份恰好是更乐观的那份**
+    #   （fs.delete 说可撤销、fs.move 说不破坏性）。AI 依据这些声明决定
+    #   "敢不敢试错" —— 声明错了，它就是基于错的认知行动。
+    #
+    # 判据是两条：
+    #   ① 配对的两条命令，六个 Effects 字段必须逐项相同；
+    #   ② 它们必须引用**同一个**具名常量（kEffectXxx）——
+    #      只满足 ① 的话，下一个人加一条命令时又会分叉（回到老问题）。
+    by_name = {c['name']: c for c in cmds}
+    pair_missing = []
+    pair_drift = []
+    for a, b in sorted(SAME_OPERATION_PAIRS.items()):
+        ca, cb = by_name.get(a), by_name.get(b)
+        if ca is None or cb is None:
+            pair_missing.append('%s / %s：配对里有命令不在表里' % (a, b))
+            continue
+        fields = ('readOnly', 'destructive', 'idempotent', 'openWorld',
+                  'undoable', 'scope')
+        diff = [f for f in fields if ca[f] != cb[f]]
+        if diff:
+            pair_drift.append(
+                '%s 与 %s 的 Effects 不一致（%s）—— 同一件事不能有两套声明'
+                % (a, b, '、'.join(diff)))
+        elif ca.get('effectsConst') is None or cb.get('effectsConst') is None:
+            pair_drift.append(
+                '%s 与 %s 必须引用同一个具名 Effects 常量'
+                '（当前 %s / %s）—— 否则"同一事实两个源头"会重新长出来'
+                % (a, b, ca.get('effectsConst'), cb.get('effectsConst')))
+        elif ca['effectsConst'] != cb['effectsConst']:
+            pair_drift.append(
+                '%s 与 %s 引用了不同常量（%s / %s）'
+                % (a, b, ca['effectsConst'], cb['effectsConst']))
+    for m in pair_missing + pair_drift:
+        fail(m)
+    if not pair_missing and not pair_drift:
+        ok('%d 组同义命令共用同一份 Effects 常量，六个字段逐项一致'
+           % len(SAME_OPERATION_PAIRS))
+
+    # ---------------------------------------------------------------- 25
+    print('\n25. 可逆性不许说谎（声明 undoable 的命令必须有真实撤销机制）')
+    # 为什么要有这一项：
+    #   `undoable=1` 是**给 AI 看的承诺** —— 它据此决定"敢不敢试错"。
+    #   空承诺比不声明更坏：不声明 AI 会谨慎，声明了它反而会放心地做破坏性尝试。
+    #
+    # 2026-11-21 实测：全表 24 条声明 undoable，只有 13 条 bmk.* 真的有栈，
+    # 其余 11 条是空承诺（tab.move.* 没有顺序快照、tab.pin 没有取消历史、
+    # file.undo 本身不是被撤的对象、session.named.* 没有版本栈）。
+    # 本轮把它们改成 0，并给真正可撤的 fs.* / file.rename.batch 补了
+    # 自己的撤销栈（src/file_undo.h）。
+    #
+    # 判据两条（必须同时成立）：
+    #   ① 声明 undoable=1 的命令必须登记在 UNDO_MECHANISM 里（事实清单）；
+    #   ② 登记在册的命令必须真的声明 undoable=1（两处口径不许漂）。
+    by_name2 = {c['name']: c for c in cmds}
+    bad = 0
+    claimed = []
+    for c in cmds:
+        if not c.get('undoable'):
+            continue
+        claimed.append(c['name'])
+        if c['name'] not in UNDO_MECHANISM:
+            fail('%s 声明 undoable=1 但没有真实撤销机制'
+                 '（登记在 UNDO_MECHANISM 里才有栈）' % c['name'])
+            bad += 1
+    for name in sorted(UNDO_MECHANISM):
+        c = by_name2.get(name)
+        if c is None:
+            fail('UNDO_MECHANISM 里的 %s 不在命令表里（登记失效）' % name)
+            bad += 1
+        elif not c.get('undoable'):
+            fail('%s 登记了撤销机制但没有声明 undoable=1（两处口径必须一致）' % name)
+            bad += 1
+    if not bad:
+        ok('%d 条声明可撤销的命令都指向真实撤销机制；%d 条操作无撤销栈已如实标 0'
+           % (len(claimed), len(cmds) - len(claimed)))
 
     print()
     if g_fail:

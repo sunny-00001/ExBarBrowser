@@ -68,6 +68,9 @@ public:
     IShellView* CurrentView();
     void ToggleNavPane();
     bool NavPaneVisible() const;
+    // Ctrl+Shift+E：展开导航窗格整棵树（原生 SysTreeView32，逐节点 TVM_EXPAND）。
+    // 返回 false = 没找到树控件或树是空的（调用方据此回报"没生效"，不假报成功）。
+    bool ExpandNavTree();
     // 导航窗格的真实可见性由自己维护：EBO_SHOWFRAMES 只在"导航前"被消费，
     // 导航后再 SetOptions 无效、清零更是永不生效，GetOptions 读到的只是意图。
     bool navPaneWanted_ = true;

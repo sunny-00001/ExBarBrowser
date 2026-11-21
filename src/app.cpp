@@ -6,6 +6,7 @@
 #include "ai_server.h"
 #include "app_commands.h"   // RunTerminal（面包屑段菜单的"在此打开终端"）
 #include "commands.h"
+#include "mcp_stdio.h"      // --mcp-stdio：stdio ⇄ 命名管道 桥接
 #include "text_file.h"
 #include "mouse_rules.h"
 #include "shell_ops.h"
@@ -121,11 +122,11 @@ void App::OnCreate() {
     // 前置检查（CanExecute）、审计、前置拦截只有一个入口。以前这里直接调
     // GoUp()/GoBack()，绕过命令总线 —— 于是同一个"上一级"按钮能跳、双击没反应
     // （命令被 Req::CanGoUp 拦掉），两种行为分裂。
-    navBar_.SetBackFn([] { CommandBus::Get().Invoke(CmdId::NavBack, Args::Empty(), L"ui"); });
-    navBar_.SetForwardFn([] { CommandBus::Get().Invoke(CmdId::NavForward, Args::Empty(), L"ui"); });
-    navBar_.SetUpFn([] { CommandBus::Get().Invoke(CmdId::NavUp, Args::Empty(), L"ui"); });
+    navBar_.SetBackFn([] { CommandBus::Get().Invoke(CmdId::NavBack, Args::Empty(), Actor::Ui()); });
+    navBar_.SetForwardFn([] { CommandBus::Get().Invoke(CmdId::NavForward, Args::Empty(), Actor::Ui()); });
+    navBar_.SetUpFn([] { CommandBus::Get().Invoke(CmdId::NavUp, Args::Empty(), Actor::Ui()); });
     navBar_.SetRefreshFn(
-        [] { CommandBus::Get().Invoke(CmdId::NavRefresh, Args::Empty(), L"ui"); });
+        [] { CommandBus::Get().Invoke(CmdId::NavRefresh, Args::Empty(), Actor::Ui()); });
     // 视图菜单转投命令，不直接调 SetViewMode：
     // 命令 handler 会同时更新 viewMode_ 并写 settings.json，
     // 直接操作视图会让"用户点了详细信息、重启后还是小图标"。
@@ -133,7 +134,7 @@ void App::OnCreate() {
     navBar_.SetViewFn([](int fvm, int iconPx) {
         const int preset = ViewModeIndexFor(fvm, iconPx);
         if (preset >= 0)
-            CommandBus::Get().InvokeLegacy(CmdId::ViewMode, std::to_wstring(preset), L"ui");
+            CommandBus::Get().InvokeLegacy(CmdId::ViewMode, std::to_wstring(preset), Actor::Ui());
     });
     navBar_.SetHistoryFn([this](bool back) { return HistoryList(back); },
                          [this](int depth, bool back) { JumpHistory(depth, back); });
@@ -163,9 +164,9 @@ void App::OnCreate() {
     // 同视图菜单：转投命令，否则排序/分组的选择不会落盘。
     navBar_.SetSortGroupFn([](int kind, int arg) {
         if (kind == 0)
-            CommandBus::Get().InvokeLegacy(CmdId::ViewSort, std::to_wstring(arg), L"ui");
+            CommandBus::Get().InvokeLegacy(CmdId::ViewSort, std::to_wstring(arg), Actor::Ui());
         else
-            CommandBus::Get().InvokeLegacy(CmdId::ViewGroup, std::to_wstring(arg), L"ui");
+            CommandBus::Get().InvokeLegacy(CmdId::ViewGroup, std::to_wstring(arg), Actor::Ui());
     });
 
     bookmarkBar_.SetNavigateFn([this](const std::wstring& p) { NavigateActive(p, true); });
@@ -282,6 +283,32 @@ void App::OnCreate() {
         s.focus = (GetGUIThreadInfo(GetCurrentThreadId(), &gi) && gi.hwndFocus)
                       ? FocusPaneOf(gi.hwndFocus)
                       : L"unknown";
+
+        // ---- 标签组 / 书签 / 会话的可回读面（自断言要用）----
+        // 全部取**同一份真源**：标签数与标题来自 tabSet_（标签栏画的就是它），
+        // 书签计数来自 BookmarkStore 的扁平叶子数（与 bmk.list 同口径），
+        // 会话状态来自 Settings（与 session.list 同口径）。
+        s.tabCount = tabSet_.Count();
+        if (const core::TabRef* ref = tabSet_.Find(activeId_)) {
+            s.activeTabTitle = core::DisplayTitle(*ref);
+            s.activeTabAlias = ref->alias;
+        }
+        // "是不是最后一个"是派生布尔：断言语言没有算术，
+        // 而 tab.activate.last 的判据恰好是它（见 ai_api.h 的说明）。
+        s.activeTabIsLast = s.tabCount > 0 && s.activeTab == s.tabCount - 1;
+        s.bookmarkCount = static_cast<int>(BookmarkStore::Get().CountLeaves());
+        s.bookmarkTotalCount = static_cast<int>(BookmarkStore::Get().CountNodes());
+        s.sessionSaved = !Config::Get().s().sessionPaths.empty();
+        s.namedSessionCount = static_cast<int>(Config::Get().s().namedSessions.size());
+
+        // ---- shell 隐藏项设置（view.toggle.* 与 view.cycle.hidden 的回读面）----
+        // 与写侧同一份 SHELLSTATE、同一掩码（shell_ops::GetHiddenFlags）——
+        // 另存副本会让"读到的不是刚改的那个开关"。
+        const shellops::HiddenFlagsState hf = shellops::GetHiddenFlags();
+        s.showHiddenFiles = hf.showAllObjects;
+        s.showSystemFiles = hf.showSuperHidden;
+        s.showExtensions = hf.showExtensions;
+        s.shellHiddenState = hf.triState;
         return s;
     });
 
@@ -295,12 +322,12 @@ void App::OnCreate() {
 
     statusBar_.SetClickFn([](int seg) {
         switch (seg) {
-        case Seg_Chk: CommandBus::Get().InvokeLegacy(CmdId::CmdSelectAll, L"", L"ui"); break;
-        case Seg_Date: CommandBus::Get().InvokeLegacy(CmdId::ViewSort, L"1", L"ui"); break;
-        case Seg_Path: CommandBus::Get().InvokeLegacy(CmdId::PathCopyDir, L"", L"ui"); break;
-        case Seg_Size: CommandBus::Get().InvokeLegacy(CmdId::CmdProps, L"", L"ui"); break;
-        case Seg_Disk: CommandBus::Get().InvokeLegacy(CmdId::GoThisPC, L"", L"ui"); break;
-        case Seg_Eye: CommandBus::Get().InvokeLegacy(CmdId::CycleHiddenSeg, L"", L"ui"); break;
+        case Seg_Chk: CommandBus::Get().InvokeLegacy(CmdId::CmdSelectAll, L"", Actor::Ui()); break;
+        case Seg_Date: CommandBus::Get().InvokeLegacy(CmdId::ViewSort, L"1", Actor::Ui()); break;
+        case Seg_Path: CommandBus::Get().InvokeLegacy(CmdId::PathCopyDir, L"", Actor::Ui()); break;
+        case Seg_Size: CommandBus::Get().InvokeLegacy(CmdId::CmdProps, L"", Actor::Ui()); break;
+        case Seg_Disk: CommandBus::Get().InvokeLegacy(CmdId::GoThisPC, L"", Actor::Ui()); break;
+        case Seg_Eye: CommandBus::Get().InvokeLegacy(CmdId::CycleHiddenSeg, L"", Actor::Ui()); break;
         default: break;
         }
     });
@@ -373,6 +400,17 @@ int App::Run(HINSTANCE hInst, const std::wstring& initialPath) {
     // 运行中改 aiEnabled 立即生效（WM_APP_SYNC_AI -> SyncAiChannel），无需重启。
     SyncAiChannel();
 
+    // MCP over stdio（--mcp-stdio）：把 stdin/stdout 接到上面那条命名管道上，
+    // 让标准 MCP 客户端能直接驱动本程序。
+    //
+    // 【为什么放在 SyncAiChannel 之后】桥接要连的正是刚启动的管道；
+    // 顺序反了就可能连到一个还没建好的名字。
+    // 【为什么独立于 aiEnabled 开关】stdio 是**进程启动方式**（客户端拉起我们），
+    // 不是"要不要 AI"：客户端既然用 stdio 拉起本进程，就说明它要 AI 通道。
+    // 所以它在 App::Run 里无条件起（Requested() 内部自己判断命令行），
+    // 不随运行中热插拔的 aiEnabled 反复起停。
+    mcpstdio::Start(hwnd_);
+
     MSG msg;
     int gm;
     while ((gm = GetMessageW(&msg, nullptr, 0, 0)) > 0) {
@@ -385,8 +423,15 @@ int App::Run(HINSTANCE hInst, const std::wstring& initialPath) {
         DispatchMessageW(&msg);
     }
     // GetMessage 返回 -1 是错误（不能继续循环），0 是 WM_QUIT。
-    if (gm == 0) return 0;
+    if (gm == 0) {
+        // 兜底停桥接：正常路径 OnDestroy 已经停过，这里再调一次是幂等的。
+        // 万一有路径绕过 WM_CLOSE 直接 PostQuitMessage，这里也能收干净，
+        // 不会留下一个 joinable 的静态线程在进程退出时 std::terminate()。
+        mcpstdio::Stop();
+        return 0;
+    }
     LogDbg(L"[loop] GetMessage 失败 error=%lu", GetLastError());
+    mcpstdio::Stop();
     return 1;
 }
 
@@ -422,6 +467,9 @@ bool App::OnChromeMouse(int target, UINT msg, int button, int mods, POINT pt) {
 }
 
 bool App::ConfirmExit() {
+    // MCP 模式（--mcp-stdio）：这个进程是 MCP 客户端拉起来的服务器，
+    // 客户端断开即应静默退出 —— 弹框问"确定退出吗"会把客户端晾在原地。
+    if (mcpstdio::Requested()) return true;
     // 只有多标签才问：最后一个标签关闭 = 正常结束，不该再拦一次。
     // 默认按钮是"否"：误按 Enter 的常见场景（Alt+F4 后手还没离开键盘）
     // 不该把整组标签关掉；会话虽能恢复，但用户此刻未必想退出。
@@ -500,6 +548,9 @@ void App::OnDestroy() {
     KillTimer(hwnd_, kStatsTimer);
     KillTimer(hwnd_, kAiTimer);
     KillTimer(hwnd_, kSessionTimer);
+    // 先停 stdio 桥接：它可能正阻塞在 stdin 上，要靠 CancelSynchronousIo 唤醒。
+    // 放在 ai::StopServer() 前面，让桥接线程在管道还在的时候干净地退出。
+    mcpstdio::Stop();
     ai::StopServer();   // 先停监听线程，避免它持有请求排队时窗口已销毁
     ai::SetStateProvider(nullptr);
     input_.Cancel();

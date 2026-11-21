@@ -22,6 +22,9 @@ bool CopySelection(IShellView* view, bool cut);
 bool CopyPaths(const std::vector<std::wstring>& paths, bool cut);
 bool Paste(IShellView* view, HWND owner);
 bool DeleteSelection(IShellView* view, HWND owner);
+// Shift+Delete：与 DeleteSelection 走同一份 IFileOperation，但不带 FOF_ALLOWUNDO，
+// 即绕过回收站永久删除。仍保留 FOF_WANTNUKEWARNING 让 shell 弹最终警告。
+bool DeleteSelectionPermanently(IShellView* view, HWND owner);
 bool InvokeSelectionVerb(IShellView* view, HWND owner, const char* verb);  // rename/properties/open
 bool InvokeFolderVerb(IShellView* view, HWND owner, const char* verb);     // paste
 bool NewFolder(IShellView* view, HWND owner);
@@ -67,8 +70,26 @@ bool SelectedSinglePath(IShellView* view, std::wstring* fullPath);
 // 重命名指定项。newName 只给名字（不含路径）。带冲突检测。
 // 与 InvokeSelectionVerb("rename") 的区别：那个会弹 shell 的输入框（交互式），
 // 这个直接改（确定式，可被脚本/机器调用）。
+//
+// why（非空时写入失败原因）：失败原因**只存在于 shell 的 HRESULT 里**，
+// 不取出来就只能给一句"重命名失败"，而那句话对每种原因都不算错、
+// 对使用者却毫无用处（换名？关掉占用程序？还是权限？）。
 bool RenameTo(IShellView* view, HWND owner, const std::wstring& fullPath,
-              const std::wstring& newName);
+              const std::wstring& newName, std::wstring* why = nullptr);
+
+// ---- 按路径的文件操作（撤销栈专用）----
+//
+// 为什么单独有一组：撤销时目标**已经不在当前视图里**了（移动过的文件到了别的
+// 目录、复制出的副本在别处），"Selection" 语义与 RenameTo 的"必须在视图里"
+// 校验都用不了 —— 而那条校验的用意是"不要凭空操作视图外的目录"，
+// 撤销恰恰必须操作视图外。
+//
+// 只被撤销栈调用，不参与命令路径：命令路径（file.* / fs.*）仍然只有一份实现。
+// 共同点：走 IFileOperation、不弹 UI、冲突时改名而不是覆盖（FOF_RENAMEONCOLLISION）。
+bool RenamePath(HWND owner, const std::wstring& fullPath, const std::wstring& newName);
+bool MovePathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir);
+bool CopyPathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir);
+bool DeletePath(HWND owner, const std::wstring& fullPath);
 
 // ---- 只读查询（业界 P6：读操作返回值）----
 //
@@ -167,6 +188,24 @@ bool GetSort(IShellView* view, int* mode, bool* ascending);
 bool SetGroup(IShellView* view, int mode);  // 0 无 1 类型 2 日期 3 大小
 bool ToggleHidden(IShellView* view, int which, HWND owner);  // which: 0 hidden 1 system 2 ext
 int CycleHiddenState(IShellView* view, HWND owner);          // 返回新状态 0/1/2
+
+// 读取当前的"隐藏项"显示设置。
+//
+// 为什么必须有读面：view.toggle.hidden / system / extensions 这三条命令
+// 改的是 **进程级 shell 设置**（SHGetSetSettings），改完界面上立刻生效，
+// 但状态快照里原来没有任何字段能反映它 —— 于是"隐藏文件开关到底有没有翻"
+// 只能靠命令自述，而命令自述正是假绿的高发区。
+//
+// 读面与写面必须同源：这里用的是与 ToggleHidden/CycleHiddenState **同一个**
+// HiddenFlags 掩码、同一份 SHELLSTATE。掩码若与写侧不一致，
+// 就会出现"读到的不是刚改的那个开关"—— 那比没有读面更坏。
+struct HiddenFlagsState {
+    bool showAllObjects = true;   // 显示隐藏文件
+    bool showSuperHidden = true;  // 显示系统文件
+    bool showExtensions = true;   // 显示文件扩展名
+    int triState = 0;             // 0 全显 / 1 隐系统 / 2 隐全部（与 CycleHiddenState 同口径）
+};
+HiddenFlagsState GetHiddenFlags();
 
 // ---- 取接口（唯一实现）----
 //

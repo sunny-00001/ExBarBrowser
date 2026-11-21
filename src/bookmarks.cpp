@@ -154,6 +154,36 @@ void FlattenIn(const BookmarkList& list, std::vector<std::pair<std::wstring, std
     }
 }
 
+// 只数不分配：与 FlattenIn 同口径（只数有 path 的叶子，不数分类）。
+size_t CountLeavesIn(const BookmarkList& list) {
+    size_t n = 0;
+    for (const auto& e : list) {
+        if (!e.isFolder && !e.path.empty()) ++n;
+        n += CountLeavesIn(e.children);
+    }
+    return n;
+}
+
+// 只数不分配：分类数（isFolder 的节点），含嵌套分类。
+size_t CountFoldersIn(const BookmarkList& list) {
+    size_t n = 0;
+    for (const auto& e : list) {
+        if (e.isFolder) ++n;
+        n += CountFoldersIn(e.children);
+    }
+    return n;
+}
+
+// 只数不分配：节点总数（叶子 + 分类）。
+size_t CountNodesIn(const BookmarkList& list) {
+    size_t n = 0;
+    for (const auto& e : list) {
+        ++n;
+        n += CountNodesIn(e.children);
+    }
+    return n;
+}
+
 void AssignIds(BookmarkList& list, int& seq) {
     for (auto& n : list) {
         if (n.id.empty()) {
@@ -829,3 +859,9 @@ std::vector<std::pair<std::wstring, std::wstring>> BookmarkStore::Flatten() cons
     FlattenIn(roots_, out);
     return out;
 }
+
+size_t BookmarkStore::CountLeaves() const { return CountLeavesIn(roots_); }
+
+size_t BookmarkStore::CountFolders() const { return CountFoldersIn(roots_); }
+
+size_t BookmarkStore::CountNodes() const { return CountNodesIn(roots_); }

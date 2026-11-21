@@ -69,6 +69,10 @@ public:
     // 搜索交给 shell 视图自己的搜索（与在资源管理器里输入即搜同一套），
     // 不自己扫盘 —— 扫盘要么卡 UI，要么结果与用户看到的不一致。
     void FocusSearch();
+    // 搜索框句柄。给焦点观测面用：地址框与搜索框都在导航栏里，
+    // 不给出这个句柄就分不清"焦点在地址栏"和"焦点在搜索框"，
+    // 于是 win.focus.search 只能靠猜（而猜错比不答更糟）。
+    HWND searchHwnd() const { return search_; }
     bool IsSearching() const;
     // 用户提交搜索词（Enter）。空串 = 清除搜索回到原目录。
     // 由 NavBar 自己调，不让 App 去读控件文本（那是两份状态）。

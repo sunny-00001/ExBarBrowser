@@ -1,16 +1,22 @@
 // 开发面工具实现（接口说明见 dev_tools.h）。
 #include "dev_tools.h"
 
+#include <windows.h>
+
+#include <algorithm>
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
 #include "ai_events.h"
+#include "dev_proc.h"
+#include "eval_surface.h"
 #include "str.h"
 #include "text_file.h"
 #include "common.h"
 #include "config.h"
-
-#include <cstdio>
-#include <map>
-#include <mutex>
-#include <thread>
 
 namespace devtools {
 namespace {
@@ -19,44 +25,56 @@ std::mutex g_mu;
 std::map<std::wstring, Job> g_jobs;
 unsigned long long g_nextId = 0;
 constexpr size_t kMaxJobs = 64;
-constexpr size_t kMaxOutput = 256 * 1024;
-
-std::wstring Quote(const std::wstring& s) {
-    return L"\"" + std::wstring(s) + L"\"";
-}
-
-// 在仓库目录里跑一条命令，返回 (退出码, 输出)。
-// 用 cd /d 而不是 SetCurrentDirectory：那是进程级状态，后台线程改它会让 UI 受影响。
-bool RunCapture(const std::wstring& command, int* code, std::wstring* output) {
-    const std::wstring repo = tf::ExeDir();
-    const std::wstring full = L"cd /d " + Quote(repo) + L" && " + command + L" 2>&1";
-    FILE* f = _wpopen(full.c_str(), L"rb");
-    if (!f) {
-        if (code) *code = -1;
-        if (output) output->clear();
-        return false;
-    }
-    std::string bytes;
-    char buf[4096];
-    size_t n = 0;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
-        if (bytes.size() + n > kMaxOutput) {
-            bytes.append(buf, kMaxOutput - bytes.size());
-            break;
-        }
-        bytes.append(buf, n);
-    }
-    const int rc = _pclose(f);
-    if (code) *code = rc;
-    if (output) *output = str::FromUtf8(bytes);
-    return true;
-}
-
-std::wstring TrimTail(const std::wstring& s) {
-    return s.size() <= 4000 ? s : s.substr(s.size() - 4000);
-}
+// 作业最长允许挂着的时间：超过就算它死了，占位必须让出去，
+// 否则 64 个挂死作业会把队列彻底堵死（新作业登记不上）。
+constexpr unsigned long long kJobTimeoutMs = 30 * 60 * 1000;
 
 json::Value Str(const std::wstring& s) { return json::Value::MakeStr(s); }
+
+// 在仓库目录里跑一条命令，返回 (退出码, 输出)。
+// 用 CreateProcess + 参数数组，不经 shell（理由见 dev_proc.h）。
+bool RunCapture(const std::wstring& program, const std::vector<std::wstring>& args,
+                int* code, std::wstring* output) {
+    std::wstring err;
+    return devproc::RunCapture(program, args, tf::ExeDir(), code, output, &err);
+}
+
+// 输出裁剪：**头 + 尾**都留。
+// 只留尾巴会把第一处编译错误丢掉 —— 而那恰恰是最该先看的一行；
+// 只留头会把最后的汇总（"N errors generated"）丢掉。
+std::wstring TrimOutput(const std::wstring& s, bool* truncated) {
+    constexpr size_t kKeep = 4000;
+    if (s.size() <= kKeep) {
+        if (truncated) *truncated = false;
+        return s;
+    }
+    constexpr size_t kHead = 1400;
+    const size_t tail = kKeep - kHead - 48;
+    std::wstring marker = L"\n…［中间省略 " + std::to_wstring(s.size() - kHead - tail) +
+                          L" 字符］…\n";
+    if (truncated) *truncated = true;
+    return s.substr(0, kHead) + marker + s.substr(s.size() - tail);
+}
+
+// git 的四个只读查询：统一走 argv，不拼字符串。
+std::wstring Git(const std::wstring& sub, const std::vector<std::wstring>& rest) {
+    std::vector<std::wstring> args;
+    args.push_back(sub);
+    for (const std::wstring& a : rest) args.push_back(a);
+    int code = 0;
+    std::wstring out;
+    RunCapture(L"git", args, &code, &out);
+    return out;
+}
+
+// 在 PATH 里找可执行文件（原来是 `where bash`，那条要过 cmd.exe）。
+// 找不到返回空串。
+std::wstring FindExe(const wchar_t* name) {
+    wchar_t buf[MAX_PATH];
+    const DWORD n = SearchPathW(nullptr, name, nullptr, MAX_PATH, buf, nullptr);
+    if (n == 0 || n >= MAX_PATH) return L"";
+    return std::wstring(buf, n);
+}
 
 }  // namespace
 
@@ -84,35 +102,39 @@ bool ValidRepoPath(const std::wstring& rel, std::wstring* err) {
     return true;
 }
 
-std::wstring StartJob(const std::wstring& kind, const std::wstring& command) {
+std::wstring StartJob(const std::wstring& kind, const std::wstring& program,
+                       const std::vector<std::wstring>& args) {
     Job job;
     {
         std::lock_guard<std::mutex> lk(g_mu);
         job.id = L"job-" + std::to_wstring(++g_nextId);
         job.kind = kind;
-        job.command = command;
+        job.command = devproc::BuildCommandLine(program, args);
+        job.startedAt = GetTickCount64();
         g_jobs[job.id] = job;
+        // 淘汰顺序：先删已完成的；全都还在跑就把**最老的**踢掉，
+        // 否则 64 个挂死作业会把队列堵死 —— 新作业登记不上，等于整条链废了。
         while (g_jobs.size() > kMaxJobs) {
-            // 只淘汰已完成的，运行中的作业不能被挤掉（否则结果永远查不到）。
             auto it = g_jobs.begin();
             while (it != g_jobs.end() && !it->second.done) ++it;
-            if (it == g_jobs.end()) break;
+            if (it == g_jobs.end()) {
+                it = g_jobs.begin();  // 没有已完成的 → 踢掉最老的
+                LogDbg(L"[dev] 作业队列已满，淘汰最老的作业：%s", it->second.id.c_str());
+            }
             g_jobs.erase(it);
         }
     }
     const std::wstring id = job.id;
-    std::thread([id, kind, command] {
+    std::thread([id, kind, program, args] {
         Job done;
         done.id = id;
         done.kind = kind;
-        done.command = command;
+        done.command = devproc::BuildCommandLine(program, args);
         int code = -1;
         std::wstring out;
-        if (RunCapture(command, &code, &out)) {
+        if (devproc::RunCapture(program, args, tf::ExeDir(), &code, &out, &done.error)) {
             done.exitCode = code;
-            done.output = out;
-        } else {
-            done.error = L"无法启动进程";
+            done.output = TrimOutput(out, &done.truncated);
         }
         done.done = true;
         {
@@ -125,7 +147,8 @@ std::wstring StartJob(const std::wstring& kind, const std::wstring& command) {
         data.Set(L"kind", Str(kind));
         data.Set(L"exitCode", json::Value::MakeInt(code));
         data.Set(L"ok", json::Value::MakeBool(code == 0));
-        data.Set(L"output", Str(TrimTail(done.output)));
+        data.Set(L"output", Str(done.output));
+        data.Set(L"truncated", json::Value::MakeBool(done.truncated));
         if (!done.error.empty()) data.Set(L"error", Str(done.error));
         ai::events::Publish(L"dev.job.done", data);
     }).detach();
@@ -137,17 +160,25 @@ bool GetJob(const std::wstring& id, Job* out) {
     auto it = g_jobs.find(id);
     if (it == g_jobs.end()) return false;
     if (out) *out = it->second;
+    // 挂死的作业不能永远挂着让人等：超过时限就按"超时"报，
+    // 而不是让调用方自己去猜它是不是还活着。
+    if (out && !out->done && out->startedAt != 0 &&
+        GetTickCount64() - out->startedAt > kJobTimeoutMs) {
+        out->done = true;
+        out->exitCode = -1;
+        out->error = L"作业超时（超过 30 分钟没有结束，已按失败上报）";
+    }
     return true;
 }
 
 std::wstring Snapshot() {
-    int code = 0;
-    std::wstring head, status, diff, bash, python;
-    RunCapture(L"git rev-parse --short HEAD", &code, &head);
-    RunCapture(L"git status --short", &code, &status);
-    RunCapture(L"git diff --stat", &code, &diff);
-    RunCapture(L"where bash", &code, &bash);
-    RunCapture(L"where python", &code, &python);
+    const std::wstring head = Git(L"rev-parse", {L"--short", L"HEAD"});
+    const std::wstring status = Git(L"status", {L"--short"});
+    const std::wstring diff = Git(L"diff", {L"--stat"});
+    const std::wstring bash = FindExe(L"bash.exe");
+    const std::wstring python = FindExe(L"python.exe");
+
+    const evalsurface::Report ev = evalsurface::Check();
 
     json::Value v = json::Value::MakeObject();
     v.Set(L"head", Str(str::Trim(head)));
@@ -155,31 +186,24 @@ std::wstring Snapshot() {
     v.Set(L"diffStat", Str(diff));
     v.Set(L"repo", Str(tf::ExeDir()));
     v.Set(L"profile", Str(Config::Get().Dir()));
-    v.Set(L"bash", Str(str::Trim(bash)));
-    v.Set(L"python", Str(str::Trim(python)));
-    if (head.empty()) v.Set(L"error", Str(L"git rev-parse 没有输出（仓库不可用？）"));
+    v.Set(L"bash", Str(bash));
+    v.Set(L"python", Str(python));
+    v.Set(L"evalSurfaceOk", json::Value::MakeBool(ev.ok));
+    v.Set(L"evalSurfaceManifest", Str(ev.manifestPath));
+    if (!ev.changed.empty()) {
+        json::Value arr = json::Value::MakeArray();
+        for (const std::wstring& c : ev.changed) arr.arr.push_back(Str(c));
+        v.Set(L"evalSurfaceChanged", arr);
+    }
+    if (!ev.reason.empty()) v.Set(L"evalSurfaceReason", Str(ev.reason));
+    if (str::Trim(head).empty()) {
+        v.Set(L"error", Str(L"git rev-parse 没有输出（仓库不可用？）"));
+    }
     return json::Stringify(v, 0);
 }
 
-bool Rollback(const std::wstring& rel, std::wstring* before, std::wstring* after,
-              std::wstring* err) {
-    if (!ValidRepoPath(rel, err)) return false;
-    int code = 0;
-    std::wstring status;
-    // 未修改的文件不给回滚：避免把"本来就没动"包装成一次成功操作。
-    RunCapture(L"git status --short -- " + Quote(rel), &code, &status);
-    if (str::Trim(status).empty()) {
-        if (err) *err = L"该文件没有未提交的改动，无需回滚（或路径写错）";
-        return false;
-    }
-    RunCapture(L"git hash-object " + Quote(rel), &code, before);
-    RunCapture(L"git checkout -- " + Quote(rel), &code, &status);
-    if (code != 0) {
-        if (err) *err = L"git checkout 失败：" + str::Trim(status);
-        return false;
-    }
-    RunCapture(L"git hash-object " + Quote(rel), &code, after);
-    return true;
-}
+// 旧的 Rollback() 已删除 —— 语义搬到 devsnap::Restore()
+// （见 dev_snapshot.h：回滚按快照还原，且回滚前的内容会被存下来，
+//  所以回滚这一步本身可逆，不再是不可逆的 git checkout）。
 
 }  // namespace devtools

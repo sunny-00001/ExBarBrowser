@@ -18,6 +18,34 @@
 // ---------------------------------------------------------------- 执行
 //
 // 唯一的一次"导航 + 记录"路径：
+
+namespace {
+
+// 导航失败时的统一出口。
+//
+// 【为什么必须分流】AI 命令在 **UI 线程**执行（ai::PumpRequests 由 WM_TIMER 驱动）。
+// MessageBoxW 会进消息循环，于是管道永远读不到这次调用的响应 —— 调用方只能等到
+// 10 秒超时，而且这段时间里**整个消息泵被模态框占住**，界面不重绘、别的请求也发不出去。
+//
+// 实测（2026-11-21）：`fs.open {"path":"C://Windows"}` → {"ok":false,"error":"timeout"}，
+// 10.5 秒。日志里对应 `[nav] parse 'C:\\Windows' hr=0x80070057`。
+//
+// 【判据】CommandBus::fromMachine() —— 看 ActorKind，不看来源细分标签。
+// 机器侧改成 NoteFailure（把原因如实交出去，调用方拿 errorCode/error）；
+// 人侧保留弹窗（这是交互式行为，该让人看见）。
+//
+// 【为什么不在这里硬编码"机器"两个字】Actor 是闭集枚举（ActorKind::Human/Ai），
+// 新增来源时不必改这里 —— 判据在 CommandBus 里是唯一一处。
+void ReportNavFailure(HWND owner, const std::wstring& path) {
+    if (CommandBus::Get().fromMachine()) {
+        CommandBus::Get().NoteFailure(L"无法打开：" + path);
+        return;
+    }
+    MessageBoxW(owner, (L"无法打开：\n" + path).c_str(), id::kBrandShort, MB_ICONWARNING);
+}
+
+}  // namespace
+
 //   1. 让历史栈决定这一跳该压栈还是原地收敛（Request）
 //   2. 真的去导航
 //   3. 失败则回滚栈（Fail），并让上层知道
@@ -38,7 +66,7 @@ bool App::NavigateActive(const std::wstring& path, bool push) {
         const bool ok = reinterpret_cast<INT_PTR>(r) > 32;
         LogDbg(L"[nav] 目标是文件，交给 shell 打开：%s ok=%d", path.c_str(), ok ? 1 : 0);
         if (!ok)
-            MessageBoxW(hwnd_, (L"无法打开：\n" + path).c_str(), id::kBrandShort, MB_ICONWARNING);
+            ReportNavFailure(hwnd_, path);
         return ok;
     }
 
@@ -51,7 +79,7 @@ bool App::NavigateActive(const std::wstring& path, bool push) {
     }
 
     if (!t->view->Navigate(path)) {
-        MessageBoxW(hwnd_, (L"无法打开：\n" + path).c_str(), id::kBrandShort, MB_ICONWARNING);
+        ReportNavFailure(hwnd_, path);
         OnTabNavFailed(t->view.get());
         return false;
     }

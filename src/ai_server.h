@@ -53,6 +53,12 @@ int PumpRequests();
 // 令牌文件路径（启动时写入；客户端读它来通过校验）。
 std::wstring TokenPath();
 
+// 当前实例的管道名与令牌。供**进程内**的消费者使用（stdio 桥接，
+// 见 mcp_stdio.h）—— 外部客户端走发现文件（ai-pipe.txt / ai-token.txt）。
+// 服务没起来时返回空串。
+std::wstring CurrentPipeName();
+std::wstring CurrentToken();
+
 // 处理一行请求，返回一行响应（纯函数，可在 UI 线程直接调；便于单测）。
 // 不依赖任何窗口 —— 命令本身经 CommandBus，状态经 ai::GetState()。
 //

@@ -93,7 +93,7 @@ bool WriteSetting(const std::wstring& key, const json::Value& value, std::wstrin
     json::Value args = json::Value::MakeObject();
     args.Set(L"key", json::Value::MakeStr(key));
     args.Set(L"value", value);  // Set 收 by-value：这里传的是副本
-    if (CommandBus::Get().Invoke(CmdId::ConfigSet, Args::FromJson(args), L"ui.settings"))
+    if (CommandBus::Get().Invoke(CmdId::ConfigSet, Args::FromJson(args), Actor::Settings()))
         return true;
     if (reason) *reason = CommandBus::Get().lastBlockReason();
     return false;
@@ -109,8 +109,7 @@ bool ReadSetting(const std::wstring& key, json::Value* out, std::wstring* reason
     json::Value args = json::Value::MakeObject();
     args.Set(L"key", json::Value::MakeStr(key));
     json::Value result;
-    if (!CommandBus::Get().InvokeByNameResult(L"config.get", Args::FromJson(args), &result,
-                                              L"ui.settings")) {
+    if (!CommandBus::Get().InvokeByNameResult(L"config.get", Args::FromJson(args), &result, Actor::Settings())) {
         if (reason) *reason = CommandBus::Get().lastBlockReason();
         return false;
     }

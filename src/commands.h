@@ -142,6 +142,10 @@ enum class CmdId : int {
     NamedSessionList,    // 无参，只读：列出全部命名会话
     NamedSessionRestore, // {name}：整组重开一个命名会话（追加开新标签）
     NamedSessionDelete,  // {name}：删除一个命名会话
+
+    // ---- Explorer 键位补齐（只允许追加在末尾，见 C1b）----
+    CmdDeletePermanent,  // 无参，needsSelection：Shift+Delete，永久删除（不经回收站、不进撤销栈）
+    NavTreeExpandAll,    // 无参：Ctrl+Shift+E，展开导航窗格整棵树
 };
 
 // 命令的风险等级（与 mod 的 risk / 架构规则 R18 对齐）。
@@ -346,6 +350,26 @@ struct CommandDef {
     // 因为它会一直绿。
     const char* assertion = nullptr;
 
+    // ---- 显式豁免（"这条命令为什么写不出断言"）----
+    //
+    // 【为什么需要这个字段】断言覆盖率不能靠"能给多少条就写多少条"来达成 ——
+    // 剩下的该怎么办？只有两种诚实的做法：写一条**真能求值**的断言，
+    // 或者**显式说明为什么写不出来**。没有第三种。
+    //
+    // 以前第三种是默认的：命令表里绝大多数条目没有 assertion，
+    // 没人知道哪些是"还没写"、哪些是"写不出来"。于是覆盖率是个死数字，
+    // 静态检查也无从判断新加的命令是不是漏了断言。
+    //
+    // 【判据】本字段非空 ⇒ 本命令**豁免**断言求值；本字段为空且 assertion
+    // 也为空 ⇒ **不合规**，check_ai_meta 第 23 项会直接报错。
+    // 两者互斥（同时给 = 自相矛盾，也会被检查拦下）。
+    //
+    // 【豁免必须写理由】理由会被 tools/list 一并暴露给调用方
+    // （expectedEffect 为空、assertionExempt 非空）——
+    // 客户端于是知道"这条命令的成败信号不可回读验证"，
+    // 而不会把 ok=true 当成"效果确实达成"。
+    const char* assertionExempt = nullptr;
+
 
     // 旧字段的兼容视图：把 effects 映射回三档。仅用于既有代码/AI 白名单的
     // 粗粒度判断，新代码请直接读 effects。
@@ -415,6 +439,51 @@ bool CanExecute(const CommandDef& def, std::wstring* reason = nullptr);
 //
 // 结果统一是 JSON 对象：便于以后直接序列化成 MCP 的 structuredContent，
 // 不需要为每种命令定义 C++ 结构体（那又会变成"只有 C++ 能读懂"的私有格式）。
+// ---------------------------------------------------------------- 调用来源
+//
+// 【为什么 actor 必须是类型，不能是字符串】
+//
+// 以前 actor 是 `const wchar_t*`，"是不是机器"只认 `actor != L"ui"`。
+// 于是「系统菜单点的」「快捷键触发的」「拖进来的」「命令面板选的」
+// 全被判成**机器** —— 而 fromMachine() 是四件事的共同前提：
+//   ① 撤销边界（AI 的撤销只该退到自己那一步，不穿透用户的手工操作）
+//   ② 审计归类（这条命令是人点的还是机器发的）
+//   ③ 审批强度（机器侧不得自我批准破坏性操作）
+//   ④ 人工改写率（人改写了机器的产出 vs 机器自己改）
+//
+// 前提答错，后面四件事全部错，而且**错得毫无征兆**：
+// 用户按 Ctrl+Z 想撤自己刚才的操作，却因为"键盘算机器"被
+// "只撤到机器那一步"的规则拦住 —— 用户看到的是"撤销坏了"。
+//
+// 判据本身必须是**闭集**：枚举 + 编译期检查，
+// 而不是"约定大家只写这几个字符串"（约定守不住，下一个人加个 L"touch" 就漏了）。
+enum class ActorKind {
+    Human,  // 人点的（UI 控件 / 快捷键 / 鼠标 / 系统菜单 / 命令面板 / 拖拽 / 设置面板）
+    Ai,     // 机器（AI 命名管道）
+};
+
+// 一次调用的来源。
+//
+// kind 决定"是不是机器"（唯一判定点）；source 只是人类来源的细分标签，
+// 用来回答"人是从哪儿点的" —— 它**不参与**判定，只进审计与日志。
+struct Actor {
+    ActorKind kind = ActorKind::Human;
+    const wchar_t* source = L"ui";
+
+    // 人类来源的固定标签。集中在这里而不是散在各调用点，
+    // 是为了让"新增一种人类来源"变成一次显式的登记，
+    // 而不是又一次在调用点随手写个字符串。
+    static Actor Ui()       { return {ActorKind::Human, L"ui"}; }
+    static Actor Key()      { return {ActorKind::Human, L"key"}; }
+    static Actor Mouse()    { return {ActorKind::Human, L"mouse"}; }
+    static Actor SysMenu()  { return {ActorKind::Human, L"sysmenu"}; }
+    static Actor Palette()  { return {ActorKind::Human, L"palette"}; }
+    static Actor Seq()      { return {ActorKind::Human, L"seq"}; }
+    static Actor Drop()     { return {ActorKind::Human, L"drop"}; }
+    static Actor Settings() { return {ActorKind::Human, L"ui.settings"}; }
+    static Actor Ai()       { return {ActorKind::Ai, L"ai"}; }
+};
+
 class CommandBus {
 public:
     // handler 收具名参数对象。不再有"字符串 arg"。
@@ -431,15 +500,18 @@ public:
 
     // 新入口：具名参数。所有新代码都该用它。
     // 返回值仍是"成功/失败"；要拿结构化结果请用 InvokeResult。
-    bool Invoke(CmdId id, const Args& args, const wchar_t* actor = L"ui");
-    bool InvokeByName(const std::wstring& name, const Args& args, const wchar_t* actor = L"ui");
+    //
+    // actor 必须传 Actor::Xxx()（见上面的 Actor）。传字符串字面量会被
+    // check_components.py 判红 —— 那样才能保证"新增调用点不会漏掉分类"。
+    bool Invoke(CmdId id, const Args& args, Actor actor = Actor::Ui());
+    bool InvokeByName(const std::wstring& name, const Args& args, Actor actor = Actor::Ui());
 
     // 带结果的调用。result 可为空（只关心成败）；非空时若命令有返回值则填入，
     // 若该命令没有返回值则置为空对象（不编造数据）。
     bool InvokeResult(CmdId id, const Args& args, json::Value* result,
-                      const wchar_t* actor = L"ui");
+                      Actor actor = Actor::Ui());
     bool InvokeByNameResult(const std::wstring& name, const Args& args, json::Value* result,
-                            const wchar_t* actor = L"ui");
+                            Actor actor = Actor::Ui());
 
     // 这条命令是否会产出结构化结果。UI/文档侧据此决定要不要展示"结果"区域。
     bool HasResult(CmdId id) const;
@@ -448,9 +520,9 @@ public:
     // 旧入口（适配层）：单字符串参数。保留是因为 keymap / 序列 / 鼠标规则里
     // 写的是 "ViewMode:3" 这种规格，且它们不关心参数形状。
     // 实现会经 ArgsFromLegacyArg 转成 Args，因此新旧路径最终走同一个 handler。
-    bool InvokeLegacy(CmdId id, const std::wstring& arg, const wchar_t* actor = L"ui");
+    bool InvokeLegacy(CmdId id, const std::wstring& arg, Actor actor = Actor::Ui());
     bool InvokeByNameLegacy(const std::wstring& name, const std::wstring& arg,
-                            const wchar_t* actor = L"ui");
+                            Actor actor = Actor::Ui());
 
     // 最近一条命令（状态栏/日志用）
     std::wstring lastCommand() const { return last_; }
@@ -482,19 +554,41 @@ public:
     // {}，于是"人侧分支"被执行，弹出模态报告窗口，把管道调用卡到超时
     // （实测：session.list 从 AI 调返回 {"ok":false,"error":"timeout"}）。
     // 判据必须是"空参数 **且** 不是机器调用"，见 IsHumanCall()。
-    bool fromMachine() const { return actor_ != nullptr && std::wcscmp(actor_, L"ui") != 0; }
+    //
+    // 【口径】只看 ActorKind —— 人类来源的细分标签（key / mouse / sysmenu…）
+    // 一律算"人"。以前这里是 `actor != L"ui"`，于是键盘、系统菜单、拖拽
+    // 全被判成机器，撤销边界与审批强度跟着一起错。
+    bool fromMachine() const { return actor_.kind == ActorKind::Ai; }
+
+    // 记一条"**被拒绝**"的调用审计。
+    //
+    // 【为什么单独开一个入口】CommandBus::Audit 记的是"进了 Dispatch 的调用"。
+    // 但 AI 通道有一整段在**进 Dispatch 之前**就返回了：
+    // 未知命令 / 未暴露 / 未实现 / schema 非法 / 参数不合法 / 危险未批准。
+    // 这些拒绝过去**一条审计都不写**（实测：连续 4 次被拒 → audit.log 0 增长）。
+    //
+    // 【为什么拒绝也要记】被拒的调用恰恰是最值得追的：
+    // · 反复撞同一个错 → 调用方（或模型）用错了方法；
+    // · 反复撞 danger_disabled → 有人在试探破坏性操作的边界；
+    // · 审计断了这一段，"AI 动过什么"就不是完整的。
+    // AGENTS.md §8.5 的口径是「没有审计的『成功』不认」—— 被拒的更不该消失。
+    //
+    // 【为什么不用 Audit】Audit 走 CommandDef 与 Dispatch 的内部状态，
+    // 而拒绝发生时还没有 CommandDef（未知命令根本没有）。
+    // 所以这里收"名字 + 原因"两个字符串，自己拼一行。
+    void AuditRejected(const std::wstring& commandName, const std::wstring& reason);
 
 private:
     CommandBus() = default;
-    bool Dispatch(CmdId id, const Args& args, json::Value* result, const wchar_t* actor);
-    void Audit(const CommandDef& def, const std::wstring& argDesc, const wchar_t* actor, bool ok);
+    bool Dispatch(CmdId id, const Args& args, json::Value* result, Actor actor);
+    void Audit(const CommandDef& def, const std::wstring& argDesc, Actor actor, bool ok);
 
     std::vector<std::pair<CmdId, Handler>> handlers_;
     std::vector<std::pair<CmdId, ResultHandler>> resultHandlers_;
     std::wstring last_;
     std::wstring lastBlockReason_;
     std::wstring pendingReason_;   // handler 报的原因，本次 Dispatch 内消费
-    const wchar_t* actor_ = L"ui"; // 本次 Dispatch 的调用来源（handler 经 fromMachine 读）
+    Actor actor_;                  // 本次 Dispatch 的调用来源（handler 经 fromMachine 读）
 };
 
 // 双入口命令的统一判据："这次是人点的吗"。
