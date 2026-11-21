@@ -230,17 +230,15 @@ void NavBar::LayoutSearch(int fieldRight, int fy, int fieldH) {
         if (search_) ShowWindow(search_, SW_HIDE);
         return;
     }
-    // 搜索框占地址框右侧约 1/3（不低于 160dp）。地址框让出这段宽度：
-    // 两者互斥摆放比"搜索浮在地址框上"更好 —— 浮着会遮住路径尾部，
-    // 而尾部恰恰是用户判断"我在哪一层"的地方。
-    const int minW = theme_->S(160);
-    const int w = std::max(minW, (fieldRight - fieldRc_.left) / 3);
-    searchRc_ = {fieldRight - w, fy, fieldRight, fy + fieldH};
+    // 搜索框占用 Layout 里给它留出的那一段（宽度计算在 Layout 一处完成，
+    // 这里只负责摆放 —— 两边各算一次宽度必然对不上）。
+    searchRc_ = {fieldRc_.right + theme_->S(kGap96), fy, fieldRight, fy + fieldH};
     ShowWindow(search_, SW_SHOW);
+    const int pad = theme_->S(kFieldVPad96);
     int eW = searchRc_.right - searchRc_.left - theme_->S(8);
-    int lineH = searchRc_.bottom - searchRc_.top - theme_->S(kFieldVPad96) * 2;
-    MoveWindow(search_, searchRc_.left + theme_->S(4), searchRc_.top + theme_->S(kFieldVPad96),
-               eW > 0 ? eW : 0, lineH > 0 ? lineH : 0, TRUE);
+    int lineH = searchRc_.bottom - searchRc_.top - pad * 2;
+    MoveWindow(search_, searchRc_.left + theme_->S(4), searchRc_.top + pad, eW > 0 ? eW : 0,
+               lineH > 0 ? lineH : 0, TRUE);
 }
 
 void NavBar::ShowSearch(bool show) {
@@ -491,9 +489,19 @@ void NavBar::Layout() {
     const int fieldLeft = (buttons_.empty() ? theme_->S(kX96) : buttons_.back().rc.right) + gap +
                           theme_->S(2);
     const int fieldRight = rc.right - theme_->S(8);
-    fieldRc_ = {fieldLeft, fy, fieldRight, fy + fieldH};
+
+    // 搜索框（显示中）从右侧切一段走，地址框让出宽度。
+    // 顺序很关键：先算搜索框、再算地址框，否则地址框的右缘会盖在搜索框下面
+    // （EDIT 子窗口的 z 序不保证，看起来像"地址框压住了搜索框一半"）。
+    const int searchW = (search_ && searchVisible_)
+                            ? std::max(theme_->S(160), (fieldRight - fieldLeft) / 3 +
+                                                           theme_->S(kGap96))
+                            : 0;
+    const int addrRight = fieldRight - (searchW ? searchW + theme_->S(kGap96) : 0);
+    fieldRc_ = {fieldLeft, fy, addrRight, fy + fieldH};
     dropRc_ = {fieldRc_.right - theme_->S(kPad96) - theme_->S(kDrop96), fieldRc_.top,
                fieldRc_.right - theme_->S(kPad96), fieldRc_.bottom};
+    LayoutSearch(fieldRight, fy, fieldH);
 
     // EDIT 只占一行高并垂直居中（单行 EDIT 拉满整框会把文字贴顶）
     if (edit_) {
