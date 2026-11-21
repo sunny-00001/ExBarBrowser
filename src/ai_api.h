@@ -69,7 +69,13 @@ struct CallResult {
     bool ok = false;
     std::wstring command;
     std::wstring risk;    // 兼容字段：read / write / danger（由 effects 推导）
-    std::wstring error;   // 失败原因（ok=false 时必填）
+    std::wstring error;   // 失败原因（ok=false 时必填）——给人看的中文
+    // 机器可读的失败类别。为什么必须与 error 分开：客户端要按类别决策
+    // （改参数 / 补命令 / 要审批 / 等用户），而中文串一改客户端就断。
+    // 取值见 docs/AI-INTERFACE.md §3.1；空表示没有失败（ok=true）。
+    //   unknown_tool / not_exposed / not_implemented / bad_args /
+    //   schema_invalid / danger_disabled / need_approval / blocked / failed
+    std::wstring errorCode;
     // 结构化结果（P6）。命令有 outputSchema 且执行成功时填入；
     // 其余情况为空对象 —— 不编造返回值。
     json::Value result = json::Value::MakeObject();
@@ -148,5 +154,14 @@ std::wstring ResultToJson(const CallResult& r);
 std::wstring StateToJson(const StateSnapshot& s);
 // tools/list 的 JSON（{"tools":[...]}，符合 MCP tools/list 形状）。
 std::wstring ToolsToJson();
+
+// 能力面自描述：命令总数 / 已实现 / 已暴露，以及两张缺口清单
+//   {"total":N,"implemented":N,"aiExposed":N,
+//    "notImplemented":["..."], "notExposed":["..."]}
+//
+// 为什么必须由产品回答：tools/list 只含已暴露的命令，客户端看到"没有这条"时
+// 无法区分三种情况 —— 命令不存在（要新增）/ 存在但未暴露（要补元数据）/
+// 存在但未实现（要写 handler）。这三类的修法完全不同，靠客户端猜必然猜错。
+std::wstring CapabilitiesToJson();
 
 }  // namespace ai

@@ -1338,6 +1338,47 @@ def main():
     else:
         ok('快照/编译/测试/作业/回滚齐全，异步结果可订阅，回滚有人侧确认')
 
+    # ---------------------------------------------------------------- 22
+    print('\n22. 失败必须可机器分类、能力面必须自描述（不靠客户端猜）')
+    api_h_text = (ROOT / 'src/ai_api.h').read_text(encoding='utf-8', errors='replace')
+    api_cpp_text = (ROOT / 'src/ai_api.cpp').read_text(encoding='utf-8', errors='replace')
+    srv_text = (ROOT / 'src/ai_server.cpp').read_text(encoding='utf-8', errors='replace')
+    test_text = (ROOT / 'tests/ai_api_test.cpp').read_text(encoding='utf-8', errors='replace')
+
+    # 错误码是客户端的分支依据：多一个未登记的码 = 客户端会掉进 default 分支，
+    # 少一个码 = 客户端只能解析中文（一改文案就断）。所以两端都钉住。
+    known_codes = {'unknown_tool', 'not_exposed', 'not_implemented', 'bad_args',
+                   'schema_invalid', 'danger_disabled', 'need_approval',
+                   'blocked', 'failed', 'effect_not_met'}
+    used_codes = set(re.findall(r'errorCode = L"([a-z_]+)"', api_cpp_text))
+    cap_body = _body_of(api_cpp_text, 'std::wstring CapabilitiesToJson()')
+
+    gap_missing = []
+    for label, cond in [
+        ('结果结构有 errorCode', 'std::wstring errorCode' in api_h_text),
+        ('能力面接口已声明', 'CapabilitiesToJson' in api_h_text),
+        ('"调不到"三态可区分',
+         {'unknown_tool', 'not_exposed', 'not_implemented'} <= used_codes),
+        ('参数/审批/阻断各有独立码',
+         {'bad_args', 'danger_disabled', 'need_approval', 'blocked'} <= used_codes),
+        ('"效果不符"有独立码', 'effect_not_met' in used_codes),
+        ('码值都在白名单内（无拼写漂移）', used_codes <= known_codes),
+        ('响应与事件都带 errorCode', api_cpp_text.count('L"errorCode"') >= 2),
+        ('旧格式暴露 capabilities', 'L"capabilities"' in srv_text),
+        ('JSON-RPC 暴露 exbar/capabilities', 'L"exbar/capabilities"' in srv_text),
+        ('能力面直接数命令表（不另存清单）', 'CommandTable()' in cap_body),
+        ('两类缺口清单都给出',
+         'notImplemented' in cap_body and 'notExposed' in cap_body),
+        ('有单测守着 errorCode 与能力面',
+         'errorCode' in test_text and 'CapabilitiesToJson' in test_text),
+    ]:
+        if not cond: gap_missing.append(label)
+    if gap_missing:
+        for label in gap_missing:
+            fail('缺口面缺：' + label)
+    else:
+        ok('失败按 10 类机器码返回；能力面（总数/已实现/已暴露/两张缺口清单）由产品自述')
+
     print()
     if g_fail:
         print(f'失败 {g_fail} 项')

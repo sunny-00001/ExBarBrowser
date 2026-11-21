@@ -505,6 +505,16 @@ std::wstring HandleRequestLine(const std::wstring& line) {
         return json::Stringify(v, 0);
     }
 
+    // ---- 能力面：让客户端能区分"没这条命令 / 有但没开放 / 有但没实现" ----
+    // 放在 tools/list 旁边而不是塞进 state：它是编译期事实，与运行时状态无关。
+    if (method == L"capabilities" || method == L"exbar/capabilities") {
+        json::Value out;
+        std::wstring jerr;
+        if (!json::Parse(CapabilitiesToJson(), out, &jerr)) out = json::Value::MakeObject();
+        out.Set(L"ok", json::Value::MakeBool(true));
+        return json::Stringify(out, 0);
+    }
+
     // ---- 事件流：补历史 + 订阅。两者都过同一个令牌校验（见上面的 CheckToken）----
     if (method == L"events/since") {
         const uint64_t after = static_cast<uint64_t>(req.GetInt(L"after", 0));
@@ -709,9 +719,21 @@ std::wstring HandleRpcLine(const json::Value& req) {
             }
         }
         result.Set(L"content", content);
+        // 机器码与 isError 并存：MCP 客户端能读 isError，但读不出"哪一类失败"。
+        // 客户端要决定"改参数 / 补命令 / 要审批"，靠这个字段而不是解析中文。
+        if (!r.errorCode.empty()) result.Set(L"errorCode", json::Value::MakeStr(r.errorCode));
         if (!result.Find(L"isError")) {
             result.Set(L"isError", json::Value::MakeBool(!r.ok));
         }
+        return json::Stringify(RpcResult(id, result), 0);
+    }
+
+    // ---- exbar/capabilities：命令总数/已实现/已暴露 + 两类缺口清单 ----
+    // 与 exbar/state 同一命名约定（厂商前缀，不占 MCP 标准方法名）。
+    if (method == L"exbar/capabilities") {
+        json::Value result;
+        std::wstring perr;
+        if (!json::Parse(CapabilitiesToJson(), result, &perr)) result = json::Value::MakeObject();
         return json::Stringify(RpcResult(id, result), 0);
     }
 

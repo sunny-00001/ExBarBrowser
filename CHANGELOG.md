@@ -19,6 +19,23 @@
 
 ## [Unreleased]
 
+### 新增（AI 通道：失败可机器分类 + 能力面自述）
+
+让"新会话 → 提需求 → 调命令 → 缺什么补什么"这条闭环真正落在产品通道里，而不是外部脚本里：
+
+- **`errorCode`（10 类）**：`tools/call` 的响应与 `command` 事件新增机器码，与中文 `error` 并存。
+  `unknown_tool` / `not_exposed` / `not_implemented` 三态分离 —— 以前同一句
+  "未知或未暴露给 AI 的命令" 混着三种修法完全不同的情况（新增命令 / 补元数据 / 写 handler）。
+  另有 `bad_args` / `schema_invalid` / `danger_disabled` / `need_approval` / `blocked` /
+  `failed` / `effect_not_met`（handler 成功但断言不符）。
+- **`exbar/capabilities`（旧格式也可 `capabilities`）**：直接由命令表算出
+  `{total, implemented, aiExposed, notImplemented[], notExposed[]}`。
+  客户端不再需要 grep 源码推断"是没这条命令，还是有但没开放"。
+- **`check_ai_meta.py` 第 22 项**：钉住 errorCode 白名单、三态可区分、
+  两条通道都暴露能力面、能力面必须数命令表（不另存清单）、单测必须守着。
+- `tests/ai_api_test.cpp`：新增 errorCode 五类断言与能力面计数一致性
+  （`aiExposed` 必须等于 `tools/list` 条数，两个面不能各说各话）。
+
 ### 变更（多实例与 AI 通道形态）
 
 - **移除单实例锁**：删除 `Local\ExBarBrowser.Instance` 命名互斥体，不存在任何

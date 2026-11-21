@@ -125,9 +125,16 @@ int main() {
     ai::CallResult r1 = ai::Call(L"CmdDelete", empty, true);
     Check(!r1.ok, "CmdDelete 即使 approve=true 也拒绝");
     Check(r1.error == L"未知或未暴露给 AI 的命令", "给出明确原因");
+    // 中文原因之外还必须有机器码：客户端据此决定"补命令 / 补暴露 / 改参数"。
+    Check(r1.errorCode == L"not_exposed", "CmdDelete -> errorCode=not_exposed");
 
     ai::CallResult r2 = ai::Call(L"NoSuchCommand", empty, false);
     Check(!r2.ok, "未知命令拒绝");
+    Check(r2.errorCode == L"unknown_tool", "NoSuchCommand -> errorCode=unknown_tool");
+
+    ai::CallResult r4 = ai::Call(L"ToggleCheckboxes", empty, false);
+    Check(!r4.ok, "未实现命令拒绝");
+    Check(r4.errorCode == L"not_implemented", "ToggleCheckboxes -> errorCode=not_implemented");
 
     // ---- 5. 危险命令门：设置未允许时，approve=true 也拒绝 ----
     std::printf("\n危险命令门\n");
@@ -135,6 +142,13 @@ int main() {
     ai::CallResult r3 = ai::Call(L"TabCloseOther", empty, true);
     Check(!r3.ok, "TabCloseOther(Danger) 在 aiAllowDanger=false 时拒绝");
     Check(r3.error == L"danger_disabled", "错误码是 danger_disabled");
+    Check(r3.errorCode == L"danger_disabled", "errorCode 同为 danger_disabled");
+
+    // 参数不合规：这是"改请求"，不是"补代码"—— 分类必须能给对。
+    json::Value badArgs = json::Value::MakeObject();
+    ai::CallResult r5 = ai::Call(L"ViewMode", badArgs, false);
+    Check(!r5.ok, "ViewMode 缺 preset 拒绝");
+    Check(r5.errorCode == L"bad_args", "缺必填参数 -> errorCode=bad_args");
 
     // 关掉的门对 Write 类不影响（这里只验证不会被误判成 danger）
     // risk 字段在第 2 步被 Effects 四维取代（单轴表达不了"幂等的写" vs
@@ -157,9 +171,57 @@ int main() {
     ai::CallResult rr;
     rr.command = L"NavBack";
     rr.risk = L"write";
+    rr.error = L"未知或未暴露给 AI 的命令";
+    rr.errorCode = L"unknown_tool";
     std::wstring rj = ai::ResultToJson(rr);
     Check(rj.find(L"\"ok\":false") != std::wstring::npos, "CallResult ok=false 正确序列化");
     Check(rj.find(L"\"verdict\":false") != std::wstring::npos, "响应含顶层 verdict（无断言时=ok）");
+    Check(rj.find(L"\"errorCode\":\"unknown_tool\"") != std::wstring::npos,
+          "响应含 errorCode（中文 error 不变）");
+
+    // ---- 7. 能力面自描述：让客户端不靠猜就能分清三类缺口 ----
+    std::printf("\n能力面\n");
+    std::wstring cap = ai::CapabilitiesToJson();
+    int total = 0, impl = 0, exp = 0;
+    for (const auto& d : CommandTable()) {
+        ++total;
+        if (!d.implemented) continue;
+        ++impl;
+        if (d.aiExposed) ++exp;
+    }
+    Check(cap.find(L"\"total\":" + std::to_wstring(total)) != std::wstring::npos,
+          "capabilities.total 与命令表条数一致");
+    Check(cap.find(L"\"implemented\":" + std::to_wstring(impl)) != std::wstring::npos,
+          "capabilities.implemented 与命令表一致");
+    Check(cap.find(L"\"aiExposed\":" + std::to_wstring(exp)) != std::wstring::npos,
+          "capabilities.aiExposed 与命令表一致");
+    Check(exp == static_cast<int>(tools.size()),
+          "capabilities.aiExposed 与 tools/list 条数一致（两个面不能各说各话）");
+    Check(cap.find(L"\"notImplemented\":[") != std::wstring::npos &&
+          cap.find(L"\"notExposed\":[") != std::wstring::npos,
+          "给出 notImplemented / notExposed 两张缺口清单");
+
+    // 清单内容要真的能对上：未实现的非空（当前确实有未实现命令），
+    // CmdDelete 属于"已实现但未开放"而不是"未实现"—— 这三类一旦混在一起，
+    // 客户端就会去写一个已经存在的命令。
+    json::Value capv;
+    std::wstring capErr;
+    Check(json::Parse(cap, capv, &capErr), "capabilities 是合法 JSON");
+    const json::Value* ni = capv.Find(L"notImplemented");
+    Check(ni && ni->IsArray() && !ni->arr.empty(), "notImplemented 非空（确实还有未实现命令）");
+    if (ni && ni->IsArray()) {
+        bool toggleInNotImpl = false;
+        for (const auto& n : ni->arr)
+            if (n.str == L"view.toggle.checkboxes") toggleInNotImpl = true;
+        Check(toggleInNotImpl, "view.toggle.checkboxes 在 notImplemented（表里 implemented=false）");
+    }
+    const json::Value* ne = capv.Find(L"notExposed");
+    bool hasCmdDelete = false;
+    if (ne && ne->IsArray())
+        for (const auto& n : ne->arr)
+            // 规范名是点分名（file.delete），CmdDelete 只是 legacy 名。
+            if (n.str == L"file.delete") hasCmdDelete = true;
+    Check(hasCmdDelete, "file.delete（CmdDelete）出现在 notExposed（已实现但未开放）");
 
     ai::CallResult okNoAssert;
     okNoAssert.command = L"NavBack";

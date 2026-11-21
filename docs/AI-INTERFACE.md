@@ -1,6 +1,6 @@
 ---
 status: current
-baseline: 2026-11-21 11:00
+baseline: 2026-11-21 19:15
 ---
 
 # AI 操作接口
@@ -32,6 +32,11 @@ baseline: 2026-11-21 11:00
    任何命令知识。新增命令时改表即可，不用改接口层。
 3. **失败关闭**：未暴露的命令拒绝、参数不合规拒绝、危险命令未经双门拒绝。
    宁可少做，不做"尽力而为"的猜测。
+4. **失败可机器分类**：每个拒绝都带 `errorCode`（见 §3 错误码表）。中文 `error` 只给人读，
+   客户端按码决策 —— 否则"补命令 / 补暴露 / 改参数 / 要审批"这四件事只能靠解析文案区分，
+   一次文案调整就会让所有客户端走错分支。
+5. **能力面自述**：`exbar/capabilities` 直接由命令表算出总数、已实现、已暴露与两张缺口清单。
+   "缺什么"由产品回答，不由客户端 grep 源码推断。
 
 ---
 
@@ -114,6 +119,15 @@ baseline: 2026-11-21 11:00
 // 非 MCP 标准方法，用厂商前缀避免与将来标准冲突
 → {"jsonrpc":"2.0","id":4,"method":"exbar/state","params":{"__token":"..."}}
 ← {"jsonrpc":"2.0","id":4,"result":{"activePath":"D:\\","tabs":[...]}}
+
+// 能力面自描述：命令总数 / 已实现 / 已暴露 + 两张缺口清单
+// 为什么需要它：tools/list 只含"已暴露"，客户端看到"没有这条命令"时分不清
+//   ① 表里没有（要新增）② 有实现但没开放（补元数据）③ 有表项没 handler（写实现）
+// 三种修法完全不同，靠猜必然猜错。答案由产品直接给出，客户端不 grep 源码。
+→ {"jsonrpc":"2.0","id":5,"method":"exbar/capabilities","params":{"__token":"..."}}
+← {"jsonrpc":"2.0","id":5,"result":{"total":168,"implemented":160,"aiExposed":135,
+     "notImplemented":["tab.merge","view.toggle.checkboxes"],
+     "notExposed":["file.delete","file.rename"]}}
 ```
 
 **令牌**：MCP 没有这个概念，所以放在 `params.__token`（也接受顶层 `token`）。
@@ -158,18 +172,26 @@ baseline: 2026-11-21 11:00
 
 ### 错误码
 
-| 错误 | 含义 |
-|---|---|
-| `invalid_json` | 请求不是合法 JSON 对象 |
-| `bad_token` | 令牌错/缺失/通道未启用（**不泄露工具清单**） |
-| `unknown_method` | method 不是 `tools/list` / `state` / `tools/call` |
-| `missing_name` | `tools/call` 缺 `name` |
-| `未知或未暴露给 AI 的命令` | 该命令不在白名单内 |
-| `danger_disabled` | 设置里 `aiAllowDanger=false`，危险命令一律拒绝 |
-| `need_approval` | 危险命令缺 `approve=true` |
-| `该命令不接受参数` | 无参数命令被传了 args（显式拒绝，不静默忽略） |
-| `缺少必填参数：xxx` | argsSchema 的 required 项没给 |
-| `timeout` | UI 线程 10 秒内没处理完（通常是在模态对话框里） |
+`error` 是给人看的中文原因，**`errorCode` 是给机器分支的稳定标识**。
+两者同时返回：客户端只读 `errorCode` 就不会被文案改动打断，人仍能读懂发生了什么。
+
+| `error`（中文，示例） | `errorCode`（机器） | 客户端该做什么 |
+|---|---|---|
+| `invalid_json` | —（JSON-RPC `error.code`） | 改请求 |
+| `bad_token` | —（JSON-RPC `error.code`） | 修令牌；**不泄露工具清单** |
+| `unknown_method` | — | 改 method |
+| `missing_name` | — | 补 `name` |
+| `未知或未暴露给 AI 的命令` | `unknown_tool` | 命令表里没有：新增命令 |
+| `未知或未暴露给 AI 的命令` | `not_exposed` | 有实现但没开放：补 `aiExposed` |
+| `未知或未暴露给 AI 的命令` | `not_implemented` | 有表项没 handler：写实现 |
+| `缺少必填参数：xxx` / `该命令不接受参数` | `bad_args` | 改参数（读 `inputSchema`），别改代码 |
+| `命令的 argsSchema 非法（实现缺陷）` | `schema_invalid` | 命令表写错：修表 + `check_ai_meta` |
+| `danger_disabled` | `danger_disabled` | 用户在设置里关掉了危险命令；这是人的决定 |
+| `need_approval` | `need_approval` | 需要人类批准这一次操作 |
+| 前置条件原因（如"已经是顶层"） | `blocked` | 改目标或先做前置动作 |
+| `命令执行失败` | `failed` | 查日志对应模块行 |
+| （handler 成功但断言不符） | `effect_not_met` | 读 `assertions`：修实现或修判据 |
+| `timeout` | —（`error: timeout`） | UI 卡在模态对话框：**不要重试**，请人关掉 |
 
 ---
 
@@ -207,8 +229,11 @@ baseline: 2026-11-21 11:00
 2. 若带必填参数：在 `src/ai_api.cpp` 的 `kArgKeys` 加一条（键名必须与
    `argsSchema.required` 完全一致）。
 3. 在 `app_commands*.cpp` 里用 `reg(CmdId::X, handler)` 注册实现。
-4. 跑 `python tools/check_ai_meta.py` —— 它会检查暴露/参数/选中项是否自洽。
+4. 跑 `python tools/check_ai_meta.py` —— 它会检查暴露/参数/选中项是否自洽，
+   第 22 项还会校验"每个拒绝都带 `errorCode`、码值不越界"。
 5. 跑 `tests/ai_api_test.cpp`。
+6. 新增任何拒绝分支时，`r.error` 与 `r.errorCode` 必须成对出现 —— 只给中文等于
+   让客户端回到"解析文案"的老路。
 
 > `kArgKeys` 存在的原因：`CommandBus` 的 handler 只收**一个字符串** arg，
 > 而 `argsSchema` 是给人和 AI 看的 JSON Schema，两者之间没有机器可读的映射。

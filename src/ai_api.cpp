@@ -229,8 +229,17 @@ CallResult CallImpl(const std::wstring& command, const json::Value& args, bool a
 
     ToolSpec spec;
     if (!FindTool(command, &spec)) {
+        // 三种"调不到"必须分开：修法完全不同（新增命令 / 补 aiExposed / 写 handler）。
+        // 文案保持原样（既有客户端与单测按它比对），分类放进 errorCode。
+        const CommandDef* any = FindCommand(command);
+        if (!any)
+            r.errorCode = L"unknown_tool";
+        else if (!any->implemented)
+            r.errorCode = L"not_implemented";
+        else
+            r.errorCode = L"not_exposed";
         r.error = L"未知或未暴露给 AI 的命令";
-        LogDbg(L"[ai] 拒绝未知命令：%s", command.c_str());
+        LogDbg(L"[ai] 拒绝未知命令：%s（%s）", command.c_str(), r.errorCode.c_str());
         return r;
     }
     // 回给调用方的命令名统一成规范名：它可能传的是旧名（NavBack），
@@ -243,11 +252,13 @@ CallResult CallImpl(const std::wstring& command, const json::Value& args, bool a
     // 少任何一个都拒绝 —— 权限不能靠调用方自觉。
     if (spec.effects.destructive) {
         if (!Config::Get().s().aiAllowDanger) {
+            r.errorCode = L"danger_disabled";
             r.error = L"danger_disabled";
             LogDbg(L"[ai] 拒绝危险命令（设置未允许）：%s", command.c_str());
             return r;
         }
         if (!approve) {
+            r.errorCode = L"need_approval";
             r.error = L"need_approval";
             LogDbg(L"[ai] 需批准：%s", command.c_str());
             return r;
@@ -258,12 +269,14 @@ CallResult CallImpl(const std::wstring& command, const json::Value& args, bool a
     json::Value schema;
     std::wstring perr;
     if (!json::Parse(spec.argsSchema, schema, &perr) || !schema.IsObject()) {
+        r.errorCode = L"schema_invalid";   // 命令表写错，是实现缺陷，不是调用方的错
         r.error = L"命令的 argsSchema 非法（实现缺陷）";
         LogDbg(L"[ai] %s 的 argsSchema 解析失败：%s", command.c_str(), perr.c_str());
         return r;
     }
     std::wstring verr;
     if (!ValidateAgainstSchema(schema, args, &verr)) {
+        r.errorCode = L"bad_args";         // 改请求即可，不该去改代码
         r.error = verr;
         LogDbg(L"[ai] 参数非法：%s（%s）", command.c_str(), verr.c_str());
         return r;
@@ -285,7 +298,15 @@ CallResult CallImpl(const std::wstring& command, const json::Value& args, bool a
     // 却只写日志，外部只能看到"执行失败"，等于让调用方去猜。
     if (!r.ok && r.error.empty()) {
         const std::wstring& blocked = CommandBus::Get().lastBlockReason();
-        r.error = blocked.empty() ? L"命令执行失败" : blocked;
+        // 前置条件不满足（"已经是顶层"这类）与真正的执行失败要分开：
+        // 前者调用方改目标就能过，后者是 bug。以前两者都是一句中文，靠人读。
+        if (blocked.empty()) {
+            r.errorCode = L"failed";
+            r.error = L"命令执行失败";
+        } else {
+            r.errorCode = L"blocked";
+            r.error = blocked;
+        }
     }
 
     // ---- 自断言求值 ----
@@ -326,6 +347,9 @@ CallResult CallImpl(const std::wstring& command, const json::Value& args, bool a
         for (const auto& a : r.assertions.arr)
             if (!a.GetBool(L"ok", true)) { r.verdict = false; break; }
     }
+    // 命令说成了、效果没对：这是独立一类（实现错，或断言判据错），
+    // 机器要能把它与"handler 直接失败"区分开，否则只能靠人读中文。
+    if (r.ok && !r.verdict && r.errorCode.empty()) r.errorCode = L"effect_not_met";
     return r;
 }
 
@@ -339,6 +363,7 @@ CallResult Call(const std::wstring& command, const json::Value& args, bool appro
     data.Set(L"args", args);   // 事件里带参数：事后回看才知道"改成了什么"
     data.Set(L"ok", json::Value::MakeBool(r.ok));
     if (!r.error.empty()) data.Set(L"error", json::Value::MakeStr(r.error));
+    if (!r.errorCode.empty()) data.Set(L"errorCode", json::Value::MakeStr(r.errorCode));
     if (r.hasAssertions) data.Set(L"assertions", r.assertions);
     data.Set(L"verdict", json::Value::MakeBool(r.verdict));
     events::Publish(L"command", data);
@@ -366,6 +391,8 @@ std::wstring ResultToJson(const CallResult& r) {
     v.Set(L"command", Str(r.command));
     v.Set(L"risk", Str(r.risk));
     if (!r.error.empty()) v.Set(L"error", Str(r.error));
+    // 机器码与中文原因并存：老客户端读 error 不变，新客户端只读 errorCode。
+    if (!r.errorCode.empty()) v.Set(L"errorCode", Str(r.errorCode));
 
     // 结构化结果（P6）。MCP 的形状是 structuredContent + 一份序列化文本
     // （兼容只认文本的客户端）。这里同时给两份。
@@ -507,6 +534,36 @@ std::wstring ToolsToJson() {    json::Value root = json::Value::MakeObject();
     }
     root.Set(L"tools", arr);
     return json::Stringify(root, 0);
+}
+
+std::wstring CapabilitiesToJson() {
+    // 直接从命令表数，不另存一份清单 —— 清单会与表脱节，而这张表是唯一真源。
+    int total = 0, implemented = 0, exposed = 0;
+    json::Value notImpl = json::Value::MakeArray();
+    json::Value notExposed = json::Value::MakeArray();
+    for (const auto& d : CommandTable()) {
+        ++total;
+        const std::wstring name = cmdnaming::CanonicalName(d.name);
+        if (!d.implemented) {
+            // 未实现也算"缺口"，但修法是写 handler，不是改 aiExposed。
+            notImpl.arr.push_back(Str(name));
+            continue;
+        }
+        ++implemented;
+        if (!d.aiExposed) {
+            // 已实现但没开放：修法是补元数据，不是写新命令。
+            notExposed.arr.push_back(Str(name));
+            continue;
+        }
+        ++exposed;
+    }
+    json::Value v = json::Value::MakeObject();
+    v.Set(L"total", json::Value::MakeInt(total));
+    v.Set(L"implemented", json::Value::MakeInt(implemented));
+    v.Set(L"aiExposed", json::Value::MakeInt(exposed));
+    v.Set(L"notImplemented", notImpl);
+    v.Set(L"notExposed", notExposed);
+    return json::Stringify(v, 0);
 }
 
 }  // namespace ai
