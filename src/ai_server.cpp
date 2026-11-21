@@ -11,11 +11,13 @@
 #include "str.h"
 
 #include "ai_api.h"
+#include "ai_events.h"
 #include "common.h"
 #include "config.h"
 #include "json.h"
 #include "text_file.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -119,6 +121,32 @@ std::wstring RunOnUiThread(const std::wstring& request) {
     return job.response;
 }
 
+// 订阅请求识别与游标提取。放在管道线程用，只解析不执行任何命令。
+bool IsSubscribeRequest(const std::string& line) {
+    json::Value req;
+    std::wstring err;
+    return json::Parse(str::FromUtf8(line), req, &err) &&
+           req.GetStr(L"method") == L"events/subscribe";
+}
+
+uint64_t AfterOfRequest(const std::string& line) {
+    json::Value req;
+    std::wstring err;
+    if (!json::Parse(str::FromUtf8(line), req, &err)) return 0;
+    uint64_t after = static_cast<uint64_t>(req.GetInt(L"after", 0));
+    if (const json::Value* p = req.Find(L"params"))
+        after = static_cast<uint64_t>(p->GetInt(L"after", static_cast<int>(after)));
+    return after;
+}
+
+uint64_t SeqOfLine(const std::wstring& line) {
+    json::Value v;
+    std::wstring err;
+    if (!json::Parse(line, v, &err)) return 0;
+    const json::Value* s = v.Find(L"seq");
+    return s && s->IsNumber() ? static_cast<uint64_t>(s->num) : 0;
+}
+
 void ServeLoop() {
     while (g_running) {
         g_pipe = CreateNamedPipeW(g_pipe_name.c_str(), PIPE_ACCESS_DUPLEX,
@@ -137,18 +165,41 @@ void ServeLoop() {
         }
 
         std::string acc;
-        char buf[4096];
-        DWORD read = 0;
-        while (g_running && ReadFile(g_pipe, buf, sizeof(buf), &read, nullptr) && read > 0) {
-            // 【必须在这里限长，不能只在见到 '\n' 之后判】
-            // 原实现是 acc.append 无条件累积，上限检查放在 `line.size() > kMaxLineBytes`
-            // 那一支 —— 而那一支只有在读到一个换行之后才会执行。客户端只要一直不发 '\n'
-            // （或发一个 1GB 的巨型行），acc 就无界增长，本机任意进程无需令牌即可
-            // 把浏览器内存耗光。这里逐次判断，超限即断连。
+        bool subscribed = false;
+        uint64_t after = 0;
+
+        auto send = [&](const std::string& bytes) {
+            DWORD w = 0;
+            return WriteFile(g_pipe, bytes.data(), static_cast<DWORD>(bytes.size()), &w, nullptr) &&
+                   w == bytes.size();
+        };
+
+        // 处理一行请求；返回 false = 连接断了，别再往下读。
+        auto processLine = [&](const std::string& line) {
+            std::string resp;
+            if (line.size() > kMaxLineBytes) {
+                resp = "{\"ok\":false,\"error\":\"line_too_large\"}\n";
+            } else {
+                std::wstring out = RunOnUiThread(LineToWide(line));
+                resp = out.empty() ? std::string("{\"ok\":false,\"error\":\"timeout\"}\n")
+                                   : WideToLine(out) + "\n";
+            }
+            if (!send(resp)) return false;
+            // 订阅确认已经写回去，才切模式：确认之前产生的事件排在后面推，
+            // 客户端看到的顺序永远是「订阅成功 → 事件」。
+            if (IsSubscribeRequest(line)) {
+                subscribed = true;
+                after = AfterOfRequest(line);
+            }
+            return true;
+        };
+
+        // 把新读到的字节切成行。订阅/非订阅两条路共用，避免限长规则写两份。
+        auto feed = [&](const char* buf, DWORD read) {
             if (acc.size() + read > kMaxLineBytes) {
                 LogDbg(L"[ai] 单行超过 %zu 字节（已累积 %zu），断开该客户端",
-                       kMaxLineBytes, acc.size() + read);
-                break;
+                       kMaxLineBytes, acc.size());
+                return false;
             }
             acc.append(buf, read);
             size_t nl;
@@ -157,18 +208,37 @@ void ServeLoop() {
                 acc.erase(0, nl + 1);
                 if (!line.empty() && line.back() == '\r') line.pop_back();
                 if (line.empty()) continue;
-
-                std::string resp;
-                if (line.size() > kMaxLineBytes) {
-                    resp = "{\"ok\":false,\"error\":\"line_too_large\"}\n";
-                } else {
-                    std::wstring out = RunOnUiThread(LineToWide(line));
-                    resp = out.empty() ? std::string("{\"ok\":false,\"error\":\"timeout\"}\n")
-                                       : WideToLine(out) + "\n";
-                }
-                DWORD w = 0;
-                WriteFile(g_pipe, resp.data(), static_cast<DWORD>(resp.size()), &w, nullptr);
+                if (!processLine(line)) return false;
             }
+            return true;
+        };
+
+        char buf[4096];
+        DWORD read = 0;
+        while (g_running) {
+            if (subscribed) {
+                // 推事件：先排空当前队列，再回去看有没有客户端请求。
+                // WaitFor(...,0) 不阻塞；没有新事件时用 Peek + Sleep 让出 CPU。
+                std::wstring line;
+                while (events::WaitFor(after, &line, 0)) {
+                    const uint64_t seq = SeqOfLine(line);
+                    if (!send(WideToLine(line) + "\n")) { subscribed = false; break; }
+                    if (seq > after) after = seq;
+                    line.clear();
+                }
+                DWORD avail = 0;
+                if (PeekNamedPipe(g_pipe, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+                    char chunk[4096];
+                    const DWORD n = std::min<DWORD>(avail, sizeof(chunk));
+                    if (!ReadFile(g_pipe, chunk, n, &read, nullptr) || read == 0) break;
+                    if (!feed(chunk, read)) break;
+                }
+                Sleep(20);
+                continue;
+            }
+
+            if (!ReadFile(g_pipe, buf, sizeof(buf), &read, nullptr) || read == 0) break;
+            if (!feed(buf, read)) break;
         }
         FlushFileBuffers(g_pipe);
         DisconnectNamedPipe(g_pipe);
@@ -176,7 +246,6 @@ void ServeLoop() {
         g_pipe = INVALID_HANDLE_VALUE;
     }
 }
-
 }  // namespace
 
 std::wstring TokenPath() { return tf::Join(Config::Get().Dir(), L"ai-token.txt"); }
@@ -186,6 +255,9 @@ bool StartServer(void (*postToUi)(const std::wstring& requestLine)) {
     if (g_running) return true;
     g_token = MakeToken();
     g_pipe_name = PipeName();
+    // 每次启动都是一条新的事件流：旧进程的历史不应被新客户端当成刚刚发生的。
+    events::Clear();
+    events::ResetStateBaseline();
     WriteDiscoveryFiles(g_token, g_pipe_name);
     g_running = true;
     g_thread = std::thread(ServeLoop);
@@ -225,6 +297,8 @@ void StopServer() {
 
 // UI 线程调用：处理挂起的请求。返回处理了几个（0 = 没活干）。
 int PumpRequests() {
+    // 状态变化由 UI 线程定时检测、由管道推给订阅者；客户端因此不需要轮询 state。
+    events::PollStateChanges();
     int n = 0;
     for (;;) {
         Job* job = nullptr;
@@ -349,6 +423,26 @@ std::wstring HandleRequestLine(const std::wstring& line) {
         return json::Stringify(v, 0);
     }
 
+    // ---- 事件流：补历史 + 订阅。两者都过同一个令牌校验（见上面的 CheckToken）----
+    if (method == L"events/since") {
+        const uint64_t after = static_cast<uint64_t>(req.GetInt(L"after", 0));
+        const size_t limit = static_cast<size_t>(req.GetInt(L"limit", 0));
+        json::Value out;
+        std::wstring jerr;
+        if (!json::Parse(events::Since(after, limit), out, &jerr)) out = json::Value::MakeObject();
+        out.Set(L"ok", json::Value::MakeBool(true));
+        return json::Stringify(out, 0);
+    }
+
+    if (method == L"events/subscribe") {
+        // 真正的"保持连接并推送"在 ServeLoop 里做；这里只回一个确认。
+        json::Value v = json::Value::MakeObject();
+        v.Set(L"ok", json::Value::MakeBool(true));
+        v.Set(L"subscribed", json::Value::MakeBool(true));
+        v.Set(L"lastSeq", json::Value::MakeNum(static_cast<double>(events::LastSeq())));
+        return json::Stringify(v, 0);
+    }
+
     if (method == L"tools/call") {
         const std::wstring name = req.GetStr(L"name");
         if (name.empty()) return json::Stringify(Err(L"missing_name"), 0);
@@ -428,6 +522,22 @@ std::wstring HandleRpcLine(const json::Value& req) {
         toolsCap.Set(L"listChanged", json::Value::MakeBool(false));
         caps.Set(L"tools", toolsCap);
         result.Set(L"capabilities", caps);
+        return json::Stringify(RpcResult(id, result), 0);
+    }
+
+    // ---- 事件流（JSON-RPC 版）：与本地简格式共用同一份事件缓冲 ----
+    if (method == L"events/since") {
+        json::Value out;
+        std::wstring jerr;
+        const uint64_t after = static_cast<uint64_t>(p.GetInt(L"after", 0));
+        const size_t limit = static_cast<size_t>(p.GetInt(L"limit", 0));
+        if (!json::Parse(events::Since(after, limit), out, &jerr)) out = json::Value::MakeObject();
+        return json::Stringify(RpcResult(id, out), 0);
+    }
+    if (method == L"events/subscribe") {
+        json::Value result = json::Value::MakeObject();
+        result.Set(L"subscribed", json::Value::MakeBool(true));
+        result.Set(L"lastSeq", json::Value::MakeNum(static_cast<double>(events::LastSeq())));
         return json::Stringify(RpcResult(id, result), 0);
     }
 

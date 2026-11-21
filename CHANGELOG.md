@@ -19,6 +19,60 @@
 
 ## [Unreleased]
 
+**两轮：把"按了没反应"的命令清零，再补上文件工具集。**
+
+这两轮解决的是同一类问题：命令目录里挂着名字、keymap 里绑着键，按下去却什么都不发生，
+而且**没有任何提示**。静态审计一次抓出 13 条（`implemented=false` 但 keymap 有引用），
+`input_router.cpp` 对它们直接 `continue`。现在剩 2 条（批量重命名、AI 面板），
+且都已如实登记原因。
+
+### 新增（文件工具集：`tool.hash` / `tool.dupfinder` / `tool.compare`）
+
+- **`tool.hash`**：MD5 / SHA-1 / SHA-256，走系统 BCrypt，**流式读**（64 KB 块，
+  内存占用与文件大小无关）。算法名认不出就失败，不静默退回 SHA-256 —— 否则
+  "我算的是 SHA-512"和实际结果无法区分，拿错摘要去核对下载包会得出错误结论。
+- **`tool.dupfinder`**：先按大小分组（便宜且能排除绝大多数），命中的候选才读内容算
+  SHA-256。判据是"大小 + 内容"，**不靠文件名** —— 改名后的副本一样能找出来
+  （实测：`dup1.bin` / `dup2-renamed.bin` / 另一个目录下的 `dup1.bin` 被归为一组）。
+- **`tool.compare`**：两侧按相对路径（大小写不敏感）配对，同大小再比内容；
+  `byContent=false` 只比大小，此时报告里明确写"同大小不同内容会算作相同"。
+  实测能把"1024 字节但内容不同"判成 differ，不是"大小相同即相同"。
+- 三条**同一套双入口**（R20）：不带参数调用（热键 / 命令面板）＝ 目标取界面现状
+  （选中项 / 当前目录 / 两个路径输入框），结果进**只读报告窗口**；带参数调用
+  （agent）＝ 返回结构化 JSON，不弹窗。
+- 结果里必带 `scannedFiles` / `hashedFiles` / `deniedDirs` / `timedOut` / `complete`：
+  只给"没有重复"而不说"扫没扫完"、"有没有目录打不开"，用户会据此删错东西。
+
+### 新增（选择族、撤销、搜索框）
+
+- **选择族四条**：`file.select.invert`（`Ctrl+I`）、`file.select.files`、
+  `file.select.folders`（`Ctrl+Alt+D`）、`file.select.pattern`（`Ctrl+Shift+F`/`Ctrl+Shift+K`）。
+  匹配语义交给系统的 `PathMatchSpecExW`，不自创通配语法。
+- **撤销 `Ctrl+Z`**（`shellops::Undo`）：把撤销转发给 shell 视图自己的撤销栈
+  （落盘操作都带 `FOF_ALLOWUNDO`，系统栈里本来就有）。定位菜单项用**菜单文本前缀匹配**，
+  不用 `GetCommandString(GCS_VERBW)` —— 后者会逐个懒加载第三方 shell 扩展，
+  扩展一阻塞，跑在 UI 线程上的函数永不返回，**整个消息泵卡死**（实测踩到）。
+- **搜索框 `Ctrl+F`**：默认隐藏（地址栏是高频控件，不该为偶尔搜索让位），
+  显示时占地址框右侧约 1/3，回车走 `search-ms:` 协议，空串＝取消搜索回到原目录。
+- **命令面板支持带参命令**：此前含 `required` 的命令在面板里被静默跳过，等于
+  "只有 AI 能用"。现在按 `inputSchema` 逐项追问（`CollectParamsInteractive`）。
+
+### 变更
+
+- **模态消息泵收成一份**（`src/modal.cpp` 的 `modal::Run`）：`prompt.cpp`（两个函数
+  各一份）、`report.cpp` 以前各写一遍同样的循环，每处都要重新踩
+  "`GetMessageW` 返回 -1 是错误 / 0 是 WM_QUIT"和"处理过的按键必须 `continue`"两个坑。
+  `check_components.py` 的"模态消息泵"规则现在只允许 `modal.cpp`（另有 app/popup_list
+  两处历史实现），`prompt.cpp` 移出白名单。
+
+### 移除
+
+- **两条永远做不到的键位**：`hotkeyMergeAllWindows`（`Ctrl+Alt+W`，单窗口模型没有
+  explorer 标签可合并）与 `hotkeyToggleCheckboxes`（`Ctrl+Alt+M`，shell 视图无公开接口，
+  DECISIONS D2）。留着键位等于对用户撒谎：按了没反应，且永远不会有。
+
+---
+
 **书签栏对标补强（DOpus / Total Commander / XYplorer）。**
 围绕三条"结构上缺失"的东西：导入/导出的编码会**改坏路径**、分类**只能读不能组织**、
 整栏**没有键盘路径**。

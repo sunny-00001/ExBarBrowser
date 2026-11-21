@@ -1,5 +1,6 @@
 #include "prompt.h"
 
+#include "modal.h"
 #include "platform_win.h"
 #include "ui_draw.h"
 
@@ -158,24 +159,18 @@ bool PromptText(HWND owner, const Theme& theme, const std::wstring& title,
     SetFocus(st.edit);
     SendMessageW(st.edit, EM_SETSEL, 0, -1);
 
-    MSG msg;
-    int gm;
-    // GetMessage 返回 -1 是错误（不能继续循环），返回 0 是 WM_QUIT（要原样交还宿主）。
-    while (!st.done && (gm = GetMessageW(&msg, nullptr, 0, 0)) > 0) {
-        if (msg.message == WM_KEYDOWN && msg.hwnd == st.edit) {
-            if (msg.wParam == VK_RETURN) {
-                SendMessageW(hwnd, WM_COMMAND, IDOK, 0);
-                continue;
-            }
-            if (msg.wParam == VK_ESCAPE) {
-                SendMessageW(hwnd, WM_COMMAND, IDCANCEL, 0);
-                continue;
-            }
+    modal::Run([&st] { return st.done; }, [&](MSG& msg) {
+        if (msg.message != WM_KEYDOWN || msg.hwnd != st.edit) return false;
+        if (msg.wParam == VK_RETURN) {
+            SendMessageW(hwnd, WM_COMMAND, IDOK, 0);
+            return true;
         }
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-    if (gm == 0) PostQuitMessage(static_cast<int>(msg.wParam));
+        if (msg.wParam == VK_ESCAPE) {
+            SendMessageW(hwnd, WM_COMMAND, IDCANCEL, 0);
+            return true;
+        }
+        return false;
+    });
 
     if (owner) {
         EnableWindow(owner, TRUE);
@@ -235,30 +230,26 @@ bool PromptText2(HWND owner, const Theme& theme, const std::wstring& title,
     SetFocus(st.edit);
     SendMessageW(st.edit, EM_SETSEL, 0, -1);
 
-    MSG msg;
-    int gm;
-    while (!st.done && (gm = GetMessageW(&msg, nullptr, 0, 0)) > 0) {
-        if (msg.message == WM_KEYDOWN && (msg.hwnd == st.edit || msg.hwnd == st.edit2)) {
-            if (msg.wParam == VK_RETURN) {
-                SendMessageW(hwnd, WM_COMMAND, IDOK, 0);
-                continue;
-            }
-            if (msg.wParam == VK_ESCAPE) {
-                SendMessageW(hwnd, WM_COMMAND, IDCANCEL, 0);
-                continue;
-            }
-            if (msg.wParam == VK_TAB) {
-                // 两输入框间切换焦点（IsDialogMessage 不在循环里，Tab 得自己处理）
-                HWND to = (msg.hwnd == st.edit) ? st.edit2 : st.edit;
-                SetFocus(to);
-                SendMessageW(to, EM_SETSEL, 0, -1);
-                continue;
-            }
+    modal::Run([&st] { return st.done; }, [&](MSG& msg) {
+        if (msg.message != WM_KEYDOWN || (msg.hwnd != st.edit && msg.hwnd != st.edit2))
+            return false;
+        if (msg.wParam == VK_RETURN) {
+            SendMessageW(hwnd, WM_COMMAND, IDOK, 0);
+            return true;
         }
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-    if (gm == 0) PostQuitMessage(static_cast<int>(msg.wParam));
+        if (msg.wParam == VK_ESCAPE) {
+            SendMessageW(hwnd, WM_COMMAND, IDCANCEL, 0);
+            return true;
+        }
+        if (msg.wParam == VK_TAB) {
+            // 两输入框间切换焦点（IsDialogMessage 不在循环里，Tab 得自己处理）
+            HWND to = (msg.hwnd == st.edit) ? st.edit2 : st.edit;
+            SetFocus(to);
+            SendMessageW(to, EM_SETSEL, 0, -1);
+            return true;
+        }
+        return false;
+    });
 
     if (owner) {
         EnableWindow(owner, TRUE);

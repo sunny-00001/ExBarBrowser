@@ -7,6 +7,7 @@
 
 #include "clipboard.h"
 #include "identity.h"
+#include "modal.h"
 #include "platform_win.h"
 
 namespace {
@@ -138,27 +139,21 @@ void ShowReport(HWND owner, const Theme& theme, const std::wstring& title,
     SetFocus(st.edit);
     SendMessageW(st.edit, EM_SETSEL, 0, 0);  // 从开头看，不要全选（误按键就整篇删掉观感差）
 
-    MSG msg;
-    int gm;
-    while (!st.done && (gm = GetMessageW(&msg, nullptr, 0, 0)) > 0) {
-        if (msg.message == WM_KEYDOWN) {
-            // ESC 关窗（多行 EDIT 自己吃掉回车/方向键，这里只拦 ESC）。
-            if (msg.wParam == VK_ESCAPE) {
-                st.done = true;
-                continue;
-            }
-            // Ctrl+C 在只读 EDIT 里本来就能用；这里额外提供 Ctrl+A 全选，
-            // 因为只读框默认不支持（用户想复制整篇时唯一可行的手势）。
-            if (msg.wParam == 'A' && (GetKeyState(VK_CONTROL) & 0x8000) && msg.hwnd == st.edit) {
-                SendMessageW(st.edit, EM_SETSEL, 0, -1);
-                continue;
-            }
+    modal::Run([&st] { return st.done; }, [&st](MSG& msg) {
+        if (msg.message != WM_KEYDOWN) return false;
+        // ESC 关窗（多行 EDIT 自己吃掉回车/方向键，这里只拦 ESC）。
+        if (msg.wParam == VK_ESCAPE) {
+            st.done = true;
+            return true;
         }
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-    if (gm == 0) PostQuitMessage(static_cast<int>(msg.wParam));
-
+        // Ctrl+C 在只读 EDIT 里本来就能用；这里额外提供 Ctrl+A 全选，
+        // 因为只读框默认不支持（用户想复制整篇时唯一可行的手势）。
+        if (msg.wParam == 'A' && (GetKeyState(VK_CONTROL) & 0x8000) && msg.hwnd == st.edit) {
+            SendMessageW(st.edit, EM_SETSEL, 0, -1);
+            return true;
+        }
+        return false;
+    });
     if (owner) {
         EnableWindow(owner, TRUE);
         PostMessageW(owner, WM_APP_REFOCUS, 0, 0);

@@ -89,8 +89,8 @@ UNIQUE = [
          why="统一用 ui::DrawIconCentered / DrawIconFit / DrawIconVCentered"),
 
     dict(name="模态消息泵", pat=r"GetMessageW\s*\(\s*&msg\s*,\s*nullptr\s*,\s*0\s*,\s*0\s*\)",
-         allow={"app.cpp", "popup_list.cpp", "prompt.cpp"},
-         why="对话框/弹层各自一份是过渡态；B5 收成 container::RunModal"),
+         allow={"app.cpp", "popup_list.cpp", "modal.cpp"},
+         why="对话框走 modal::Run（src/modal.h）；prompt/report 已收编，不要再各写一份"),
 
     # 注意：shell_ops.cpp 的 GlobalAlloc(GMEM_MOVEABLE) 是 OLE STGMEDIUM 的
     # DROPEFFECT 载体（CFSTR_PREFERREDDROPEFFECT），与剪贴板文本无关，白名单放行。

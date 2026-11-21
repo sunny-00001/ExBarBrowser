@@ -11,6 +11,7 @@
 #include "ai_api.h"
 
 #include "assert_check.h"
+#include "ai_events.h"
 #include "str.h"
 
 #include "cmd_naming.h"
@@ -220,7 +221,9 @@ bool FindTool(const std::wstring& name, ToolSpec* out) {
     return false;
 }
 
-CallResult Call(const std::wstring& command, const json::Value& args, bool approve) {
+// 真正的执行体。Call() 在它外面统一发事件 —— 这样"未知命令/需批准/参数非法"
+// 这些**没进 CommandBus** 的拒绝也会留下事件，客户端不用靠响应是否到达来猜。
+CallResult CallImpl(const std::wstring& command, const json::Value& args, bool approve) {
     CallResult r;
     r.command = command;
 
@@ -315,6 +318,27 @@ CallResult Call(const std::wstring& command, const json::Value& args, bool appro
             }
         }
     }
+    return r;
+}
+
+// 事件发布必须在**返回值**之前完成：订阅者拿到 command 事件后再去读 state，
+// 才能看到这次操作之后的状态。若放到响应写出之后，竞态会让客户端读到旧状态。
+CallResult Call(const std::wstring& command, const json::Value& args, bool approve) {
+    CallResult r = CallImpl(command, args, approve);
+    json::Value data = json::Value::MakeObject();
+    data.Set(L"command", json::Value::MakeStr(r.command));
+    data.Set(L"actor", json::Value::MakeStr(L"ai"));
+    data.Set(L"args", args);   // 事件里带参数：事后回看才知道"改成了什么"
+    data.Set(L"ok", json::Value::MakeBool(r.ok));
+    if (!r.error.empty()) data.Set(L"error", json::Value::MakeStr(r.error));
+    if (r.hasAssertions) {
+        data.Set(L"assertions", r.assertions);
+        bool verdict = true;
+        for (const auto& a : r.assertions.arr)
+            if (!a.GetBool(L"ok", true)) verdict = false;
+        data.Set(L"verdict", json::Value::MakeBool(verdict));
+    }
+    events::Publish(L"command", data);
     return r;
 }
 

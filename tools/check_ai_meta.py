@@ -1208,6 +1208,37 @@ def main():
     else:
         ok('%d 条命令带自断言，且左值与入参引用都可求值' % checked_assert)
 
+    # ---------------------------------------------------------------- 19
+    print('\n19. 事件流必须可订阅、可续接（不能只给轮询）')
+    # 判据钉三件事，少任何一件都会退化成"客户端只能猜"：
+    #   · 有序号 + 历史补发（断线重连才知道从哪接）
+    #   · 有真正保持连接的推送（不是换个名字的轮询）
+    #   · 状态变化由服务端检测后推送（客户端不必自己定时拉 state）
+    ev_h = (ROOT / 'src/ai_events.h').read_text(encoding='utf-8', errors='replace')
+    ev_cpp = (ROOT / 'src/ai_events.cpp').read_text(encoding='utf-8', errors='replace')
+    srv = (ROOT / 'src/ai_server.cpp').read_text(encoding='utf-8', errors='replace')
+    api = (ROOT / 'src/ai_api.cpp').read_text(encoding='utf-8', errors='replace')
+    missing = []
+    for label, cond in [
+        ('事件序号/补发接口', all(k in ev_h for k in ('Publish', 'Since', 'WaitFor', 'LastSeq'))),
+        ('等待有通知机制（condition_variable）', 'condition_variable' in ev_cpp),
+        ('历史缓冲有上限', 'kMaxEvents' in ev_cpp),
+        ('推送行带 event 标记与 seq', 'L"event"' in ev_cpp and 'L"seq"' in ev_cpp),
+        ('列出历史 events/since', srv.count('L"events/since"') >= 2),
+        ('订阅 events/subscribe', srv.count('L"events/subscribe"') >= 2),
+        ('订阅模式真的在推事件', 'events::WaitFor' in srv and 'subscribed' in srv),
+        ('状态变化由 PumpRequests 检测', 'events::PollStateChanges()' in srv),
+        ('命令结果发事件（含被拒绝的）', 'events::Publish(L"command"' in api
+         and 'CallImpl(' in api),
+        ('有事件流单测', (ROOT / 'tests/events_test.cpp').exists()),
+    ]:
+        if not cond: missing.append(label)
+    if missing:
+        for label in missing:
+            fail('事件流缺：' + label)
+    else:
+        ok('事件可订阅/可补历史/带序号，状态变化由服务端推送')
+
     print()
     if g_fail:
         print(f'失败 {g_fail} 项')

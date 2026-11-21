@@ -223,8 +223,12 @@ P4  差异化            AI 面板 → chrome Web 化 → 与 mod 的 UI 资产�
 - 原计划复用 `ExBarHelper.exe` 的 `kVer=2` 协议。**实际拆成两半**：
   - **不需要 helper 的部分已经做完**：`OpListDir` / `OpStat` / `OpTopN` / `OpDiskUsage`
     走纯文件系统遍历（`src/disk_scan.cpp`），不碰 COM、可脱离窗口单测。
-  - **需要 helper 的部分待做**：`DupFinder` / `FileHash` / `FolderCompare` ——
-    它们要跨目录大范围扫描，放 UI 线程会假死，必须进 helper 或工作线程 + `PostMessage`。
+  - **文件集工具（2026-11-21 已完成，未使用 helper）**：`FileHash` / `DupFinder` / `FolderCompare`。
+    原判断是"放 UI 线程会假死，必须进 helper 或工作线程 + `PostMessage`"，实测下来
+    **显式预算已经够用**：`timedOut` / `complete` / `deniedDirs` / `hashedFiles` 如实上报，
+    调用方看得见"没扫完"；而单文件摘要本来就必须读完整文件，helper 只能把等待挪走，
+    换不来结果正确性，却要多背一整套 IPC 与生命周期管理。
+    真要做后台化，正确形态是**把这三条挪到工作线程 + 进度窗口**，不是再造 helper 进程。
 - 授权：默认只读；写操作需显式开关（与 mod 的 `approval` 模型一致，AI 侧双门已实现）。
 
 ### 4.6 P3-5 预览窗格（待做）
@@ -233,12 +237,18 @@ P4  差异化            AI 面板 → chrome Web 化 → 与 mod 的 UI 资产�
 - 依赖：`IFolderView` 选中变化通知（`DAdvise` `SVGIO_SELECTION` 或轮询 `WM_ACTIVATE`）。
 - **这是本阶段最大的一块**，如果 P3 时间不够，可以只做"文本 + 图片"两种。
 
-### 4.7 P3-6 选择族与撤销（新增，待做）
+### 4.7 P3-6 选择族与撤销（2026-11-21 大部分已完成）
 
-`SelectInvert` / `SelectFiles` / `SelectFolders` / `SelectByType` / `SelectByPattern` /
-`CmdUndo` / `BatchRename` / `ToggleCheckboxes` / `PathCopyLink`。
-共同前置是一个 `SelectionModel` 抽象（现在 `shell_ops` 只有 `SelectByPath`/`SelectNone` 两个点操作），
-以及 `IFolderView::SelectItem` 的批量调用。`BatchRename` 建议直接接 PowerRename。
+已完成：`SelectInvert` / `SelectFiles` / `SelectFolders` / `SelectByPattern` / `CmdUndo`。
+**前置判断被推翻**：不需要单独的 `SelectionModel` 抽象 —— `shell_ops` 的
+`SelectWhere(pred)` / `SelectByPattern` 直接基于 `IFolderView::Item` + `SelectItem`
+就够用，先造抽象反而会多一层"谁持有选中集"的同步问题。
+
+仍未做：
+- `SelectByType` —— 与已验证的 `SelectWhere` 同形，缺的只是"取首项扩展名"这一步。
+- `BatchRename` —— 建议直接接 PowerRename，不自建规则编辑器。
+- `ToggleCheckboxes` —— shell 视图无公开接口（DECISIONS D2），键位已删。
+- `PathCopyLink` —— 需要判断"能否生成链接"，低价值。
 
 ---
 
