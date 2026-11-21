@@ -678,7 +678,7 @@ std::wstring HandleRpcLine(const json::Value& req) {
         const json::Value emptyArgs = json::Value::MakeObject();
         const bool approve = p.GetBool(L"approve", false);
 
-        CallResult r = Call(name, arguments ? *arguments : emptyArgs, approve);
+        CallResult r = Call(name, arguments ? *arguments : emptyArgs, approve, ai::TraceIdOf(id));
 
         // MCP 的 Tool Result 形状：content 数组 + isError。
         // 失败也走 result（不是 JSON-RPC error）—— 那是"工具执行失败"，

@@ -91,6 +91,10 @@ void App::RegisterDevCommands() {
             o.Set(L"tracked", json::Value::MakeBool(f.tracked));
             o.Set(L"bytes", json::Value::MakeInt(static_cast<int>(f.bytes)));
             if (!f.reason.empty()) o.Set(L"reason", Str(f.reason));
+            // P0-9：快照也要带这两个字段，agent 才能核对"落盘的是哪一版"。
+            // mtime 是十进制 Unix 秒的字符串（避开 32 位溢出），空串=取不到。
+            o.Set(L"mtime", Str(f.mtime));
+            o.Set(L"sha256", Str(f.sha256));
             files.arr.push_back(std::move(o));
         }
         snapshot.Set(L"savedFiles", json::Value::MakeInt(saved));
@@ -119,10 +123,15 @@ void App::RegisterDevCommands() {
             return false;
         }
 
-        const std::wstring id = devtools::StartJob(L"build", L"python", argv);
+        // 硬超时是**常量**（devtools::kBuildTimeoutMs）：不让 agent 自己填时限 ——
+        // 让被看管的人决定看管多久，等于没有闸门（理由见 dev_tools.h）。
+        const std::wstring id =
+            devtools::StartJob(L"build", L"python", argv, devtools::kBuildTimeoutMs);
         out->Set(L"jobId", Str(id));
         out->Set(L"command", Str(target == L"clean" ? L"python build_fast.py --clean"
                                                     : L"python build_fast.py"));
+        out->Set(L"timeoutMs", json::Value::MakeInt(
+                                   static_cast<int>(devtools::kBuildTimeoutMs)));
         return true;
     });
 
@@ -140,10 +149,13 @@ void App::RegisterDevCommands() {
         std::vector<std::wstring> argv;
         argv.push_back(L"tests/run_all.sh");
         if (!filter.empty()) argv.push_back(filter);
-        const std::wstring id = devtools::StartJob(L"test", L"bash", argv);
+        const std::wstring id =
+            devtools::StartJob(L"test", L"bash", argv, devtools::kTestTimeoutMs);
         out->Set(L"jobId", Str(id));
         out->Set(L"command", Str(filter.empty() ? L"bash tests/run_all.sh"
                                                 : L"bash tests/run_all.sh " + filter));
+        out->Set(L"timeoutMs", json::Value::MakeInt(
+                                   static_cast<int>(devtools::kTestTimeoutMs)));
         return true;
     });
 
@@ -161,6 +173,11 @@ void App::RegisterDevCommands() {
         out->Set(L"exitCode", json::Value::MakeInt(job.exitCode));
         out->Set(L"output", Str(job.output));
         out->Set(L"truncated", json::Value::MakeBool(job.truncated));
+        // timedOut 与 exitCode 要分开看：exitCode != 0 是"跑失败了"，
+        // timedOut = true 是"**根本没跑完就被掐了**" —— 后者指向环境/死循环，
+        // 前者指向测试没过。混成一个字段，agent 会去改本来没问题的地方。
+        out->Set(L"timedOut", json::Value::MakeBool(job.timedOut));
+        out->Set(L"timeoutMs", json::Value::MakeInt(static_cast<int>(job.timeoutMs)));
         if (!job.error.empty()) out->Set(L"error", Str(job.error));
         return true;
     });

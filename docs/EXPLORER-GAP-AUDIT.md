@@ -9,7 +9,7 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 > **回答一个问题**：跟 Windows 11 资源管理器比，还差哪些、哪些是错的、哪些不用补。
 >
 > 口径声明：
-> - 命令数取自 `tools/check_commands.py` 实跑：**175 条 / 已实现 166 / 未实现 9**；`tools/check_ai_meta.py` 实跑 AI 暴露 **139 条**。
+> - 命令数取自 `tools/check_commands.py` 实跑：**184 条 / 已实现 175 / 未实现 9**；`tools/check_ai_meta.py` 实跑 AI 暴露 **143 条**。
 > - 行为结论取自真实命名管道实测（`agentctl.py call`），不是读文档推断。
 > - 与 Explorer 的功能对照来自微软官方文档与 Win11 实际界面。
 > - 分类沿用三分法：**错误**（内部矛盾 / 可复现缺陷）、**缺失**（能力空白）、**有意取舍**（设计选择）。
@@ -25,7 +25,7 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 | 视图模式 / 排序 / 分组 | ✅ 基本可替代 | 8 档视图 + 4 档排序 + 4 档分组，由 `IFolderView2` 驱动 |
 | 快捷键 | ✅ **硬冲突已修，Explorer 常用键位已补齐** | 见 §1 |
 | 搜索 | ⚠️ **假能力已降级为未实现；搜索框仍缺明确失败提示** | 见 §2.1 |
-| 面板体系 | ⚠️ 缺详情列自定义 / 缩放 / 查看二级菜单 | 见 §3 |
+| 面板体系 | ✅ 详情列自定义、缩放入口已补；查看二级菜单待补 | 见 §3 |
 | 显示细节 | ✅ 主题令牌已统一；视图状态不同步仍在 | 见 §4 |
 
 **最该做的三件事**（按影响排序，均已在 P1 完成）：
@@ -66,7 +66,7 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 | 类别 | 缺什么 | 备注 |
 |---|---|---|
 | 选择 | `Shift+方向键` 范围多选 | shell 视图原生应具备，但未在 `data/mouse.json` 登记；`Ctrl+点击` 多选、`Shift+右键` 新窗口同理 |
-| 缩放 | `Ctrl+鼠标滚轮` 改图标大小 | `ShellView::SetViewMode(mode, iconPx)` **已支持改 iconPx**，但 `mouse.json` 无 wheel 规则 → 差一个入口 |
+| 缩放 | `Ctrl+鼠标滚轮` 改图标大小 | ✅ 已补：`view.zoom` / `view.zoom.set` + `mouse.json` 的 `wheel_up`/`wheel_down`（`mods=1` 即 Ctrl）+ 视图菜单「图标大小…」 |
 | 导航 | `Backspace` 上一级、`F6`/`Shift+F6` 焦点循环 | `F6` 在 Explorer 是窗口元素间循环焦点，本仓四栏没有对应 |
 | 预览 | `Space` 快速查看（Peek） | 需 PowerToys 式 Peek 实现，成本较高 |
 | 菜单 | `Shift+F10` 上下文菜单 | 书签栏/标签栏有，**文件列表区没有** |
@@ -115,8 +115,8 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 
 | 类别 | 缺失 | 性价比 | 备注 |
 |---|---|---|---|
-| 详情视图 | **详情列可自定义**（选列：名称/修改日期/类型/大小/创建日期/访问日期/属性/作者/路径/标签…） | **高** | `IColumnManager` 接口现成，路径是通的 |
-| 视图 | **图标大小缩放**（Ctrl+滚轮 + 缩放滑块） | **高** | `SetViewMode` 已支持 iconPx，缺规则与滑块 |
+| 详情视图 | **详情列可自定义**（选列：名称/修改日期/类型/大小/创建日期/访问日期/属性/作者/路径/标签…） | ✅ 已补 | 视图菜单 →「选择详细信息…」；`shell_columns` 封装 `IColumnManager`，列 id 稳定为 `{GUID}:pid` |
+| 视图 | **图标大小缩放**（Ctrl+滚轮 + 缩放滑块） | ✅ 滚轮已补 | `view.zoom` + mouse.json `wheel_up`/`wheel_down`（mods=1）；状态栏缩放滑块未做，改用视图菜单「图标大小…」 |
 | 视图 | 「排序方式」「分组依据」**二级菜单**（按任意列/任意属性） | 高 | `popup_list` 目前是平铺模型，要加一层子菜单 |
 | 视图 | 按任意属性分组（现在只有 无/类型/日期/大小 四档） | 中 | `shellops::GetSort` 只认 4 个 `PROPERTYKEY`，用户按别的列排序后**视图菜单打勾会全部消失** |
 | 导航窗格 | 主页/快速访问/OneDrive/此电脑/网络 的完整树、树右键菜单、「在文件夹中显示」 | 中 | `folder_tree.cpp` 有基础 |
@@ -150,8 +150,8 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 
 **相对 Win11 Explorer 面板体系缺的：**
 
-1. 详情列自定义（`IColumnManager`）—— 工程里已有 `IColumnManager` 的调试代码，路径通
-2. Ctrl+滚轮缩放 —— `InputRouter::OnWheel` 与 `MouseRules::TR_WHEEL_*` 骨架已在，只缺规则与图标尺寸映射
+1. ✅ 详情列自定义（`IColumnManager`）—— 已由 `shell_columns` + 视图菜单「选择详细信息…」补齐
+2. ✅ 图标缩放 —— `view.zoom`/`view.zoom.set` + `mouse.json` 的 `wheel_up`/`wheel_down`（mods=1）；视图菜单补「图标大小…」离散档位
 3. 「查看」二级菜单（排序方式/分组依据）—— `popup_list` 是平铺模型，要加子菜单层
 4. 属性面板 / 库 / 共享 / 垂直标签 —— 都要新组件，工作量最大
 
@@ -163,7 +163,7 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 
 | # | 问题 | 证据 | 影响 |
 |---|---|---|---|
-| **D1** | **主题令牌有两个来源** | `src/ui_palette.h` 头注释写"色值令牌表（唯一来源）"，`AGENTS.md` §1.3 写"不写 `RGB(`"；但 `src/theme.cpp` 里 `bg`/`bar` 直接硬编码 `RGB(0x14,0x14,0x14)` / `RGB(32,32,32)` / `RGB(0xff,0xff,0xff)`，另有 `kTabColorsDark`/`kTabColorsLight` 两组标签色板 | 违反自己的唯一性纪律。且浅色 `bar` 取 `GetSysColor(COLOR_WINDOW)`（≈纯白），深色取 `RGB(32,32,32)`（#202020）—— **浅深两态不对称**；`theme.cpp` 注释里实测记录写的是"工具栏 #f3f3f3"，代码却取 `COLOR_WINDOW`，**注释与实现不一致** |
+| **D1** ✅ 已修 | **主题令牌有两个来源** | 原 `src/theme.cpp` 里 `bg`/`bar` 直接硬编码，并有 `kTabColorsDark`/`kTabColorsLight` 两组标签色板；P1 已并入 `src/ui_palette.h`，`theme.cpp` 只从 `UiPalette` / `TabColorsFor()` 取值 | 模板用色不再两处各写一份 |
 | **D2** | **视图档位与视图真实状态不同步** | `App::SetViewStateFn`（`src/app.cpp`）：`vs.sort`/`vs.ascending` 从视图现读（正确），但 `vs.group` 抄配置、`vs.mode` 抄 `viewMode_` | 用户在 shell 里点列头改排序 → 菜单打勾跟着变（好）；但**改分组或视图档位则不同步** → 菜单打勾在旧档位。同一个坑在 mode/group 上仍在 |
 | **D3** | **状态栏窄窗丢弃顺序把"有动作"的段先丢掉** | `StatusBar::Layout` 的 `kDropOrder = {Seg_Type, Seg_Eye, Seg_Disk, Seg_Size, Seg_Date}`；而 `Seg_Date` 在 `App::SetClickFn` 里**是有动作的**（点它 → 按日期排序） | 窄窗下最有用的"点日期改排序"入口**最先消失**。丢弃顺序应按"有无点击动作"排，不该按枚举顺序倒着排 |
 | **D4** | **`ShellView::ApplyNavPaneWanted` 隐藏后留空位** | 通过 `EnumChildWindows` 找 `NamespaceTreeControl` 后 `ShowWindow(SW_HIDE)`，但**shell 视图内容区不自动重排**（代码只 `InvalidateRect(container_)`） | "隐藏导航窗格"是**留空位**而不是真收起。与 `AGENTS.md` 的"导航窗格开关"承诺有落差 |
@@ -177,8 +177,8 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 
 | 缺失 | 说明 |
 |---|---|
-| 详情列自定义 | 见 §2.3 |
-| 图标大小缩放 | 已有底层能力，缺入口 |
+| 详情列自定义 | ✅ 已补：`shell_columns` + `view.columns.list/set/choose` + 视图菜单入口 |
+| 图标大小缩放 | ✅ 已补：`view.zoom`/`view.zoom.set`/`view.zoom.choose` + `mouse.json` 滚轮规则 + 视图菜单「图标大小…」 |
 | 深浅色以外的模式（跟随系统的第三态） | 现在只有跟随系统 |
 | 排序/分组的二级菜单 | `popup_list` 平铺模型限制 |
 
@@ -188,15 +188,15 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 
 | # | 问题 | 证据 |
 |---|---|---|
-| **G1** ✅ 已修 | **`docs/PARITY.md` 的总数全错** | 原记 "155 / 已实现 147 / 未实现 8" 且写死 "总数 140"；现改为动态口径，实测为 **175 / 166 / 9**（`search.find` 降级后 164/9，P2 再补两条命令后 166/9） |
+| **G1** ✅ 已修 | **`docs/PARITY.md` 的总数全错** | 原记 "155 / 已实现 147 / 未实现 8" 且写死 "总数 140"；现改为动态口径，实测为 **184 / 175 / 9**（`search.find` 降级 164/9 → P2 两条命令 166/9 → 并发作业域 169/9 → P3 详情列三条 172/9 → P3 缩放三条 175/9） |
 | **G2** ✅ 已修 | **`docs/PARITY.md` 把假能力记成已实现** | §3.12 现记 `OpSearch` 已实现 0，并附真实命名管道失败证据（见 F1） |
-| **G3** ✅ 已修 | **`docs/ROADMAP.md` 写"89 工具"** | 已不再写死工具数，改为"以 `tools/check_commands.py` 实测为准"；当前 AI 暴露实测 **139** |
+| **G3** ✅ 已修 | **`docs/ROADMAP.md` 写"89 工具"** | 已不再写死工具数，改为"以 `tools/check_commands.py` / `tools/check_ai_meta.py` 实测为准"；当前 AI 暴露数见本文开头口径 |
 | **G4** | **`docs/FULL-COVERAGE.md` §9 的"假缺陷"** | 记"主构建 `build_fast.py` 不清理已删源文件的 `obj/*.obj`（会重复符号）"；实测 `build_fast.py` 的 `link_all` 只链接当前 `SOURCES` 清单，残留 `.obj` **不参与链接** → 该缺陷不成立，浪费修复预算 |
 | **G5** ✅ 部分已修 | **`docs/PARITY.md` §5 快捷键对照表已过期** | `sequences[]` 38 条仍正确；P1/P2 已消除 `Ctrl+Shift+A` 撞键，并把原先无键/隐藏键位补进 `keymap.json`；对照表本身仍需随新键位再校一轮 |
 
 > 修法口径：这些文档要么改成"不写死数字"（AI-INTERFACE.md 已这么做了，是对的），要么用脚本从命令表生成。`AGENTS.md` §9 已经写明"所有规模数字都是快照且必须标口径；与代码不符时先信 `src/`" —— 现在这几处正是没照做。
 >
-> 附实测口径（2026-11-21 P2 完成后）：`data/keymap.json` 的 `hotkeys[]` **100 条**（其中 18 条 `key` 为空、靠 `kSysKeys` 兜底生效；2 条为 `-` 哨兵），`sequences[]` **38 条**。`src/keymap.gen.h` 由 `tools/gen_keymap.py` 重新生成，同为 100/38。命令侧：`check_commands.py` 实跑 **175 条 / 已实现 166 / 处理器 166 / keymap 引用 105 条**；`check_ai_meta.py` 实跑 **AI 暴露 139 条**。
+> 附实测口径（2026-11-22 P3 缩放完成后）：`data/keymap.json` 的 `hotkeys[]` **100 条**（其中 18 条 `key` 为空、靠 `kSysKeys` 兜底生效；2 条为 `-` 哨兵），`sequences[]` **38 条**。`src/keymap.gen.h` 同为 100/38。命令侧：`check_commands.py` 实跑 **184 条 / 已实现 175 / 处理器 175 / keymap 引用 105 条**；`check_ai_meta.py` 实跑 **AI 暴露 143 条**。
 
 ---
 
@@ -225,8 +225,8 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 
 ### 第 3 批 —— 补齐"替代 Explorer"的真实缺口
 
-1. 详情列自定义（`IColumnManager`）
-2. Ctrl+滚轮缩放 + 缩放滑块
+1. ✅ 详情列自定义（`IColumnManager`）—— `shell_columns` + 三条命令 + 视图菜单入口；`tests/shell_columns_test.cpp` 覆盖列 id 往返
+2. ✅ `Ctrl+滚轮` 缩放 + 视图菜单离散档位（`view.zoom` / `view.zoom.set` / `view.zoom.choose`；`tests/view_modes_test.cpp` 钳制边界）
 3. 「排序方式 / 分组依据」二级菜单（`popup_list` 加子菜单层）
 4. 排序/分组维度放开到任意属性（现在硬限死 4 个 `PROPERTYKEY`）
 5. 修复 D2/D3/D4/D7/D9 这几个显示状态不同步与丢弃顺序问题

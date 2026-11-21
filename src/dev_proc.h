@@ -40,6 +40,27 @@ std::wstring BuildCommandLine(const std::wstring& program,
 bool RunCapture(const std::wstring& program, const std::vector<std::wstring>& args,
                 const std::wstring& cwd, int* code, std::wstring* output, std::wstring* err);
 
+// 带**硬超时**的版本：到点就把**整棵进程树**杀掉，并置 timedOut=true。
+//
+// 【为什么必须"真杀"而不是"报一句超时"】
+// 自我迭代的闭环里，最危险的一步是"在开发机上跑 agent 写的代码"。
+// 如果超时只是**报告**一句"超时了"而进程还在跑，那么 agent 提交一份
+// 会死循环的代码 = 开发机上多一个永远停不下来的进程，而且没人知道。
+// 更糟的是"只杀直接进程"：孙子（编译器、测试二进制）照样活着，
+// 管道写端还被它们攥着 —— 调用方连"读干输出"这一步都会永远卡住。
+//
+// 所以这里用**作业对象**（Job Object）把整棵树收进来：
+//   · 到点 → TerminateJobObject：一次收掉父子孙；
+//   · 进程一启动就 CREATE_SUSPENDED，**先归组再解冻** ——
+//     否则孙子在归组之前就已经 fork 出来，不会被自动收编。
+//
+// timeoutMs = 0 表示不限时（保持旧行为）。
+// timedOut（可为 nullptr）告诉你这次是不是被超时干掉的 ——
+// "被超时杀掉"与"跑失败了"是两回事，调用方要分开报。
+bool RunCaptureTimeout(const std::wstring& program, const std::vector<std::wstring>& args,
+                       const std::wstring& cwd, unsigned long long timeoutMs,
+                       int* code, std::wstring* output, std::wstring* err, bool* timedOut);
+
 // 输出上限（字节）。截断时保留**头部与尾部**：
 // 编译错误既可能出现在前面（第一处报错），也可能出现在后面（汇总），
 // 只留尾巴会把第一处报错丢掉 —— 那恰恰是最该看到的一行。

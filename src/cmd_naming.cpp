@@ -158,6 +158,12 @@ const Alias kAliases[] = {
     {L"TogglePreviewPane", L"view.toggle.preview"},
     {L"ToggleNavPane",     L"view.toggle.nav"},
     {L"NavTreeExpandAll",  L"nav.tree.expand.all"},
+    {L"ViewColumnsList",   L"view.columns.list"},
+    {L"ViewColumnsSet",    L"view.columns.set"},
+    {L"ViewColumnsChoose", L"view.columns.choose"},
+    {L"ViewZoom",          L"view.zoom"},
+    {L"ViewZoomSet",       L"view.zoom.set"},
+    {L"ViewZoomChoose",    L"view.zoom.choose"},
     {L"ToggleCheckboxes",  L"view.toggle.checkboxes"},
     {L"CycleHiddenSeg",    L"view.cycle.hidden"},
 
@@ -211,6 +217,11 @@ const Alias kAliases[] = {
     {L"OpStat",            L"tool.stat"},
     {L"OpTopN",            L"tool.topn"},
     {L"OpDiskUsage",       L"tool.diskusage"},
+    // 作业域：长任务命令（tool.*）的异步侧。三段点分名推导规则给不出来
+    // （推导出来会是 tool.jobget），所以显式登记 —— 名字是契约，不靠巧合。
+    {L"ToolJobGet",        L"tool.job.get"},
+    {L"ToolJobCancel",     L"tool.job.cancel"},
+    {L"ToolJobList",       L"tool.job.list"},
     // AI 面板是窗口级 UI（group=Window），不是"工具"——它开/关的是窗口里的一块区域。
     {L"AiTogglePanel",     L"win.ai.toggle"},
     {L"AiStop",            L"win.ai.stop"},

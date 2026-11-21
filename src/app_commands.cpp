@@ -183,7 +183,8 @@ bool App::CopyText(const std::wstring& text) {
     // 否则"剪贴板被占用、其实没复制"会被记成成功（审计与 AI 都会被误导）。
     if (!SetClipboardText(hwnd_, text)) {
         LogDbg(L"[clip] 写入失败（剪贴板被占用？）");
-        CommandBus::Get().NoteFailure(L"剪贴板写入失败（可能被其他程序占用）");
+        CommandBus::Get().NoteFailure(L"剪贴板写入失败（可能被其他程序占用）",
+                                      FailKind::LockConflict);
         return false;
     }
     return true;
@@ -356,6 +357,9 @@ int App::ViewModeIndexFor(int fvm, int iconPx) {
 void App::RegisterCommands() {
     RegisterTabCommands();
     RegisterFileCommands();
+    RegisterScanCommands();
+    RegisterCompareCommands();
+    RegisterJobCommands();
     RegisterMiscCommands();
     RegisterDevCommands();
 }

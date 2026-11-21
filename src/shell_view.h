@@ -45,6 +45,8 @@ public:
     bool Navigate(const std::wstring& path);
     void Refresh();
     void SetViewMode(int fvm, int iconPx);
+    // 读回当前 FOLDERVIEWMODE 与图标像素（Ctrl+滚轮要在当前档位上改大小）。
+    bool GetViewMode(int* fvm, int* iconPx);
     unsigned ItemCount();
     // 当前选中项数量。供"命令可否执行"的前置判定用，因此不走 statistics 缓存
     // （缓存 800ms 刷新一次，用作"能不能删"会得到过期答案）。

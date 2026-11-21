@@ -13,6 +13,7 @@
 
 #include "file_hash.h"
 #include "file_tools.h"
+#include "file_rename_plan.h"
 #include "text_file.h"
 
 namespace {

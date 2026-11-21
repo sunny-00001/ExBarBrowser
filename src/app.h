@@ -66,6 +66,15 @@ private:
     // 命令注册按域分片（app_commands*.cpp），RegisterCommands 只做调度。
     void RegisterTabCommands();
     void RegisterFileCommands();
+    // 长任务域（工作线程 + 进度 + 取消）：体积统计 / 摘要 / 查重 / 比较。
+    // 与 RegisterFileCommands 分开是因为它们有**独立的并发约定**，
+    // 而那个约定只该有一份（见 app_commands_scan.cpp 文件头）。
+    void RegisterScanCommands();
+    void RegisterCompareCommands();
+    // 作业域：作业查询/控制命令 + 事件接线（进度与完成推给订阅者）。
+    void RegisterJobCommands();
+    // 退出前收尾：取消全部作业并 join 工作线程（实现见 app_commands_jobs.cpp）。
+    void ShutdownJobs();
     // fs.*（按路径操作）单独成文件：作用域与 file.*（选中集）不同。
     void RegisterFsCommands();
     void RegisterMiscCommands();
@@ -220,6 +229,12 @@ private:
     // 设置面板：表（settings_reg）驱动的可调项列表，改动走 config.set 命令。
     // at 是弹层的屏幕锚点（视图菜单按钮下方），与其它弹层一致。
     void ShowSettingsPanel(POINT at);
+    // “选择详细信息”：反复弹出列勾选菜单，每次选择都走 view.columns.set 命令，
+    // 直到用户按 Esc 或选“完成”。不自己模拟输入，只展示菜单并接命令。
+    void ShowColumnMenu(POINT at);
+
+    // 图标大小档位菜单（Ctrl+滚轮之外的离散入口）：每项是 view.zoom.set。
+    void ShowZoomMenu(POINT at);
 
     // 在搜索视图里搜当前目录（query 为空 = 取消搜索回到来源目录）。
     //

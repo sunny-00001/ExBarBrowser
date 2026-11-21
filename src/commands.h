@@ -146,6 +146,20 @@ enum class CmdId : int {
     // ---- Explorer 键位补齐（只允许追加在末尾，见 C1b）----
     CmdDeletePermanent,  // 无参，needsSelection：Shift+Delete，永久删除（不经回收站、不进撤销栈）
     NavTreeExpandAll,    // 无参：Ctrl+Shift+E，展开导航窗格整棵树
+    // ---- 长任务作业域（只允许追加在末尾，见 C1b）----
+    ToolJobGet,     // {id}：查作业状态与结果（完成后带 result）
+    ToolJobCancel,  // {id}：请求取消一个还在跑的作业
+    ToolJobList,    // 无参：列出全部作业（新的在前，只给摘要）
+
+    // ---- 详细信息列（P3：能力缺口）----
+    ViewColumnsList,     // 无参，只读：列出详细信息视图可用列及可见性
+    ViewColumnsSet,      // {visible[]}：设置可见详情列（列 id 来自 view.columns.list）
+    ViewColumnsChoose,   // 无参，UI：打开“选择详细信息”菜单
+    ViewZoom,            // {delta}：Ctrl+滚轮步进缩放图标（delta = ±1）
+    ViewZoomSet,         // {iconPx}：设置精确图标像素（16..256）
+    ViewZoomChoose,      // 无参，UI：打开图标大小档位菜单
+    // ---- P0-9：改写可见性（只读观测，不落盘）----
+    DevDiff,             // 无参，只读：返回工作树的结构化 diff（文件+SHA-256+mtime+patch），供审阅"agent 改了什么"
 };
 
 // 命令的风险等级（与 mod 的 risk / 架构规则 R18 对齐）。
@@ -484,6 +498,31 @@ struct Actor {
     static Actor Ai()       { return {ActorKind::Ai, L"ai"}; }
 };
 
+// 失败的**机器可判读类别**。
+//
+// 【为什么不能只有一个 "blocked"】
+// agent 拿到 "blocked" 无法决定下一步，因为"被拦住"有四种，下一步完全不同：
+//   · PreconditionUnmet（前置不满足）→ 换目标 / 先做前置动作，**重试有用**
+//   · LockConflict（锁冲突）        → 稍后重试，或换一个对象
+//   · CanceledByUser（被用户取消）  → **停下来问人**，重试只是骚扰
+//   · NotSupported（能力不存在）    → 换一条路，**重试永远没用**
+// 一锅端成 "blocked" 等于让调用方去猜 —— 而"猜"正是 agent 最容易做错的地方：
+// 它要么一直重试到超时，要么直接放弃，两种都是错的。
+//
+// 枚举值与对外的 errorCode 一一对应，映射只在 FailKindCode 一处（唯一真源）。
+enum class FailKind {
+    None = 0,           // 没有失败（不是一种错误，只是"没有错误"）
+    PreconditionUnmet,  // 声明的前置条件不满足（没选中、目标不在视图、参数缺失…）
+    LockConflict,       // 目标被占用 / 被锁（剪贴板被占、目标已存在…）
+    CanceledByUser,     // 用户主动取消（拒绝批准、在进度窗口上点了取消…）
+    NotSupported,       // 该环境 / 该对象不支持这件事（视图模式不对、能力不存在…）
+    TimedOut,           // 等时限到了（后台作业仍在跑，该去查它而不是重试）
+};
+
+// FailKind → errorCode（唯一映射处）。
+// None 返回空串：它不是一种错误，只是"没有错误"。
+const wchar_t* FailKindCode(FailKind k);
+
 class CommandBus {
 public:
     // handler 收具名参数对象。不再有"字符串 arg"。
@@ -545,7 +584,25 @@ public:
     // 约定：handler 在 return false 之前调用；Dispatch 随后把它搬到
     // lastBlockReason_，于是 UI / AI / 审计看到的是同一句话。
     // 返回 true 的 handler 不需要调用（残留会由下次 Dispatch 开头清空）。
-    void NoteFailure(const std::wstring& reason) { pendingReason_ = reason; }
+    //
+    // 【kind 是干什么的】只给一句话，调用方无法决定下一步 ——
+    // "剪贴板被占用"和"这个视图不支持详情列"该做的完全不同。
+    // kind 让调用点**在知道原因的地方**顺手给出机器可判读的类别，
+    // 于是 ai_api 不用去匹配中文字符串（文案一改就断）。
+    //
+    // 默认 PreconditionUnmet：绝大多数失败确实是"前提没满足"
+    // （没选中、目标不存在、参数缺失、id 不存在…），所以默认值是安全的那一个。
+    // 不确定时**不要**硬凑一个类别 —— 留默认比猜一个错类别好。
+    void NoteFailure(const std::wstring& reason,
+                     FailKind kind = FailKind::PreconditionUnmet) {
+        pendingReason_ = reason;
+        pendingKind_ = kind;
+    }
+
+    // 本次失败/阻断的类别。没有失败时是 FailKind::None。
+    //
+    // 与 lastBlockReason() 同源：原因非空时它才有意义。
+    FailKind lastFailKind() const { return lastFailKind_; }
 
     // 本次调用的来源是"机器"（AI / 脚本）还是"人"。
     //
@@ -576,18 +633,31 @@ public:
     // 【为什么不用 Audit】Audit 走 CommandDef 与 Dispatch 的内部状态，
     // 而拒绝发生时还没有 CommandDef（未知命令根本没有）。
     // 所以这里收"名字 + 原因"两个字符串，自己拼一行。
-    void AuditRejected(const std::wstring& commandName, const std::wstring& reason);
+    //
+    // errorCode 是**机器可判读**的分类；为什么这么设计见 audit_log.h。
+    void AuditRejected(const std::wstring& commandName, const std::wstring& reason,
+                       const std::wstring& errorCode);
 
 private:
     CommandBus() = default;
     bool Dispatch(CmdId id, const Args& args, json::Value* result, Actor actor);
-    void Audit(const CommandDef& def, const std::wstring& argDesc, Actor actor, bool ok);
+
+    // 记一条"执行了"的审计。参数为什么传 Args、verdict 为什么要结构化，
+    // 见 src/audit_log.h 与 src/commands_audit.cpp。
+    // errorCode 是**机器可判读**的分类（见 commands.h 的 FailKind），
+    // reason 是**人可读**的原因。两者分开是有意的：机器码不能塞中文，
+    // 而中文原因也不该被机器码的位置挤掉。
+    void Audit(const CommandDef& def, const Args& args, Actor actor, bool ok,
+               const std::wstring& verdict, const std::wstring& errorCode,
+               const std::wstring& reason, long long durationMs);
 
     std::vector<std::pair<CmdId, Handler>> handlers_;
     std::vector<std::pair<CmdId, ResultHandler>> resultHandlers_;
     std::wstring last_;
     std::wstring lastBlockReason_;
+    FailKind lastFailKind_ = FailKind::None;  // 本次失败/阻断的类别
     std::wstring pendingReason_;   // handler 报的原因，本次 Dispatch 内消费
+    FailKind pendingKind_ = FailKind::None;  // handler 报的类别，本次 Dispatch 内消费
     Actor actor_;                  // 本次 Dispatch 的调用来源（handler 经 fromMachine 读）
 };
 

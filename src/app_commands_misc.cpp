@@ -75,7 +75,7 @@ void App::RegisterMiscCommands() {
         // 与标题栏 X / Alt+F4 走同一份确认：命令路径不能成为"绕过提示"的后门。
         // 用户取消时如实报 false，AI/脚本才知道窗口仍然开着。
         if (!ConfirmExit()) {
-            CommandBus::Get().NoteFailure(L"用户取消退出");
+            CommandBus::Get().NoteFailure(L"用户取消退出", FailKind::CanceledByUser);
             return false;
         }
         OnDestroy();

@@ -10,7 +10,8 @@ baseline: 2026-11-21 21:00
 > 数据来源：`src/commands.cpp` 的命令目录（逐条对照 `implemented` 字段，不按 README 宣称），
 > mod 侧对照其 127 条命令目录（`data/capabilities.json`）。本工程在 mod 的 127 条之外自加 13 条
 > 命令（10 条确定式 `Fs*` + 3 条标签个性化 `tab.rename` / `tab.color` / `tab.close.duplicates`），
-> 因此总数是 140。
+> 因此总数以 `tools/check_commands.py` 实测为准（2026-11-22：**184 条**）。
+> 数字不写死在这里 —— 加一条命令就变，见 §2 口径说明。
 
 ---
 
@@ -25,39 +26,46 @@ baseline: 2026-11-21 21:00
 
 ---
 
-## 2. 总览（2026-11-21 22:10 实测，脚本对账）
+## 2. 总览（2026-11-22 脚本对账）
 
 | 组 | 条数 | 已实现 | 未实现 |
 |---|---:|---:|---|
-| Tab | 33 | 32 | 1（`tab.merge`） |
+| Tab | 40 | 39 | 1（`tab.merge`） |
 | Go | 10 | 10 | 0 |
-| Nav | 6 | 6 | 0 |
+| Nav | 10 | 10 | 0 |
 | Path | 7 | 6 | 1（`path.copy.link`） |
-| File | 35 | 35 | 0 |
-| View | 12 | 11 | 1（`view.toggle.checkboxes`） |
+| File | 36 | 36 | 0 |
+| View | 19 | 18 | 1（`view.toggle.checkboxes`） |
 | Window | 12 | 10 | 2（`win.ai.toggle` / `win.ai.stop`） |
 | External | 4 | 2 | 2（`ext.run` / `ext.sendkeys`） |
-| Bookmark | 15 | 15 | 0 |
+| Bookmark | 18 | 18 | 0 |
 | Config | 3 | 3 | 0 |
 | Dev | 5 | 5 | 0 |
-| Session | 4 | 4 | 0 |
-| Tool | 7 | 7 | 0 |
-| Search | 2 | 1 | 1（`search.everything`） |
-| **合计** | **155** | **147** | **8** |
+| Session | 8 | 8 | 0 |
+| Tool | 10 | 10 | 0 |
+| Search | 2 | 0 | 2（`search.everything` / `search.find`） |
+| **合计** | **184** | **175** | **9** |
 
 > 口径：脚本按 `src/commands.cpp` 里 `{CmdId::X, …}` 字面形式逐条统计分组与 `implemented`，
 > 不按 README 宣称。命令行：见 `tools/check_commands.py`（同时校验 keymap × 处理器三方一致）。
 >
-> 总数 155 里，10 条确定式命令
+> `search.find` 于 2026-11-21 从「已实现」降级为 `implemented=false`：宿主
+> `IExplorerBrowser` 没有搜索带，`search-ms:` 被 `ShellView::DoNavigate` 明确拒绝，
+> 该命令实测恒失败。降级让失败显形（详见 `docs/EXPLORER-GAP-AUDIT.md` §2.1），
+> 真搜索需要换宿主或接 `ISearchFolderItemFactory`，属另一件事。
+>
+> 总数 184 里，10 条确定式命令
 > （`fs.open` / `fs.open.tab` / `fs.open.window` / `fs.copy.toclip` / `fs.cut.toclip` /
 > `fs.properties` / `fs.rename` / `fs.delete` / `fs.copy` / `fs.move`）不是"mod 有而我们没有"，
 > 而是"机器需要按路径点名操作"的补充 —— 详见 §3.5 与 `docs/OPERATION-MODEL.md` 第 4 步。
 > 另 3 条（`tab.rename` / `tab.color` / `tab.close.duplicates`）是标签右键菜单的补齐，
 > 每条都同时登记为命令（R20 人机等价：菜单动作必须有键盘/面板可达路径）。
 >
-> Tool 组已实现 7 条：`OpListDir` / `OpStat` / `OpTopN` / `OpDiskUsage` 是**当前视图**的结构化查询；
+> Tool 组已实现 10 条：`OpListDir` / `OpStat` / `OpTopN` / `OpDiskUsage` 是**当前视图**的结构化查询；
 > `tool.hash` / `tool.dupfinder` / `tool.compare` 是 2026-11-21 新增的文件集工具
-> （`file_hash.cpp` + `file_tools.cpp`），它们回答的是"两份是不是同一份"。
+> （`file_hash.cpp` + `file_tools.cpp`），它们回答的是"两份是不是同一份"；
+> `tool.job.get` / `tool.job.cancel` / `tool.job.list` 是 2026-11-22 新增的**作业查询与控制**
+> （前五条长任务命令改跑工作线程后配套的读面）。
 
 > 对账口径：`src/commands.cpp` 的 `implemented` 字段 × `app_commands*.cpp` 的 `reg(CmdId::X)`
 > × `data/keymap.json` 的引用。一条命令"已实现"必须三者都在，`python tools/check_commands.py`
@@ -65,7 +73,7 @@ baseline: 2026-11-21 21:00
 > （旧版本手写的 90/36 与代码不一致：`GoTab1..9` 在 keymap 里绑了但目录里没有，
 > `CopyToFolder`/`MoveToFolder` 也一直缺，已补齐。）
 
-一句话结论：**File / Bookmark / Config / Dev / Session / Tool 六组全部落地；剩下的 8 条是 Everything 搜索（1，要接它的 IPC）、
+一句话结论：**File / Bookmark / Config / Dev / Session / Tool 六组全部落地；剩下的 9 条是 Everything 搜索（1，要接它的 IPC）、
 AI 面板（2，缺窗口内对话 UI），以及少量"本工程模型下没有意义/没有把握"的项
 （合并窗口、复制为快捷方式、复选框、RunCommand/SendKeys 等）。**
 
@@ -104,13 +112,13 @@ PowerShell（在当前目录开终端）/ 主文件夹。
 完整路径 / 文件名 / 当前目录 / UNC（`\\localhost\C$\…`）/ 扩展名 / 所有标签路径 → 剪贴板。
 `PathCopyLink`（复制为快捷方式）未实现。
 
-### 3.5 File（35）—— 全实现
+### 3.5 File（36）—— 全实现
 
-mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
+mod 的 25 条 + 本工程新增的 11 条命令（10 条确定式 `Fs*` + `Shift+Delete` 的永久删除入口）。
 
 | 已实现 | 说明 |
 |---|---|
-| 复制 / 剪切 / 粘贴 / 删除 | 走 shell 的 `IDataObject` + `IContextMenu` + `IFileOperation`（回收站/冲突/撤销交给系统） |
+| 复制 / 剪切 / 粘贴 / 删除 / 永久删除（`Shift+Delete`） | 走 shell 的 `IDataObject` + `IContextMenu` + `IFileOperation`（回收站/冲突/撤销交给系统）；永久删除仅去掉 `FOF_ALLOWUNDO`，仍保留 `FOF_WANTNUKEWARNING` 警告 |
 | 重命名 / 属性 / 打开 | shell 右键菜单动词 |
 | 新建文件夹 / 新建文本文件 | `IFileOperation::NewItem` / `CreateFileW`（自动去重名） |
 | 全选 / 定位首项 / 定位末项 | `IShellView::SelectItem` |
@@ -143,12 +151,20 @@ mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
 > 给 `CmdRename` 加参数会让"传了参数就不弹框"变成隐式分叉。拆开后人机各走入口、逻辑共用，
 > 这条口径见 `docs/OPERATION-MODEL.md` 第 4 步与 `ARCHITECTURE-RULES.md` R6。
 
-### 3.6 View（12）—— 已实现 11
+### 3.6 View（19）—— 已实现 18
 
 8 档视图模式（按钮 / `Ctrl+Shift+1..8` / `ViewNext/ViewPrev` / 面板）、
 排序（名称/日期/类型/大小）、分组（无/类型/日期/大小）、
 隐藏文件 / 系统文件 / 扩展名、隐藏三态（状态栏眼睛段）、导航窗格开关、
+**展开导航树（`Ctrl+Shift+E`，原生 `SysTreeView32` 逐节点 `TVM_EXPAND`）**、
+**选择详细信息列（视图菜单 →「选择详细信息…」，`IColumnManager` 封装在 `shell_columns`）**、
+**图标缩放（`Ctrl+滚轮` → `view.zoom`，视图菜单 →「图标大小…」 → `view.zoom.choose`）**、
 预览窗格开关（`FWF_SHOWPREVIEWPANE`，用户意图跨目录保持）。
+
+列 id 由 `view.columns.list` 给出稳定 `{GUID}:pid` 字符串；菜单里的每次勾选都转投
+`view.columns.set`，不直接改 shell 状态。`view.columns.choose` 只作为人工入口，不暴露给 AI。
+缩放同理：`view.zoom` / `view.zoom.set` 经命令总线调 `ShellView::ZoomIcon`，
+`view.zoom.choose` 只是视图菜单里的人工入口，不暴露给 AI。
 
 未实现：`ToggleCheckboxes`。
 
@@ -198,17 +214,20 @@ mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
 （要有名字、重名与覆盖策略），不该用这两条命令名去冒充 —— 否则"能列出 / 能删"
 会在只有一条会话时变成假能力。
 
-### 3.11 Tool（7）—— 全实现
+### 3.11 Tool（10）—— 全实现
 
 | 命令 | 状态 | 说明 |
 |---|---|---|
 | `OpListDir` | 已实现 | 列出当前视图的项目（`shellops::ListView`），带 `limit` 截断标记；返回结构化 JSON |
 | `OpStat` | 已实现 | 查单项属性（`shellops::StatItem`），必须在本目录内 |
-| `OpTopN` | 已实现 | 谁最占空间：`entries[]` + `totalBytes` + `truncated`/`timedOut`/`elapsedMs` |
+| `OpTopN` | 已实现 | 谁最占空间：`entries[]` + `totalBytes` + `truncated`/`timedOut`/`cancelled`/`elapsedMs` |
 | `OpDiskUsage` | 已实现 | 这目录占多少：`totalBytes` + 完整性标记 |
 | `FileHash` | 已实现 | MD5/SHA-1/SHA-256，BCrypt 流式读（64 KB 块），`paths` 省略则用选中项 |
 | `DupFinder` | 已实现 | 先按大小分组再比 SHA-256；`Ctrl+Shift+Y` / 命令面板；返回组 + `wastedBytes` |
 | `FolderCompare` | 已实现 | 相对路径配对（大小写不敏感），同大小再比内容；`byContent=false` 只比大小 |
+| `ToolJobGet` | 已实现（2026-11-22 新增） | 查作业状态；完成后带 `result` |
+| `ToolJobCancel` | 已实现（2026-11-22 新增） | 请求取消；返回 `cancelRequested`（**已受理**，不等于已停下） |
+| `ToolJobList` | 已实现（2026-11-22 新增） | 列出全部作业（新的在前，只给摘要） |
 | ~~`OpReadText` / `OpNavigate` / `OpReveal` / `OpSelect` / `OpOpen` / `OpListCurrentView`~~ | **已删除命令表条目** | 六条是 `fs.open` / `tool.list` 的语义重复，且无 handler、无键位、无 agent 暴露。保留声明只是在目录里挂着永远不会实现的假能力，故删除。**枚举项与 legacy 名仍保留**（C1b/C2：删中间枚举会让后续 id 位移，删 legacy 名会让用户已有 keymap 失效），仅标废弃。 |
 
 > `OpTopN` 与 `OpDiskUsage` 是**新写**的（mod 没有）：`src/disk_scan.cpp` 纯文件系统遍历、
@@ -221,17 +240,37 @@ mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
 > helper 换来的只是"扫描时界面不卡"，代价是一整套 IPC 与生命周期管理。
 > 代价是预算耗尽会少扫一部分 —— 报告里写清楚了，比假死或假数字好。
 > 端到端验证：`obj/e2e_tools.py`（真实管道 + 真实文件，含改名副本、同大小不同内容）。
+>
+> **2026-11-22：长任务作业化。** 上面"预算够用"的判断只解决了"不会假死到没完"，
+> 没解决"中途不能停"与"界面不冻结"。现在五条长任务命令全部搬到**工作线程**
+> （`src/job.{h,cpp}`），配**进度窗口**（`src/job_ui.{h,cpp}`，带「取消」按钮）；
+> 仍然**不用 helper 进程**（helper 要把结果整份搬回主进程，
+> 而这里要的正是"边跑边看进度、随时能停"）。新增 `async` 参数与三条作业命令，
+> 细节见 `docs/AI-INTERFACE.md` §9。顺带补上一个人侧的空白：
+> `tool.topn` / `tool.diskusage` 过去**没有任何人可见的输出**（命令面板只调 `Invoke`
+> 不调 `InvokeResult`，返回值被丢弃），现在跑完给一份可读报告。
 
-### 3.12 Search（2）—— 已实现 1
+### 3.12 Search（2）—— 已实现 0
 
-`OpSearch`（`search.find`，2026-11-21 接上命令总线）：走 shell 自己的 `search-ms:` 协议，
-结果落在同一个 `IShellView` 里，所以排序 / 右键 / 拖放照旧可用。人侧是导航栏搜索框或
-命令面板追问搜索词，agent 侧是 `{"query":…}` → `{query, scope, url, searching}`。
-搜索是**导航**不是查询（原声明 `readOnly=1` 写错了）；空串 / 只有空白 = 退出搜索回到来源目录。
+**两条都未实现。** 这是 2026-11-21 实测后的诚实结论，不是倒退：
 
-URL 拼装抽成了纯函数 `searchurl::Build` / `Trim`（`src/search_url.*`），
-`tests/search_url_test.cpp` 按住引号转义与范围原样传递；端到端见 `obj/e2e_search.py`
-（真实管道实测：正常词、首尾空格被 trim、只有空格→取消、缺参数报错）。
+`OpSearch`（`search.find`）曾标为已实现，走 shell 的 `search-ms:` 协议，文档当时声称
+"结果落在同一个 `IShellView` 里，所以排序 / 右键 / 拖放照旧可用"。**实测证明这句话是假的**：
+宿主 `IExplorerBrowser` 没有搜索带，`ShellView::DoNavigate` 对 `search-ms:` 前缀明确
+`return false`，`App::RunSearch` 必然失败。真实管道实测：
+
+```
+call search.find '{"query":"test"}' → ok=false
+error="搜索视图没有接受这个查询：search-ms:query=test&crumb=location:..."
+```
+
+于是 2026-11-21 把它降级为 `implemented=false` 并移除处理器，让"搜索"在命令面板 /
+快捷键 / AI 侧都显示为未实现 —— **宁可少暴露，不可假绿**。真搜索要换宿主或接
+`ISearchFolderItemFactory`（当前工具链无 `searchapi.h`），属另一件事。
+
+`searchurl::Build` / `Trim`（`src/search_url.*`）与 `tests/search_url_test.cpp` 保留：
+它们是纯函数，将来接真搜索时可直接复用。`obj/e2e_search.py` 记录的是降级前的历史测试，
+**不能作为当前可用的证据**。
 
 `SearchEverything`：需要接 Everything 的 IPC（mod 的 `evipc`）。
 
@@ -243,7 +282,7 @@ URL 拼装抽成了纯函数 `searchurl::Build` / `Trim`（`src/search_url.*`）
 |---|---|---|
 | 不在 explorer 进程内 | `TabMergeAll`、`SendKeys` | 不适用 / 不实现 |
 | 视图不自绘 | `ToggleCheckboxes` | shell 视图未暴露接口；预览窗格已改用 `IFolderView2` 的 folder flag，无需自绘 |
-| 需要独立进程/协议 | Search 1（Everything 的 IPC；`search.find` 已用 shell 的 search-ms 落地） | 复用 mod 的 `evipc` 协议。文件集三条**不需要**：显式预算 + 完整性上报已够（见 §3.11） |
+| 需要独立进程/协议 | Search 2（Everything 的 IPC + `IExplorerBrowser` 无搜索带，`search-ms:` 被宿主拒绝） | 真搜索要换宿主或接 `ISearchFolderItemFactory`；Everything 走 mod 的 `evipc` 协议。文件集三条**不需要**：显式预算 + 完整性上报已够（见 §3.11） |
 | 缺窗口内对话 UI | `AiTogglePanel` / `AiStop` | 接口层已完成，只缺面板与历史（ROADMAP P4） |
 | 语义与既有命令重叠 | 6 条 `tool.*` 包装命令 | 先确认没有第二种语义，再接线；重复一套实现比"未实现"更糟 |
 | 安全边界 | `RunCommand`、`SendKeys` | 不做；AI 侧也不暴露 |

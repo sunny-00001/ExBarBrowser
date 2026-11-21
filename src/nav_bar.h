@@ -30,6 +30,10 @@ public:
     // 打开设置面板。参数是弹层的屏幕锚点（视图按钮下方）—— 面板与其它弹层
     // 同一套定位方式，不在面板内部自己算位置（那样两个地方都要算一次）。
     using SettingsFn = std::function<void(POINT)>;
+    // “选择详细信息…”入口，与设置面板共用锚点类型；回调由 App 转投命令。
+    using ColumnsFn = std::function<void(POINT)>;
+    // “图标大小…”入口，同样由 App 转投 view.zoom.choose。
+    using ZoomFn = std::function<void(POINT)>;
     // 当前视图状态的只读查询：视图模式下标 / 排序方式 / 分组方式。
     // 视图菜单要打勾（"现在用的是哪一档"），而导航栏不持有这些状态 ——
     // 它们只在 Config::Settings + ShellView 里。以前菜单完全不标当前值，
@@ -112,6 +116,8 @@ public:
     void SetRecentFn(RecentFn fn) { recentList_ = std::move(fn); }
     void SetClearHistoryFn(ClearHistoryFn fn) { clearHistory_ = std::move(fn); }
     void SetSettingsFn(SettingsFn fn) { onSettings_ = std::move(fn); }
+    void SetColumnsFn(ColumnsFn fn) { onColumns_ = std::move(fn); }
+    void SetZoomFn(ZoomFn fn) { onZoom_ = std::move(fn); }
     // 「设置…」面板的锚点（屏幕坐标）。鼠标路径（右键菜单第 900 项）与
     // 命令路径（win.preferences / 命令面板 / 键位）必须落在**同一个**位置 ——
     // 两处各算一份，早晚会因为布局调整而指向不同的按钮。
@@ -163,6 +169,8 @@ private:
     void ShowFoldMenu(POINT screen);
     void ShowHistoryMenu(bool backward, POINT screen);
     void ShowViewMenu(POINT screen);
+    // 视图菜单的二级层：0=排序方式 1=分组依据。kind 与 SortGroupFn 一致。
+    void ShowSortGroupSubMenu(int kind, POINT screen);
     void ShowDropMenu(POINT screen);
     void ShowSegmentMenu(int partIndex, POINT screen);
     void UpdateLeadIcon();
@@ -230,5 +238,7 @@ private:
     RecentFn recentList_;
     ClearHistoryFn clearHistory_;
     SettingsFn onSettings_;
+    ColumnsFn onColumns_;
+    ZoomFn onZoom_;
     std::function<void()> refocus_;
 };

@@ -51,7 +51,8 @@ obj*/
 #   书签          data\bookmarks.html
 #   键位          data\keymap.json
 #   鼠标规则      data\mouse.json
-#   审计日志      data\audit.log
+#   审计日志      data\audit.log   （旧文本格式）
+#                 data\audit.jsonl （规范格式，R18/C6 要求的那份）
 # ---------------------------------------------------------------------------
 data/settings.json
 data/settings.json.tmp
@@ -61,6 +62,8 @@ data/keymap.json
 data/mouse.json
 data/audit.log
 data/audit.log.1
+data/audit.jsonl
+data/audit.jsonl.1
 data/ai-token.txt
 data/ai-pipe.txt
 data/.write-probe

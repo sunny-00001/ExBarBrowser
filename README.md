@@ -5,15 +5,15 @@
 本仓库**自包含**（2026-11-20 起从 `D:\Windhawk` 主仓独立出来，见 §3.4）：不引用、不修改任何
 ExBar mod 分片，可并存、可整体拷走、可单独卸载。
 
-| 项 | 现状（2026-11-21 09:05，v0.2.2） |
+| 项 | 现状（2026-11-21 23:15，v0.2.2） |
 |---|---|
 | 阶段 | **P2 完成 + P3 起步**：标签/导航/书签/状态栏 + 键盘/序列/鼠标 + 命令契约 + AI 接口全部落地，日常浏览可用 |
-| 规模 | `src/` 约 2.33 万行（61 个 `.cpp` + 53 个 `.h`）；`tests/` 39 个单测、548 项断言（2026-11-21 实测；仓库在活跃并行开发，**行数每几分钟就变**，要看当前值见下方口径命令） |
-| 产物 | 单 exe 20.2 MB（含 `-g` 调试符号；`strip` 后约 1.3 MB），静态链接 libstdc++/libgcc |
+| 规模 | `src/` 约 3.14 万行（76 个 `.cpp` + 66 个 `.h`）；`tests/` 46 个单测、639 项断言（2026-11-21 实测；仓库在活跃并行开发，**行数每几分钟就变**，要看当前值见下方口径命令） |
+| 产物 | 单 exe 31.5 MB（含 `-g` 调试符号；`strip` 后约 1.9 MB），静态链接 libstdc++/libgcc |
 | 命令 | 由 `python tools/check_commands.py` 首行给出（目录 / 已实现 / 处理器），`check_ai_meta.py` 给出对 AI 暴露条数。**这三个数每加一条命令就变，本文不写死** |
 | 配置 | 便携模式，全部在 `<exe>\data`：`settings.json` / `bookmarks.html` / `keymap.json` / `mouse.json` / `audit.log` |
-| 验证 | clang++ 20.1.3 零警告；`build_fast.py --clean` 全量 **10.5s**；冒烟改为**人工操作 + 只读证据**（日志 / `exbar/state` / 截图），不注入键鼠（`docs/MIGRATION-PLAN.md` §8.2、规则 R21） |
-| 检查 | 3 个静态检查全绿（2026-11-21 10:10 复核）：`check_components`（唯一性 / 禁令 / 接线 / 令牌消费 / **输入纪律 R21** 五类，条数以脚本末行为准）、`check_ai_meta`（16 组，含 R20 人机等价）、`check_commands`（三方对账，含 CmdId 顺序与 legacy 名基线） |
+| 验证 | clang++ 20.1.3 零警告；`build_fast.py --clean` 全量 **19.8s**（76 TU，默认 8 路并行）；冒烟改为**人工操作 + 只读证据**（日志 / `exbar/state` / 截图），不注入键鼠（`docs/MIGRATION-PLAN.md` §8.2、规则 R21） |
+| 检查 | 3 个静态检查全绿（2026-11-21 23:15 复核）：`check_components`（唯一性 / 禁令 / 接线 / 令牌消费 / **输入纪律 R21** 五类，条数以脚本末行为准）、`check_ai_meta`（24 组，含 R20 人机等价）、`check_commands`（三方对账，含 CmdId 顺序与 legacy 名基线） |
 | 版本控制 | **独立仓库**（`E:\ExBarBrowser`，分支 `main`）：源码/脚本/文档/生成头入库，构建与运行产物由 `.gitignore` 排除 |
 
 > 本文所有路径均相对仓库根。文档基线：**2026-11-21 11:00**（代码仍在快速演进，
@@ -26,6 +26,8 @@ ExBar mod 分片，可并存、可整体拷走、可单独卸载。
 > ls tests/*.cpp | wc -l                                # 单测个数
 > grep -ho 'Check(' tests/*.cpp | wc -l                  # 断言总数
 > grep -c '^    {CmdId::' src/commands.cpp               # 命令条数
+> ls -l ExBarBrowser.exe | awk '{printf "%.1f MB\n", $5/1048576}'   # exe 体积
+> python tools/check_ai_meta.py | grep -cE '^[0-9]+\.'   # 静态检查组数
 > ```
 > 重新量之前不要凭印象改这几个数。仓库处于活跃并行开发，本文所有数字都是**快照**；
 > 与代码不符时先信代码，并把本文更新到新值。
@@ -68,7 +70,7 @@ ExBarBrowser.exe（本进程）
 | 改造对象 | 系统资源管理器窗口 | 自己造窗口 |
 | 能做的事 | 改 explorer 的标签栏/导航栏/命令栏，加书签栏、搜索、命令面板、AI 面板 | 只能做自己窗口里的东西；改不了系统 explorer |
 | 崩溃面 | 崩了连带 explorer | 崩了只影响自己 |
-| 现状 | 约 7.7 万行（17 个分片）、127 条命令目录（`data/capabilities.json`） | 约 2.29 万行、命令目录见 `check_commands.py`（规模比 mod 小一个量级，命令反而更多） |
+| 现状 | 约 7.7 万行（17 个分片）、127 条命令目录（`data/capabilities.json`） | 约 3.14 万行、命令目录见 `check_commands.py`（规模比 mod 小一个量级，命令反而更多） |
 
 两者**共享设计口径而非代码**：主题色令牌、面包屑交互语义、标签栏视觉、快捷键习惯都对齐 ExBar mod
 （`ebnav` / `ebtab` / `ebstatus` 的行为），但一行代码都不互相引用，各自可独立演进、独立卸载。
@@ -157,7 +159,7 @@ bash build.sh          # 或 build.bat（cmd）
 - 工具链：Windhawk 自带 `C:\Program Files\Windhawk\Compiler\bin\clang++.exe`（20.1.3），
   `-target x86_64-w64-mingw32`，`-std=c++20 -O1 -g -mwindows`。
 - 构建由 `build_fast.py` 驱动（PCH + 分 TU 增量 + 并行），`build.sh`/`build.bat` 只是透传参数的薄包装。
-  实测全量 10.5s（PCH 2.2s + 57 TU 并行）、改一行 ~1s、无改动 0.3s。常用：`--clean` 全量重建、
+  实测全量 19.8s（PCH 3.5s + 76 TU 并行）、改一行 ~1s、无改动 0.3s。常用：`--clean` 全量重建、
   `-j 16` 并行数、`--stats` 看耗时、`--objdir <dir>` 多会话隔离中间目录。
 - **换目录/搬机器后必须 `--clean`**：PCH 是 clang AST 二进制，里面记着绝对路径；
   仓库从 `D:\Windhawk\ExBarBrowser` 搬到 `E:\ExBarBrowser` 后，旧 `obj/common.h.gch`
@@ -176,9 +178,11 @@ bash build.sh          # 或 build.bat（cmd）
 ExBarBrowser.exe                      :: 默认打开用户主目录
 ExBarBrowser.exe "C:\Windows"         :: 打开指定目录
 ExBarBrowser.exe /select,"C:\a\b.txt" :: 打开所在目录（选中项暂未实现）
+ExBarBrowser.exe --mcp-stdio          :: 以 MCP 服务器方式启动（stdio 进、stdio 出）
 ```
 
 已有一个实例在跑时，上述命令不会新起进程，而是让已有窗口开一个新标签并前置。
+`--mcp-stdio` 是例外：它**一定**新起进程（这个进程自己就是服务器），不转发。
 
 ### 3.3 注册右键菜单（可选）
 
@@ -210,6 +214,21 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
   （书签、最近访问、窗口几何、键位习惯因人而异）。清单见 [.gitignore](.gitignore)。
 - **提交**：约定式提交（中文正文，`feat|fix|docs|refactor|build|test|...` + scope），
   见 [CONTRIBUTING.md](CONTRIBUTING.md) §2.3。
+
+### 3.5 MCP over stdio（让标准 MCP 客户端直接驱动）
+
+命名管道是给本机脚本用的；Claude Desktop / VS Code / Cursor 这类 MCP 客户端
+只认 stdio（拉子进程 + 换行分隔 JSON-RPC）。`--mcp-stdio` 就是这条入口：
+
+```jsonc
+// 客户端配置示例（各家字段名略有差别）
+{ "command": "E:\\ExBarBrowser\\ExBarBrowser.exe", "args": ["--mcp-stdio"] }
+```
+
+令牌由程序自动注入，客户端**不用**配。客户端断开（stdin EOF）时进程静默退出。
+
+细节见 [docs/AI-INTERFACE.md](docs/AI-INTERFACE.md) §3「stdio 入口」。
+端到端验证：`python3 tools/probe_mcp_stdio.py path/to/ExBarBrowser.exe`。
 - **首次提交前的机器相关项**：`src/keymap.gen.h` 由 `data/keymap.json` 生成，
   已入库，改键后记得 `python tools/gen_keymap.py` 再提交（`check_commands.py` 会拦不一致）。
 
@@ -389,7 +408,7 @@ main.cpp            进程级：DPI → COM(STA)/OLE → 转发或新开 → 命
 
 ```
 ExBarBrowser/                       独立 git 仓库（main）
-├─ src/                             按职责命名（平铺，60 .cpp / 52 .h，22,065 行）
+├─ src/                             按职责命名（平铺，76 .cpp / 66 .h，31,438 行）
 │  ├─ main.cpp                      进程入口：DPI / COM+OLE / 转发或新开 / 命令行
 │  ├─ app.{h,cpp}                   装配：单例 / 窗口创建 / 生命周期 / 鼠标入口
 │  ├─ app_wnd / app_tabs / app_nav  主窗口过程、标签生命周期、导航与历史栈
@@ -413,7 +432,7 @@ ExBarBrowser/                       独立 git 仓库（main）
 │  ├─ platform_win / str / log / clipboard / tooltip_host   收编后的基础设施
 │  ├─ config / json / text_file                             配置、JSON、原子文本写
 │  └─ common.h                                              共享类型与常量（并转发 identity 的类名）
-├─ tests/                           39 个单测（每个 .cpp 自带 main + Check；`bash tests/run_all.sh` 一键跑全量，数量自动枚举）
+├─ tests/                           46 个单测（每个 .cpp 自带 main + Check；`bash tests/run_all.sh` 一键跑全量，数量自动枚举）
 ├─ tools/                           check_commands / check_ai_meta / check_components / gen_keymap / gen_icon / probe_highlight / probe_toggle
 ├─ scripts/                         shot.py / install.ps1 / uninstall.ps1
 ├─ docs/                            见下表（15 篇）
@@ -438,7 +457,7 @@ ExBarBrowser/                       独立 git 仓库（main）
 | [docs/FULL-COVERAGE.md](docs/FULL-COVERAGE.md) | 要回答"是不是所有操作都能程序化"的人 | **全覆盖模型**：操作覆盖的判据、三平面闭环（执行/观测/改进）、为什么不能靠模拟输入 |
 | [docs/PARITY.md](docs/PARITY.md) | 要判断"能不能替代 explorer"的人 | 与 ExBar mod 127 条命令的逐组对照（已实现 / 未实现）、差异根因 |
 | [docs/INPUT.md](docs/INPUT.md) | 要改键位/序列/鼠标规则的人 | 输入端主线、keymap/mouse 文件格式、时序语义、管理器用法、排查 |
-| [docs/AI-INTERFACE.md](docs/AI-INTERFACE.md) | 要接 AI / 写 MCP 封装的人 | **AI 操作接口**（已实现）：命令白名单规则、JSON-RPC 管道协议、令牌与双门授权、错误码 |
+| [docs/AI-INTERFACE.md](docs/AI-INTERFACE.md) | 要接 AI / 写 MCP 封装的人 | **AI 操作接口**（已实现）：命令白名单规则、JSON-RPC 管道协议、stdio 入口（`--mcp-stdio`）、令牌与双门授权、错误码 |
 | [docs/OPERATION-MODEL.md](docs/OPERATION-MODEL.md) | 要定操作契约的人 | **操作模型**（已实现 1–10 步）：MCP / VS Code / Blender / Opus 四家的做法、七条原则、与现状的差距、迁移的做法与取舍 |
 | [docs/FULL-COVERAGE.md](docs/FULL-COVERAGE.md) | 要让「所有操作」都可程序化/可观测/可闭环的人 | **全覆盖模型**（设计）：四原语（Action/Query/Navigation/Event）、覆盖的三条可证伪判据、控制/观测/开发三平面、能力注册表、闭环模板、分层授权、差距清单、落地顺序 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 要排期的人 | P1 收尾 → P4 的里程碑、验收标准、风险与回退 |
@@ -479,7 +498,7 @@ ExBarBrowser/                       独立 git 仓库（main）
   详见 [CHANGELOG](CHANGELOG.md) 0.2.0 与 [MIGRATION-PLAN](docs/MIGRATION-PLAN.md) §8。
 - **P2.5（已完成，2026-11-20 / v0.2.1）**：操作契约结构化（10 步）—— 参数对象化、效果四维化、
   前置条件、交互与确定分离、结构化返回值、点分命名空间、MCP 兼容层、内容补全、能力缺口补齐；
-  AI 操作接口（JSON-RPC over 管道，当时 86 工具，现 89）；导航收口为组件（`nav_path` / `nav_history`）；
+  AI 操作接口（JSON-RPC over 管道，当时 86 工具，现 139）；导航收口为组件（`nav_path` / `nav_history`）；
   存储改便携模式（`<exe>\data`）；基础设施收编（窗口类/字符串/日志/剪贴板/tooltip/字形）。
 - **P3（进行中）**：搜索（复用 `evipc`）、预览窗格、会话管理 UI、可选 Shell 扩展 DLL。
   已提前落地：目录统计（`OpTopN` / `OpDiskUsage`）、文件集工具（`tool.hash` / `tool.dupfinder` /

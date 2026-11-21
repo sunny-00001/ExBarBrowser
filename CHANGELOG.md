@@ -1,5 +1,374 @@
 ## [Unreleased]
 
+### 变更（"被拦住"不再一锅端：`blocked` 拆成四类 + 一类超时）
+
+以前"被拦住"只有一个 `blocked`。但**被拦住有四种，下一步完全不同**：
+
+| 类别 | 含义 | 调用方该做什么 |
+|---|---|---|
+| `precondition_unmet` | 前置条件不满足（没选中、目标不在视图、参数缺失） | 换目标 / 先做前置动作，**重试有用** |
+| `lock_conflict` | 执行期被占用/被锁（剪贴板、文件被别的程序占着） | 关掉占用方后重试，或换一个目标 |
+| `canceled_by_user` | 用户主动取消（拒绝批准、在进度窗口点了取消） | **不要重试** —— 停下来问用户 |
+| `not_supported` | 该环境/该对象不支持这件事（视图模式不对、能力不存在） | 换一条路，**重试永远没用** |
+| `timed_out` | 等待时限到了，后台作业**仍在跑** | 用 `tool.job.get` 继续查那个 jobId，别重发命令 |
+
+一锅端成 `blocked` 等于让调用方去猜，而它猜错的方式通常是
+"一直重试到超时"或"直接放弃"—— 两种都是错的，而且都会变成静默的行为缺陷。
+
+- **新增 `FailKind` 枚举**（`src/commands.h`）—— 类别由**命令调用点**声明：
+  `CommandBus::NoteFailure(reason, kind)`。这是关键：`ai_api` 不去匹配中文字符串
+  （文案一改就断，那是文案该干的事），"剪贴板被占"在写它的地方就知道它是锁冲突。
+  `FailKindCode` 是唯一的枚举 → errorCode 映射点。
+- **默认值是 `precondition_unmet`** —— 绝大多数失败确实是"前提没满足"
+  （没选中、目标不存在、参数缺失、id 不存在…）。不确定时**不要**硬凑一个类别：
+  留默认比猜一个错类别好。
+- **`CommandBus` 新增 `lastFailKind()`** —— 与 `lastBlockReason()` 同源：
+  UI、AI、审计看到的是同一件事。
+- **顺带修掉一个真缺陷**：作业被取消时 `job::Status` 是
+  `done=true, cancelled=true, failed=false`，而 `CollectResult` 只判 `failed` ——
+  于是被取消的作业会走**成功**分支，把空结果当成"跑完了"报出去
+  （"查重没查到重复"其实可能是"用户中途叫停了"）。现在单独判 `cancelled`，
+  报 `canceled_by_user`，并在结果里带上 `cancelled: true`。
+- **`tools/agentctl.py` 的 `gap` 诊断**同步细分：四类给出四条**不同的**处置建议
+  （混成一条，agent 就会把"稍后重试"用在"能力不存在"上）。
+- **静态判据**（`tools/check_ai_meta.py` 第 22 项）：白名单加上五个新码，
+  并加判据「`blocked` 不许退化回一锅端」—— 码表是从 `FailKindCode` 反查的，
+  不是从 `ai_api.cpp` 扫的（后者看不到这几类码）。
+- **新增 `tests/fail_kind_test.cpp`**：映射唯一性、类别透传、默认类别、
+  前置不满足的归类，以及"被取消的作业不算成功"。
+- **兼容性**：旧版本程序仍可能返回一锅端的 `blocked`，客户端按
+  `precondition_unmet` 处理（`agentctl.py` 里保留了这条映射）。
+
+### 新增（M3：五条长任务命令作业化 —— 工作线程 + 进度 + 取消 + 异步）
+
+`tool.dupfinder` / `tool.hash` / `tool.compare` / `tool.diskusage` / `tool.topn`
+过去**同步跑在 UI 线程**上。一个几万文件的目录能把界面冻住十几秒，
+用户连"取消"都按不了 —— UI 线程被占着，连定时器都不转。
+`budgetMs` 只保证"不会假死到没完"，不解决"中途不能停"，也不解决"界面不冻结"。
+
+按 `docs/ROADMAP.md` §4.5 的判断，正确形态是**把这五条挪到工作线程 + 进度窗口**，
+而不是再造一个 helper 进程（helper 进程要把结果整份搬回主进程，
+而这里要的就是"边跑边看进度、随时能停"）。
+
+- **新增 `src/job.{h,cpp}`** —— 进程级作业服务：一条命令对应一个作业，
+  作业在**工作线程**上跑，产出结构化结果，并给出**进度**与**取消**。
+  三条硬约束：工作线程产出 / UI 线程取走（共享记录 + 互斥锁，调用方永远拿到
+  **快照**，不会看到写了一半的中间态）；取消是**协作式**的（置原子位，
+  数据层在循环里查 —— 已经被系统调用卡住的那一步中断不了，这是诚实的边界）；
+  完成与进度都可订阅（钩子 → 事件推送，客户端不必轮询）。
+- **新增 `src/scan_ctl.h`** —— 数据层与命令层之间的控制通道
+  （取消标志 + 进度回调）。取消与进度这两件事在三个数据层都要用，
+  各自加一份字段就是三份实现，而三份实现迟早分叉。
+- **新增 `src/job_ui.{h,cpp}`** —— 进度窗口（自绘进度条 + 「取消」按钮）。
+  人工路径弹窗（模态，owner 被禁用），机器路径用 `HWND_MESSAGE` 静默等待 ——
+  没人盯着屏幕，却把整个界面锁住，比冻结好不到哪去。
+  **人侧不再"等超时就把窗口关掉"**：作业还在后台跑却把窗口关了，
+  用户会以为"停了"，于是既看不到结果也不敢做别的事。
+  现在人侧等到作业自己结束或用户按「取消」为止；机器路径保留时限。
+- **五条长任务命令全部走作业**：准备参数在 UI 线程（`ActiveView()` 是 COM 调用，
+  只能在 UI 线程），重活在工作线程，收尾（弹报告）在 UI 线程。
+- **新增 `async` 参数**（五条都有）：`true` = 立刻返回 `{jobId, state:"running"}`。
+  这是**必须的**：AI 管道的监听线程只有 10 秒超时，同步扫一个大目录必然超时，
+  而超时之后命令仍在跑 —— 调用方拿不到结果，也没法叫停。
+  异步把"跑多久"与"等多久"拆开。
+- **新增三条作业命令**：`tool.job.get`（查状态与结果）、`tool.job.cancel`
+  （请求取消）、`tool.job.list`（列出全部）。
+  作业是**进程级**对象，所以 scope 是 App —— 写成 CurrentTab 会骗调用方。
+- **新增事件 `tool.job.progress` / `tool.job.done`**：完成事件**带结果**，
+  否则订阅者收到"做完了"还要再调一次才拿到东西，那等于把轮询换成了两段式轮询。
+- **结果新增 `cancelled` 字段**：与 `timedOut` **分开**。超时是"没那么多时间"
+  （可以加大预算重试），取消是"我不要了"（重试只是白费力气）。
+  把两者混成一个字段，调用方就没法决定下一步该做什么。
+- **时间预算的语义统一了**：`budgetMs` 不传 = **不限时**（异步与人工路径的默认）；
+  机器同步调用仍默认 1500ms（管道 10 秒就超时，等太久没有意义）。
+  三层数据层对"0"的原有解释并不一致（摘要那层 0 = 不限，体积统计那层 0 = 立刻超时，
+  且 `tests/disk_scan_test.cpp` 钉着这个行为），所以"不限时"走**新增的 `noTimeLimit` 标志**，
+  由命令层统一翻译 —— 不动任何历史语义。
+- **顺带补上人侧的空白**：`tool.topn` / `tool.diskusage` 过去**没有任何人可见的输出**
+  （命令面板只调 `Invoke` 不调 `InvokeResult`，返回值被丢弃）——
+  人在界面上点了"最大的 N 项"，什么都没发生。现在跑完给一份可读报告。
+- **命令层按职责拆开**：`app_commands_files.cpp`（1356 → 759）里那五条长任务命令
+  搬去了 `app_commands_scan.cpp`（体积统计 + 摘要）与 `app_commands_compare.cpp`
+  （查重 + 比较），作业域的命令与事件接线在 `app_commands_jobs.cpp`。
+- **新增 `tests/job_test.cpp`**：钉住作业服务的关键契约 ——
+  正常路径 / 失败路径 / 取消（取消**不是**失败）/ 进度快照 /
+  取消已结束的作业会失败 / 等待超时不装作等到 / `Shutdown` 取消全部并 join。
+  退出时不 join 的话，工作线程会往已析构的 Service 上写 ——
+  崩在关窗口那一刻，而且崩得莫名其妙（用户只看到"关窗口时闪退"）。
+
+### 变更（按职责拆开两个超长文件：行数棘轮第一次真的收紧了）
+
+上一笔提交引入了"单文件 ≤500 行"的棘轮，但**基线是在编辑中途量的**，
+记的行数比真正提交进去的少（如 `shell_ops.cpp` 记 1384、实际提交 1502）。
+于是棘轮在自己诞生的那笔提交上就报错 —— 判据从第一天起就是假的。
+
+本轮先把两处按职责切开，再把账改正：
+
+- **`shell_ops.cpp`（1502 → 1338）** 拆成三份：
+  - `shell_ops.cpp` —— **视图作用域**的 shell 操作（选中/排序/分组/隐藏/新建…）；
+  - `shell_ops_path.{h,cpp}`（新）—— **路径作用域**的文件操作（撤销栈专用：
+    `RenamePath` / `MovePathTo` / `CopyPathTo` / `DeletePath`）；
+  - `shell_op_exec.{h,cpp}`（新）—— `IFileOperation` 的**唯一**执行器
+    （`Run` + `HexHr`）。
+  两种作用域混在一个文件里时，读的人要一路翻到文件末尾才发现还有另一套语义；
+  而"执行 + 判成败"这套判据（必须同时看 `PerformOperations` 的 HRESULT **和**
+  `GetAnyOperationsAborted`）抄一半就会漏 —— 同一件事在删除路径上查 aborted、
+  在改名路径上不查。
+- **`app_commands_files.cpp`（1356 → 1140）** 拆出 **`app_commands_fs.{h,cpp}`**：
+  `fs.*`（按路径点名目标）与 `file.*`（作用于用户碰巧选中的项）**入参语义就不同**，
+  混在一起时读的人要翻到中段才知道"这些命令的入参根本不是选中集"。
+- **`pathutil::ToShellPaths()`**：批量版归一化。`fs.*` 的 `targets` 本来就是数组，
+  批量版让"整批一起归一化"成为**一次**调用 —— 逐项在调用点写循环，
+  迟早有人漏掉其中一项（漏掉的那一项就是那个报 `E_INVALIDARG` 的）。
+- **`data/file-length-baseline.json` 改正**：记账值改为**提交态的真实行数**。
+  棘轮本身没有被绕过（已验证：压低记账值仍会报错；普通检查与构建脚本都不改写基线），
+  错的只是量表。
+- **`mcp_stdio.cpp` 进"长路径前缀"白名单**：它开的是命名管道
+  （`\\.\pipe\...`），不是文件系统路径，加 `\\?\` 前缀会彻底打不开 ——
+  与 `ai_server.cpp` 同理。
+
+两个最大文件都降到了**记账值以下**，棘轮第一次真的收紧了（`shell_ops.cpp` 1384→1338、
+`app_commands_files.cpp` 1240→1140）。
+
+### 修复（P0：AI 请求队列的写已释放栈）
+
+监听线程把请求交给 UI 线程执行并同步等结果，**10 秒**超时。请求对象原先是
+`RunOnUiThread` 的**栈上局部变量**，队列里存裸指针。于是这条路径成立：
+
+1. UI 线程已把请求取走，开始执行（handler 跑得久，比如一次大目录的磁盘扫描）；
+2. 监听线程等到 10 秒超时 → 返回 → **栈帧销毁**；
+3. UI 线程这时才处理完 → 往 `job->response` 写结果
+   → **写已释放的栈**（踩的是监听线程 `ServeLoop` 的栈帧，未定义行为：
+   可能当场崩，也可能悄悄改掉别人的数据）。
+
+触发条件很现实：任何跑得比等待时限长的命令都会走到（大目录扫描、大树复制）。
+
+- **请求对象改成共享所有权**（`shared_ptr`）：提交方、队列、UI 线程各持一份引用，
+  谁先放手都不影响对象寿命。超时放弃的只是"等结果"这件事，
+  UI 线程仍然会把那个请求安全地处理完。
+- **抽成独立模块 `src/ai_queue.{h,cpp}`**：这段线程契约（谁拥有请求、提交方能等
+  多久、超时之后谁还在用它）是最容易写错的地方，值得单独一个文件、单独单测。
+  `ai_server.cpp` 顺带瘦了 30 行。
+- **`tests/ai_queue_test.cpp`**：钉住超时路径 —— 提交方超时走人之后，
+  UI 线程仍能安全处理完那个请求，队列之后仍然可用。
+- 附赠可观测性：`Queue::Abandoned()` 统计"客户端超时之后才处理完"的请求数，
+  写进日志 —— 这就是"界面卡了多久"的账。
+
+### 修复（P0：超时响应用错了协议格式）
+
+超时响应过去不论请求是什么格式，一律回 `{"ok":false,"error":"timeout"}`。
+对 JSON-RPC / MCP 客户端来说这是个**非法响应**：没有 `id`，客户端无法把它
+认成"我那条请求的回复" —— 要么当乱码丢掉，要么当服务端推送，
+然后**永远等一个不会来的结果**（挂死）。
+
+MCP stdio 桥接更是直接栽在这里：它靠"有 id、无 method"判响应，
+旧格式的超时响应两条都不满足 → 被当成推送转发出去，客户端那头就一直挂着。
+
+- 现在按**请求的格式**给：JSON-RPC 请求回
+  `{"jsonrpc":"2.0","id":<id>,"error":{"code":-32000,"message":"请求超时…","errorCode":"timeout"}}`；
+  旧格式请求仍旧回 `{"ok":false,"error":"timeout"}`。
+- `code` 用 -32000（JSON-RPC 留给实现自定义的区间），语义是"服务端没能在时限内
+  处理完"，不是"请求不合法"（那是 -32600）。
+- `errorCode` 一并带上：项目口径是 `errorCode` 才是给机器分支的稳定标识。
+
+### 修复（P0：模态框开着的时候仍在派发 AI 命令）
+
+模态框有自己的消息循环，而那个循环里**照样收得到 `WM_TIMER`** ——
+于是 AI 通道的泵定时器会在模态框开着的时候照常触发，命令 handler
+**重入**地跑在模态框的循环里。那不是"慢一点"，是能出事的：
+
+- handler 可能再开一个模态框（框套框，用户看到两个）；
+- handler 可能改选中集/视图，而那个模态框正在等的就是这份状态
+  （"重命名"对话框正开着，AI 把它正在改的那一项换掉了）。
+
+- **`modal::Depth()` / `modal::Scope`**：模态层数计数（文件内唯一一份，
+  自写模态循环的地方用 `Scope` 包住，别自己维护计数）。
+- **派发点避让**：`app_wnd.cpp` 的定时器分支在 `modal::Depth() > 0` 时**不派发**
+  AI 请求 —— 请求留在队列里等模态框关掉，客户端那边照旧按 10 秒时限拿超时
+  （语义不变，只是不再有重入）。
+- **`tests/modal_depth_test.cpp`**：钉住计数必须配平（少减一次 → AI 泵被永久
+  关掉；多加一次 → 防护形同虚设。两种都不报错，只是功能不对）。
+
+### 修复（P1：`tool.hash` 没有时间预算，大文件能把界面按死）
+
+`filehash::HashFile` 一直有 `cancel` 参数，但**命令层从来没传过**，
+也没有时间预算 —— 于是 `tool.hash` 一个文件就是算到底。
+这条命令跑在 **UI 线程**上（AI 请求由定时器泵派发，人按快捷键也是 UI 线程）：
+一个几十 MB 的文件要十几秒，那段时间整个界面没有响应，
+用户**连取消都按不了**（UI 线程被占着，定时器都不转）。
+
+- `filehash::HashFile` 新增 `budgetMs`（0 = 不限），每 64 KB 检查一次，
+  超了就停并置 `Result::timedOut`。
+- `tool.hash` 新增 `budgetMs` 参数（默认 1500，与 diskscan / filetools 一致，
+  夹在 100–30000）。**预算按整次调用计，不是每个文件一份** ——
+  否则 N 个文件就是 N 倍预算，界面照样能卡很久。
+- 结果里新增 `timedOut` / `complete`，**如实说"没算完"**：
+  只给一串哈希而不说算没算完，调用方会把"预算用完"当成"这些文件就是这些摘要"。
+- 预算耗尽时**绝不给半截哈希**（`hex` 留空），只报"未计算"。
+
+### 修复（外部路径没归一化：`fs.*` 收到正斜杠路径就失败）
+
+`SHCreateItemFromParsingName` **只认反斜杠**，收到 `C:/dir/file.txt` 直接返回
+`E_INVALIDARG(0x80070057)`。而正斜杠在 Windows 里是完全合法的路径写法
+（`CreateFile` 也接受），AI 也天然会这么写 —— 于是同一类输入：
+`fs.open "C:/x"` 能导航（那一层有归一化），`fs.rename "C:/x/a.txt"` 却失败。
+
+实测症状：`fs.rename` 报"重命名失败（名称非法或目标被占用）"，
+而真因（分隔符）在错误信息里完全看不出来 —— **报一个错的错比报错更糟**。
+
+- **新增 `pathutil::ToShellPath()`**（`src/path_util.{h,cpp}`）：全项目
+  "外部路径 → shell API"的**唯一收口**（正斜杠→反斜杠、折叠连续分隔符、
+  去尾分隔符；`::` / `shell:` 命名空间原样）。
+- `shell_view.cpp` 里那份手抄的归一化删掉，改调同一份。
+- `shell_ops.cpp` 的路径入口（`RenameTo` / `CopyPaths` / `RenamePath` /
+  `MovePathTo` / `CopyPathTo` / `DeletePath`）全部归一化；
+  `fs.*` 的 10 条命令在命令层也归一化（这样撤销记录与回执里存的是规范形式）。
+- `tests/path_util_test.cpp` 补 `ToShellPath` 的用例（正斜杠、连续分隔符、
+  盘根、UNC 前缀、命名空间路径）。
+
+### 修复（失败原因细分：重命名不再"猜"错因）
+
+`RenameTo` 以前只返回 `bool`，失败原因**只存在于 shell 的 HRESULT 里**，
+于是所有失败都被压成同一句"重命名失败（名称非法或目标被占用）"——
+这句话对每种原因都不算错，对使用者却毫无用处（该换名？该关掉占用它的程序？
+还是权限问题？）。
+
+- `shellops::RenameTo` 增加可选的 `std::wstring* why`，区分五种原因：
+  目标不在当前视图 / 目标已存在 / 无法定位源文件（带 HRESULT）/ 重命名请求被拒 /
+  文件操作被中止。
+- `file.rename.batch` 的 `failed[]` 从"字符串数组"改成"对象数组"
+  （`{from, reason}`），`outputSchema` 同步更新 —— 失败项必须带原因，
+  只报文件名对使用者没用。
+- `RunOp` 拆出 `RunOpEx`：把 `PerformOperations` 的 HRESULT 与
+  `GetAnyOperationsAborted` 一起报出来（后者为 TRUE 时 S_OK 也是失败）。
+
+### 修复（撤销失败不再"改撤别的操作"）
+
+`file.undo` 在**应用内撤销栈非空但撤销失败**时会落回 shell 的撤销栈 ——
+于是"撤 A 失败"会变成"居然撤了 B"。用户以为退回了 A，实际丢的是 B。
+
+现在：栈非空但撤不动时**到此为止**（两种情形都必须停）：
+① 栈顶是人工操作而调用方是机器（让机器撤人工的操作 = 穿透人工操作）；
+② 撤销执行本身失败（记录还在栈里，可重试）。
+只有"我们的栈本来就是空的"才轮到 shell 的撤销栈。
+
+### 新增（文件操作撤销栈：`file.undo` 真能撤）
+
+`file.undo` 以前只有一条兜底路径：去 shell 视图背景菜单里找 undo 谓词。
+那条路对"右键菜单做的操作"有效，对 `fs.*` 这类**按路径点名**的操作无效
+（菜单里根本没有对应项）。
+
+- **`src/file_undo.{h,cpp}`**：逆操作式撤销栈（LIFO，上限 20，同 `bmk.*` 口径），
+  纯策略、无 COM，可单测。
+- 记栈点：`fs.rename` / `file.rename.batch`（批量=一条）/ 交互式 `file.rename`
+  （按目录清单差集推新旧名）/ `fs.copy` / `fs.move` / `file.copy.to` / `file.move.to`。
+- 撤销用**按路径**的那组 shell 操作（`src/shell_ops.{h,cpp}` 新增
+  `RenamePath` / `MovePathTo` / `CopyPathTo` / `DeletePath`）——
+  撤销时目标已经不在当前视图里，`Selection` 语义与 `RenameTo` 的
+  "必须在视图里"校验都用不了。
+- 两条边界规则：机器**不能**撤销人工的操作；撤销失败**不弹栈**
+  （部分失败时把已撤成功的项剔掉，让重试只试剩下的）。
+- `tests/file_undo_test.cpp` 覆盖：空栈 / LIFO / 上限 / 机器不穿透人工操作 /
+  失败不弹栈 / 部分失败 prune / 空记录不入栈。
+
+### 新增（`dev.snapshot` 真落盘 + `dev.rollback` 可逆）
+
+`dev.rollback` 以前直接 `git checkout -- <path>`：**不可逆**（改到哪算哪，
+回滚掉的东西没有副本），而文档指引的 `dev.snapshot` **不保存内容**
+（只记路径 + 大小 + mtime），照着做等于"先扔掉备份再撤销"。
+
+- **`src/dev_snapshot.{h,cpp}`**：快照把改动文件的**内容副本**写到
+  `<repo>/snapshots/<id>/files/<rel>` + `manifest.json`；
+  单文件 ≤4MB、单份快照 ≤64MB。
+- `dev.snapshot` 现在真的落盘，返回 `snapshotId` / `snapshotDir` /
+  `createdAt` / `savedFiles` / `totalFiles` / `files`。
+- `dev.rollback` **必须带 `snapshotId`**（缺了就明确失败），按快照还原；
+  三分支：有副本 → 写回 / 快照时干净且 git 跟踪 → `git checkout -- path` /
+  未跟踪 → 不动并如实报告。
+- **回滚本身也可逆**：回滚前先把当前内容存进 `pre-rollback/`，撤错了还能撤回来。
+
+### 修复（`undoable` 不许说谎）
+
+`Effects::undoable` 的语义是"**我们**能不能撤销"，不是"系统理论上能不能"。
+11 条命令声明了 `undoable=1` 却没有撤销栈（`tab.move.*` / `tab.pin` /
+`file.undo` / `session.named.*`）—— 对调用方说谎。
+
+- 这 11 条的 `undoable` 归零，各带解释注释。
+- `tools/check_ai_meta.py` 新增**第 25 项**"可逆性不许说谎"：
+  按 `UNDO_MECHANISM` 清单做**双向**校验（声明了必须有机制；
+  登记了也必须真声明 `undoable=1`）。
+
+### 修复（`search.find` 的契约不成立）
+
+宿主是 `IExplorerBrowser`（没有搜索带），`search-ms:` 协议走不通 ——
+上一轮把 `implemented` 降级为 `false` 时只翻了那一个字段，
+`aiExposed` 仍是 `true`（AI 看得到、调不动）、`outputSchema` 仍声明着
+（承诺兑现不了）。现已 `aiExposed=false` + `outputSchema=nullptr`，
+并在 `check_ai_meta.py` 第 10 项加判据 c：**未实现的命令不得声明 outputSchema**。
+
+### 新增（MCP over stdio 入口：`--mcp-stdio`）
+
+AI 通道原本只有命名管道一种入口，那是**给本机脚本**用的；标准 MCP 客户端
+（Claude Desktop / VS Code / Cursor）只认 stdio 或 HTTP。业界现状是
+Eagle 随附本地 HTTP MCP 服务器、微软给资源管理器做了官方 MCP 连接器、
+Windows ODR 把 `odr mcp add --manifest` 做成系统级标准 —— 没有 stdio 入口，
+别的 MCP 客户端要接本程序就得先自己写一个转发器。
+
+- **`src/mcp_stdio.{h,cpp}`**：stdin 一行 → 注入 `params.__token` → 命名管道
+  → 管道回一行 → stdout。是**桥接**而不是"再实现一遍协议"：协议、鉴权、
+  `errorCode`、自断言、事件流全走原来那条路，stdio 与管道不可能出现两套行为。
+  零依赖，只用 Win32。
+- **`--mcp-stdio` 启动语义**：等价于 `--new-window` —— 本进程自己当服务器，
+  **不**转发给已有实例（转发 = 进程立刻退出 = 客户端只看到管道断开）；
+  同时强制开启 AI 通道（客户端用 stdio 拉起它，本身就说明要 AI 通道）。
+- **JSON-RPC 通知按规范不回响应**，也不会污染响应流。
+- **断开即退**：stdin EOF → 客户端断开 → 进程静默退出（退出码 0），
+  不留半个进程在后台；MCP 模式下不弹"确定退出吗"（会把客户端晾在原地）。
+- **退出时的 `std::terminate()` 已修**：原先 `Stop()` 从未被调用，进程退出时
+  静态 `std::thread` 析构时仍 joinable → `libc++abi: terminating`，退出码 3。
+  现在 `Stop()` 由 `App::OnDestroy` 与 `App::Run` 收尾各调一次（幂等），
+  用 `CancelSynchronousIo` 唤醒阻塞在 stdin 上的读；线程赖着不走时改为
+  detach 而非 join（join 会卡死 UI 线程，detach 后析构也不会 terminate）。
+- **`tools/probe_mcp_stdio.py`**：端到端验证（真实进程 + 真实管道，
+  不注入键鼠，符合 R21）。覆盖握手、工具清单形状、`tools/call`（含
+  `structuredContent`）、未知工具的 `errorCode` 归类、`exbar/state` 扩展方法、
+  通知不串位、断开后干净退出。
+- 文档：`README.md` §3.2 / §3.5、`docs/AI-INTERFACE.md` §3「stdio 入口」。
+
+### 新增（静态关卡：快捷键冲突）
+
+同一组合被绑两次时，后一条**永远按不出来**（`InputRouter::BuildBindings`
+的 `add()` 是先到先得且静默丢弃）。原先只有管理界面能看出来，源码里查不到。
+
+- **`tools/check_commands.py`**：新增冲突检查，覆盖**全部三个来源** ——
+  `data/keymap.json` 热键、`src/keymap.cpp` 的 `kSysKeys`（系统原生兜底）、
+  `src/input_router.cpp` 的 `kExtra`（应用内附加）。检查器里复刻了一份
+  `chord::Parse`（含修饰键别名、大小写、`PgUp`/`PageUp`、单字符落到 VK 表
+  等），所以 `Alt+Left` 与 `Alt+←` 会被认出是同一个键。
+- **`src/input_router.cpp`**：冲突同时写进日志，不再只标在管理界面上 ——
+  `[keymap] 快捷键冲突：Ctrl+C 被绑了 2 次（先到先得，后一条永远按不出来）：…`。
+
+### 新增（静态关卡：单文件 500 行）
+
+`ARCHITECTURE-RULES` §3 要求单文件 ≤500 行，但没有任何机器检查，
+靠人记着 → 事实上已经漂了。
+
+- **`tools/check_components.py`**：新增行数检查 + **棘轮**。
+  超限文件记进 `data/file-length-baseline.json`（git 跟踪，改它就是一次可见的 diff），
+  之后只许降不许升。18 个历史超限文件（`shell_ops.cpp` 1384 行等）先记账，
+  从此每长一行都要有人显式承认。
+
+### 修复（文档数字过期）
+
+`README.md` 里的规模数字全部是旧的（写着 2.33 万行 / 39 个单测 / 20.2 MB），
+与仓库实际（3.14 万行 / 46 个单测 / 31.5 MB）对不上。已按实测校正，
+并补了两条口径命令，下一个读者几秒内能自己复核：
+
+```bash
+ls -l ExBarBrowser.exe | awk '{printf "%.1f MB\n", $5/1048576}'
+python tools/check_ai_meta.py | grep -cE '^[0-9]+\.'
+```
+
 ### 新增（AI 通道：失败可机器分类 + 能力面自述）
 
 让"新会话 → 提需求 → 调命令 → 缺什么补什么"这条闭环真正落在产品通道里，而不是外部脚本里：
@@ -429,6 +798,88 @@ wParam 解析；全量 42/42 通过，静态检查（keymap/component/command）
 - **空书签栏提示行**（`Ctrl+D` 收藏 / `Ctrl+B` 聚焦），而不是一条什么都没有的灰带。
 - 单测：`bmk_html_test` 51 项（新增 URL 往返 / UTF-8 解码 / UNC / 数字实体）、
   `test_store` 65 项（新增 MoveTo 成环拒绝 / 递归排序 / 跨层级去重 / 冲突另存）。
+
+---
+
+### 修复（P0-6：审计改结构化 JSONL；被拒的调用也必须留痕）
+
+审计过去只有一种形状：`data/audit.log` 里一行文本，记着"谁、什么命令、什么参数、成没成"。
+它撑不住三件事，于是三件事都答不了：
+
+1. **谁做的** —— `actor` 是个字符串，`palette` / `key` / `mouse` / `seq` / `drop` / `sysmenu`
+   全是真人，却和 `ai` 一样只是字符串。分不清人和机器，审批与审计就没法分级。
+2. **为什么没成** —— 失败原因被压成一句中文，客户端只能猜。
+3. **机器可判读** —— 文本行里没有稳定的字段名，脚本要靠正则抠。
+
+- **新增 `src/audit_log.{h,cpp}`**：审计的**唯一事实源**是结构化的 `auditlog::Record`，
+  `data/audit.jsonl`（R18 要求的那份，一行一条 JSON）与 `data/audit.log`
+  （旧文本镜像，给既有脚本 grep）**由同一条记录渲染** —— 两个来源对不上这种事从此不可能发生。
+- **字段补齐到 15 项**：`ts / actorKind / actorName / cmd / args / argsHash / ok / verdict /
+  errorCode / durationMs / approval / approvedBy / sessionId / traceId / pid`。
+  其中 `actorKind` 用 P0-10 建立的 `ActorKind`（`human` / `ai`，不再只有字符串）；
+  `traceId` 取 JSON-RPC / MCP 的**请求 id** —— 客户端手里只有它自己发的 id，
+  审计里记着同一个 id，两边才能对账；自己编的序号客户端无从校验，等于没写。
+- **拒绝路径全部落审计**：此前 AI 通道有一整段在进 CommandBus **之前**就返回了
+  （未知命令 / 未暴露 / 未实现 / schema 非法 / 参数不合法 / 危险未批准），
+  这些**一条审计都不写** —— 实测连续 4 次被拒，审计文件 0 增长。
+  而被拒的调用恰恰最值得追（反复撞同一个错 = 调用方用错了方法；
+  反复撞 `danger_disabled` = 有人在试探破坏性操作的边界）。
+  现在每条拒绝都带机器可判读的 `errorCode`：`unknown_tool` / `not_exposed` /
+  `not_implemented` / `schema_invalid` / `bad_args` / `danger_disabled` / `need_approval`。
+- **审批状态与"没批"分开**：`not_required` / `granted` / `required` / `denied`。
+  `denied` 与 `required` 差一个字，含义差很多：前者是"根本不让批"，后者是"要批，但这次没批"。
+- **参数哈希算在完整参数上**：`argsHash` 用 `json::Stringify(args.raw(), 0)` 全量算，
+  不像给人看的 `args` 那样截断到 160 字符 —— 否则两组只差末尾的长参数会撞成同一个哈希。
+- 单测：`tests/audit_log_test.cpp`（哈希确定性 / 差异性 / **长参数只差末尾也必须不同哈希** /
+  JSON 转义往返 / 文本镜像格式 / `Scope` 出作用域恢复）、`tests/audit_test.cpp` 重写。
+
+### 修复（P1-7：`dev.build` / `dev.test` 的"超时"从"报一句"改成"真杀"）
+
+自我迭代的闭环里，最危险的一步是"在开发机上跑 agent 写的代码"。这条路上的闸门有两个洞：
+
+- **超时不是硬的** —— 旧实现里 `kJobTimeoutMs`（30 分钟）只用于**查询作业时现编一个"超时"结论**，
+  进程其实还在跑。于是 agent 交一份死循环的代码 = 开发机上多一个永远停不下来的进程，
+  而 agent 还以为"编译卡住了"，去改本来没问题的地方。
+- **读输出这一步本身没有时限** —— 旧实现先在主线程里读干管道（阻塞到 EOF），
+  **然后**才去等进程。"进程不退、管道不 EOF"这一种情况会卡在读上，超时根本轮不到。
+  而孙子（编译器、测试二进制）攥着管道写端不撒手，正是最容易触发这一种情况。
+
+修法：
+
+- **作业对象（Job Object）当进程树的天花板**：进程一启动就 `CREATE_SUSPENDED`，
+  **先归组再解冻**（否则孙子在归组之前就 fork 出来了，收不进来），
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` + `TerminateJobObject` 一次收掉整棵树。
+  只杀直接进程是不够的 —— 孙子照样活着，而且管道写端还被它们攥着。
+- **读与等分开**：读输出放到独立线程，主线程只负责盯时限并负责杀。
+  于是"到点就返回"是真的到点，不是"等它自己结束"。
+- **时限是常量，不给调用方自选**：`kBuildTimeoutMs`（30 分钟）/ `kTestTimeoutMs`（15 分钟）
+  写在 `dev_tools.h` 里。让 agent 自己填超时 = 让被看管的人决定看管多久，那就没有闸门了。
+  真实需求（编译很慢）应该**改这里**，那道改动会留在 git 里；运行时参数不会。
+- **"被超时杀掉"与"跑失败"分成两个字段**（`timedOut` / `exitCode`）：
+  前者指向环境或死循环，后者指向测试没过。混成一个字段，agent 就会改错地方。
+- 单测 `tests/dev_proc_test.cpp` 新增 6 项断言，其中最关键的一条用
+  "**孙子迟到 3 秒写标记文件**"来验进程树：标记文件没出现，才说明整棵树真的死了
+  （只杀直接进程的话它会出现）。
+
+### 修复（`FailKindCode` 落在匿名 namespace 里 → 链接不上）
+
+`commands.h` 对外声明了 `FailKindCode`，定义却在 `commands.cpp` 的**匿名 namespace** 内 ——
+定义只有内部链接，别的 TU 链不上（症状是 `undefined symbol: FailKindCode(FailKind)`，
+而头文件与实现都"看着对"）。已把定义移到匿名 namespace 之外。
+
+### 杂项（按职责拆分与工具链修补）
+
+- **按职责拆分**（行数棘轮不许抬基线，只许把代码搬走）：
+  `commands.cpp` → `commands_audit.cpp`（审计落盘）、
+  `ai_api.cpp` → `ai_api_json.cpp`（JSON 序列化段）。
+  拆分的判据是"一个文件只做一件事"，不是行数。
+- **`tests/run_all.sh` 剔除孤儿 obj**：脚本用 `ls $OBJDIR/*.obj` 收集对象，
+  源文件改名后旧 `.obj` 留在原地 → 链接期 duplicate symbol。
+  现在按 `src/<base>.cpp` 是否存在来剔（`app.res` 例外）。
+  推翻了报告 P2-5「该缺陷不成立」的结论：它在主构建不成立，在测试脚本成立。
+- **`RiskName` / `ScopeName` / `TraceIdOf` 提升进 `ai_api.h`**：它们是**协议的一部分** ——
+  `tools/list` 里写的、结果里回的、审计里记的，必须是同一个词。各写一份迟早分叉，
+  而分叉之后客户端按 `danger` 过滤、审计按 `write` 记录，两边都"对"，但对不上。
 
 ---
 

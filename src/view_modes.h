@@ -41,4 +41,21 @@ inline constexpr ViewMode kModes[] = {
 
 inline constexpr int kCount = static_cast<int>(sizeof(kModes) / sizeof(kModes[0]));
 
+// Ctrl+滚轮的图标尺寸步进。两侧都夹在 16..256，避免 shell 收到 0 或超大值后
+// 直接忽略整次设置（表现为“按了没反应”，最难查的一种失败）。
+inline constexpr int kMinIconPx = 16;
+inline constexpr int kMaxIconPx = 256;
+inline constexpr int kZoomStepPx = 16;
+
+inline int ClampIconPx(int px) {
+    if (px < kMinIconPx) return kMinIconPx;
+    if (px > kMaxIconPx) return kMaxIconPx;
+    return px;
+}
+
+inline int ZoomIconPx(int px, int steps) {
+    if (px <= 0) px = kMinIconPx;
+    return ClampIconPx(px + steps * kZoomStepPx);
+}
+
 }  // namespace viewmode

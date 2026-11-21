@@ -4,15 +4,15 @@
 #include "app.h"
 
 #include "app_commands.h"
-#include "prompt.h"
-#include "report.h"
-#include "search_url.h"   // searchurl::Trim —— 与导航栏搜索框共用同一套规范化
+#include "menu.h"           // 选择详细信息列的勾选菜单
+#include "prompt.h"         // PromptText —— 批量改名/按模式选择的交互式输入
+#include "search_url.h"     // searchurl::Trim —— 与导航栏搜索框共用同一套规范化
+#include "shell_columns.h"  // IColumnManager 的唯一封装
 #include "shell_ops.h"
-#include "disk_scan.h"
-#include "file_hash.h"
+#include "view_modes.h"     // 图标尺寸步进与边界
 #include "file_tools.h"
+#include "file_rename_plan.h"   // filetools::PlanBatchRename —— 批量改名计划（纯函数）
 #include "text_file.h"
-#include "view_stats.h"
 
 namespace {
 
@@ -300,7 +300,8 @@ void App::RegisterFileCommands() {
             // 部分失败必须如实报失败，不能因为"改了一些"就算成功
             CommandBus::Get().NoteFailure(L"改了 " + std::to_wstring(okCount) + L" 项，" +
                                           std::to_wstring(failures.arr.size()) +
-                                          L" 项失败（原因见 failed[].reason）");
+                                          L" 项失败（原因见 failed[].reason）",
+                                          FailKind::LockConflict);
             return false;
         }, L"批量重命名");
     });
@@ -685,8 +686,82 @@ void App::RegisterFileCommands() {
         Tab* t = Active();
         if (!t || !t->view) return false;
         const bool ok = t->view->ExpandNavTree();
-        if (!ok) CommandBus::Get().NoteFailure(L"没找到可展开的原生导航树（窗格可能被隐藏）");
+        if (!ok)
+            CommandBus::Get().NoteFailure(L"没找到可展开的原生导航树（窗格可能被隐藏）",
+                                         FailKind::NotSupported);
         return ok;
+    });
+
+    // 详细信息列：list 给机器稳定 id，set 真正落列布局，choose 是人用入口。
+    regR(CmdId::ViewColumnsList, [this](const Args&, json::Value* result) {
+        if (!result) return false;
+        return WithView([result](IShellView* v) {
+            std::vector<shellcolumns::ColumnDesc> cols;
+            if (!shellcolumns::List(v, &cols)) {
+                CommandBus::Get().NoteFailure(L"当前视图不支持详情列管理（需详细信息视图）",
+                                         FailKind::NotSupported);
+                return false;
+            }
+            json::Value arr = json::Value::MakeArray();
+            for (const auto& c : cols) {
+                json::Value row = json::Value::MakeObject();
+                row.Set(L"id", json::Value::MakeStr(c.id));
+                row.Set(L"name", json::Value::MakeStr(c.name));
+                row.Set(L"visible", json::Value::MakeBool(c.visible));
+                row.Set(L"canHide", json::Value::MakeBool(c.canHide));
+                row.Set(L"width", json::Value::MakeInt(static_cast<int>(c.width)));
+                arr.arr.push_back(std::move(row));
+            }
+            result->Set(L"columns", std::move(arr));
+            return true;
+        }, L"列出详情列");
+    });
+    reg(CmdId::ViewColumnsSet, [this](const Args& args) {
+        const std::vector<std::wstring> visible = args.StrArray(L"visible");
+        return WithView([visible](IShellView* v) {
+            if (!shellcolumns::SetVisible(v, visible)) {
+                CommandBus::Get().NoteFailure(L"详情列设置失败：列 id 不存在或没有可见列");
+                return false;
+            }
+            return true;
+        }, L"设置详情列");
+    });
+    reg(CmdId::ViewColumnsChoose, [this](const Args&) {
+        ShowColumnMenu(navBar_.SettingsAnchor());
+        return true;
+    });
+    reg(CmdId::ViewZoom, [this](const Args& args) {
+        const int steps = args.Int(L"delta");
+        if (!steps) return false;
+        Tab* t = Active();
+        if (!t || !t->view) return false;
+        int fvm = 0, icon = 0;
+        if (!t->view->GetViewMode(&fvm, &icon)) {
+            CommandBus::Get().NoteFailure(L"读不到当前视图模式，无法缩放图标");
+            return false;
+        }
+        t->view->SetViewMode(fvm, viewmode::ZoomIconPx(icon, steps));
+        return true;
+    });
+    reg(CmdId::ViewZoomSet, [this](const Args& args) {
+        const int px = args.Int(L"iconPx", 0);
+        if (px < viewmode::kMinIconPx || px > viewmode::kMaxIconPx) {
+            CommandBus::Get().NoteFailure(L"图标大小必须在 16..256 像素之间");
+            return false;
+        }
+        Tab* t = Active();
+        if (!t || !t->view) return false;
+        int fvm = 0, icon = 0;
+        if (!t->view->GetViewMode(&fvm, &icon)) {
+            CommandBus::Get().NoteFailure(L"读不到当前视图模式，无法设置图标大小");
+            return false;
+        }
+        t->view->SetViewMode(fvm, px);
+        return true;
+    });
+    reg(CmdId::ViewZoomChoose, [this](const Args&) {
+        ShowZoomMenu(navBar_.SettingsAnchor());
+        return true;
     });
 
     // ---------------- 搜索 ----------------
@@ -755,386 +830,85 @@ void App::RegisterFileCommands() {
         return true;
     });
 
-    // ---- OpTopN / OpDiskUsage：目录体积统计 ----
-    //
-    // 两条共用 diskscan::Scan，区别只在语义：
-    //   OpTopN       —— "这个目录里什么最占空间"，答的是内容本身
-    //   OpDiskUsage  —— "这个目录占多少"，答的是总量
-    // 之所以分成两条而不是一条带 mode：它们的**主要问题不同**，
-    // 调用方关心的是不同的字段（前者看 entries，后者看 totalBytes）。
-    // 参照 du（总量）与 ncdu（占比排序）在 Unix 上也是两个工具。
-    //
-    // 结果里必带 truncated / timedOut / elapsedMs 三个"诚实字段"：
-    // 只给数字而不说"没算完"，调用方会把不完整值当真实值用。
-    // 注意：这里写成两个显式的 regR(CmdId::X, ...) 而不是循环/工厂。
-    // 静态检查（check_ai_meta.py 第 3/10 项）按 `regR(CmdId::名字` 的字面形式
-    // 扫描"谁注册了谁"，用变量传 id 就扫不到，会误报"声明了参数却没取用"。
-    // 换句话说：字面注册让检查能覆盖到，这比少写两行代码更重要。
-    auto scanImpl = [this](const Args& args, json::Value* result, bool wantEntries) {
-            if (!result) return false;
-            const std::wstring path = args.Str(L"path");
-            diskscan::Options opt;
-            if (args.Has(L"limit")) opt.limit = args.Int(L"limit", 50);
-            if (args.Has(L"budgetMs")) {
-                const int ms = args.Int(L"budgetMs", 1500);
-                // 夹到合理区间：太小必然没结果，太大会让人以为程序卡死
-                opt.budgetMs = static_cast<unsigned long long>(
-                    ms < 100 ? 100 : (ms > 30000 ? 30000 : ms));
-            }
+    // 体积统计 / 摘要 / 查重 / 比较这四条长任务命令搬去了
+    // app_commands_scan.cpp 与 app_commands_compare.cpp：
+    // 那些活可能跑很久，必须在工作线程上跑（进度 + 取消 + async），
+    // 而并发约定只该有一份。搬走之后本文件回到行数上限以内。
+}
 
-            diskscan::Result r;
-            std::wstring err;
-            // 没指定路径就统计当前目录 —— 这是最常见的用法（"这里什么最占空间"）。
-            // 注意 ActiveView() 是 AddRef 过的，必须 Release，否则每调一次漏一个引用。
-            std::wstring target = path;
-            if (target.empty()) {
-                if (IShellView* v = ActiveView()) {
-                    target = ViewFolderPath(v);
-                    v->Release();
-                }
+void App::ShowColumnMenu(POINT at) {
+    // 每次重开菜单都重新读列状态：上一次勾选已经通过 view.columns.set 落地，
+    // 这里若沿用旧快照，第二次勾选会把前一次改动覆盖掉。
+    for (;;) {
+        std::vector<shellcolumns::ColumnDesc> cols;
+        if (IShellView* v = ActiveView()) {
+            const bool ok = shellcolumns::List(v, &cols);
+            v->Release();
+            if (!ok || cols.empty()) {
+                CommandBus::Get().NoteFailure(L"当前视图不支持详情列管理（需详细信息视图）",
+                                         FailKind::NotSupported);
+                return;
             }
-            if (target.empty()) {
-                LogDbg(L"[cmd] 扫描命令：拿不到当前目录");
-                return false;
-            }
-            if (!diskscan::Scan(target, opt, &r, &err)) {
-                LogDbg(L"[cmd] diskscan 失败：%s", err.c_str());
-                return false;
-            }
-
-            result->Set(L"path", json::Value::MakeStr(r.path));
-            result->Set(L"totalBytes", json::Value::MakeNum(static_cast<double>(r.totalBytes)));
-            result->Set(L"truncated", json::Value::MakeBool(r.truncated));
-            result->Set(L"timedOut", json::Value::MakeBool(r.timedOut));
-            result->Set(L"elapsedMs", json::Value::MakeNum(static_cast<double>(r.elapsedMs)));
-            result->Set(L"scannedFiles",
-                        json::Value::MakeNum(static_cast<double>(r.scannedFiles)));
-            result->Set(L"scannedDirs",
-                        json::Value::MakeNum(static_cast<double>(r.scannedDirs)));
-            result->Set(L"deniedDirs",
-                        json::Value::MakeNum(static_cast<double>(r.deniedDirs)));
-            result->Set(L"complete", json::Value::MakeBool(r.complete));
-
-            json::Value arr = json::Value::MakeArray();
-            for (const auto& e : r.entries) {
-                json::Value o = json::Value::MakeObject();
-                o.Set(L"name", json::Value::MakeStr(e.name));
-                o.Set(L"path", json::Value::MakeStr(e.path));
-                o.Set(L"bytes", json::Value::MakeNum(static_cast<double>(e.bytes)));
-                o.Set(L"isFolder", json::Value::MakeBool(e.isFolder));
-                o.Set(L"items", json::Value::MakeNum(static_cast<double>(e.items)));
-                o.Set(L"complete", json::Value::MakeBool(e.complete));
-                arr.arr.push_back(std::move(o));
-            }
-            result->Set(L"entries", arr);
-            return true;
-    };
-    regR(CmdId::OpTopN, [scanImpl](const Args& a, json::Value* r) {
-        return scanImpl(a, r, true);
-    });
-    regR(CmdId::OpDiskUsage, [scanImpl](const Args& a, json::Value* r) {
-        return scanImpl(a, r, false);
-    });
-
-    // ---- FileHash / DupFinder / FolderCompare：文件集工具 ----
-    //
-    // 三条共用同一套设计：
-    //   人工路径 —— **不带参数**调用（命令面板 / 热键）：目标取界面现状
-    //               （哈希取选中项、查重取当前目录、比较弹两个路径框），
-    //               结果用 ShowReport 弹只读文本报告；
-    //   agent 路径 —— 带参数调用：返回结构化 JSON，**不弹窗**（没人看着屏幕）。
-    // 判据是 IsHumanCall(args)（空参数 **且** 不是机器调用），不是 args.IsEmpty()：
-    // 无参数命令从 AI 过来也是 {}，只看空参数会走"人侧"分支弹模态窗口，
-    // 把管道调用卡到超时。命令面板与热键走的正是空参数，所以人侧判定要成立。
-    // 副作用一致（都只读），所以不需要两套命令 id。
-    regR(CmdId::FileHash, [this](const Args& args, json::Value* result) {
-        if (!result) return false;
-        const bool human = IsHumanCall(args);
-
-        filehash::Algo algo = filehash::Algo::Sha256;
-        if (args.Has(L"algorithm") && !filehash::ParseAlgo(args.Str(L"algorithm"), &algo)) {
-            // 认不出的算法：失败，不静默退回 SHA-256。否则"我算的是 SHA-512"
-            // 与实际结果无法区分 —— 拿错算法去核对下载包会得出错误结论。
-            LogDbg(L"[cmd] tool.hash：认不出的算法 %s", args.Str(L"algorithm").c_str());
-            // 原因要带给调用方：名字打错和"值超范围"该做的下一步完全不同。
-            CommandBus::Get().NoteFailure(L"不支持的算法：" + args.Str(L"algorithm") +
-                                          L"（可用 md5 / sha1 / sha256）");
-            return false;
+        } else {
+            CommandBus::Get().NoteFailure(L"没有活动文件视图，无法选择详情列",
+                                         FailKind::NotSupported);
+            return;
         }
 
-        std::vector<std::wstring> paths = args.StrArray(L"paths");
-        if (paths.empty()) {
-            // 无参：当前选中项。这是人最自然的动作（选中 → 算摘要）。
-            if (IShellView* v = ActiveView()) {
-                paths = shellops::SelectedPaths(v);
-                v->Release();
-            }
-        }
-        if (paths.empty()) {
-            CommandBus::Get().NoteFailure(L"没有目标：paths 为空，且当前没有选中项");
-            if (human)
-                MessageBoxW(hwnd_, L"先在文件列表里选中要计算摘要的文件。", id::kBrandShort,
-                            MB_ICONINFORMATION);
-            return false;
-        }
+        ui::Menu menu;
+        for (size_t i = 0; i < cols.size(); ++i)
+            menu.AddChecked(cols[i].name, cols[i].visible, static_cast<int>(i),
+                            ico::IconId::DetailsView, !cols[i].canHide);
+        menu.Separator();
+        menu.Add(L"完成", -2, ico::IconId::Check);
 
+        ui::MenuOptions opt;
+        opt.maxRows = 30;
+        opt.toggleKey = L"view.columns";   // 同一实例内防重复打开
+        const int pick = menu.Show(hwnd_, theme_, at, opt);
+        if (pick == -2 || pick < 0 || pick >= static_cast<int>(cols.size())) break;
+
+        std::vector<std::wstring> visible;
+        for (size_t i = 0; i < cols.size(); ++i) {
+            const bool shown = (static_cast<int>(i) == pick) ? !cols[i].visible : cols[i].visible;
+            if (shown) visible.push_back(cols[i].id);
+        }
+        json::Value args = json::Value::MakeObject();
         json::Value arr = json::Value::MakeArray();
-        std::wstring report;
-        unsigned okCount = 0, failCount = 0;
-        std::wstring failures;
-        // 时间预算：**整次调用一份**，不是每个文件一份。
-        // 否则 N 个文件就是 N 倍预算 —— 界面照样能卡很久，
-        // 而"每个文件都算完"并不是调用方要的。
-        unsigned long long budgetMs = 1500;
-        if (args.Has(L"budgetMs")) {
-            const int ms = args.Int(L"budgetMs", 1500);
-            // 夹到合理区间（同 diskscan / filetools）：太小必然没结果，
-            // 太大等于让 UI 卡住（这条命令跑在 UI 线程上）。
-            budgetMs = static_cast<unsigned long long>(ms < 100 ? 100 : (ms > 30000 ? 30000 : ms));
-        }
-        const ULONGLONG deadline = GetTickCount64() + budgetMs;
-        bool timedOut = false;
-        for (const auto& p : paths) {
-            const ULONGLONG now = GetTickCount64();
-            if (now >= deadline) {
-                // 预算已经用完：剩下的文件**如实说没算**，不假装算过。
-                timedOut = true;
-                json::Value o = json::Value::MakeObject();
-                o.Set(L"path", json::Value::MakeStr(p));
-                o.Set(L"algorithm", json::Value::MakeStr(filehash::AlgoName(algo)));
-                o.Set(L"ok", json::Value::MakeBool(false));
-                o.Set(L"error", json::Value::MakeStr(L"超出时间预算，未计算"));
-                arr.arr.push_back(std::move(o));
-                ++failCount;
-                failures += L"  " + p + L"  —  超出时间预算，未计算\r\n";
-                continue;
-            }
-            filehash::Result hr;
-            const bool ok = filehash::HashFile(p, algo, &hr, nullptr, deadline - now);
-            if (hr.timedOut) timedOut = true;
-            if (ok) {
-                ++okCount;
-                report += hr.hex + L"  " + FormatSize(hr.bytes) + L"  " + p + L"\r\n";
-            } else {
-                ++failCount;
-                failures += L"  " + p + L"  —  " + hr.error + L"\r\n";
-            }
-            json::Value o = json::Value::MakeObject();
-            o.Set(L"path", json::Value::MakeStr(p));
-            o.Set(L"algorithm", json::Value::MakeStr(filehash::AlgoName(algo)));
-            o.Set(L"ok", json::Value::MakeBool(ok));
-            if (ok) {
-                o.Set(L"hash", json::Value::MakeStr(hr.hex));
-                o.Set(L"bytes", json::Value::MakeNum(static_cast<double>(hr.bytes)));
-            } else {
-                o.Set(L"error", json::Value::MakeStr(hr.error));
-            }
-            arr.arr.push_back(std::move(o));
-        }
+        for (const std::wstring& id : visible) arr.arr.push_back(json::Value::MakeStr(id));
+        args.Set(L"visible", std::move(arr));
+        CommandBus::Get().Invoke(CmdId::ViewColumnsSet, Args::FromJson(args), Actor::Ui());
+    }
+}
 
-        result->Set(L"algorithm", json::Value::MakeStr(filehash::AlgoName(algo)));
-        result->Set(L"entries", arr);
-        // 完整性必须说清楚：只给一串哈希而不说"有没有算完"，
-        // 调用方会把"预算用完"当成"这些文件就是这些摘要"（其实可能算的是半个文件）。
-        result->Set(L"timedOut", json::Value::MakeBool(timedOut));
-        result->Set(L"complete", json::Value::MakeBool(!timedOut));
+void App::ShowZoomMenu(POINT at) {
+    static constexpr int kSizes[] = {16, 32, 48, 64, 96, 128, 192, 256};
+    Tab* t = Active();
+    if (!t || !t->view) {
+        CommandBus::Get().NoteFailure(L"没有活动文件视图，无法调整图标大小");
+        return;
+    }
+    int fvm = 0, current = 0;
+    if (!t->view->GetViewMode(&fvm, &current)) {
+        CommandBus::Get().NoteFailure(L"读不到当前图标大小");
+        return;
+    }
 
-        if (human) {
-            std::wstring text = std::wstring(filehash::AlgoName(algo)) + L"　成功 " +
-                                std::to_wstring(okCount) + L" 个";
-            if (failCount) text += L"，失败 " + std::to_wstring(failCount) + L" 个";
-            if (timedOut) text += L"（**未算完**：超出时间预算，结果不完整）";
-            text += L"\r\n\r\n" + report;
-            if (failCount) text += L"\r\n读取失败：\r\n" + failures;
-            ShowReport(hwnd_, theme_, L"文件摘要", text);
-        }
-        return okCount > 0;
-    });
+    ui::Menu menu;
+    int initial = -1;
+    for (size_t i = 0; i < _countof(kSizes); ++i) {
+        const int row = menu.AddChecked(std::to_wstring(kSizes[i]) + L" 像素",
+                                        kSizes[i] == current, static_cast<int>(i),
+                                        ico::IconId::GridView);
+        if (kSizes[i] == current) initial = row;
+    }
+    ui::MenuOptions opt;
+    opt.toggleKey = L"view.zoom";
+    opt.initialRow = initial;
+    const int pick = menu.Show(hwnd_, theme_, at, opt);
+    if (pick < 0 || pick >= static_cast<int>(_countof(kSizes))) return;
 
-    regR(CmdId::DupFinder, [this](const Args& args, json::Value* result) {
-        if (!result) return false;
-        const bool human = IsHumanCall(args);
-
-        filetools::Options opt;
-        if (args.Has(L"budgetMs")) {
-            const int ms = args.Int(L"budgetMs", 1500);
-            // 夹到合理区间（同 diskscan）：太小必然没结果，太大等于让 UI 卡住。
-            opt.budgetMs = static_cast<unsigned long long>(ms < 100 ? 100 : (ms > 30000 ? 30000 : ms));
-        }
-        if (args.Has(L"minBytes")) {
-            const int n = args.Int(L"minBytes", 1);
-            opt.minBytes = n <= 0 ? 0ULL : static_cast<unsigned long long>(n);
-        }
-
-        std::wstring root = args.Str(L"path");
-        if (root.empty()) {
-            if (IShellView* v = ActiveView()) {
-                root = ViewFolderPath(v);
-                v->Release();
-            }
-        }
-        if (root.empty()) {
-            CommandBus::Get().NoteFailure(L"没有目录：path 为空，且当前视图没有文件系统路径");
-            if (human)
-                MessageBoxW(hwnd_, L"拿不到当前目录（虚拟位置没有文件系统路径）。",
-                            id::kBrandShort, MB_ICONINFORMATION);
-            return false;
-        }
-
-        filetools::DupResult r;
-        std::wstring err;
-        if (!filetools::FindDuplicates(root, opt, &r, &err)) {
-            LogDbg(L"[cmd] tool.dupfinder 失败：%s", err.c_str());
-            CommandBus::Get().NoteFailure(L"查找重复文件失败：" + err);
-            if (human)
-                MessageBoxW(hwnd_, (L"查找重复文件失败：\r\n" + err).c_str(), id::kBrandShort,
-                            MB_ICONWARNING);
-            return false;
-        }
-
-        // 报告里**先讲完整性再讲结论**：把"扫了多少、停在哪"写在数字前面，
-        // 否则"没有重复"会被读成"这个目录很干净"，而实际可能是预算用完了。
-        std::wstring head = L"目录：" + r.root + L"\r\n";
-        head += L"扫描 " + std::to_wstring(r.scannedFiles) + L" 个文件，实际哈希 " +
-                std::to_wstring(r.hashedFiles) + L" 个，用时 " +
-                std::to_wstring(r.elapsedMs) + L" ms";
-        head += r.timedOut ? L"（**未扫完**：预算用完，结果偏少）" : L"（已扫完）";
-        if (r.deniedDirs)
-            head += L"\r\n有 " + std::to_wstring(r.deniedDirs) + L" 个目录打不开（结果偏少）";
-        head += L"\r\n可回收 " + FormatSize(r.wastedBytes) + L"，共 " +
-                std::to_wstring(r.groups.size()) + L" 组\r\n";
-
-        json::Value groups = json::Value::MakeArray();
-        std::wstring body;
-        constexpr size_t kMaxShown = 200;
-        size_t shown = 0;
-        for (const auto& g : r.groups) {
-            if (shown < kMaxShown) {
-                const unsigned long long wasted = g.bytes * (g.files.size() - 1);
-                body += L"\r\n组 " + std::to_wstring(shown + 1) + L"：" +
-                        std::to_wstring(g.files.size()) + L" 份 × " + FormatSize(g.bytes) +
-                        L" = 可回收 " + FormatSize(wasted) + L"\r\n  SHA-256 " + g.hash + L"\r\n";
-                for (const auto& f : g.files) body += L"  " + f.path + L"\r\n";
-                ++shown;
-            }
-            json::Value go = json::Value::MakeObject();
-            go.Set(L"bytes", json::Value::MakeNum(static_cast<double>(g.bytes)));
-            go.Set(L"hash", json::Value::MakeStr(g.hash));
-            json::Value files = json::Value::MakeArray();
-            for (const auto& f : g.files) {
-                json::Value fo = json::Value::MakeObject();
-                fo.Set(L"path", json::Value::MakeStr(f.path));
-                fo.Set(L"bytes", json::Value::MakeNum(static_cast<double>(f.bytes)));
-                files.arr.push_back(std::move(fo));
-            }
-            go.Set(L"files", files);
-            groups.arr.push_back(std::move(go));
-        }
-        if (r.groups.size() > kMaxShown)
-            body += L"\r\n（仅显示前 " + std::to_wstring(kMaxShown) + L" 组）\r\n";
-
-        result->Set(L"path", json::Value::MakeStr(r.root));
-        result->Set(L"groups", groups);
-        result->Set(L"wastedBytes", json::Value::MakeNum(static_cast<double>(r.wastedBytes)));
-        result->Set(L"scannedFiles", json::Value::MakeNum(static_cast<double>(r.scannedFiles)));
-        result->Set(L"hashedFiles", json::Value::MakeNum(static_cast<double>(r.hashedFiles)));
-        result->Set(L"deniedDirs", json::Value::MakeNum(static_cast<double>(r.deniedDirs)));
-        result->Set(L"timedOut", json::Value::MakeBool(r.timedOut));
-        result->Set(L"complete", json::Value::MakeBool(r.complete));
-        result->Set(L"elapsedMs", json::Value::MakeNum(static_cast<double>(r.elapsedMs)));
-
-        if (human) ShowReport(hwnd_, theme_, L"查找重复文件", head + body);
-        return true;
-    });
-
-    regR(CmdId::FolderCompare, [this](const Args& args, json::Value* result) {
-        if (!result) return false;
-        const bool human = IsHumanCall(args);
-
-        std::wstring left = args.Str(L"left");
-        std::wstring right = args.Str(L"right");
-        if ((left.empty() || right.empty()) && human) {
-            // 人没有"两个参数"这回事：给一个两框输入，左侧预填当前目录。
-            if (left.empty()) {
-                if (IShellView* v = ActiveView()) {
-                    left = ViewFolderPath(v);
-                    v->Release();
-                }
-            }
-            if (!PromptText2(hwnd_, theme_, L"比较文件夹", L"左侧（当前目录）", left, &left,
-                             L"右侧（要对比的目录）", right, &right))
-                return false;
-        }
-        if (left.empty() || right.empty()) {
-            CommandBus::Get().NoteFailure(L"两个目录都必须给：left / right");
-            return false;
-        }
-
-        filetools::CompareOptions opt;
-        if (args.Has(L"byContent")) opt.byContent = args.Bool(L"byContent", true);
-        if (args.Has(L"budgetMs")) {
-            const int ms = args.Int(L"budgetMs", 1500);
-            opt.walk.budgetMs =
-                static_cast<unsigned long long>(ms < 100 ? 100 : (ms > 30000 ? 30000 : ms));
-        }
-
-        filetools::CompareResult r;
-        std::wstring err;
-        if (!filetools::CompareFolders(left, right, opt, &r, &err)) {
-            LogDbg(L"[cmd] tool.compare 失败：%s", err.c_str());
-            CommandBus::Get().NoteFailure(L"比较失败：" + err);
-            if (human)
-                MessageBoxW(hwnd_, (L"比较失败：\r\n" + err).c_str(), id::kBrandShort,
-                            MB_ICONWARNING);
-            return false;
-        }
-
-        std::wstring head = L"左：" + r.left + L"\r\n右：" + r.right + L"\r\n";
-        head += L"相同 " + std::to_wstring(r.sameCount) + L"，内容不同 " +
-                std::to_wstring(r.differCount) + L"，仅左 " + std::to_wstring(r.onlyLeftCount) +
-                L"，仅右 " + std::to_wstring(r.onlyRightCount) + L"，用时 " +
-                std::to_wstring(r.elapsedMs) + L" ms";
-        head += r.timedOut ? L"（**未比完**：预算用完）" : L"（已比完）";
-        if (r.deniedLeft || r.deniedRight)
-            head += L"\r\n有目录打不开：左 " + std::to_wstring(r.deniedLeft) + L"，右 " +
-                    std::to_wstring(r.deniedRight) + L"（结果偏少）";
-        head += L"\r\n左合计 " + FormatSize(r.leftBytes) + L"，右合计 " +
-                FormatSize(r.rightBytes) + L"\r\n";
-        if (!opt.byContent) head += L"\r\n（只比了大小，同大小不同内容会算作“相同”）\r\n";
-
-        json::Value entries = json::Value::MakeArray();
-        std::wstring body;
-        for (const auto& e : r.entries) {
-            const wchar_t* tag = e.state == filetools::Diff::OnlyLeft    ? L"[L] 仅左侧"
-                                 : e.state == filetools::Diff::OnlyRight ? L"[R] 仅右侧"
-                                                              : L"[M] 内容不同";
-            body += std::wstring(tag) + L"  " + FormatSize(e.leftBytes) + L" → " +
-                    FormatSize(e.rightBytes) + L"  " + e.rel + L"\r\n";
-
-            json::Value o = json::Value::MakeObject();
-            o.Set(L"rel", json::Value::MakeStr(e.rel));
-            o.Set(L"leftBytes", json::Value::MakeNum(static_cast<double>(e.leftBytes)));
-            o.Set(L"rightBytes", json::Value::MakeNum(static_cast<double>(e.rightBytes)));
-            o.Set(L"state", json::Value::MakeStr(e.state == filetools::Diff::OnlyLeft    ? L"onlyLeft"
-                                                 : e.state == filetools::Diff::OnlyRight ? L"onlyRight"
-                                                                              : L"differ"));
-            entries.arr.push_back(std::move(o));
-        }
-        if (r.truncated)
-            body += L"（差异项超过上限，仅列出前 " + std::to_wstring(opt.maxEntries) + L" 条）\r\n";
-
-        result->Set(L"left", json::Value::MakeStr(r.left));
-        result->Set(L"right", json::Value::MakeStr(r.right));
-        result->Set(L"entries", entries);
-        result->Set(L"sameCount", json::Value::MakeNum(static_cast<double>(r.sameCount)));
-        result->Set(L"differCount", json::Value::MakeNum(static_cast<double>(r.differCount)));
-        result->Set(L"onlyLeftCount", json::Value::MakeNum(static_cast<double>(r.onlyLeftCount)));
-        result->Set(L"onlyRightCount", json::Value::MakeNum(static_cast<double>(r.onlyRightCount)));
-        result->Set(L"timedOut", json::Value::MakeBool(r.timedOut));
-        result->Set(L"complete", json::Value::MakeBool(r.complete));
-        result->Set(L"elapsedMs", json::Value::MakeNum(static_cast<double>(r.elapsedMs)));
-
-        if (human) ShowReport(hwnd_, theme_, L"比较文件夹", head + L"\r\n" + body);
-        return true;
-    });
+    json::Value args = json::Value::MakeObject();
+    args.Set(L"iconPx", json::Value::MakeInt(kSizes[pick]));
+    CommandBus::Get().Invoke(CmdId::ViewZoomSet, Args::FromJson(args), Actor::Ui());
 }

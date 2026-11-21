@@ -32,6 +32,18 @@ std::wstring LabelFor(const std::wstring& path) {
 inline constexpr const viewmode::ViewMode* kViews = viewmode::kModes;
 constexpr int kViewCount = viewmode::kCount;
 
+// 排序/分组维度表：父菜单的小结与二级子菜单都从这里取，避免两处文案/图标漂移。
+// 下标与 Config::sortMode / ViewState::sort / ViewState::group 一一对应（0..3）。
+constexpr int kSortGroupCount = 4;
+static const wchar_t* const kSortLabels[kSortGroupCount] = {L"按名称排序", L"按日期排序",
+                                                             L"按类型排序", L"按大小排序"};
+static const wchar_t* const kGroupLabels[kSortGroupCount] = {L"不分组", L"按类型分组",
+                                                              L"按日期分组", L"按大小分组"};
+static const ico::IconId kSortGlyphs[kSortGroupCount] = {
+    ico::IconId::Page, ico::IconId::Calendar, ico::IconId::Tag, ico::IconId::HardDrive};
+static const ico::IconId kGroupGlyphs[kSortGroupCount] = {
+    ico::IconId::Close, ico::IconId::Tag, ico::IconId::Calendar, ico::IconId::HardDrive};
+
 }  // namespace
 
 void NavBar::BeginEdit() {
@@ -389,28 +401,28 @@ void NavBar::ShowViewMenu(POINT screen) {
         const int row = menu.AddChecked(kViews[i].label, vs.mode == i, i, kViews[i].glyph);
         if (i == vs.mode) initial = row;
     }
+    // 排序 / 分组收进二级层（与 Explorer 的「排序方式 →」「分组依据 →」一致）。
+    // 父层只显示当前值小结 + 右向 chevron，具体四档在子菜单里选 —— 平铺时
+    // 视图档位 + 4 排序 + 4 分组共 16 行，一屏放不下还混在一起。
+    // 小结里保留方向（升序/降序），这样不展开也知道当前排序方向。
+    std::wstring sortHint = L"排序方式";
+    if (vs.sort >= 0 && vs.sort < kSortGroupCount) {
+        sortHint += L"：" + std::wstring(kSortLabels[vs.sort]);
+        sortHint += vs.ascending ? L"（升序）" : L"（降序）";
+    }
+    std::wstring groupHint = L"分组依据";
+    if (vs.group >= 0 && vs.group < kSortGroupCount)
+        groupHint += L"：" + std::wstring(kGroupLabels[vs.group]);
     menu.Separator();
-    static const wchar_t* kSorts[] = {L"按名称排序", L"按日期排序", L"按类型排序", L"按大小排序"};
-    static const wchar_t* kGroups[] = {L"不分组", L"按类型分组", L"按日期分组", L"按大小分组"};
-    // 排序/分组按列语义取图标；不分组用关闭字形表达“无”，而不是空白。
-    static const ico::IconId kSortGlyphs[] = {ico::IconId::Page, ico::IconId::Calendar,
-                                               ico::IconId::Tag, ico::IconId::HardDrive};
-    static const ico::IconId kGroupGlyphs[] = {ico::IconId::Close, ico::IconId::Tag,
-                                                ico::IconId::Calendar, ico::IconId::HardDrive};
-    int sortRows[4] = {-1, -1, -1, -1};
-    for (int i = 0; i < 4; ++i)
-        sortRows[i] = menu.AddChecked(kSorts[i], vs.sort == i, 100 + i, kSortGlyphs[i]);
-    // 排序方向也是一条独立信息：同一列点两次会反向，但菜单上完全看不出来。
-    if (vs.sort >= 0 && vs.sort < 4)
-        menu.AppendLabel(sortRows[vs.sort], vs.ascending ? L"（升序）" : L"（降序）");
-    menu.Separator();
-    for (int i = 0; i < 4; ++i)
-        menu.AddChecked(kGroups[i], vs.group == i, 200 + i, kGroupGlyphs[i]);
+    menu.AddPath(sortHint, L"", 1100, /*folder=*/true);   // 右端 chevron = 有下一级
+    menu.AddPath(groupHint, L"", 1200, /*folder=*/true);
 
-    // 「设置…」放在最下面：它是"其它可调项"的入口，与上面三组（视图/排序/分组）
-    // 不是同一层级的即时动作。动作号 900 与 0..7 / 1xx / 2xx 分开，
-    // 免得将来视图档位扩到 9 档时撞号。
+    // 「选择详细信息…」「图标大小…」「设置…」放在最下面：它们是"其它可调项"的入口，
+    // 与上面三组（视图/排序/分组）不是同一层级的即时动作。
+    // 动作号 900/901/902 与 0..7 / 1xx / 2xx 分开，免得视图档位扩到 9 档时撞号。
     menu.Separator();
+    menu.Add(L"选择详细信息…", 901, ico::IconId::DetailsView);
+    menu.Add(L"图标大小…", 902, ico::IconId::GridView);
     menu.Add(L"设置…", 900, ico::IconId::Settings);
 
     const POINT at = SettingsAnchor();
@@ -419,16 +431,52 @@ void NavBar::ShowViewMenu(POINT screen) {
     opt.toggleKey = L"nav.view";
     opt.initialRow = initial;
     const int data = menu.Show(hwnd_, *theme_, at, opt);
-    if (data == 900) {
+    if (data == 1100 || data == 1200) {
+        // 二级层：从父菜单右上角落下，避免盖住父菜单当前行。
+        POINT sub{screen.x + 8, screen.y + 8};
+        ShowSortGroupSubMenu(data == 1100 ? 0 : 1, sub);
+    } else if (data == 901) {
+        if (onColumns_) onColumns_(at);
+    } else if (data == 902) {
+        if (onZoom_) onZoom_(at);
+    } else if (data == 900) {
         // 面板自己会按同一锚点重新打开，这里只把位置交出去。
         if (onSettings_) onSettings_(at);
-    } else if (data >= 200) {
-        if (onSortGroup_) onSortGroup_(1, data - 200);
-    } else if (data >= 100) {
-        if (onSortGroup_) onSortGroup_(0, data - 100);
     } else if (data >= 0 && data < static_cast<int>(kViewCount) && onView_) {
         onView_(kViews[data].fvm, kViews[data].icon);
     }
+}
+
+void NavBar::ShowSortGroupSubMenu(int kind, POINT screen) {
+    const ViewState vs = viewState_ ? viewState_() : ViewState{};
+    const wchar_t* const* labels = kind == 0 ? kSortLabels : kGroupLabels;
+    const ico::IconId* glyphs = kind == 0 ? kSortGlyphs : kGroupGlyphs;
+    const int current = kind == 0 ? vs.sort : vs.group;
+
+    ui::Menu menu;
+    int initial = -1;
+    for (int i = 0; i < kSortGroupCount; ++i) {
+        const int row = menu.AddChecked(labels[i], current == i, i, glyphs[i]);
+        if (i == current) initial = row;
+    }
+    // 排序方向：二级层里放一条可点的切换项，而不是只读标注 ——
+    // 资源管理器在「排序方式」子菜单里也能直接改方向。arg 用 100 表示"翻转方向"，
+    // 与 0..3 的档位分开；App 侧据此调 ViewSort 的同列反向语义（ascending=-1）。
+    if (kind == 0) {
+        menu.Separator();
+        // 文案是"点下去会变成什么"，不是当前态（当前方向已在父菜单小结里）。
+        menu.Add(vs.ascending ? L"改为降序" : L"改为升序", 100, ico::IconId::Sort);
+    }
+
+    ui::MenuOptions opt;
+    opt.toggleKey = kind == 0 ? L"nav.sort.sub" : L"nav.group.sub";
+    opt.initialRow = initial;
+    const int pick = menu.Show(hwnd_, *theme_, screen, opt);
+    if (pick < 0 || !onSortGroup_) return;
+    if (pick == 100)
+        onSortGroup_(0, current >= 0 && current < kSortGroupCount ? current : 0);
+    else if (pick >= 0 && pick < kSortGroupCount)
+        onSortGroup_(kind, pick);
 }
 
 void NavBar::ShowViewMenuNow() {

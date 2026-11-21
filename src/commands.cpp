@@ -2,6 +2,7 @@
 
 #include "str.h"
 
+#include "audit_log.h"
 #include "cmd_naming.h"
 #include "common.h"
 #include "config.h"
@@ -9,16 +10,34 @@
 
 #include <algorithm>
 
-namespace {
+// FailKind → errorCode（唯一映射处，见 commands.h 里 FailKind 的说明）。
+//
+// 【为什么必须只有这一处】errorCode 是给机器分支用的：
+// 同一类别在两处各写一个字符串，改了一处忘了另一处，客户端就会掉进 default 分支。
+// 枚举在这里翻成码，映射就只有一个真源。
+//
+// 【为什么必须在匿名 namespace 之外】commands.h 对外声明了它 ——
+// 声明是外部链接，定义就必须是外部链接。落在匿名 namespace 里的话，
+// 定义只有内部链接，别的 TU 链接不上（症状是 undefined symbol，
+// 而头文件与实现都"看着对"）。
+const wchar_t* FailKindCode(FailKind k) {
+    switch (k) {
+        case FailKind::PreconditionUnmet: return L"precondition_unmet";
+        case FailKind::LockConflict:     return L"lock_conflict";
+        case FailKind::CanceledByUser:   return L"canceled_by_user";
+        case FailKind::NotSupported:     return L"not_supported";
+        case FailKind::TimedOut:         return L"timed_out";
+        case FailKind::None:             break;
+    }
+    return L"";   // None 不是一种错误
+}
 
 namespace {
 
-// 无参命令的 schema（119 条命令都用它）。
-//
-// 以前这一行 41 字符的字面量在表里抄了 119 遍，占全表体积的一半以上，
-// 也让"哪些命令真的带参数"变得看不出来 —— 扫一眼全是同一个串。
-// 提成常量后，带参数的条目会自然凸显。
-//
+namespace {
+
+// 无参命令的 schema（上百条命令都用它）：以前这个 41 字符的字面量在表里抄了上百遍，
+// 占全表体积的一半以上，也让"哪些命令真的带参数"看不出来。提成常量后，带参数的条目自然凸显。
 // 语义：显式声明"不接受任何参数"（additionalProperties:false），
 // 这样 AI 多传一个字段会被 schema 校验拒绝，而不是被静默忽略。
 constexpr const char* kNoArgs = R"({"type":"object","additionalProperties":false})";
@@ -27,17 +46,12 @@ constexpr const char* kNoArgs = R"({"type":"object","additionalProperties":false
 
 // ---- 显式豁免理由（CommandDef::assertionExempt）----
 //
-// 为什么用常量而不是每条各写一句：豁免理由会被 tools/list 暴露给调用方，
-// 逐条各写一份会写出十几种说法，而静态检查只认"非空"。
-// 归成几类之后，"哪一类豁免最多"本身就是一条可追踪的信号。
+// 为什么用常量：豁免理由会被 tools/list 暴露给调用方，逐条各写一份会写出十几种说法，
+// 而静态检查只认非空。归成几类之后，哪一类豁免最多本身就是一条可追踪的信号。
 //
-// 每条理由都必须回答同一个问题：**为什么这条命令写不出可求值的断言**，
-// 而不是"还没写"。写不出就写出来 —— 这是本表存在的全部意义：
-// 覆盖率上不来的部分，变成一份有名有姓的债务清单，而不是一片沉默。
-//
-// 豁免不是"这条命令不可信"：它只是说"**这条命令的成败信号不能靠状态回读核对**"。
-// 调用方拿到 tools/list 里的 assertionExempt，就知道该自己补一次核对，
-// 而不是把 ok=true 当成"效果确实达成"。
+// 每条理由都要回答同一个问题：**为什么这条命令写不出可求值的断言**，而不是"还没写"。
+// 豁免不是说这条命令不可信，它只是说成败信号不能靠状态回读核对 —— 调用方拿到
+// tools/list 里的 assertionExempt，就知道该自己补一次核对，而不是把 ok=true 当成效果达成。
 
 // 导航是异步的：路径在 Shell 回调里才落地，执行后立刻回读仍是出发地。
 constexpr const char* kExemptAsyncNav =
@@ -70,6 +84,10 @@ constexpr const char* kExemptUndo =
 // 改哪个设置项由入参 key 决定，快照只暴露其中几项。
 constexpr const char* kExemptConfig =
     "改哪个设置项由入参 key 决定，而状态快照只暴露其中几项，写不出与 key 无关的判据";
+
+// 作业状态是后台对象的私有状态，不在 exbar/state 快照里 —— 回读面是 tool.job.get 的返回值本身。
+constexpr const char* kExemptJobState =
+    "作业状态是后台对象的私有状态，不在 exbar/state 快照里（回读面是 tool.job.get 的返回值本身），写不出快照级断言";
 
 // ---- 同一操作的两条入口共用同一份 Effects（P0-11）----
 //
@@ -252,6 +270,17 @@ const std::vector<CommandDef> kTable = {
     // Explorer 的 Ctrl+Shift+E：把导航窗格整棵树展开。纯 UI 便利操作，不暴露给 AI；
     // 状态里没有"每节点展开与否"的回读面，所以不编造断言。
     {CmdId::NavTreeExpandAll, L"nav.tree.expand.all", L"View", L"文件视图", L"展开导航树", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
+    // ---- 详细信息列（P3）----
+    // list 是只读且无参：AI 可先拿稳定列 id，再决定是否调用 set。
+    // set/choose 不暴露给 AI：前者要人从菜单里勾选，后者本身就是 UI 动作。
+    {CmdId::ViewColumnsList, L"view.columns.list", L"View", L"文件视图", L"列出详情列", true, Effects{1, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"columns\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"visible\":{\"type\":\"boolean\"},\"canHide\":{\"type\":\"boolean\"},\"width\":{\"type\":\"integer\"}},\"required\":[\"id\",\"name\",\"visible\",\"canHide\",\"width\"]}}},\"required\":[\"columns\"]}", nullptr, kExemptNoReadback},
+    {CmdId::ViewColumnsSet, L"view.columns.set", L"View", L"文件视图", L"设置详情列", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"visible\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"要显示的列 id；来自 view.columns.list\"}},\"required\":[\"visible\"],\"additionalProperties\":false}", false, false},
+    {CmdId::ViewColumnsChoose, L"view.columns.choose", L"View", L"文件视图", L"选择详细信息列", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, false, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
+    // Ctrl+滚轮：步进 ±1，handler 内部换算成 16px 并夹在 16..256。
+    // choose 是人用的离散“滑块”（预设档位菜单），set 由菜单转投，不暴露给 AI。
+    {CmdId::ViewZoom, L"view.zoom", L"View", L"文件视图", L"缩放图标", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"delta\":{\"type\":\"integer\",\"minimum\":-8,\"maximum\":8,\"description\":\"滚轮步数：正=放大，负=缩小\"}},\"required\":[\"delta\"],\"additionalProperties\":false}", false, false},
+    {CmdId::ViewZoomSet, L"view.zoom.set", L"View", L"文件视图", L"设置图标大小", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"iconPx\":{\"type\":\"integer\",\"minimum\":16,\"maximum\":256,\"description\":\"图标像素\"}},\"required\":[\"iconPx\"],\"additionalProperties\":false}", false, false},
+    {CmdId::ViewZoomChoose, L"view.zoom.choose", L"View", L"文件视图", L"图标大小", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, false, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
     {CmdId::ToggleCheckboxes, L"view.toggle.checkboxes", L"View", L"文件视图", L"复选框", false, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
     {CmdId::ViewNext, L"view.next", L"View", L"文件视图", L"下一个视图模式", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{}, nullptr, "viewMode=$changed"},
     {CmdId::ViewPrev, L"view.prev", L"View", L"文件视图", L"上一个视图模式", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{}, nullptr, "viewMode=$changed"},
@@ -331,12 +360,12 @@ const std::vector<CommandDef> kTable = {
     // Python 都会跑起来。参数面收窄只挡住了"注入外部命令"，挡不住"仓库本身被改成
     // 会干坏事的程序"。所以它必须进危险双门（aiAllowDanger + approve），
     // 否则 AI 可以无批准地在开发机上执行任意代码。
-    {CmdId::DevBuild, L"dev.build", L"Dev", L"开发", L"异步编译当前工作树", true, Effects{0, 1, 1, 1, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"enum\":[\"all\",\"clean\"],\"description\":\"all=编译整个工程（默认）；clean=先清空产物再全量编译。不接受自由文本。\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"}},\"required\":[\"jobId\"]}", "tabCount=$unchanged"},
+    {CmdId::DevBuild, L"dev.build", L"Dev", L"开发", L"异步编译当前工作树", true, Effects{0, 1, 1, 1, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"enum\":[\"all\",\"clean\"],\"description\":\"all=编译整个工程（默认）；clean=先清空产物再全量编译。不接受自由文本。\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"},\"timeoutMs\":{\"type\":\"integer\",\"description\":\"该作业的硬超时上限（毫秒）\"}},\"required\":[\"jobId\"]}", "tabCount=$unchanged"},
     // filter 只允许字母数字下划线连字符与点：tests/run_all.sh 拿它做子串匹配，
     // 别的字符没有意义，只会成为注入面。openWorld=1：它会起 bash 并执行测试二进制。
     // destructive=1：理由同 dev.build —— 测试二进制是仓库里的代码，会真的跑起来。
-    {CmdId::DevTest, L"dev.test", L"Dev", L"开发", L"异步运行测试", true, Effects{0, 1, 1, 1, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"filter\":{\"type\":\"string\",\"description\":\"只跑名字含该串的测试；省略=全量。只接受字母、数字、下划线、连字符与点。\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"}},\"required\":[\"jobId\"]}", "tabCount=$unchanged"},
-    {CmdId::DevJob, L"dev.job", L"Dev", L"开发", L"查询异步作业结果", true, Effects{1, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"dev.build/dev.test 返回的 jobId\"}},\"required\":[\"id\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\"},\"done\":{\"type\":\"boolean\"},\"exitCode\":{\"type\":\"integer\"},\"output\":{\"type\":\"string\",\"description\":\"stdout+stderr；超长时保留头尾，truncated=true 表示中间被省略\"},\"truncated\":{\"type\":\"boolean\"},\"error\":{\"type\":\"string\"}},\"required\":[\"id\",\"done\"]}", "tabCount=$unchanged"},
+    {CmdId::DevTest, L"dev.test", L"Dev", L"开发", L"异步运行测试", true, Effects{0, 1, 1, 1, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"filter\":{\"type\":\"string\",\"description\":\"只跑名字含该串的测试；省略=全量。只接受字母、数字、下划线、连字符与点。\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"},\"timeoutMs\":{\"type\":\"integer\",\"description\":\"该作业的硬超时上限（毫秒）\"}},\"required\":[\"jobId\"]}", "tabCount=$unchanged"},
+    {CmdId::DevJob, L"dev.job", L"Dev", L"开发", L"查询异步作业结果", true, Effects{1, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"dev.build/dev.test 返回的 jobId\"}},\"required\":[\"id\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\"},\"done\":{\"type\":\"boolean\"},\"exitCode\":{\"type\":\"integer\"},\"output\":{\"type\":\"string\",\"description\":\"stdout+stderr；超长时保留头尾，truncated=true 表示中间被省略\"},\"truncated\":{\"type\":\"boolean\"},\"timedOut\":{\"type\":\"boolean\",\"description\":\"是否被硬超时掐断（整棵进程树被杀）\"},\"timeoutMs\":{\"type\":\"integer\",\"description\":\"该作业的硬超时上限（毫秒）\"},\"error\":{\"type\":\"string\"}},\"required\":[\"id\",\"done\"]}", "tabCount=$unchanged"},
     // 不可撤销：回滚会丢掉工作树里对该文件的改动。调用方必须先 dev.snapshot
     // 记下 before，并在需要时自行备份；approve=true 表示人已确认这一次覆盖。
     // openWorld=1：它会起 git。
@@ -359,17 +388,24 @@ const std::vector<CommandDef> kTable = {
     // ---- 占位（未实现）----
     // 文件集工具已实现（2026-11-21）：见 app_commands_files.cpp 末尾三条 regR。
     // 它们的"人工路径"是**不带参数**调用（目标取界面现状），agent 路径带参数返回 JSON。
-    {CmdId::DupFinder, L"tool.dupfinder", L"Tool", L"文件视图", L"查找重复文件", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要扫描的目录；省略则用当前目录\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒）；默认 1500，超时返回已找到的部分并置 timedOut\"},\"minBytes\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"小于此字节数的文件不参与；默认 1（排除 0 字节占位文件）\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"groups\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"bytes\":{\"type\":\"integer\",\"description\":\"组内每份的大小\"},\"hash\":{\"type\":\"string\",\"description\":\"SHA-256（小写十六进制）\"},\"files\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"bytes\":{\"type\":\"integer\"}},\"required\":[\"path\"]}}},\"required\":[\"bytes\",\"hash\",\"files\"]}},\"wastedBytes\":{\"type\":\"integer\",\"description\":\"保留一份后可回收的字节数\"},\"scannedFiles\":{\"type\":\"integer\"},\"hashedFiles\":{\"type\":\"integer\",\"description\":\"实际计算摘要的文件数（含未进结果的候选）\"},\"deniedDirs\":{\"type\":\"integer\",\"description\":\"打不开的目录数（>0 说明结果偏少）\"},\"timedOut\":{\"type\":\"boolean\"},\"complete\":{\"type\":\"boolean\",\"description\":\"是否扫完整个子树\"},\"elapsedMs\":{\"type\":\"integer\"}},\"required\":[\"path\",\"groups\",\"wastedBytes\",\"complete\"]}", "itemCount=$unchanged"},
-    {CmdId::FileHash, L"tool.hash", L"Tool", L"文件视图", L"计算哈希", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"要计算摘要的文件路径；省略则用当前选中项\"},\"algorithm\":{\"type\":\"string\",\"enum\":[\"md5\",\"sha1\",\"sha256\"],\"description\":\"摘要算法；默认 sha256。认不出的名字会失败，不会退回默认值\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒）；默认 1500。这条命令跑在 UI 线程上，超时则返回已算部分并置 timedOut\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"algorithm\":{\"type\":\"string\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"ok\":{\"type\":\"boolean\"},\"hash\":{\"type\":\"string\",\"description\":\"小写十六进制；ok=false 时缺省\"},\"bytes\":{\"type\":\"integer\"},\"error\":{\"type\":\"string\",\"description\":\"ok=false 时的原因\"}},\"required\":[\"path\",\"ok\"]}},\"timedOut\":{\"type\":\"boolean\",\"description\":\"超出时间预算提前结束，结果不完整\"},\"complete\":{\"type\":\"boolean\",\"description\":\"整次调用是否完整（false 表示有文件没算完）\"}},\"required\":[\"algorithm\",\"entries\"]}", "itemCount=$unchanged"},
-    {CmdId::FolderCompare, L"tool.compare", L"Tool", L"文件视图", L"比较文件夹", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"left\":{\"type\":\"string\",\"description\":\"左侧目录\"},\"right\":{\"type\":\"string\",\"description\":\"右侧目录\"},\"byContent\":{\"type\":\"boolean\",\"description\":\"true=同大小再比 SHA-256（默认）；false=只比大小（快，但同大小不同内容会算作相同）\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒）；默认 1500\"}},\"required\":[\"left\",\"right\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"left\":{\"type\":\"string\"},\"right\":{\"type\":\"string\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"rel\":{\"type\":\"string\",\"description\":\"相对路径\"},\"leftBytes\":{\"type\":\"integer\"},\"rightBytes\":{\"type\":\"integer\"},\"state\":{\"type\":\"string\",\"enum\":[\"onlyLeft\",\"onlyRight\",\"differ\"]}},\"required\":[\"rel\",\"state\"]}},\"sameCount\":{\"type\":\"integer\"},\"differCount\":{\"type\":\"integer\"},\"onlyLeftCount\":{\"type\":\"integer\"},\"onlyRightCount\":{\"type\":\"integer\"},\"timedOut\":{\"type\":\"boolean\"},\"complete\":{\"type\":\"boolean\"},\"elapsedMs\":{\"type\":\"integer\"}},\"required\":[\"left\",\"right\",\"entries\",\"complete\"]}", "itemCount=$unchanged"},
+    {CmdId::DupFinder, L"tool.dupfinder", L"Tool", L"文件视图", L"查找重复文件", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要扫描的目录；省略则用当前目录\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒）；不传＝不限时（机器同步调用默认 1500）；超时返回已找到的部分并置 timedOut\"},\"minBytes\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"小于此字节数的文件不参与；默认 1（排除 0 字节占位文件）\"},\"async\":{\"type\":\"boolean\",\"description\":\"true = 立刻返回 jobId 不等它跑完；用 tool.job.get 查进度、tool.job.cancel 取消\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\",\"description\":\"async=true 时返回的作业 id\"},\"state\":{\"type\":\"string\",\"enum\":[\"running\"],\"description\":\"async=true 时的状态；同步返回完整结果时没有这两个字段\"},\"path\":{\"type\":\"string\"},\"groups\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"bytes\":{\"type\":\"integer\",\"description\":\"组内每份的大小\"},\"hash\":{\"type\":\"string\",\"description\":\"SHA-256（小写十六进制）\"},\"files\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"bytes\":{\"type\":\"integer\"}},\"required\":[\"path\"]}}},\"required\":[\"bytes\",\"hash\",\"files\"]}},\"wastedBytes\":{\"type\":\"integer\",\"description\":\"保留一份后可回收的字节数\"},\"scannedFiles\":{\"type\":\"integer\"},\"hashedFiles\":{\"type\":\"integer\",\"description\":\"实际计算摘要的文件数（含未进结果的候选）\"},\"deniedDirs\":{\"type\":\"integer\",\"description\":\"打不开的目录数（>0 说明结果偏少）\"},\"timedOut\":{\"type\":\"boolean\"},\"cancelled\":{\"type\":\"boolean\",\"description\":\"被取消而提前结束（人点了取消或 tool.job.cancel）；与 timedOut 分开\"},\"complete\":{\"type\":\"boolean\",\"description\":\"是否扫完整个子树\"},\"elapsedMs\":{\"type\":\"integer\"}}}", "itemCount=$unchanged"},
+    {CmdId::FileHash, L"tool.hash", L"Tool", L"文件视图", L"计算哈希", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"要计算摘要的文件路径；省略则用当前选中项\"},\"algorithm\":{\"type\":\"string\",\"enum\":[\"md5\",\"sha1\",\"sha256\"],\"description\":\"摘要算法；默认 sha256。认不出的名字会失败，不会退回默认值\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒）；不传＝不限时（机器同步调用默认 1500）；超时则返回已算部分并置 timedOut\"},\"async\":{\"type\":\"boolean\",\"description\":\"true = 立刻返回 jobId 不等它跑完；用 tool.job.get 查进度、tool.job.cancel 取消\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\",\"description\":\"async=true 时返回的作业 id\"},\"state\":{\"type\":\"string\",\"enum\":[\"running\"],\"description\":\"async=true 时的状态；同步返回完整结果时没有这两个字段\"},\"algorithm\":{\"type\":\"string\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"ok\":{\"type\":\"boolean\"},\"hash\":{\"type\":\"string\",\"description\":\"小写十六进制；ok=false 时缺省\"},\"bytes\":{\"type\":\"integer\"},\"error\":{\"type\":\"string\",\"description\":\"ok=false 时的原因\"}},\"required\":[\"path\",\"ok\"]}},\"timedOut\":{\"type\":\"boolean\",\"description\":\"超出时间预算提前结束，结果不完整\"},\"cancelled\":{\"type\":\"boolean\",\"description\":\"被取消而提前结束（人点了取消或 tool.job.cancel）；与 timedOut 分开\"},\"complete\":{\"type\":\"boolean\",\"description\":\"整次调用是否完整（false 表示有文件没算完）\"}}}", "itemCount=$unchanged"},
+    {CmdId::FolderCompare, L"tool.compare", L"Tool", L"文件视图", L"比较文件夹", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"left\":{\"type\":\"string\",\"description\":\"左侧目录\"},\"right\":{\"type\":\"string\",\"description\":\"右侧目录\"},\"byContent\":{\"type\":\"boolean\",\"description\":\"true=同大小再比 SHA-256（默认）；false=只比大小（快，但同大小不同内容会算作相同）\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒）；不传＝不限时（机器同步调用默认 1500）\"},\"async\":{\"type\":\"boolean\",\"description\":\"true = 立刻返回 jobId 不等它跑完；用 tool.job.get 查进度、tool.job.cancel 取消\"}},\"required\":[\"left\",\"right\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\",\"description\":\"async=true 时返回的作业 id\"},\"state\":{\"type\":\"string\",\"enum\":[\"running\"],\"description\":\"async=true 时的状态；同步返回完整结果时没有这两个字段\"},\"left\":{\"type\":\"string\"},\"right\":{\"type\":\"string\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"rel\":{\"type\":\"string\",\"description\":\"相对路径\"},\"leftBytes\":{\"type\":\"integer\"},\"rightBytes\":{\"type\":\"integer\"},\"state\":{\"type\":\"string\",\"enum\":[\"onlyLeft\",\"onlyRight\",\"differ\"]}},\"required\":[\"rel\",\"state\"]}},\"sameCount\":{\"type\":\"integer\"},\"differCount\":{\"type\":\"integer\"},\"onlyLeftCount\":{\"type\":\"integer\"},\"onlyRightCount\":{\"type\":\"integer\"},\"timedOut\":{\"type\":\"boolean\"},\"cancelled\":{\"type\":\"boolean\",\"description\":\"被取消而提前结束（人点了取消或 tool.job.cancel）；与 timedOut 分开\"},\"complete\":{\"type\":\"boolean\"},\"elapsedMs\":{\"type\":\"integer\"}}}", "itemCount=$unchanged"},
     {CmdId::SearchEverything, L"search.everything", L"Search", L"导航栏", L"搜索", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
     // ---- 只读查询（P6：读操作返回结构化结果）----
     // 这两条是第一批带 outputSchema 的命令，用来验证返回值设计。
     // 它们列/查的是**当前视图**，而不是按路径另扫盘 —— 与用户看到的一致。
     {CmdId::OpListDir, L"tool.list", L"Tool", L"文件视图", L"列出当前目录", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":5000,\"description\":\"最多返回多少项；省略则不限\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"被列出的目录\"},\"truncated\":{\"type\":\"boolean\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"isFolder\":{\"type\":\"boolean\"},\"size\":{\"type\":\"integer\"},\"hidden\":{\"type\":\"boolean\"}},\"required\":[\"name\",\"isFolder\"]}}},\"required\":[\"path\",\"entries\"]}", "itemCount=$unchanged"},
     {CmdId::OpStat, L"tool.stat", L"Tool", L"文件视图", L"查看单项属性", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"项目的完整路径（必须在当前目录内）\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"isFolder\":{\"type\":\"boolean\"},\"hidden\":{\"type\":\"boolean\"},\"readonly\":{\"type\":\"boolean\"},\"size\":{\"type\":\"integer\"},\"typeName\":{\"type\":\"string\"}},\"required\":[\"name\",\"isFolder\"]}", "itemCount=$unchanged"},
-    {CmdId::OpTopN, L"tool.topn", L"Tool", L"文件视图", L"最大的 N 项", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要统计的目录；省略则用当前目录\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":5000,\"description\":\"返回前 N 项；默认 50\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒），超时则返回已统计部分；默认 1500\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"被统计的目录\"},\"totalBytes\":{\"type\":\"integer\",\"description\":\"目录内容总大小（含被 limit 截断的部分）\"},\"truncated\":{\"type\":\"boolean\",\"description\":\"结果被 limit 截断\"},\"timedOut\":{\"type\":\"boolean\",\"description\":\"到时间预算提前结束，数值不完整\"},\"elapsedMs\":{\"type\":\"integer\"},\"scannedFiles\":{\"type\":\"integer\"},\"scannedDirs\":{\"type\":\"integer\"},\"deniedDirs\":{\"type\":\"integer\",\"description\":\"打不开的目录数（>0 表示结果偏小）\"},\"complete\":{\"type\":\"boolean\",\"description\":\"整次统计是否完整\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"bytes\":{\"type\":\"integer\"},\"isFolder\":{\"type\":\"boolean\"},\"items\":{\"type\":\"integer\"},\"complete\":{\"type\":\"boolean\"}},\"required\":[\"name\",\"bytes\"]}}},\"required\":[\"path\",\"totalBytes\",\"entries\"]}", "itemCount=$unchanged"},
-    {CmdId::OpDiskUsage, L"tool.diskusage", L"Tool", L"文件视图", L"目录占用", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要统计的目录；省略则用当前目录\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":5000,\"description\":\"返回前 N 项；默认 50\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒），超时则返回已统计部分；默认 1500\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"被统计的目录\"},\"totalBytes\":{\"type\":\"integer\",\"description\":\"目录内容总大小（含被 limit 截断的部分）\"},\"truncated\":{\"type\":\"boolean\",\"description\":\"结果被 limit 截断\"},\"timedOut\":{\"type\":\"boolean\",\"description\":\"到时间预算提前结束，数值不完整\"},\"elapsedMs\":{\"type\":\"integer\"},\"scannedFiles\":{\"type\":\"integer\"},\"scannedDirs\":{\"type\":\"integer\"},\"deniedDirs\":{\"type\":\"integer\",\"description\":\"打不开的目录数（>0 表示结果偏小）\"},\"complete\":{\"type\":\"boolean\",\"description\":\"整次统计是否完整\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"bytes\":{\"type\":\"integer\"},\"isFolder\":{\"type\":\"boolean\"},\"items\":{\"type\":\"integer\"},\"complete\":{\"type\":\"boolean\"}},\"required\":[\"name\",\"bytes\"]}}},\"required\":[\"path\",\"totalBytes\",\"entries\"]}", "itemCount=$unchanged"},
+    {CmdId::OpTopN, L"tool.topn", L"Tool", L"文件视图", L"最大的 N 项", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要统计的目录；省略则用当前目录\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":5000,\"description\":\"返回前 N 项；默认 50\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒）；不传＝不限时（机器同步调用默认 1500）；超时则返回已统计部分\"},\"async\":{\"type\":\"boolean\",\"description\":\"true = 立刻返回 jobId 不等它跑完；用 tool.job.get 查进度、tool.job.cancel 取消\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\",\"description\":\"async=true 时返回的作业 id\"},\"state\":{\"type\":\"string\",\"enum\":[\"running\"],\"description\":\"async=true 时的状态；同步返回完整结果时没有这两个字段\"},\"path\":{\"type\":\"string\",\"description\":\"被统计的目录\"},\"totalBytes\":{\"type\":\"integer\",\"description\":\"目录内容总大小（含被 limit 截断的部分）\"},\"truncated\":{\"type\":\"boolean\",\"description\":\"结果被 limit 截断\"},\"timedOut\":{\"type\":\"boolean\",\"description\":\"到时间预算提前结束，数值不完整\"},\"cancelled\":{\"type\":\"boolean\",\"description\":\"被取消而提前结束（人点了取消或 tool.job.cancel）；与 timedOut 分开\"},\"elapsedMs\":{\"type\":\"integer\"},\"scannedFiles\":{\"type\":\"integer\"},\"scannedDirs\":{\"type\":\"integer\"},\"deniedDirs\":{\"type\":\"integer\",\"description\":\"打不开的目录数（>0 表示结果偏小）\"},\"complete\":{\"type\":\"boolean\",\"description\":\"整次统计是否完整\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"bytes\":{\"type\":\"integer\"},\"isFolder\":{\"type\":\"boolean\"},\"items\":{\"type\":\"integer\"},\"complete\":{\"type\":\"boolean\"}},\"required\":[\"name\",\"bytes\"]}}}}", "itemCount=$unchanged"},
+    {CmdId::OpDiskUsage, L"tool.diskusage", L"Tool", L"文件视图", L"目录占用", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要统计的目录；省略则用当前目录\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":5000,\"description\":\"返回前 N 项；默认 50\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒）；不传＝不限时（机器同步调用默认 1500）；超时则返回已统计部分\"},\"async\":{\"type\":\"boolean\",\"description\":\"true = 立刻返回 jobId 不等它跑完；用 tool.job.get 查进度、tool.job.cancel 取消\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\",\"description\":\"async=true 时返回的作业 id\"},\"state\":{\"type\":\"string\",\"enum\":[\"running\"],\"description\":\"async=true 时的状态；同步返回完整结果时没有这两个字段\"},\"path\":{\"type\":\"string\",\"description\":\"被统计的目录\"},\"totalBytes\":{\"type\":\"integer\",\"description\":\"目录内容总大小（含被 limit 截断的部分）\"},\"truncated\":{\"type\":\"boolean\",\"description\":\"结果被 limit 截断\"},\"timedOut\":{\"type\":\"boolean\",\"description\":\"到时间预算提前结束，数值不完整\"},\"cancelled\":{\"type\":\"boolean\",\"description\":\"被取消而提前结束（人点了取消或 tool.job.cancel）；与 timedOut 分开\"},\"elapsedMs\":{\"type\":\"integer\"},\"scannedFiles\":{\"type\":\"integer\"},\"scannedDirs\":{\"type\":\"integer\"},\"deniedDirs\":{\"type\":\"integer\",\"description\":\"打不开的目录数（>0 表示结果偏小）\"},\"complete\":{\"type\":\"boolean\",\"description\":\"整次统计是否完整\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"bytes\":{\"type\":\"integer\"},\"isFolder\":{\"type\":\"boolean\"},\"items\":{\"type\":\"integer\"},\"complete\":{\"type\":\"boolean\"}},\"required\":[\"name\",\"bytes\"]}}}}", "itemCount=$unchanged"},
+    // ---- 长任务作业（工具域的异步侧）----
+    // 五条长任务命令搬去了工作线程（src/job.cpp），"返回 jobId 再回来查"成了常态，这三条是配套。
+    // scope 是 App：作业是**进程级**对象，命令返回后还活着，不随某个标签页关闭而消失。
+    {CmdId::ToolJobGet, L"tool.job.get", L"Tool", L"文件视图", L"查询长任务作业", true, Effects{1, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"作业 id（长任务命令 async=true 时返回）\"}},\"required\":[\"id\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\",\"description\":\"作业类别：hash / dup / compare / usage / topn\"},\"target\":{\"type\":\"string\",\"description\":\"作业对象（一般是路径）\"},\"done\":{\"type\":\"boolean\",\"description\":\"工作线程是否已收工\"},\"cancelled\":{\"type\":\"boolean\",\"description\":\"被取消（人点了取消或 tool.job.cancel）\"},\"failed\":{\"type\":\"boolean\"},\"stage\":{\"type\":\"string\",\"description\":\"当前阶段说明（进度用）\"},\"doneCount\":{\"type\":\"integer\",\"description\":\"已处理多少项\"},\"totalCount\":{\"type\":\"integer\",\"description\":\"总量；0 表示未知\"},\"error\":{\"type\":\"string\",\"description\":\"失败原因\"},\"result\":{\"type\":\"object\",\"description\":\"成功完成时的结构化结果（形状取决于 kind）\"}},\"required\":[\"id\",\"done\"]}", nullptr, kExemptJobState},
+    // cancelRequested=true 只表示"已受理"：取消是协作式的（置原子位），已被系统调用卡住的那一步中断不了。
+    {CmdId::ToolJobCancel, L"tool.job.cancel", L"Tool", L"文件视图", L"取消长任务作业", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"要取消的作业 id\"}},\"required\":[\"id\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"cancelRequested\":{\"type\":\"boolean\",\"description\":\"已受理取消请求（不等于已经停下）\"}},\"required\":[\"id\",\"cancelRequested\"]}", nullptr, kExemptJobState},
+    {CmdId::ToolJobList, L"tool.job.list", L"Tool", L"文件视图", L"列出长任务作业", true, Effects{1, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobs\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\"},\"target\":{\"type\":\"string\"},\"done\":{\"type\":\"boolean\"},\"cancelled\":{\"type\":\"boolean\"},\"failed\":{\"type\":\"boolean\"},\"stage\":{\"type\":\"string\"},\"doneCount\":{\"type\":\"integer\"},\"totalCount\":{\"type\":\"integer\"}},\"required\":[\"id\",\"done\"]}},\"count\":{\"type\":\"integer\",\"description\":\"作业总数\"}},\"required\":[\"jobs\",\"count\"]}", nullptr, kExemptJobState},
     // 搜索是**导航**（结果落在同一个视图里），不是只读查询 —— 原声明 readOnly=1 就错在这里。
     // 人侧：搜索框直接输入、或命令面板追问搜索词（留空＝退出搜索）；agent 侧：{"query":"..."} → 结构化结果。
     // 搜索：宿主 IExplorerBrowser 没有搜索带，search-ms: 被 ShellView::DoNavigate
@@ -494,24 +530,6 @@ namespace {
 std::wstring AnsiToWide(const char* s) {
     std::wstring w = str::FromUtf8(s);
     return w.empty() ? std::wstring(L"{}") : w;
-}
-
-// 审计里记的参数摘要。用紧凑 JSON，过长时截断 —— 审计是给人查的，
-// 不该因为一条超长路径把日志行撑爆。
-std::wstring DescribeArgs(const Args& args) {
-    if (args.IsEmpty()) return std::wstring();
-    std::wstring s = json::Stringify(args.raw(), 0);
-    if (s.size() > 160) s = s.substr(0, 157) + L"...";
-    return s;
-}
-
-// 审计里的参数摘要：失败且 handler 报了原因时，把原因附在同一行。
-// 不另开字段，是为了让"一条命令一行"这个性质保持 —— 事后 grep 一条命令
-// 就能看到为什么失败，不用在几行之间拼时间戳。
-std::wstring ArgsDescForAudit(const Args& args, bool ok, const std::wstring& reason) {
-    const std::wstring desc = DescribeArgs(args);
-    if (ok || reason.empty()) return desc;
-    return desc.empty() ? (L"(failed: " + reason + L")") : (desc + L" (failed: " + reason + L")");
 }
 
 // 从 schema 里挑出"旧字符串参数该落到哪个键"。
@@ -713,6 +731,8 @@ bool CommandBus::Dispatch(CmdId id, const Args& args, json::Value* result, Actor
     // 调用方读到"成功了但原因还是旧的"，比没有原因更误导。
     lastBlockReason_.clear();
     pendingReason_.clear();
+    lastFailKind_ = FailKind::None;
+    pendingKind_ = FailKind::None;
 
     // 前置检查：不满足就不调 handler。以前这里没有这一层，结果是
     // "无历史时点后退"——handler 里静默 return false，界面毫无反馈。
@@ -722,7 +742,11 @@ bool CommandBus::Dispatch(CmdId id, const Args& args, json::Value* result, Actor
     if (!CanExecute(*def, &reason)) {
         last_ = def->name;
         lastBlockReason_ = reason;
-        Audit(*def, DescribeArgs(args) + L" (blocked: " + reason + L")", actor, false);
+        // 前置条件不满足 —— 这就是 PreconditionUnmet 的定义，
+        // 不需要 handler 再报一次（它根本没被调用）。
+        lastFailKind_ = FailKind::PreconditionUnmet;
+        Audit(*def, args, actor, false, L"blocked",
+              FailKindCode(FailKind::PreconditionUnmet), reason, 0);
         LogDbg(L"[cmd] 前置不满足：%s（%s）", def->name, reason.c_str());
         if (result) *result = json::Value::MakeObject();
         return false;
@@ -737,26 +761,42 @@ bool CommandBus::Dispatch(CmdId id, const Args& args, json::Value* result, Actor
     for (auto& kv : resultHandlers_) {
         if (kv.first != id) continue;
         json::Value out = json::Value::MakeObject();
+        // 耗时：只量 handler 本身，不含参数校验与审计落盘 ——
+        // C6 要的是"这次调用花了多久"，而审计落盘自己也会花时间，
+        // 把它算进去会得到一个随磁盘状态波动的数。
+        const ULONGLONG t0 = GetTickCount64();
         bool ok = kv.second ? kv.second(args, &out) : false;
+        const long long dur = static_cast<long long>(GetTickCount64() - t0);
         last_ = def->name;
         // handler 自己报的原因优先于笼统的"失败"：它知道是名字错还是值超范围。
         if (!ok && !pendingReason_.empty()) lastBlockReason_ = pendingReason_;
-        Audit(*def, ArgsDescForAudit(args, ok, pendingReason_), actor, ok);
+        if (!ok) lastFailKind_ = pendingKind_;
+        // 审计里的机器码与 AI 通道返回的 errorCode 是**同一个来源**
+        // （FailKindCode）—— 同一件事不能有两个源头。
+        Audit(*def, args, actor, ok, ok ? L"ok" : L"failed",
+              ok ? std::wstring() : FailKindCode(pendingKind_), pendingReason_, dur);
         if (result) *result = std::move(out);
         return ok;
     }
 
     for (auto& kv : handlers_) {
         if (kv.first != id) continue;
+        const ULONGLONG t0 = GetTickCount64();
         bool ok = kv.second ? kv.second(args) : false;
+        const long long dur = static_cast<long long>(GetTickCount64() - t0);
         last_ = def->name;
         if (!ok && !pendingReason_.empty()) lastBlockReason_ = pendingReason_;
-        Audit(*def, ArgsDescForAudit(args, ok, pendingReason_), actor, ok);
+        if (!ok) lastFailKind_ = pendingKind_;
+        // 审计里的机器码与 AI 通道返回的 errorCode 是**同一个来源**
+        // （FailKindCode）—— 同一件事不能有两个源头。
+        Audit(*def, args, actor, ok, ok ? L"ok" : L"failed",
+              ok ? std::wstring() : FailKindCode(pendingKind_), pendingReason_, dur);
         // 无返回值命令：给空对象而非旧数据（不编造）。
         if (result) *result = json::Value::MakeObject();
         return ok;
     }
-    Audit(*def, DescribeArgs(args), actor, false);
+    Audit(*def, args, actor, false, L"not_implemented", L"not_implemented",
+          std::wstring(), 0);
     LogDbg(L"[cmd] 未实现：%s（actor=%s）", def->name, actor.source ? actor.source : L"?");
     if (result) *result = json::Value::MakeObject();
     return false;
@@ -800,39 +840,4 @@ bool CommandBus::InvokeByNameLegacy(const std::wstring& name, const std::wstring
         return false;
     }
     return Invoke(def->id, ArgsFromLegacyArg(*def, arg.empty() ? inlineArg : arg), actor);
-}
-
-void CommandBus::Audit(const CommandDef& def, const std::wstring& argDesc, Actor actor,
-                       bool ok) {
-    // 审计只记录"谁触发了什么命令"；文件不轮转，单行 <=200 字节，量级与人工操作同阶。
-    SYSTEMTIME st{};
-    GetLocalTime(&st);
-    wchar_t line[512];
-    swprintf(line, 512, L"%04d-%02d-%02dT%02d:%02d:%02d %ls %ls arg=%ls ok=%d\r\n", st.wYear, st.wMonth,
-             st.wDay, st.wHour, st.wMinute, st.wSecond, actor.source ? actor.source : L"?", def.name,
-             argDesc.empty() ? L"-" : argDesc.c_str(), ok ? 1 : 0);
-    const std::wstring path = tf::Join(Config::Get().Dir(), L"audit.log");
-
-    // 轮转（每 200 条查一次、超 2 MB 改名 .1）与调试日志共用 tf::AppendLine；
-    // 这里只负责编码 —— 审计用 UTF-8（脚本 grep 方便），调试日志用 UTF-16 LE。
-    tf::AppendLine(path, tf::ToUtf8(line), 2ull << 20, 200);
-}
-
-void CommandBus::AuditRejected(const std::wstring& commandName, const std::wstring& reason) {
-    // 与 Audit 同一套格式与同一个文件 —— 拒绝与执行是同一条时间线，
-    // 分两个文件的话，事后回溯"这个命令到底被谁动过"要拼两个文件。
-    //
-    // actor 固定记 "ai"：这条入口只为 AI 通道的拒绝而开（见 commands.h 的说明）。
-    // 格式上多了 `rejected=` 一段，与正常调用的 `ok=0` 区分开：
-    // ok=0 表示"执行了但没成"，rejected 表示"**根本没进执行**"。
-    SYSTEMTIME st{};
-    GetLocalTime(&st);
-    wchar_t line[512];
-    swprintf(line, 512,
-             L"%04d-%02d-%02dT%02d:%02d:%02d ai %ls arg=- rejected=%ls ok=0\r\n", st.wYear,
-             st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
-             commandName.empty() ? L"?" : commandName.c_str(),
-             reason.empty() ? L"-" : reason.c_str());
-    const std::wstring path = tf::Join(Config::Get().Dir(), L"audit.log");
-    tf::AppendLine(path, tf::ToUtf8(line), 2ull << 20, 200);
 }

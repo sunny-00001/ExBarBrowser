@@ -139,6 +139,8 @@ void App::OnCreate() {
     navBar_.SetHistoryFn([this](bool back) { return HistoryList(back); },
                          [this](int depth, bool back) { JumpHistory(depth, back); });
     navBar_.SetSettingsFn([this](POINT at) { ShowSettingsPanel(at); });
+    navBar_.SetColumnsFn([this](POINT at) { ShowColumnMenu(at); });
+    navBar_.SetZoomFn([this](POINT at) { ShowZoomMenu(at); });
     navBar_.SetRecentFn([] { return Config::Get().s().recentPaths; });
     navBar_.SetClearHistoryFn([this] { (void)ClearHistory(); });
     // 视图菜单打勾用：当前档位来自 viewMode_（用户偏好），排序/分组从**视图**现读。
@@ -553,6 +555,8 @@ void App::OnDestroy() {
     mcpstdio::Stop();
     ai::StopServer();   // 先停监听线程，避免它持有请求排队时窗口已销毁
     ai::SetStateProvider(nullptr);
+    // 长任务作业：取消全部并 join 工作线程（实现见 app_commands_jobs.cpp）。
+    ShutdownJobs();
     input_.Cancel();
     tabs_.clear();  // 字体仍有效，Shell 视图可安全销毁
 }

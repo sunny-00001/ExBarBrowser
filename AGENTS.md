@@ -363,7 +363,11 @@ python tools/agentctl.py tools --grep bmk   # 通道可用后，一切以 tools/
 | `bad_args` | 缺必填、多传、类型错 | 改**请求**：`tools --grep <name>` 看 `inputSchema`；不要改代码迁就调用 |
 | `schema_invalid` | 命令表的 `argsSchema` 写错了 | 修 `src/commands.cpp` 那一行（实现缺陷，不是调用方的错） |
 | `danger_disabled` / `need_approval` | 危险命令未获人类批准 | 把命令+参数交给用户等明确同意。**AI 不给自己加 `--approve`** |
-| `blocked` | 前置条件不满足（error 里是具体原因），含"作用于当前选中而现在没选中" | 先读状态、改目标或先做前置动作，不是 bug。长期要"指定目标"就加确定式命令（`Op*`/`Fs*` 模式）；`needsSelection` 是命令的属性（见 `tools/list`），不是失败码 |
+| `precondition_unmet` | 前置条件不满足（error 里是具体原因），含"作用于当前选中而现在没选中" | 先读状态、改目标或先做前置动作，不是 bug。长期要"指定目标"就加确定式命令（`Op*`/`Fs*` 模式）；`needsSelection` 是命令的属性（见 `tools/list`），不是失败码 |
+| `lock_conflict` | 执行期被占用/被锁（剪贴板、文件被别的程序占着） | 关掉占用方后重试，或换一个目标。**重试有意义** |
+| `canceled_by_user` | 用户主动取消（拒绝批准、在进度窗口点了取消） | **不要重试** —— 停下来问用户。绕过用户的决定比失败更糟 |
+| `not_supported` | 该环境/该对象不支持这件事（视图模式不对、能力不存在） | 换一条路。**重试永远没用** |
+| `timed_out` | 等待时限到了，后台作业**仍在跑**（不是失败） | 用 `tool.job.get` 继续查那个 jobId，别重发同一条命令；要停用 `tool.job.cancel` |
 | `failed` | handler 真失败 | 看 `error` 与日志对应模块行 |
 | `effect_not_met` | `ok=true` 但 `verdict=false` | 读 `assertions`；先独立回读，再决定修 handler 还是修判据 |
 | （`error: timeout`） | 10 秒超时，UI 卡在模态对话框 | 请人关掉对话框；**不要循环重发** |

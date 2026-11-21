@@ -161,27 +161,39 @@ def git(*args):
 
 
 def check_git_tracked():
-    """清单必须已被 git 跟踪，且工作树里没有未提交的改动。
+    """清单必须已被 git 跟踪，且**与 HEAD 一致**（已提交、工作树干净）。
 
     返回 (ok, reason)。
 
-    【为什么这条是"签发权归人"的着力点】重签会改变清单内容。只要清单
-    是**被跟踪**的，这个改动就必然以"modified: data/eval-surface.json"
-    出现 —— 人在 `git status` / review / CI 里看得见。
+    【为什么这条是"签发权归人"的着力点】重签会改变清单内容。只要清单是
+    **被跟踪**的，这个改动就必然出现在 git 里 —— `git status` /
+    `git diff --cached` / review / CI 都看得见，谁在什么时候放宽了判据留得下痕迹。
     agent 若想悄悄放宽判据，就必须连"提交"这一步也做掉（那本身是另一道
     更显眼的动作）。**不跟踪**就等于这条痕迹完全不存在 —— 这正是
     本轮修复前的状态（`?? data/eval-surface.json`）。
+
+    【流程】签发 → `git add` → `git commit`。提交之后 status 变空，门开。
+    签发之后**门仍然关着**，直到有人提交 —— 这正是"签发权归人"的机械含义
+    （见 src/eval_surface.h 的同名注释）。
     """
     ok, tracked = git("ls-files", "--error-unmatch", "data/eval-surface.json")
     if not ok:
         return False, ("data/eval-surface.json 未被 git 跟踪 —— 重签将不留任何痕迹。"
                        "先执行：git add data/eval-surface.json")
-    ok2, dirty = git("status", "--porcelain", "--", "data/eval-surface.json")
+    ok2, status = git("status", "--porcelain", "--", "data/eval-surface.json")
     if not ok2:
         return True, ""   # status 查不了（比如浅克隆）时不阻塞，只跳过这条
-    if dirty:
-        return False, ("data/eval-surface.json 有未提交改动 —— 有人重签过但还没提交。"
-                       "确认这次重签是有意的、并提交它：git add data/eval-surface.json")
+    # 【判据必须与 C++ 运行时门逐条一致】src/eval_surface.cpp 的 CheckGitTrust
+    # 要求 `git status --porcelain -- data/eval-surface.json` **输出为空**
+    # （已跟踪 + 已提交 + 工作树干净）。这里曾经放宽成"已暂存即可"，
+    # 于是同一个不变量有了两个判定：清单只暂存没提交时，
+    # tools/check_components.py 第 3 道放行（绿），而 dev.build/dev.test 拒绝启动。
+    # 一边绿一边红，调用方只能猜 —— 而"两处判定同一件事"本身就是一条纪律。
+    # 所以这里也要求空：已暂存（"M "）同样不合格。
+    if status.strip():
+        return False, ("data/eval-surface.json 与 HEAD 不一致（已跟踪但有未提交改动）—— "
+                       "有人重签过但还没提交。先 git add 并提交它；"
+                       "在此之前 dev.build/dev.test 会拒绝启动（fail-closed，这是对的）。")
     return True, ""
 
 

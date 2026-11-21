@@ -31,7 +31,18 @@ struct FileEntry {
     bool tracked = false;    // git 跟踪的？（未跟踪 = 快照时它就是"新文件"）
     unsigned long long bytes = 0;
     std::wstring reason;     // 没存下来的原因（如"文件太大"）
+    // ---- P0-9：改写可见性的两个可核对字段 ----
+    // 光有"路径 + 字节数"只能回答"改了哪些"，回答不了"是不是又变回去了、
+    // 是不是我上次看到的那一版"。mtime + SHA-256 让调用方能**独立核对**：
+    // 快照之间比 sha256 就知道内容有没有变，不用信 git status 的文本。
+    std::wstring mtime;    // 文件最后写入时间（本地时间，ISO 风格；空=取不到）
+    std::wstring sha256;   // 内容摘要（小写 hex；空文件/取不到时为空，reason 给因）
 };
+
+// 当前工作树的改动文件视图（**只读，不落盘**）。
+// 与 Create() 用同一个 ChangedFiles()，但这里只做"改了什么 + mtime + sha256"，
+// 不复制内容 —— 给 dev.diff 用：审阅一次改动不需要先存一份快照。
+std::vector<FileEntry> CurrentChanges();
 
 // 一份快照。
 struct Snapshot {

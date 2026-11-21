@@ -233,6 +233,20 @@ P4  差异化            AI 面板 → chrome Web 化 → 与 mod 的 UI 资产�
     调用方看得见"没扫完"；而单文件摘要本来就必须读完整文件，helper 只能把等待挪走，
     换不来结果正确性，却要多背一整套 IPC 与生命周期管理。
     真要做后台化，正确形态是**把这三条挪到工作线程 + 进度窗口**，不是再造 helper 进程。
+- **长任务作业化（2026-11-22 已完成）**：上一条留下的"真要做后台化"已经做了 ——
+  五条长任务命令（`tool.dupfinder` / `tool.hash` / `tool.compare` /
+  `tool.diskusage` / `tool.topn`）全部搬到**工作线程**（`src/job.{h,cpp}`），
+  配**进度窗口**（`src/job_ui.{h,cpp}`，带「取消」按钮）。
+  **没有用 helper 进程**：helper 要把结果整份搬回主进程，
+  而这里要的正是"边跑边看进度、随时能停"。
+  - 新增 `async` 参数：立刻返回 `jobId`，把"跑多久"与"等多久"拆开
+    （AI 管道只有 10 秒超时，同步扫大目录必然超时）。
+  - 新增三条作业命令 `tool.job.get` / `tool.job.cancel` / `tool.job.list`，
+    以及事件 `tool.job.progress` / `tool.job.done`。
+  - 结果新增 `cancelled`（与 `timedOut` 分开：超时可重试，取消重试只是白费力气）。
+  - 人工路径顺带补上了空白：`tool.topn` / `tool.diskusage` 过去**没有任何人可见的输出**
+    （命令面板只调 `Invoke` 不调 `InvokeResult`，返回值被丢弃），
+    现在跑完给一份可读报告。
 - 授权：默认只读；写操作需显式开关（与 mod 的 `approval` 模型一致，AI 侧双门已实现）。
 
 ### 4.6 P3-5 预览窗格（待做）
@@ -259,7 +273,7 @@ P4  差异化            AI 面板 → chrome Web 化 → 与 mod 的 UI 资产�
 
 | 项 | 内容 | 前置 |
 |---|---|---|
-| AI 面板 | 侧栏聊天。**接口层已完成**（`ai_api`/`ai_server`：JSON-RPC over 命名管道、89 工具、令牌 + 危险双门），缺的是窗口内对话 UI 与会话历史 | 会话存储 + 面板载体（`docs/ARCHITECTURE-TARGET.md` 的 Panel） |
+| AI 面板 | 侧栏聊天。**接口层已完成**（`ai_api`/`ai_server`：JSON-RPC over 命名管道、令牌 + 危险双门；工具数以 `tools/check_commands.py` 实测为准），缺的是窗口内对话 UI 与会话历史 | 会话存储 + 面板载体（`docs/ARCHITECTURE-TARGET.md` 的 Panel） |
 | chrome Web 化 | 用 `ui/theme/tokens.css` 统一视觉；WebView2 只承载"面板"，标签栏/导航栏保持 GDI（启动速度优先） | 与 `ExBarUI` 的宿主代码复用评估 |
 | 与 mod 的资产互通 | 同一套图标、同一套色令牌；`bookmarks.html` / `keymap` **不再共用**（便携模式后各写各的），需要互通时走导入导出（`bookmark_io.cpp` 已实现 Netscape 导入导出） | P2-3、P2-4、P3-4 |
 
@@ -287,6 +301,6 @@ P4  差异化            AI 面板 → chrome Web 化 → 与 mod 的 UI 资产�
 | P1 | 能开、能看、能走 | 编译零警告；5 标签连续开关 20 次不崩 | ✅ |
 | P1.1 | 20 个标签也不乱 | 20 标签全部可见；盘根无空箭头；`/select` 选中成功 | ✅（`/select` 仍未选中目标项） |
 | P2 | 可以当默认文件夹处理器 | 重启还原几何与标签；路径复制/终端/书签/会话可用；一周无崩溃 | ✅ |
-| P2.5 | 人机同源：同一操作对人可用、对机器可调 | 全部命令带 schema/效果/前置；对 AI 暴露的命令全部满足 R20 人机等价；32 个单测 475 项断言 + 16 组静态检查全绿 | ✅ |
+| P2.5 | 人机同源：同一操作对人可用、对机器可调 | 全部命令带 schema/效果/前置；对 AI 暴露的命令全部满足 R20 人机等价；**48 个单测**（47 通过 / 1 环境限制）+ **25 项** `check_ai_meta` 与 `check_commands`/`check_components` 全绿 | ✅ |
 | P3 | 能力可发现、可编排 | 命令面板覆盖全部已实现命令（✅）；搜索 200 ms 内出结果；预览 3 种格式 | 进行中 |
 | P4 | 与 mod 视觉一致、AI 面板可用 | 同一套色令牌与图标；AI 面板能在窗口内对话（接口层已完成） | 未开始 |

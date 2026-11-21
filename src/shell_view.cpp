@@ -665,9 +665,24 @@ void ShellView::SelectPaths(const std::vector<std::wstring>& paths) {
     view->Release();
 }
 
-unsigned ShellView::ItemCount() {
-    if (!browser_) return 0;
+bool ShellView::GetViewMode(int* fvm, int* iconPx) {
+    if (!browser_) return false;
     IShellView* view = nullptr;
+    if (FAILED(browser_->GetCurrentView(IID_IShellView, reinterpret_cast<void**>(&view))) || !view)
+        return false;
+    ComPtr<IFolderView2> fv2 = shellops::FolderView2(view);
+    view->Release();
+    if (!fv2) return false;
+    FOLDERVIEWMODE mode = FVM_AUTO;
+    int icon = 0;
+    if (FAILED(fv2->GetViewModeAndIconSize(&mode, &icon))) return false;
+    if (fvm) *fvm = static_cast<int>(mode);
+    if (iconPx) *iconPx = icon;
+    return true;
+}
+
+unsigned ShellView::ItemCount() {
+    if (!browser_) return 0;    IShellView* view = nullptr;
     if (FAILED(browser_->GetCurrentView(IID_IShellView, reinterpret_cast<void**>(&view))) || !view)
         return 0;
 

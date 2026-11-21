@@ -55,6 +55,39 @@ struct ToolSpec {
     std::wstring assertionExempt;
 };
 
+// 风险的三个档位名（read / write / danger）。给机器读的稳定标识。
+//
+// 【为什么放在头里而不是某个 .cpp】"风险叫什么"是**协议**的一部分：
+// tools/list 里写的、结果里回的、审计里记的，必须是同一个词。
+// 各写一份迟早分叉，而分叉之后客户端按 danger 过滤、审计按 write 记录，
+// 两边都"对"，但对不上。
+inline const wchar_t* RiskName(const Effects& e) {
+    if (e.destructive) return L"danger";
+    return e.readOnly ? L"read" : L"write";
+}
+
+// 作用域名（currentTab / app / system）。同上：协议的一部分。
+inline const wchar_t* ScopeName(Scope s) {
+    switch (s) {
+    case Scope::CurrentTab: return L"currentTab";
+    case Scope::App:        return L"app";
+    case Scope::System:     return L"system";
+    }
+    return L"currentTab";
+}
+
+// JSON-RPC / MCP 的请求 id → 审计里的 traceId。
+//
+// 【为什么用请求 id 而不是自己编一个】客户端手里只有它自己发的 id。
+// 审计里那行记着同一个 id，客户端就能把"我发的第 N 条"与"你记的那条"
+// 直接对上；自己编的序号客户端无从校验，等于没写。
+// id 可以是数字或字符串；缺省（通知）返回空串 —— 那时没有可对账的标识。
+inline std::wstring TraceIdOf(const json::Value& id) {
+    if (id.IsString()) return id.str;
+    if (id.IsNumber()) return json::Stringify(id, 0);
+    return std::wstring();
+}
+
 // 列出所有可暴露给 AI 的命令（aiExposed && implemented）。
 // 顺序稳定（按命令表顺序），便于客户端做 diff。
 std::vector<ToolSpec> ListTools();
@@ -83,8 +116,19 @@ struct CallResult {
     // 机器可读的失败类别。为什么必须与 error 分开：客户端要按类别决策
     // （改参数 / 补命令 / 要审批 / 等用户），而中文串一改客户端就断。
     // 取值见 docs/AI-INTERFACE.md §3.1；空表示没有失败（ok=true）。
-    //   unknown_tool / not_exposed / not_implemented / bad_args /
-    //   schema_invalid / danger_disabled / need_approval / blocked / failed
+    //
+    //   未知 / 未暴露 / 未实现：unknown_tool / not_exposed / not_implemented
+    //   参数与契约：          bad_args / schema_invalid
+    //   危险与审批：          danger_disabled / need_approval
+    //   **被拦住**（四类 + 一类超时，见 commands.h 的 FailKind）：
+    //       precondition_unmet / lock_conflict / canceled_by_user /
+    //       not_supported / timed_out
+    //   其他：                failed（handler 真失败）/ effect_not_met（ok=true 但效果不对）
+    //
+    // 【为什么"被拦住"要分这么细】这五类的**下一步完全不同**：
+    // 换目标 / 稍后重试 / 问人 / 换一条路 / 去查作业。
+    // 一锅端成 "blocked" 时，agent 只能猜 —— 而它猜错的方式通常是
+    // "一直重试到超时"或"直接放弃"，两种都不对。
     std::wstring errorCode;
     // 结构化结果（P6）。命令有 outputSchema 且执行成功时填入；
     // 其余情况为空对象 —— 不编造返回值。
@@ -121,7 +165,12 @@ bool ValidateAgainstSchema(const json::Value& schema, const json::Value& args,
                            std::wstring* err);
 
 // 执行一次调用（已含校验 + 审计）。
-CallResult Call(const std::wstring& command, const json::Value& args, bool approve);
+//
+// traceId：调用方的追踪标识（JSON-RPC / MCP 的请求 id）。空表示没有。
+// 它会进审计记录（traceId 字段），让"一条命令"与"一条请求"能对上 ——
+// 请求 id 是客户端能自己拿出来对账的唯一标识。
+CallResult Call(const std::wstring& command, const json::Value& args, bool approve,
+                const std::wstring& traceId = L"");
 
 // 状态快照（只读，R19：与 UI 同源，不另存副本）。
 // 由 App 注册的回调填充，避免 ai 层反向依赖 App。

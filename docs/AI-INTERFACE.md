@@ -20,7 +20,9 @@ baseline: 2026-11-21 19:15
 | `src/commands.h/.cpp` | 命令表 + AI 元数据（`risk` / `argsSchema` / `aiExposed` / `needsSelection`） |
 | `src/ai_api.h/.cpp` | 工具投影、参数校验、派发、状态快照 |
 | `src/ai_server.h/.cpp` | 命名管道通道、令牌校验、请求泵 |
+| `src/mcp_stdio.h/.cpp` | stdio ⇄ 命名管道 桥接（`--mcp-stdio`，让标准 MCP 客户端能直接驱动） |
 | `tools/check_ai_meta.py` | 静态对账（暴露/参数/选中项三方一致） |
+| `tools/probe_mcp_stdio.py` | MCP over stdio 端到端验证（真实进程 + 真实管道） |
 
 ---
 
@@ -146,6 +148,44 @@ baseline: 2026-11-21 19:15
 **令牌检查在方法分派之前**：否则能靠"返回 method-not-found 还是 bad-token"
 枚举出有哪些方法。未授权时，所有请求的响应完全一致。
 
+### stdio 入口：`--mcp-stdio`
+
+命名管道是**给本机脚本**用的；MCP 客户端（Claude Desktop / VS Code / Cursor）
+只认 stdio（拉子进程 + 换行分隔 JSON-RPC）或 HTTP。`--mcp-stdio` 就是这条入口：
+
+```bash
+ExBarBrowser.exe --mcp-stdio
+```
+
+客户端把它配成 MCP 服务器的启动命令即可，无需自己写转发器。
+
+实现方式是**桥接**而不是"再实现一遍协议"：stdin 一行 → 注入 `params.__token`
+→ 走原来的命名管道 → 管道回一行 → stdout。所以 stdio 与管道**不可能**出现
+两套行为 —— 协议、鉴权、`errorCode`、自断言、事件流全部共用同一条路。
+
+要点：
+
+| 事项 | 行为 |
+|---|---|
+| 令牌 | 桥接自动注入 `params.__token`，客户端**不需要**配置令牌 |
+| 启动方式 | `--mcp-stdio` 等价于 `--new-window`：本进程自己当服务器，**不**转发给已有实例 |
+| AI 通道 | 随 `--mcp-stdio` 强制开启（客户端用 stdio 拉起它，本身就说明要 AI 通道） |
+| 通知 | JSON-RPC 通知（无 `id`）按规范**不回**响应，也不会污染响应流 |
+| 断开 | stdin EOF = 客户端断开 → 进程静默退出（退出码 0），不留半个进程在后台 |
+| 退出确认 | MCP 模式下不弹"确定退出吗"——客户端断开就该安静退 |
+
+Windows ODR 的 `odr mcp add --manifest` 走的是系统清单，与本入口无关；
+两者都能指向同一个程序。
+
+验证：
+
+```bash
+python3 tools/probe_mcp_stdio.py path/to/ExBarBrowser.exe
+```
+
+覆盖握手、工具清单形状、`tools/call`（含 `structuredContent`）、未知工具的
+`errorCode` 归类、`exbar/state` 扩展方法、通知不串位、断开后干净退出。
+
 ### 旧格式（既有本地脚本在用，保留）
 
 ```jsonc
@@ -188,10 +228,24 @@ baseline: 2026-11-21 19:15
 | `命令的 argsSchema 非法（实现缺陷）` | `schema_invalid` | 命令表写错：修表 + `check_ai_meta` |
 | `danger_disabled` | `danger_disabled` | 用户在设置里关掉了危险命令；这是人的决定 |
 | `need_approval` | `need_approval` | 需要人类批准这一次操作 |
-| 前置条件原因（如"已经是顶层"） | `blocked` | 改目标或先做前置动作 |
+| 前置条件不满足（如"已经是顶层"、"目标不在当前视图"） | `precondition_unmet` | 改目标或先做前置动作；重试有用 |
+| 执行期被占用/被锁（剪贴板、文件被别的程序占着） | `lock_conflict` | 关掉占用方后重试；或换一个目标 |
+| 用户主动取消（拒绝批准、在进度窗口点了取消） | `canceled_by_user` | **不要重试** —— 停下来问用户 |
+| 该环境/该对象不支持这件事（视图模式不对、能力不存在） | `not_supported` | 换一条路；重试永远没用 |
+| 等待时限到了（后台作业**仍在跑**） | `timed_out` | 用 `tool.job.get` 继续查那个 jobId，别重发命令 |
 | `命令执行失败` | `failed` | 查日志对应模块行 |
 | （handler 成功但断言不符） | `effect_not_met` | 读 `assertions`：修实现或修判据 |
 | `timeout` | —（`error: timeout`） | UI 卡在模态对话框：**不要重试**，请人关掉 |
+
+> **"被拦住"为什么分这么细**：这五类的**下一步完全不同** ——
+> 换目标 / 稍后重试 / 问人 / 换一条路 / 去查作业。
+> 以前一锅端成 `blocked`，agent 只能猜；而它猜错的方式通常是
+> "一直重试到超时"或"直接放弃"，两种都不对。
+>
+> 类别由**命令调用点**声明（`CommandBus::NoteFailure(reason, FailKind)`），
+> 经 `commands.h` 的 `FailKind` 唯一映射成码（`FailKindCode`）。
+> 这里不匹配中文字符串 —— 文案一改就断，那是文案该干的事。
+> 旧版本程序仍可能返回一锅端的 `blocked`，客户端应按 `precondition_unmet` 处理。
 
 ---
 
@@ -318,3 +372,72 @@ $w.WriteLine("{`"token`":`"$token`",`"method`":`"tools/list`"}")
 真要修，需要换宿主（自带搜索带）或接 Windows Search（`ISearchFolderItemFactory` /
 `IQueryParser`）。当前工具链的 MinGW 头里没有 `searchapi.h` / `structuredquery.h`，
 要做就得自带声明 —— 属于独立任务，别混在导航修复里。
+
+---
+
+## 9. 长任务：作业化与异步契约（2026-11-22 补齐）
+
+`tool.dupfinder` / `tool.hash` / `tool.compare` / `tool.diskusage` / `tool.topn`
+五条命令的活可能跑很久。它们**现在跑在工作线程上**，不再是 UI 线程上的同步调用。
+
+### 9.1 为什么要有 `async`
+
+AI 管道的监听线程只有 **10 秒**超时（`kUiWaitMs`）。同步扫一个大目录必然超时，
+而超时之后命令仍在跑 —— 调用方拿不到结果，也没法叫停。
+`async` 把"**跑多久**"与"**等多久**"拆开：
+
+| 参数 | 行为 |
+|---|---|
+| 不传 / `false` | 同步：在 UI 线程上等作业跑完，返回完整结果 |
+| `true` | 立刻返回 `{jobId, state:"running"}`，不等它跑完 |
+
+同步路径上，作业的 `budgetMs` 默认 **1500ms**（机器调用等太久没有意义 ——
+管道 10 秒就超时）；异步路径默认**不限时**（`budgetMs` 不传 = 不限），
+因为异步的用处正是"这活很久，别等我"。
+
+### 9.2 三条作业命令
+
+| 命令 | 参数 | 作用 |
+|---|---|---|
+| `tool.job.get` | `{id}` | 查作业状态；完成后带 `result` |
+| `tool.job.cancel` | `{id}` | 请求取消；返回 `{cancelRequested:true}` |
+| `tool.job.list` | 无 | 列出全部作业（新的在前，只给摘要，不带结果体） |
+
+作业是**进程级**对象（命令返回后它还活着），所以这三条的 scope 是 **App**。
+
+`cancelRequested:true` 只表示"**已受理**"：取消是协作式的（置一个原子位，
+数据层在遍历循环里查），已经被系统调用卡住的那一步中断不了 —— 这是诚实的边界，
+不是缺陷。作业真正停下来时，`cancelled` 会变成 `true`。
+
+### 9.3 结果里的诚实字段
+
+| 字段 | 含义 | 调用方该做什么 |
+|---|---|---|
+| `complete` | 整次调用是否完整 | `false` 时**别**把结果当完整值用 |
+| `timedOut` | 撞到时间预算，提前结束 | 可以加大 `budgetMs` **重试** |
+| `cancelled` | 被叫停（人按了取消 / `tool.job.cancel`） | 重试只是白费力气 —— 换参数或放弃 |
+| `elapsedMs` | 实际耗时 | — |
+
+`timedOut` 与 `cancelled` **必须分开**：超时是"没那么多时间"，取消是"我不要了"。
+混成一个字段，调用方就没法决定下一步该做什么。
+
+### 9.4 事件
+
+| 事件 | 时机 | 内容 |
+|---|---|---|
+| `tool.job.progress` | 进度变化（200ms 节流） | `{id, kind, stage, doneCount, totalCount}` |
+| `tool.job.done` | 作业收工 | `{id, kind, target, cancelled, failed, error?, result?}` |
+
+`tool.job.done` **带结果**：否则订阅者收到"做完了"还要再调一次 `tool.job.get`，
+那等于把轮询换成了两段式轮询。
+
+### 9.5 与人工路径的关系
+
+同一条命令有两条路，靠 `IsHumanCall(args)` 分流（**不是**只看空参数 ——
+无参数命令从 AI 过来也是 `{}`，只看空参数会走人侧分支弹模态窗口，把管道调用卡到超时）：
+
+- **人工路径**：弹进度窗口（带「取消」按钮），跑完给一份可读报告。
+  人侧**不限时**，等作业自己结束或用户按「取消」为止。
+- **机器路径**：不弹窗（没人盯着屏幕），但照样泵消息，界面不会僵死。
+
+两条路的**副作用完全一致**（都只读），所以不需要两套命令 id。

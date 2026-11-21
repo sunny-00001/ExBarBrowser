@@ -507,9 +507,18 @@ _CODE_TO_REASON = {
     "schema_invalid": "schema_invalid",
     "danger_disabled": "approval_required",
     "need_approval": "approval_required",
-    "blocked": "blocked",
+    # "被拦住"不再是一锅端：四类的下一步完全不同（换目标 / 稍后重试 /
+    # 问人 / 换一条路），映射到不同 reason 才能给出不同的处置建议。
+    "precondition_unmet": "precondition_unmet",
+    "lock_conflict": "lock_conflict",
+    "canceled_by_user": "canceled_by_user",
+    "not_supported": "not_supported",
+    "timed_out": "timed_out",
     "failed": "failed",
     "effect_not_met": "effect_not_met",
+    # 旧版本程序还会返回一锅端的 "blocked"。映射到最接近的一类，
+    # 别让它掉进 "failed" —— 那会让 agent 以为是代码有 bug。
+    "blocked": "precondition_unmet",
 }
 
 
@@ -555,9 +564,32 @@ def _fix_for(reason, name):
             "danger_disabled 说明设置里 aiAllowDanger=false —— 这是用户的决定，不要自己改",
             "AI 不得自行加 approve —— 自我迭代不包含自我批准破坏性操作",
         ],
-        "blocked": [
+        # 【为什么分开】"被拦住"有四种，下一步完全不同。
+        # 混成一条建议，agent 就会把"稍后重试"用在"能力不存在"上，
+        # 或者把"该问人"当成"换个目标再来" —— 后者最糟，会一直骚扰用户。
+        "precondition_unmet": [
             "前置条件不满足（error 里是 NoteFailure 的具体原因，不是 bug）",
             "先读状态确认前提，再决定是换目标还是先做前置动作",
+            "改完再调一次；前提没变就再调只会一直失败",
+        ],
+        "lock_conflict": [
+            "目标被占用或被锁（剪贴板、文件、目录）—— 执行期争用",
+            "关掉占用的程序后重试；或换一个目标",
+            "重试有意义：占用是暂时的（但别无脑连发，先看看占用还在不在）",
+        ],
+        "canceled_by_user": [
+            "用户主动取消了这次操作（拒绝批准 / 在进度窗口上点了取消）",
+            "**不要重试** —— 停下来问用户要不要继续",
+            "换参数重来一次等于绕过用户的决定",
+        ],
+        "not_supported": [
+            "这个环境/这个对象不支持这件事（视图模式不对、能力不存在）",
+            "换一条路（换视图模式、换目标类型）；重试永远不会有用",
+        ],
+        "timed_out": [
+            "等待时限到了，后台作业**仍在跑**（不是失败）",
+            "用 tool.job.get 继续查那个 jobId，不要重发同一条命令",
+            "要停它就用 tool.job.cancel",
         ],
         "blocked_ui_thread": [
             "10 秒超时=UI 线程卡在模态对话框（打开/另存/属性…）",

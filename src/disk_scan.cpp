@@ -30,10 +30,14 @@ bool IsReparse(const WIN32_FIND_DATAW& fd) {
     return (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
 
-// 统计 dir 子树。返回 false 表示因超时/出错没算完（bytes 仍是已算到的部分）。
-bool SumSubtree(const std::wstring& dir, const Options& opt, Clock::time_point deadline,
-                unsigned long long* bytes, unsigned* files, unsigned* dirs,
-                unsigned* deniedOut = nullptr) {
+// 提前结束的原因。三种必须分开：调用方要据此决定"重试"还是"放弃"。
+enum class Abort { None, Timeout, Cancelled };
+
+// 统计 dir 子树。返回 None 表示算完了；其余表示提前结束
+// （bytes 仍是已算到的部分 —— 部分结果比没有结果有用，但必须标明不完整）。
+Abort SumSubtree(const std::wstring& dir, const Options& opt, Clock::time_point deadline,
+                 unsigned long long* bytes, unsigned* files, unsigned* dirs,
+                 unsigned* deniedOut = nullptr) {
     *bytes = 0;
     *files = 0;
     *dirs = 0;
@@ -46,7 +50,12 @@ bool SumSubtree(const std::wstring& dir, const Options& opt, Clock::time_point d
         // 每进入一个目录检查一次时间：足够细，开销可忽略。
         if (Clock::now() > deadline) {
             if (deniedOut) *deniedOut = denied;
-            return false;
+            return Abort::Timeout;
+        }
+        // 取消：置位即停。粒度与超时检查一致（每目录一次）。
+        if (opt.ctl && opt.ctl->Cancelled()) {
+            if (deniedOut) *deniedOut = denied;
+            return Abort::Cancelled;
         }
 
         const std::wstring cur = stack.back();
@@ -72,10 +81,19 @@ bool SumSubtree(const std::wstring& dir, const Options& opt, Clock::time_point d
             // 含几十万文件的目录（WinSxS、node_modules）会让 FindNextFileW
             // 一路跑完 —— budgetMs=1500 形同虚设，UI 线程直接卡死。
             // 每 1024 项查一次时钟：开销可忽略，粒度足够。
-            if ((++innerCount & 0x3FF) == 0 && Clock::now() > deadline) {
-                FindClose(h);
-                if (deniedOut) *deniedOut = denied;
-                return false;
+            if ((++innerCount & 0x3FF) == 0) {
+                if (Clock::now() > deadline) {
+                    FindClose(h);
+                    if (deniedOut) *deniedOut = denied;
+                    return Abort::Timeout;
+                }
+                // 取消也要在内层查：一个大目录里卡住时，用户按的"取消"
+                // 必须立刻生效，而不是等这个目录枚举完。
+                if (opt.ctl && opt.ctl->Cancelled()) {
+                    FindClose(h);
+                    if (deniedOut) *deniedOut = denied;
+                    return Abort::Cancelled;
+                }
             }
 
             const bool isDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
@@ -93,7 +111,7 @@ bool SumSubtree(const std::wstring& dir, const Options& opt, Clock::time_point d
         FindClose(h);
     }
     if (deniedOut) *deniedOut = denied;
-    return true;
+    return Abort::None;
 }
 
 }  // namespace
@@ -114,7 +132,10 @@ bool Scan(const std::wstring& path, const Options& opt, Result* out, std::wstrin
     }
 
     const auto t0 = Clock::now();
-    const auto deadline = t0 + std::chrono::milliseconds(opt.budgetMs);
+    // 不限时：取"永远到不了"的时刻，而不是"加一个很大的数" ——
+    // 后者迟早会被真的超过，于是"不限时"变成"过了某个点就悄悄停"。
+    const auto deadline = opt.noTimeLimit ? Clock::time_point::max()
+                                           : t0 + std::chrono::milliseconds(opt.budgetMs);
 
     // 第一层：列直接子项。子项各自才是"一个候选条目"。
     std::vector<Entry> found;
@@ -128,14 +149,23 @@ bool Scan(const std::wstring& path, const Options& opt, Result* out, std::wstrin
         unsigned outerCount = 0;
         do {
             // 第一层也可能有几十万项；只在子目录里查 deadline 仍然会卡住 UI。
-            if ((++outerCount & 0x3FF) == 0 && Clock::now() > deadline) {
-                // 带着已经枚举到的部分继续走第二层；直接 return false 会让调用方
-                // 连 timedOut/complete 标记都拿不到，和"扫描成功"无法区分。
-                FindClose(h);
-                h = INVALID_HANDLE_VALUE;
-                out->timedOut = true;
-                out->complete = false;
-                break;
+            if ((++outerCount & 0x3FF) == 0) {
+                if (Clock::now() > deadline) {
+                    // 带着已经枚举到的部分继续走第二层；直接 return false 会让调用方
+                    // 连 timedOut/complete 标记都拿不到，和"扫描成功"无法区分。
+                    FindClose(h);
+                    h = INVALID_HANDLE_VALUE;
+                    out->timedOut = true;
+                    out->complete = false;
+                    break;
+                }
+                if (opt.ctl && opt.ctl->Cancelled()) {
+                    FindClose(h);
+                    h = INVALID_HANDLE_VALUE;
+                    out->cancelled = true;
+                    out->complete = false;
+                    break;
+                }
             }
             if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
             Entry e;
@@ -152,26 +182,36 @@ bool Scan(const std::wstring& path, const Options& opt, Result* out, std::wstrin
     // 为什么逐个而不是一次遍历全树：这样"时间用完了"也能给出
     // 前几项的真实数值，而不是一个都没算完的空结果。du 也是这个思路
     // （先给能给的，最后说明是否完整）。
-    for (auto& e : found) {
+    const unsigned long long total = found.size();
+    for (size_t idx = 0; idx < found.size(); ++idx) {
+        auto& e = found[idx];
         if (Clock::now() > deadline) {
             out->timedOut = true;
             e.complete = false;
             continue;   // 其余条目的 bytes 保持 0 + complete=false
         }
+        if (opt.ctl && opt.ctl->Cancelled()) {
+            out->cancelled = true;
+            e.complete = false;
+            continue;   // 同上：已算出的部分仍然给出，但标明不完整
+        }
+        // 进度：直接子项是"任务单元"，每算完一个报一次。
+        if (opt.ctl) opt.ctl->Report(L"正在统计大小", idx, total);
 
         if (e.isFolder) {
             unsigned long long b = 0;
             unsigned f = 0, d = 0;
             unsigned denied = 0;
-            const bool ok = SumSubtree(e.path, opt, deadline, &b, &f, &d, &denied);
+            const Abort ab = SumSubtree(e.path, opt, deadline, &b, &f, &d, &denied);
             out->deniedDirs += denied;
             e.bytes = b;
             e.items = f + d;
             // 子树里有打不开的目录时，数字偏小；不能只靠顶层 Result 表达。
-            e.complete = ok && denied == 0;
+            e.complete = ab == Abort::None && denied == 0;
             out->scannedFiles += f;
             out->scannedDirs += d;
-            if (!ok) out->timedOut = true;
+            if (ab == Abort::Timeout) out->timedOut = true;
+            if (ab == Abort::Cancelled) out->cancelled = true;
         } else {
             WIN32_FILE_ATTRIBUTE_DATA fad{};
             if (GetFileAttributesExW(tf::ToExtended(e.path).c_str(), GetFileExInfoStandard,
@@ -192,7 +232,7 @@ bool Scan(const std::wstring& path, const Options& opt, Result* out, std::wstrin
     });
 
     // 总量要含全部子项（截断前的），否则"总量 < 各子项之和"会让人困惑
-    out->complete = !out->timedOut && out->deniedDirs == 0;
+    out->complete = !out->timedOut && !out->cancelled && out->deniedDirs == 0;
     for (const auto& e : found) {
         out->totalBytes += e.bytes;
         if (!e.complete) out->complete = false;

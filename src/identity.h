@@ -38,6 +38,9 @@ constexpr wchar_t kPromptClass[] = L"ExBarBrowser_Prompt";
 constexpr wchar_t kSeqHintClass[] = L"ExBarBrowser_SeqHint";
 constexpr wchar_t kHotkeysClass[] = L"ExBarBrowser_Hotkeys";
 constexpr wchar_t kReportClass[] = L"ExBarBrowser_Report";
+// 长任务进度窗口（tool.dupfinder / tool.hash / tool.compare /
+// tool.diskusage / tool.topn 在工作线程上跑时给人工看的进度条）。
+constexpr wchar_t kProgressClass[] = L"ExBarBrowser_Progress";
 
 // ---- 进程级资源名 ----
 //

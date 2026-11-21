@@ -48,6 +48,21 @@ KEYMAP_JSON = ROOT / 'data/keymap.json'
 INPUT_ROUTER = ROOT / 'src/input_router.cpp'
 KEYMAP_CPP = ROOT / 'src/keymap.cpp'
 
+# AI 协议实现的源文件分片。
+#
+# 【为什么按 glob 收集，而不是写死 ai_api.cpp】
+# 2026-11-22：ai_api.cpp 把"执行命令"与"写 JSON"拆开（序列化搬到
+# ai_api_json.cpp）。检查器因为写死读 ai_api.cpp，**119 条检查全部失效**：
+# 报"bookmarkTotalCount 不在 exbar/state 里"，而那个字段好好地写在
+# ai_api_json.cpp 的 StateToJson 里。字段一个没少，检查面却没了 —— 与
+# 文件头记的那次"整行正则只命中 21/140 却打印全部通过"是同一类事故：
+# **检查面静默缩水**。
+#
+# 分片只会继续增加（每次按职责重构都可能拆），所以检查面必须跟着**代码**走，
+# 而不是跟着文件名走：这里按 glob 收齐所有分片，函数定位则按"找到定义体"
+# 来做（见 _ai_func_body）。
+AI_SRC_GLOB = 'ai_*.cpp'
+
 g_fail = 0
 
 # 已知设计债务：这些破坏性命令目前只能作用于"当前选中项"，没有目标参数。
@@ -63,10 +78,10 @@ INDIRECT_ARGS = {
     # 参数在 App::TransferTargets 里读（src/app_commands.cpp）。
     'fs.copy': 'App::TransferTargets',
     'fs.move': 'App::TransferTargets',
-    # OpTopN/OpDiskUsage 的 regR 只是一行转发，参数在 RegisterFileCommands
+    # OpTopN/OpDiskUsage 的 regR 只是一行转发，参数在 RegisterScanCommands
     # 里的 scanImpl lambda 中读取（两条共用同一份实现）。
-    'tool.topn': 'RegisterFileCommands::scanImpl',
-    'tool.diskusage': 'RegisterFileCommands::scanImpl',
+    'tool.topn': 'RegisterScanCommands::scanImpl',
+    'tool.diskusage': 'RegisterScanCommands::scanImpl',
 }
 
 KNOWN_NO_TARGET = {
@@ -163,8 +178,15 @@ HUMAN_PATH = {
 # 是为了让"人点了看不到东西"这件事是已知的，而不是被当成 bug 反复排查。
 AI_ONLY_QUERIES = {
     'tool.list': '返回当前目录的条目数组；人的等价物是直接看文件列表',
-    'tool.topn': '返回最大的 N 项；界面上没有"按体积排序"的视图',
-    'tool.diskusage': '返回目录总占用；界面上没有这个读数',
+    # tool.topn / tool.diskusage 以前也在这张表里（"界面上没有按体积排序的视图"）。
+    # 2026-11-22 起它们有了人工路径：长任务搬去工作线程后，人侧会弹进度窗口，
+    # 跑完再弹一份只读报告 —— 所以它们不再"只有 agent 看得到结果"，从表里摘掉。
+    #
+    # 作业域这三条则相反：人能触发（命令面板），但**看不到结果**
+    # —— 作业状态只在返回值里，而命令面板丢弃返回值。
+    'tool.job.get': '返回作业状态与结果；作业状态不在界面上（进度窗口只在跑的那一瞬存在）',
+    'tool.job.cancel': '取消正在跑的作业；人在进度窗口上按"取消"才是有人可见反馈的等价路径',
+    'tool.job.list': '列出全部作业；界面上没有作业列表',
 }
 
 # 同义命令配对：两条命令做的是**同一件事**，走的是同一批底层实现
@@ -305,6 +327,12 @@ MENU_ACTIONS = {
     '标签·固定标签': 'tab.pin',
     '标签·取消固定': 'tab.pin',
     '标签·重新打开关闭的标签': 'tab.reopen',
+    # ---- 视图菜单（nav_bar_actions.cpp）----
+    '视图·选择详细信息…': 'view.columns.choose',
+    '视图·图标大小…': 'view.zoom.choose',
+    # 排序/分组二级菜单：文案带方向与当前维度后缀，按前缀归一到同一命令。
+    '视图·排序方式': 'view.sort',
+    '视图·分组依据': 'view.group',
     # ---- 书签右键菜单（bookmark_bar.cpp 的 ShowItemMenu）----
     '书签·添加当前目录为书签': 'bmk.add.current',
     '书签·新建分类': 'bmk.newfolder',
@@ -492,23 +520,134 @@ def _body_of(text, name, kind='struct'):
     return body or ''
 
 
+# ------------------------------------------------------- AI 协议分片的定位
+#
+# 这一组函数的唯一职责：**不让检查面跟着文件名走**。
+#
+# 判据是"这段代码还在不在这套协议里"，不是"它还在不在那个文件里"。
+# 每一条都返回"全部命中"或"没命中"，绝不返回半截 —— 半截会让检查项
+# 看起来跑过了，实际只覆盖了一部分。
+
+def _ai_source_paths():
+    """AI 协议实现的源文件（按 glob 收齐，不写死文件名）。"""
+    return sorted((ROOT / 'src').glob(AI_SRC_GLOB))
+
+
+def _ai_all_text():
+    """所有 AI 协议分片的源码文本（去注释后合并）。
+
+    合并而不是逐文件看：检查项关心的都是"这个字段/函数在不在这套协议里"，
+    分片怎么拆都不影响覆盖面。
+    """
+    global _AI_TEXT
+    if _AI_TEXT is None:
+        chunks = []
+        for p in _ai_source_paths():
+            chunks.append(_strip_comments(
+                p.read_text(encoding='utf-8', errors='replace')))
+        _AI_TEXT = '\n'.join(chunks)
+    return _AI_TEXT
+
+
+def _find_def_body(text, fragment):
+    """在 text 里找 fragment 的**定义**并返回其函数体；找不到返回 ''。
+
+    必须区分声明与定义：声明后面跟的是 ';'，定义后面跟的是 '{'。
+    只按"片段之后第一个 '{'"找，会把声明也当成定义，于是抓到隔壁函数的
+    函数体 —— 检查项就对着别人的代码说话了。
+    """
+    pos = 0
+    while True:
+        idx = text.find(fragment, pos)
+        if idx < 0:
+            return ''
+        j = idx + len(fragment)
+        depth = 0
+        while j < len(text):
+            c = text[j]
+            if c == '(':
+                depth += 1
+            elif c == ')':
+                depth -= 1
+            elif depth == 0 and c == ';':
+                break            # 只是声明/前向声明，继续找定义
+            elif depth == 0 and c == '{':
+                body, _ = _html_block(text, j)
+                return body or ''
+            j += 1
+        pos = idx + len(fragment)
+
+
+def _ai_func_body(fragment):
+    """在 AI 协议分片里找函数的定义体；找不到返回 ''。
+
+    调用方**必须**把"找不到"当失败处理 —— 否则会静默失去检查面，
+    这正是 2026-11-22 那 119 条假警报的成因。
+    """
+    for p in _ai_source_paths():
+        text = _strip_comments(p.read_text(encoding='utf-8', errors='replace'))
+        body = _find_def_body(text, fragment)
+        if body:
+            return body
+    return ''
+
+
+def _ai_state_body():
+    """StateToJson 的定义体（exbar/state 的**唯一**序列化来源）。
+
+    第 17 项（可写状态回读）与第 18 项（断言左值求值）都锚在它身上 ——
+    因为那两项要核对的是"state 里到底有没有这个字段"，
+    而 exbar/state 的内容就是这函数的输出。
+    """
+    return _ai_func_body('std::wstring StateToJson')
+
+
+def _fail_kind_codes():
+    """FailKindCode 翻出来的错误码集合。
+
+    【为什么要单独取】"被拦住"的四类码不在 ai_api 里写死 —— 那是**故意的**：
+    类别由命令调用点声明，经 commands.h 的 FailKind 唯一映射成码。
+    只扫 ai_api 就会漏掉它们，于是"分类退化成一锅端"这件事检查不出来 ——
+    而那正是第 22 项要防的。
+
+    找不到 FailKindCode 时返回空集：调用方据此判定"分类面没了"。
+    """
+    path = ROOT / 'src' / 'commands.cpp'
+    if not path.exists():
+        return set()
+    text = _strip_comments(path.read_text(encoding='utf-8', errors='replace'))
+    body = _find_def_body(text, 'const wchar_t* FailKindCode')
+    if not body:
+        return set()
+    return set(re.findall(r'return L"([a-z_]+)"', body))
+
+
 def _state_selection_observable():
-    """观测面是否可读选中：ai_api.cpp 的 StateToJson 是否输出 selectionCount。
+    """观测面是否可读选中：StateToJson 是否输出 selectionCount。
 
     needsSelection 命令能否暴露给 AI 取决于此（见第 4 项与第 14 项）：
     观测面在场 → AI 可先读 selection 确认目标再调用；缺失 → 恢复"不许暴露"。
-    结果缓存，全跑只读一次文件。"""
+
+    返回三态，**不能**压成布尔：
+      True  → 观测面在场
+      False → 观测面在场，但确实没有输出 selectionCount（该收紧规则）
+      None  → **定位失败**（找不到 StateToJson 的定义）——
+               这不是"观测面缺失"，是检查面自己坏了，必须报错。
+               压成 False 会把"我找不到"说成"它没有"，
+               于是 2026-11-22 那 119 条假警报能一路静默走下去。
+    """
     global _SEL_OBS
     if _SEL_OBS is None:
-        try:
-            src = Path(__file__).resolve().parent.parent / 'src' / 'ai_api.cpp'
-            _SEL_OBS = 'L"selectionCount"' in src.read_text(encoding='utf-8', errors='replace')
-        except OSError:
-            _SEL_OBS = False
-    return _SEL_OBS
+        body = _ai_state_body()
+        if not body:
+            _SEL_OBS = 'missing'
+        else:
+            _SEL_OBS = 'L"selectionCount"' in body
+    return None if _SEL_OBS == 'missing' else _SEL_OBS
 
 
 _SEL_OBS = None
+_AI_TEXT = None
 
 
 def _effects_constants(text):
@@ -797,6 +936,15 @@ def main():
         fail('命令表解析为空 —— kTable 的形状变了？先修本脚本的结构解析')
         return 1
 
+    # 硬断言：AI 协议分片必须能找到。
+    # glob 写错 / 文件改名 → 后面每一项都对着空文本说话，
+    # 照样打印"全部通过"。这与 2026-11-22 那次假警报同源，
+    # 所以在这里硬拦一道。
+    if not _ai_source_paths():
+        fail(f'找不到任何 src/{AI_SRC_GLOB} —— AI 协议实现的定位失效，'
+             f'本脚本后续结论全部不可信')
+        return 1
+
     # 硬断言：解析结果必须覆盖表里所有条目。
     # 这一条是防"检查面静默缩水"的最后一道闸 —— 早先正则只命中 21/140
     # 却照样打印"全部通过"，就是因为没有这道对账。
@@ -874,7 +1022,12 @@ def main():
     # 再调用，这正是人机协作（用户在界面表达意图）。检测锚点是 ai_api.cpp
     # 里 StateToJson 对 selectionCount 的输出——观测面被删/断链立即恢复 ERROR。
     bad = 0
-    if not _state_selection_observable():
+    sel_obs = _state_selection_observable()
+    if sel_obs is None:
+        fail('定位失败：找不到 StateToJson 的定义，观测面无从判定 —— '
+             '这一项的结论不可信（"找不到"不等于"没有"，两者必须分开报）')
+        bad += 1
+    elif not sel_obs:
         for c in cmds:
             if c['needsSelection'] and c['exposed']:
                 fail(f'{c["name"]} 依赖选中项却又暴露给 AI，且观测面不可读选中（目标不可表达）')
@@ -1103,24 +1256,32 @@ def main():
     # MCP 规范：tools/list 的每一项都必须有 name / description / inputSchema，
     # 且 inputSchema 必须是 JSON 对象（不能是字符串或 null）。
     # 这些在运行时只会表现为"客户端静默丢弃这个工具"，很难查。
-    ai_cpp = (ROOT / 'src/ai_api.cpp').read_text(encoding='utf-8')
+    #
+    # 锚点是 ToolsToJson 的**定义体**（不写死文件名）：序列化代码搬到哪个
+    # 分片都不该让检查项失效 —— 写死文件名造成的 119 条假警报就是这么来的。
+    tools_body = _ai_func_body('std::wstring ToolsToJson')
+    if not tools_body:
+        fail('找不到 ToolsToJson 的定义 —— MCP 工具形状这一项没有检查面了'
+             '（函数被改名或搬走时，这里必须立刻红，而不是静默通过）')
+        return 1
     required_fields = ['name', 'legacyName', 'title', 'description',
                        'annotations', 'inputSchema']
-    missing_fields = [f for f in required_fields if f'o.Set(L"{f}"' not in ai_cpp]
+    missing_fields = [f for f in required_fields if f'o.Set(L"{f}"' not in tools_body]
     if missing_fields:
         fail(f'ToolsToJson 缺少字段：{missing_fields}')
     else:
         ok(f'ToolsToJson 输出 {len(required_fields)} 个必需字段')
 
     # inputSchema / outputSchema 必须是解析后的对象，不能塞字符串
-    if 'json::Parse(t.argsSchema, schema' in ai_cpp and 'o.Set(L"inputSchema", schema)' in ai_cpp:
+    if ('json::Parse(t.argsSchema, schema' in tools_body
+            and 'o.Set(L"inputSchema", schema)' in tools_body):
         ok('inputSchema 解析成对象（不是字符串）')
     else:
         fail('inputSchema 没有解析成对象 —— MCP 要求它是 JSON 对象')
 
     # annotations 四要素
     ann_fields = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint']
-    miss_ann = [f for f in ann_fields if f'ann.Set(L"{f}"' not in ai_cpp]
+    miss_ann = [f for f in ann_fields if f'ann.Set(L"{f}"' not in tools_body]
     if miss_ann:
         fail(f'annotations 缺少：{miss_ann}')
     else:
@@ -1165,8 +1326,8 @@ def main():
             fail(f'{c["name"]} 暴露给 AI 但未实现（会出现却调不动）')
             bad += 1
         # 依赖选中项：观测面在场（第 4 项检测过）才允许暴露——AI 先读
-        # selection 确认目标再调用；观测面缺失时这里恢复 ERROR。
-        if c['needsSelection'] and not _state_selection_observable():
+        # selection 确认目标再调用；观测面缺失或**定位失败**时这里恢复 ERROR。
+        if c['needsSelection'] and sel_obs is not True:
             fail(f'{c["name"]} 暴露给 AI 但依赖当前选中且观测面不可读（机器无法指定目标）')
             bad += 1
         if c['name'] in UI_ONLY:
@@ -1369,11 +1530,16 @@ def main():
     # 判据是机械的：命令表里凡是改这几个维度（排序/分组/书签栏/窗格）的命令，
     # StateSnapshot 就必须有对应字段、且 StateToJson 真的输出它。
     ai_h = (ROOT / 'src' / 'ai_api.h').read_text(encoding='utf-8', errors='replace')
-    ai_cpp = (ROOT / 'src' / 'ai_api.cpp').read_text(encoding='utf-8', errors='replace')
+    # exbar/state 的内容就是 StateToJson 的输出，所以"能不能回读"这件事
+    # 要在**它的定义体**里查，而不是在某个文件里查（分片搬走就失效的教训）。
+    state_body = _ai_state_body()
+    if not state_body:
+        fail('找不到 StateToJson 的定义 —— 可写状态回读这一项没有检查面了')
+        return 1
     readback_missing = []
     for field, cmds_writing in WRITABLE_STATE:
         in_struct = re.search(rf'\b{field}\b', ai_h) is not None
-        in_json = re.search(rf'L"{field}"', ai_cpp) is not None
+        in_json = re.search(rf'L"{field}"', state_body) is not None
         if not (in_struct and in_json):
             readback_missing.append((field, cmds_writing,
                                      '结构体缺字段' if not in_struct else 'StateToJson 未输出'))
@@ -1389,7 +1555,7 @@ def main():
     # argsSchema 里声明。否则这条断言要么永远为真、要么永远为假 ——
     # 两种都是假绿，比没有断言更危险（它让人以为验证过了）。
     state_fields = set()
-    for m2 in re.finditer(r'v\.Set\(L"(\w+)"', ai_cpp):
+    for m2 in re.finditer(r'v\.Set\(L"(\w+)"', state_body):
         state_fields.add(m2.group(1))
     bad_assert = []
     checked_assert = 0
@@ -1442,7 +1608,9 @@ def main():
     ev_h = (ROOT / 'src/ai_events.h').read_text(encoding='utf-8', errors='replace')
     ev_cpp = (ROOT / 'src/ai_events.cpp').read_text(encoding='utf-8', errors='replace')
     srv = (ROOT / 'src/ai_server.cpp').read_text(encoding='utf-8', errors='replace')
-    api = (ROOT / 'src/ai_api.cpp').read_text(encoding='utf-8', errors='replace')
+    # API 侧的分片（ai_api*.cpp）合并后查 —— 命令结果事件由"执行"分片发，
+    # 工具/能力面的形状由"序列化"分片发，两边都要在检查面里。
+    api = _ai_all_text()
     missing = []
     for label, cond in [
         ('事件序号/补发接口', all(k in ev_h for k in ('Publish', 'Since', 'WaitFor', 'LastSeq'))),
@@ -1521,17 +1689,27 @@ def main():
     # ---------------------------------------------------------------- 22
     print('\n22. 失败必须可机器分类、能力面必须自描述（不靠客户端猜）')
     api_h_text = (ROOT / 'src/ai_api.h').read_text(encoding='utf-8', errors='replace')
-    api_cpp_text = (ROOT / 'src/ai_api.cpp').read_text(encoding='utf-8', errors='replace')
+    api_cpp_text = _ai_all_text()
     srv_text = (ROOT / 'src/ai_server.cpp').read_text(encoding='utf-8', errors='replace')
     test_text = (ROOT / 'tests/ai_api_test.cpp').read_text(encoding='utf-8', errors='replace')
 
     # 错误码是客户端的分支依据：多一个未登记的码 = 客户端会掉进 default 分支，
     # 少一个码 = 客户端只能解析中文（一改文案就断）。所以两端都钉住。
+    #
+    # 【为什么多了一处取码的地方】"被拦住"的四类码不在 ai_api 里写死，
+    # 而是由 commands.h 的 FailKind 经 FailKindCode 翻出来（唯一真源）。
+    # 只扫 ai_api 会漏掉它们 —— 那正是本项要防的事：分类退化回一锅端。
     known_codes = {'unknown_tool', 'not_exposed', 'not_implemented', 'bad_args',
                    'schema_invalid', 'danger_disabled', 'need_approval',
-                   'blocked', 'failed', 'effect_not_met'}
+                   'precondition_unmet', 'lock_conflict', 'canceled_by_user',
+                   'not_supported', 'timed_out',
+                   'failed', 'effect_not_met'}
     used_codes = set(re.findall(r'errorCode = L"([a-z_]+)"', api_cpp_text))
-    cap_body = _body_of(api_cpp_text, 'std::wstring CapabilitiesToJson()')
+    used_codes |= _fail_kind_codes()
+    cap_body = _ai_func_body('std::wstring CapabilitiesToJson')
+    if not cap_body:
+        fail('找不到 CapabilitiesToJson 的定义 —— 能力面这一项没有检查面了')
+        return 1
 
     gap_missing = []
     for label, cond in [
@@ -1540,7 +1718,10 @@ def main():
         ('"调不到"三态可区分',
          {'unknown_tool', 'not_exposed', 'not_implemented'} <= used_codes),
         ('参数/审批/阻断各有独立码',
-         {'bad_args', 'danger_disabled', 'need_approval', 'blocked'} <= used_codes),
+         {'bad_args', 'danger_disabled', 'need_approval',
+          'precondition_unmet', 'lock_conflict', 'canceled_by_user',
+          'not_supported'} <= used_codes),
+        ('"被拦住"没有退化回一锅端', 'blocked' not in used_codes),
         ('"效果不符"有独立码', 'effect_not_met' in used_codes),
         ('码值都在白名单内（无拼写漂移）', used_codes <= known_codes),
         ('响应与事件都带 errorCode', api_cpp_text.count('L"errorCode"') >= 2),
@@ -1557,7 +1738,9 @@ def main():
         for label in gap_missing:
             fail('缺口面缺：' + label)
     else:
-        ok('失败按 10 类机器码返回；能力面（总数/已实现/已暴露/两张缺口清单）由产品自述')
+        ok('失败按 %d 类机器码返回（含"被拦住"的四类 + 超时）；'
+           '能力面（总数/已实现/已暴露/两张缺口清单）由产品自述'
+           % len(used_codes))
 
     # ---------------------------------------------------------------- 23
     print('\n23. 自断言覆盖率门槛（每条要么有断言，要么有**带理由**的豁免）')

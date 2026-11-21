@@ -56,6 +56,45 @@ OUT="${TMPDIR:-/tmp}/ebb_tests"
 OBJDIR="$OUT/obj"                       # 测试专属中间目录，与主构建 obj/ 物理隔离
 mkdir -p "$OUT"
 
+# ---- 会话锁：同一时刻只允许一个会话跑这套测试 ----
+#
+# 【为什么需要】多个会话在同一个仓库里同时跑这套测试时会撞车，而且
+# **两种撞车都伪装成"代码坏了"**：
+#   ① 链接产物写到同一个 exe 路径 → "Permission denied"（文件正被另一个会话占用），
+#      报错长得像编译器/权限问题，跟代码毫无关系；
+#   ② 两个会话同时往同一个 obj 目录写 → 另一个会话可能读到**写了一半**的 .obj，
+#      链接期报出莫名其妙的 undefined symbol。
+# 假错比真错更费时间：它把排查方向带偏，而真问题还在那儿。
+#
+# 【锁的实现】mkdir 是原子的，当锁用。持有者进程没了 = 陈旧锁，接管它
+# （否则一个会话崩了就把它后面的会话全堵死）。
+# 锁覆盖**整段**（构建 + 链接 + 运行）：只锁构建那一段的话，
+# 另一个会话仍可能在链接期间读到正在被改写的 obj。
+#
+# 【删除要用相对路径】仓库的删除安全钩子拒绝**带盘符前缀**的路径
+# （"embedded drive prefix is not allowed"），而 $OUT 正是这种路径。
+# 所以进到 $OUT 里用相对路径删，否则锁永远清不掉 —— 下个会话就得等陈旧锁。
+LOCKDIR="$OUT/.lock"
+lock_owner=""
+lock_waited=0
+while ! mkdir "$LOCKDIR" 2>/dev/null; do
+    lock_owner=$(cat "$LOCKDIR/pid" 2>/dev/null || echo "")
+    if [ -n "$lock_owner" ] && ! kill -0 "$lock_owner" 2>/dev/null; then
+        echo "接管陈旧锁（原持有者 $lock_owner 已不在）"
+        ( cd "$OUT" && rm -f ".lock/pid" && rmdir ".lock" ) 2>/dev/null
+        continue
+    fi
+    if [ "$lock_waited" -gt 900 ]; then
+        echo "等测试锁超过 15 分钟，放弃（持有者 $lock_owner 可能卡住了）"
+        exit 2
+    fi
+    [ "$lock_waited" -eq 0 ] && echo "另一个会话正在跑测试（持有者 ${lock_owner:-未知}），等待…"
+    sleep 3
+    lock_waited=$((lock_waited + 3))
+done
+echo $$ > "$LOCKDIR/pid"
+trap '( cd "$OUT" && rm -f ".lock/pid" && rmdir ".lock" ) 2>/dev/null' EXIT INT TERM
+
 # 1. 刷新测试专属 obj（增量；已是最新时约 0.3s）
 #    --objdir 隔离 obj/PCH/资源对象；--out 给独立 exe 名，不碰主构建的 ExBarBrowser.exe。
 echo "刷新 obj（测试专属 $OBJDIR）…"
@@ -66,10 +105,36 @@ if ! bash build.sh --objdir "$OBJDIR" --out "$OUT/ExBarBrowser.test.exe" >"$OUT/
 fi
 
 # 2. 收集可复用的 obj（从测试专属目录，不读主构建的 obj/）
-OBJS=$(ls "$OBJDIR"/*.obj 2>/dev/null \
-       | grep -vE "/(main|.*_test)\.obj$" \
-       | grep -v "\.check\.obj$" \
-       | tr '\n' ' ')
+#
+# 【为什么要剔除"孤儿 obj"】
+# 这里用的是 `ls $OBJDIR/*.obj` —— 目录里有什么就链什么。而 obj 目录是
+# **增量**的：源文件改了名（a.cpp → b.cpp）之后，a.obj 会留在原地。
+# 主构建不中招（build_fast.py 按当前源清单链接，不扫目录），
+# 但本脚本会 —— 于是同一个函数被链两次，链接期报 duplicate symbol，
+# 看起来像"代码写坏了"，其实是缓存里躺着个孤儿。
+# 真实踩过一次：app_jobs.cpp 改名成 app_commands_jobs.cpp 之后，
+# 两个测试同时 COMPILE-FAIL（duplicate symbol: App::RegisterJobCommands）。
+#
+# 判据：obj 的名字必须能在 src/ 里找到同名的 .cpp。
+# 唯一的例外是 app.res（资源对象，源是 .rc 不是 .cpp）。
+OBJS=""
+for o in "$OBJDIR"/*.obj; do
+    [ -e "$o" ] || continue
+    b=$(basename "$o")
+    case "$b" in
+        main.obj|*_test.obj) continue ;;
+        *.check.obj) continue ;;
+    esac
+    base="${b%.obj}"
+    if [ "$base" != "app.res" ] && [ ! -f "src/$base.cpp" ]; then
+        # 孤儿：源文件改名/删除后留下的旧产物。跳过它，并说明一声 ——
+        # 静默跳过会让"为什么少链了一个文件"变成猜谜。
+        echo "  跳过孤儿 obj：$b（src/$base.cpp 已不存在）"
+        continue
+    fi
+    OBJS="$OBJS $o"
+done
+OBJS="${OBJS# }"
 if [ -z "$OBJS" ]; then
     echo "$OBJDIR 里没有可复用的目标文件（构建脚本的产物目录变了吗？）"
     exit 2

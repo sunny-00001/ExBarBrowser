@@ -12,6 +12,7 @@
 
 #include "ai_events.h"
 #include "dev_proc.h"
+#include "dev_snapshot.h"
 #include "eval_surface.h"
 #include "str.h"
 #include "text_file.h"
@@ -25,9 +26,6 @@ std::mutex g_mu;
 std::map<std::wstring, Job> g_jobs;
 unsigned long long g_nextId = 0;
 constexpr size_t kMaxJobs = 64;
-// 作业最长允许挂着的时间：超过就算它死了，占位必须让出去，
-// 否则 64 个挂死作业会把队列彻底堵死（新作业登记不上）。
-constexpr unsigned long long kJobTimeoutMs = 30 * 60 * 1000;
 
 json::Value Str(const std::wstring& s) { return json::Value::MakeStr(s); }
 
@@ -103,7 +101,8 @@ bool ValidRepoPath(const std::wstring& rel, std::wstring* err) {
 }
 
 std::wstring StartJob(const std::wstring& kind, const std::wstring& program,
-                       const std::vector<std::wstring>& args) {
+                       const std::vector<std::wstring>& args,
+                       unsigned long long timeoutMs) {
     Job job;
     {
         std::lock_guard<std::mutex> lk(g_mu);
@@ -111,6 +110,7 @@ std::wstring StartJob(const std::wstring& kind, const std::wstring& program,
         job.kind = kind;
         job.command = devproc::BuildCommandLine(program, args);
         job.startedAt = GetTickCount64();
+        job.timeoutMs = timeoutMs;
         g_jobs[job.id] = job;
         // 淘汰顺序：先删已完成的；全都还在跑就把**最老的**踢掉，
         // 否则 64 个挂死作业会把队列堵死 —— 新作业登记不上，等于整条链废了。
@@ -125,16 +125,26 @@ std::wstring StartJob(const std::wstring& kind, const std::wstring& program,
         }
     }
     const std::wstring id = job.id;
-    std::thread([id, kind, program, args] {
+    std::thread([id, kind, program, args, timeoutMs] {
         Job done;
         done.id = id;
         done.kind = kind;
         done.command = devproc::BuildCommandLine(program, args);
+        done.timeoutMs = timeoutMs;
         int code = -1;
         std::wstring out;
-        if (devproc::RunCapture(program, args, tf::ExeDir(), &code, &out, &done.error)) {
+        // 硬超时在这里生效：到点杀掉整棵进程树，然后按失败收场。
+        // "被超时杀掉"要能被调用方分辨 —— 它和"跑失败了"是两种完全不同的结论，
+        // 前者说明**代码/环境有问题**，后者只说明这次没通过。
+        if (devproc::RunCaptureTimeout(program, args, tf::ExeDir(), timeoutMs, &code, &out,
+                                       &done.error, &done.timedOut)) {
             done.exitCode = code;
             done.output = TrimOutput(out, &done.truncated);
+        }
+        if (done.timedOut) {
+            done.error = L"作业超时（超过 " + std::to_wstring(timeoutMs / 60000) +
+                         L" 分钟，已杀掉整个进程树）";
+            LogDbg(L"[dev] 作业超时被杀：%s（%ls）", id.c_str(), kind.c_str());
         }
         done.done = true;
         {
@@ -146,9 +156,10 @@ std::wstring StartJob(const std::wstring& kind, const std::wstring& program,
         data.Set(L"id", Str(id));
         data.Set(L"kind", Str(kind));
         data.Set(L"exitCode", json::Value::MakeInt(code));
-        data.Set(L"ok", json::Value::MakeBool(code == 0));
+        data.Set(L"ok", json::Value::MakeBool(code == 0 && !done.timedOut));
         data.Set(L"output", Str(done.output));
         data.Set(L"truncated", json::Value::MakeBool(done.truncated));
+        data.Set(L"timedOut", json::Value::MakeBool(done.timedOut));
         if (!done.error.empty()) data.Set(L"error", Str(done.error));
         ai::events::Publish(L"dev.job.done", data);
     }).detach();
@@ -160,15 +171,99 @@ bool GetJob(const std::wstring& id, Job* out) {
     auto it = g_jobs.find(id);
     if (it == g_jobs.end()) return false;
     if (out) *out = it->second;
-    // 挂死的作业不能永远挂着让人等：超过时限就按"超时"报，
-    // 而不是让调用方自己去猜它是不是还活着。
-    if (out && !out->done && out->startedAt != 0 &&
-        GetTickCount64() - out->startedAt > kJobTimeoutMs) {
-        out->done = true;
-        out->exitCode = -1;
-        out->error = L"作业超时（超过 30 分钟没有结束，已按失败上报）";
-    }
+    // 【为什么这里不再"按超时上报"】旧版会在读作业时现编一个"超时"结论 ——
+    // 那是**假**：进程其实还在跑，只是我们不再等了。现在超时是**真杀**
+    // （RunCaptureTimeout 到点杀整棵进程树），Job::timedOut 由执行侧如实写入。
+    // 假超时比没超时更坏：agent 会以为"编译卡住了"，去改本来没问题的地方。
     return true;
+}
+
+// 解析 `git diff --numstat` 的一行："<added>\t<deleted>\t<path>"（二进制是 "-\t-\t..."）。
+// 返回 path 与增删行数；非新增/删除的普通改动才有意义。
+bool ParseNumstat(const std::wstring& line, std::wstring* path, int* added, int* deleted) {
+    const size_t t1 = line.find(L'\t');
+    if (t1 == std::wstring::npos) return false;
+    const size_t t2 = line.find(L'\t', t1 + 1);
+    if (t2 == std::wstring::npos) return false;
+    const std::wstring a = line.substr(0, t1);
+    const std::wstring d = line.substr(t1 + 1, t2 - t1 - 1);
+    if (a == L"-" || d == L"-") return false;  // 二进制：行数无意义
+    *added = _wtoi(a.c_str());
+    *deleted = _wtoi(d.c_str());
+    *path = line.substr(t2 + 1);
+    return !path->empty();
+}
+
+// 逐文件的增删行数（numstat 只给 changed 文件，与 CurrentChanges 的路径并集用）。
+// key 是仓库内相对路径（正斜杠）；numstat 给的路径已是正斜杠，无需再归一化。
+std::map<std::wstring, std::pair<int, int>> DiffNumstat() {
+    std::map<std::wstring, std::pair<int, int>> out;
+    // 工作区 + 暂存区都算：dev.diff 是"从上次提交到现在改了什么"的完整视图。
+    for (const auto& args : {
+             std::vector<std::wstring>{L"-c", L"core.quotepath=false", L"diff", L"--numstat"},
+             std::vector<std::wstring>{L"-c", L"core.quotepath=false", L"diff", L"--cached",
+                                       L"--numstat"},
+         }) {
+        const std::wstring text = GitArgs(args);
+        size_t start = 0;
+        while (start <= text.size()) {
+            size_t end = text.find(L'\n', start);
+            if (end == std::wstring::npos) end = text.size();
+            std::wstring line = text.substr(start, end - start);
+            while (!line.empty() && line.back() == L'\r') line.pop_back();
+            std::wstring path;
+            int added = 0, deleted = 0;
+            if (ParseNumstat(line, &path, &added, &deleted)) {
+                auto& slot = out[path];
+                slot.first += added;
+                slot.second += deleted;
+            }
+            if (end == text.size()) break;
+            start = end + 1;
+        }
+    }
+    return out;
+}
+
+std::wstring Diff() {
+    json::Value v = json::Value::MakeObject();
+    const std::wstring head = str::Trim(Git(L"rev-parse", {L"--short", L"HEAD"}));
+    v.Set(L"head", Str(head));
+    if (head.empty()) {
+        v.Set(L"error", Str(L"git rev-parse 没有输出（仓库不可用？）"));
+        return json::Stringify(v, 0);
+    }
+
+    const auto changes = devsnap::CurrentChanges();
+    const auto numstat = DiffNumstat();
+    json::Value files = json::Value::MakeArray();
+    for (const auto& f : changes) {
+        json::Value o = json::Value::MakeObject();
+        o.Set(L"path", Str(f.path));
+        o.Set(L"tracked", json::Value::MakeBool(f.tracked));
+        o.Set(L"bytes", json::Value::MakeNum(static_cast<double>(f.bytes)));
+        o.Set(L"mtime", Str(f.mtime));
+        o.Set(L"sha256", Str(f.sha256));  // 空 = 没算出来（目录/已删），不是"内容是空的"
+        auto it = numstat.find(f.path);
+        o.Set(L"added", json::Value::MakeInt(it == numstat.end() ? 0 : it->second.first));
+        o.Set(L"deleted", json::Value::MakeInt(it == numstat.end() ? 0 : it->second.second));
+        files.arr.push_back(std::move(o));
+    }
+    v.Set(L"files", std::move(files));
+
+    // patch 可能很大（一次大重构几 MB）——头+尾裁剪，中间的省略处留标记。
+    // 需要完整 diff 的调用方可以自己跑 git diff：这里给的是**审阅用摘要**，不是存档。
+    const std::wstring patch = GitArgs({L"-c", L"core.quotepath=false", L"diff",
+                                        L"--no-ext-diff", L"--no-color"});
+    const std::wstring staged = GitArgs({L"-c", L"core.quotepath=false", L"diff", L"--cached",
+                                         L"--no-ext-diff", L"--no-color"});
+    bool truncated = false;
+    v.Set(L"patch", Str(TrimOutput(patch, &truncated)));
+    bool stagedTruncated = false;
+    v.Set(L"stagedPatch", Str(TrimOutput(staged, &stagedTruncated)));
+    v.Set(L"patchTruncated", json::Value::MakeBool(truncated || stagedTruncated));
+    v.Set(L"stat", Str(Git(L"diff", {L"--stat"})));
+    return json::Stringify(v, 0);
 }
 
 std::wstring Snapshot() {
