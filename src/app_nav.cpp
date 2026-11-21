@@ -13,6 +13,7 @@
 
 #include "text_file.h"   // tf::Exists / tf::IsDirectory（区分"导航到目录"与"打开文件"）
 #include "icon_resolve.h"
+#include "search_url.h"  // searchurl::Build —— search-ms URL 的唯一拼装点
 
 // ---------------------------------------------------------------- 执行
 //
@@ -85,6 +86,36 @@ void App::GoUp() {
 }
 
 void App::GoHome() { NavigateActive(HomePath(), true); }
+
+// 搜索：导航栏搜索框与 search.find 命令的唯一实现。
+//
+// 为什么用 search-ms 而不自建扫描：自建要么阻塞 UI（大目录几十万项），要么起
+// 线程/helper（另一套索引与用户看到的视图不一致）。search-ms 是资源管理器自己
+// 走的路，结果就落在同一个 IShellView 里 —— 排序、右键、拖放全部照旧可用。
+//
+// 空串 = 取消搜索：搜索视图没有"上一级"，只能记住来源目录再退回去。
+bool App::RunSearch(const std::wstring& query, std::wstring* url) {
+    Tab* t = Active();
+    if (!t || !t->view) return false;
+    // 只打空格＝没打：搜索框原样把输入交过来，规范化在这里做（唯一入口）。
+    const std::wstring q = searchurl::Trim(query);
+    if (q.empty()) {
+        if (searchFrom_.empty()) return true;   // 本来就不在搜索里：什么也不用做
+        const std::wstring back = searchFrom_;
+        searchFrom_.clear();
+        return NavigateActive(back, true);
+    }
+    // 已经是搜索视图时，来源目录要用最早的（否则"在搜索结果里再搜"会搜到 0 项）。
+    if (searchFrom_.empty()) searchFrom_ = t->path();
+    const std::wstring u = searchurl::Build(q, searchFrom_);
+    if (url) *url = u;
+    if (!t->view->Navigate(u)) {
+        LogDbg(L"[search] 无法搜索：%s", u.c_str());
+        MessageBeep(MB_ICONWARNING);
+        return false;
+    }
+    return true;
+}
 
 void App::RefreshActive() {
     Tab* t = Active();

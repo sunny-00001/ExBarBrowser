@@ -160,33 +160,7 @@ void App::OnCreate() {
     // 结果就在同一个 IShellView 里呈现 —— 排序、右键、拖放全部照旧可用。
     //
     // 空串 = 取消搜索：回到原目录（搜索视图没有"上一级"，只能记住来源）。
-    navBar_.SetSearchFn([this](const std::wstring& query) {
-        Tab* t = Active();
-        if (!t || !t->view) return;
-        // 搜索来源目录：正在搜索时用记下来的那个，否则用当前目录。
-        const std::wstring here = t->path();
-        if (query.empty()) {
-            if (!searchFrom_.empty()) {
-                const std::wstring back = searchFrom_;
-                searchFrom_.clear();
-                NavigateActive(back, true);
-            }
-            return;
-        }
-        // 已经是搜索视图时，来源目录要用最早的（否则"在搜索结果里再搜"会搜到 0 项）。
-        if (searchFrom_.empty()) searchFrom_ = here;
-        // search-ms 语法：crumb 限定范围，query 是搜索词。
-        // 双引号包住路径（可能含逗号/空格），词本身也转义引号。
-        std::wstring q = query;
-        for (size_t i = 0; i < q.size(); ++i)
-            if (q[i] == L'"') q.insert(i++, 1, L'"');   // 引号翻倍转义
-        const std::wstring url =
-            L"search-ms:query=" + q + L"&crumb=location:" + searchFrom_ + L"&";
-        if (!t->view->Navigate(url)) {
-            LogDbg(L"[search] 无法搜索：%s", url.c_str());
-            MessageBeep(MB_ICONWARNING);
-        }
-    });
+    navBar_.SetSearchFn([this](const std::wstring& query) { RunSearch(query, nullptr); });
 
     // 面包屑段右键：动作作用于"右键的那一段"，不是当前目录。
     // 这里把段路径转成既有的命令/入口，不新写一套文件语义：

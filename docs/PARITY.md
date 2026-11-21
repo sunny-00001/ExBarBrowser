@@ -42,8 +42,8 @@ baseline: 2026-11-21 21:00
 | Dev | 5 | 5 | 0 |
 | Session | 4 | 2 | 2（`session.delete` / `session.list`） |
 | Tool | 13 | 7 | 6 |
-| Search | 2 | 0 | 2 |
-| **合计** | **161** | **144** | **17** |
+| Search | 2 | 1 | 1（`search.everything`） |
+| **合计** | **161** | **145** | **16** |
 
 > 口径：脚本按 `src/commands.cpp` 里 `{CmdId::X, …}` 字面形式逐条统计分组与 `implemented`，
 > 不按 README 宣称。命令行：见 `tools/check_commands.py`（同时校验 keymap × 处理器三方一致）。
@@ -65,7 +65,7 @@ baseline: 2026-11-21 21:00
 > （旧版本手写的 90/36 与代码不一致：`GoTab1..9` 在 keymap 里绑了但目录里没有，
 > `CopyToFolder`/`MoveToFolder` 也一直缺，已补齐。）
 
-一句话结论：**File 组 35 条全部落地；剩下的 17 条是搜索（2，要接 Everything 的 IPC）、
+一句话结论：**File 组 35 条全部落地；剩下的 16 条是 Everything 搜索（1，要接它的 IPC）、
 AI 面板（2，缺窗口内对话 UI）、6 条与既有 `fs.*` 语义重叠的 `tool.*` 包装命令，
 以及少量"本工程模型下没有意义/没有把握"的项（合并窗口、复选框、RunCommand/SendKeys 等）。**
 
@@ -215,9 +215,18 @@ mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
 > 代价是预算耗尽会少扫一部分 —— 报告里写清楚了，比假死或假数字好。
 > 端到端验证：`obj/e2e_tools.py`（真实管道 + 真实文件，含改名副本、同大小不同内容）。
 
-### 3.12 Search（2）—— 未实现
+### 3.12 Search（2）—— 已实现 1
 
-`SearchEverything` / `OpSearch`：需要接 Everything 的 IPC（mod 的 `evipc`）。
+`OpSearch`（`search.find`，2026-11-21 接上命令总线）：走 shell 自己的 `search-ms:` 协议，
+结果落在同一个 `IShellView` 里，所以排序 / 右键 / 拖放照旧可用。人侧是导航栏搜索框或
+命令面板追问搜索词，agent 侧是 `{"query":…}` → `{query, scope, url, searching}`。
+搜索是**导航**不是查询（原声明 `readOnly=1` 写错了）；空串 / 只有空白 = 退出搜索回到来源目录。
+
+URL 拼装抽成了纯函数 `searchurl::Build` / `Trim`（`src/search_url.*`），
+`tests/search_url_test.cpp` 按住引号转义与范围原样传递；端到端见 `obj/e2e_search.py`
+（真实管道实测：正常词、首尾空格被 trim、只有空格→取消、缺参数报错）。
+
+`SearchEverything`：需要接 Everything 的 IPC（mod 的 `evipc`）。
 
 ---
 
@@ -227,7 +236,7 @@ mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
 |---|---|---|
 | 不在 explorer 进程内 | `TabMergeAll`、`SendKeys` | 不适用 / 不实现 |
 | 视图不自绘 | `ToggleCheckboxes` | shell 视图未暴露接口；预览窗格已改用 `IFolderView2` 的 folder flag，无需自绘 |
-| 需要独立进程/协议 | Search 2（Everything 的 IPC） | 复用 mod 的 `evipc` 协议。文件集三条**不需要**：显式预算 + 完整性上报已够（见 §3.11） |
+| 需要独立进程/协议 | Search 1（Everything 的 IPC；`search.find` 已用 shell 的 search-ms 落地） | 复用 mod 的 `evipc` 协议。文件集三条**不需要**：显式预算 + 完整性上报已够（见 §3.11） |
 | 缺窗口内对话 UI | `AiTogglePanel` / `AiStop` | 接口层已完成，只缺面板与历史（ROADMAP P4） |
 | 语义与既有命令重叠 | 6 条 `tool.*` 包装命令 | 先确认没有第二种语义，再接线；重复一套实现比"未实现"更糟 |
 | 安全边界 | `RunCommand`、`SendKeys` | 不做；AI 侧也不暴露 |

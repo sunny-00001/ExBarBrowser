@@ -43,6 +43,26 @@
 - 结果里必带 `scannedFiles` / `hashedFiles` / `deniedDirs` / `timedOut` / `complete`：
   只给"没有重复"而不说"扫没扫完"、"有没有目录打不开"，用户会据此删错东西。
 
+### 新增（`search.find` 接上命令总线）
+
+- **搜索从"只有搜索框能用"变成命令**：导航栏搜索框早就存在，但命令目录里
+  `search.find` 一直是 `implemented=false` —— 命令面板搜不到、键位绑不上、
+  agent 完全没有"搜索"这个能力。现在 `{"query":"…"}` 走同一条实现，
+  返回 `{query, scope, url, searching}`。
+- **搜索是导航，不是只读查询**：结果落在同一个 `IShellView` 里（排序 / 右键 / 拖放
+  照旧），所以它会换掉当前标签的内容 —— 原声明 `Effects.readOnly=1` 写错了，
+  撤销方式是再搜一次空串（= 回到来源目录）。
+- **URL 拼装抽成纯函数**（`searchurl::Build` / `Trim`，`src/search_url.*`）：
+  原来这段长在导航栏回调里，既不可复用也不可测。`tests/search_url_test.cpp`
+  按住两件事：搜索词里的引号要翻倍转义（否则 `search-ms` 会把短语提前截断）；
+  范围**原样**进 `crumb=location:`（现状行为 —— 路径含 `&` 会被当分隔符，
+  这是已知局限，固定成契约等有测试兜底时再改）。
+- **只打空格不再当成搜索词**：搜索框提交时不做 trim，于是敲几个空格回车就进入
+  一个搜不到东西的搜索视图，看起来像"搜索坏了"。现在首尾空白在 `App::RunSearch`
+  统一去掉（导航栏与命令共用这一处），空白即"退出搜索"。
+- 端到端：`obj/e2e_search.py`（真实管道）实测四种输入 —— 正常词、首尾空格被 trim、
+  只有空格 → `searching:false, url:""`、缺 `query` → `失败：缺少必填参数：query`。
+
 ### 新增（批量重命名 `Ctrl+Shift+R`、按类型选择）
 
 - **`file.rename.batch`**：模式串 `{name}` / `{ext}` / `{old}` / `{n}` / `{nn}` / `{nnn}`。

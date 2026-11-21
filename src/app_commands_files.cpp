@@ -6,6 +6,7 @@
 #include "app_commands.h"
 #include "prompt.h"
 #include "report.h"
+#include "search_url.h"   // searchurl::Trim —— 与导航栏搜索框共用同一套规范化
 #include "shell_ops.h"
 #include "disk_scan.h"
 #include "file_hash.h"
@@ -672,6 +673,45 @@ void App::RegisterFileCommands() {
         if (!t || !t->view) return false;
         t->view->ToggleNavPane();
         RefreshStats();
+        return true;
+    });
+
+    // ---------------- 搜索 ----------------
+    //
+    // 把"视图里能搜"变成"命令能搜"：搜索框在导航栏上，命令面板 / 键位 / agent
+    // 以前完全够不着，命令目录里 search.find 一直是 implemented=false。
+    //
+    // 这条**不是只读查询**：搜索是导航，结果落在同一个 IShellView 里，
+    // 会换掉当前标签看到的内容（这也是原声明 Effects.readOnly=1 写错的地方）。
+    // 退出搜索 = 再搜一次空串（回到来源目录），导航栏搜索框留空即此语义。
+    regR(CmdId::OpSearch, [this](const Args& args, json::Value* result) {
+        if (!result) return false;
+        const bool human = args.IsEmpty();
+
+        std::wstring query = args.Str(L"query");
+        if (human) {
+            std::wstring input;
+            if (!PromptText(hwnd_, theme_, L"搜索", L"搜索词（留空＝退出搜索）", input, &input))
+                return false;
+            query = input;
+        }
+
+        // 范围必须在 RunSearch 之前取：它会把来源目录记进 searchFrom_。
+        // 查询词也在这里规范化：返回给调用方的必须是**实际搜的那个词**，
+        // 而不是带首尾空格的原文（否则 agent 会拿一个没搜过的串去对账）。
+        query = searchurl::Trim(query);
+        const std::wstring scope =
+            searchFrom_.empty() ? (Active() ? Active()->path() : std::wstring()) : searchFrom_;
+        std::wstring url;
+        if (!RunSearch(query, &url)) {
+            CommandBus::Get().NoteFailure(L"搜索视图没有接受这个查询：" + url);
+            return false;
+        }
+
+        result->Set(L"query", json::Value::MakeStr(query));
+        result->Set(L"scope", json::Value::MakeStr(scope));
+        result->Set(L"url", json::Value::MakeStr(url));
+        result->Set(L"searching", json::Value::MakeBool(!searchFrom_.empty()));
         return true;
     });
 

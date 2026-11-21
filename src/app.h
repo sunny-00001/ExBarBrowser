@@ -149,6 +149,13 @@ private:
     // at 是弹层的屏幕锚点（视图菜单按钮下方），与其它弹层一致。
     void ShowSettingsPanel(POINT at);
 
+    // 在搜索视图里搜当前目录（query 为空 = 取消搜索回到来源目录）。
+    //
+    // 导航栏搜索框与 search.find 命令共用这一份实现：两处各写一遍，表现迟早
+    // 不同（"搜索框能搜、命令搜不到"这种最典型的假等价）。成功时把实际用的
+    // URL 写进 url，供命令返回结构化结果。
+    bool RunSearch(const std::wstring& query, std::wstring* url);
+
     // 命令辅助
     IShellView* ActiveView();
     // 跑一个"对当前 IShellView 操作"的命令：统一判成败、失败记日志 + 响铃。
