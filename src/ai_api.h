@@ -74,6 +74,19 @@ struct CallResult {
     // 其余情况为空对象 —— 不编造返回值。
     json::Value result = json::Value::MakeObject();
     bool hasResult = false;
+
+    // ---- 自断言结果（见 CommandDef::assertion）----
+    //
+    // 与 ok 的关系：ok 说"handler 说它成功了"，assertions 说"效果确实对"。
+    // 两者独立：
+    //   · ok=true + 断言全过  → 真的成了
+    //   · ok=true + 断言失败  → handler 以为成了，实际没成（最危险的一类 bug）
+    //   · ok=false            → 没成，断言通常也过不了
+    //
+    // 断言失败**不改 ok**：ok 是 handler 的返回值，篡改它会让审计失真。
+    // 但 CallResult 有断言失败时，ai 层会把它写进审计并在响应里显式给出。
+    json::Value assertions = json::Value::MakeArray();
+    bool hasAssertions = false;
 };
 
 // 按 JSON Schema 校验参数。返回 false 时 err 给出人可读原因。

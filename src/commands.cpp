@@ -47,7 +47,7 @@ const std::vector<CommandDef> kTable = {
     {CmdId::TabLast, L"tab.activate.last", L"Tab", L"标签栏", L"最后一个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
     {CmdId::CloseLeftOne, L"tab.close.prev", L"Tab", L"标签栏", L"关闭左侧一个", true, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs, Req::CanMoveTabLeft}},
     {CmdId::CloseRightOne, L"tab.close.next", L"Tab", L"标签栏", L"关闭右侧一个", true, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs, Req::CanMoveTabRight}},
-    {CmdId::TabActivate, L"tab.activate", L"Tab", L"标签栏", L"切换到第 N 个标签", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"index\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"0 起的标签序号\"}},\"required\":[\"index\"],\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
+    {CmdId::TabActivate, L"tab.activate", L"Tab", L"标签栏", L"切换到第 N 个标签", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"index\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"0 起的标签序号\"}},\"required\":[\"index\"],\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}, nullptr, "activeTab=$arg:index"},
     {CmdId::GoTab1, L"tab.goto.1", L"Tab", L"标签栏", L"切换到第 1 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
     {CmdId::GoTab2, L"tab.goto.2", L"Tab", L"标签栏", L"切换到第 2 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
     {CmdId::GoTab3, L"tab.goto.3", L"Tab", L"标签栏", L"切换到第 3 个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
@@ -136,9 +136,9 @@ const std::vector<CommandDef> kTable = {
     {CmdId::FsCut, L"fs.cut.toclip", L"File", L"文件操作", L"剪切到剪贴板（指定路径）", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"targets\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"一组完整路径\"}},\"required\":[\"targets\"],\"additionalProperties\":false}", true, false},
     {CmdId::FsProperties, L"fs.properties", L"File", L"文件操作", L"属性（指定路径）", true, Effects{0, 0, 0, 1, 0, Scope::System}, "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"description\":\"目标的完整路径\"}},\"required\":[\"target\"],\"additionalProperties\":false}", true, false},
     // ---- View ----
-    {CmdId::ViewMode, L"view.mode", L"View", L"文件视图", L"视图模式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"preset\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":7,\"description\":\"0=超大图标 1=大图标 2=中图标 3=小图标 4=列表 5=详细信息 6=平铺 7=内容\"}},\"required\":[\"preset\"],\"additionalProperties\":false}", true, false},
-    {CmdId::ViewSort, L"view.sort", L"View", L"文件视图", L"排序方式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"by\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":3,\"description\":\"0=名称 1=日期 2=类型 3=大小\"}},\"required\":[\"by\"],\"additionalProperties\":false}", true, false},
-    {CmdId::ViewGroup, L"view.group", L"View", L"文件视图", L"分组方式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"by\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":3,\"description\":\"0=不分组 1=类型 2=日期 3=大小\"}},\"required\":[\"by\"],\"additionalProperties\":false}", true, false},
+    {CmdId::ViewMode, L"view.mode", L"View", L"文件视图", L"视图模式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"preset\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":7,\"description\":\"0=超大图标 1=大图标 2=中图标 3=小图标 4=列表 5=详细信息 6=平铺 7=内容\"}},\"required\":[\"preset\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, "viewMode=$arg:preset"},
+    {CmdId::ViewSort, L"view.sort", L"View", L"文件视图", L"排序方式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"by\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":3,\"description\":\"0=名称 1=日期 2=类型 3=大小\"}},\"required\":[\"by\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, "sortMode=$arg:by"},
+    {CmdId::ViewGroup, L"view.group", L"View", L"文件视图", L"分组方式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"by\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":3,\"description\":\"0=不分组 1=类型 2=日期 3=大小\"}},\"required\":[\"by\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, "groupBy=$arg:by"},
     {CmdId::ToggleHidden, L"view.toggle.hidden", L"View", L"文件视图", L"显示隐藏文件", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
     {CmdId::ToggleSystemFiles, L"view.toggle.system", L"View", L"文件视图", L"显示系统文件", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
     {CmdId::ToggleExtensions, L"view.toggle.extensions", L"View", L"文件视图", L"显示扩展名", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
@@ -166,8 +166,8 @@ const std::vector<CommandDef> kTable = {
     {CmdId::SendKeys, L"ext.sendkeys", L"External", L"全局", L"发送按键", false, Effects{0, 1, 0, 1, 0, Scope::System}, kNoArgs, false, false},
     // ---- Bookmark ----
     {CmdId::BmkAddCurrent, L"bmk.add.current", L"Bookmark", L"书签栏", L"收藏当前目录", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true, false},
-    {CmdId::BmkShowBar, L"bmk.show", L"Bookmark", L"书签栏", L"显示书签栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false},
-    {CmdId::BmkHideBar, L"bmk.hide", L"Bookmark", L"书签栏", L"隐藏书签栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false},
+    {CmdId::BmkShowBar, L"bmk.show", L"Bookmark", L"书签栏", L"显示书签栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, nullptr, "bookmarkBarVisible=true"},
+    {CmdId::BmkHideBar, L"bmk.hide", L"Bookmark", L"书签栏", L"隐藏书签栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, nullptr, "bookmarkBarVisible=false"},
     {CmdId::BmkToggleBar, L"bmk.toggle", L"Bookmark", L"书签栏", L"切换书签栏", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false},
     // 书签编辑族：原来只有右键菜单可达，补成命令后键盘/面板/AI 与人等价。
     // 删除/清空/排序都进撤销栈，所以 destructive=0（可回退）；undoable=1。

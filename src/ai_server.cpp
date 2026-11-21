@@ -475,8 +475,47 @@ std::wstring HandleRpcLine(const json::Value& req) {
             text.Set(L"text", json::Value::MakeStr(L"失败：" + r.error));
         }
         content.arr.push_back(text);
+        // content 在断言块之后再 Set：json::Value::Set 是 move 语义，
+        // 先 Set 会把它搬空，后面 push_back 的失败说明就丢了。
+
+        // ---- 自断言 ----
+        //
+        // 断言失败时 isError 置 true。这是刻意的：
+        //   命令 handler 返回 true 只说明"我这个函数返回了成功"，而断言说的是
+        //   "效果对吗"。两者不一致时，从调用方的立场看这次操作**没有达成目的** ——
+        //   如果仍报 isError=false，AI 会基于"已成功"继续下一步，
+        //   错误被推到很远以后才暴露，而那时现场已经丢了。
+        //
+        // 同时在 text 里给出可读原因，并在 assertions 字段里给结构化明细：
+        // 只说失败没用，调用方需要知道"期望什么、实际什么"才能决策。
+        bool assertFailed = false;
+        if (r.hasAssertions) {
+            result.Set(L"assertions", r.assertions);
+            for (const auto& a : r.assertions.arr) {
+                const json::Value* okv = a.Find(L"ok");
+                if (okv && !okv->b) {
+                    assertFailed = true;
+                    const std::wstring expr = a.GetStr(L"expr");
+                    const std::wstring expect = a.GetStr(L"expect");
+                    const std::wstring actual = a.GetStr(L"actual");
+                    LogDbg(L"[ai] %s 断言不符：%s 期望 %s 实际 %s", r.command.c_str(),
+                           expr.c_str(), expect.c_str(), actual.c_str());
+                    // 失败原因写进文本块：只认 content 的客户端也能看到。
+                    json::Value warn = json::Value::MakeObject();
+                    warn.Set(L"type", json::Value::MakeStr(L"text"));
+                    warn.Set(L"text", json::Value::MakeStr(
+                        L"断言不符：" + expr + L"（期望 " + expect + L"，实际 " + actual + L"）"));
+                    content.arr.push_back(warn);
+                }
+            }
+            if (assertFailed) {
+                result.Set(L"isError", json::Value::MakeBool(true));
+            }
+        }
         result.Set(L"content", content);
-        result.Set(L"isError", json::Value::MakeBool(!r.ok));
+        if (!result.Find(L"isError")) {
+            result.Set(L"isError", json::Value::MakeBool(!r.ok));
+        }
         return json::Stringify(RpcResult(id, result), 0);
     }
 

@@ -276,6 +276,29 @@ struct CommandDef {
     // 也为空时表示"这个命令只回报成败"，不编造返回值。
     const char* outputSchema = nullptr;
 
+    // ---- 自断言（让"可验证"从脚本层提升到契约层）----
+    //
+    // 【为什么需要】`ok=true` 只说明"handler 返回了 true"，不说明"效果对吗"。
+    // 典型事故：改了内存但没落盘、改了 A 却以为改了 B、被前置条件静默跳过
+    // 后仍返回成功。这些都不会让 ok 变 false —— 调用方以为成了，实际没成，
+    // 而错误要到很久以后才暴露（那时现场已丢）。
+    //
+    // 【形态】声明式，不是回调。理由与 Requirements 相同：
+    //   · 静态检查能核对"声明了就真能求值"，回调核不了；
+    //   · 能导出成文档 / 生成测试用例骨架；
+    //   · 不需要每个命令自己写一段 if，避免逻辑散落。
+    //
+    // 【怎么求值】形如 "sortMode=$arg:by"：
+    //   左值取自 exbar/state 的字段名（**必须是可回读的**，见 check_ai_meta 第 17 项），
+    //   右值是期望值；`$arg:<key>` 表示"等于入参 key 的值"，
+    //   `$arg:<key>.length` 取数组/字符串长度。
+    //   执行后由 assert_check::Check 求值，结果进 CallResult.assertions。
+    //
+    // 【为什么右值要能引用入参】断言"sortMode 等于我刚传的 by"才是真实预期；
+    // 写死成 "sortMode=2" 会在换参数时悄悄失效 —— 那种断言比没有更危险，
+    // 因为它会一直绿。
+    const char* assertion = nullptr;
+
     // 旧字段的兼容视图：把 effects 映射回三档。仅用于既有代码/AI 白名单的
     // 粗粒度判断，新代码请直接读 effects。
     Risk LegacyRisk() const {

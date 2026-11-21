@@ -404,18 +404,37 @@ def parse_commands():
         exposed = fields[8].strip() == 'true' if len(fields) > 8 else False
         sel = fields[9].strip() == 'true' if len(fields) > 9 else False
 
-        # 尾部可选：Requirements{...} / outputSchema（顺序由 struct 声明决定）
-        reqs, outschema = [], None
-        for f in fields[10:]:
-            f = f.strip()
-            if f.startswith('Requirements'):
-                rm = re.search(r'Requirements\{(.*)\}', f, re.S)
-                if rm:
-                    reqs = [x.strip() for x in rm.group(1).split(',') if x.strip()]
-            elif f:
-                v = _string_literal(f, consts)
+        # 尾部可选字段按**位置**解析，不按"最后一个字符串"猜。
+        #
+        # struct 声明顺序固定为：requires_ / outputSchema / assertion。
+        # 关键：`nullptr` 是 outputSchema 的显式占位（"这条不产出结果"），
+        # 它必须占掉一个位置 —— 否则后面的 assertion 会顶上来被当成结果 schema，
+        # 报出"outputSchema 非法 JSON"这种指向错误的假错误。
+        #
+        # 例：
+        #   ..., false, false, Requirements{}, "outputSchema", "assert"    → 12 字段
+        #   ..., false, false, Requirements{}, nullptr,       "assert"     → 13 字段
+        reqs, outschema, assertion = [], None, None
+        tail = [x.strip() for x in fields[10:]]
+        tail = [x for x in tail if x]                      # 去掉空的尾逗号残余
+        pos = 0
+        if pos < len(tail) and tail[pos].startswith('Requirements'):
+            rm = re.search(r'Requirements\{(.*)\}', tail[pos], re.S)
+            if rm:
+                reqs = [x.strip() for x in rm.group(1).split(',') if x.strip()]
+            pos += 1
+        if pos < len(tail) and tail[pos] == 'nullptr':
+            pos += 1                                       # 占位，明确表示"无结果"
+        else:
+            if pos < len(tail):
+                v = _string_literal(tail[pos], consts)
                 if v is not None:
                     outschema = v
+                    pos += 1
+        if pos < len(tail):
+            v = _string_literal(tail[pos], consts)
+            if v is not None:
+                assertion = v
 
         out.append({
             'id': cid, 'name': name, 'group': group, 'title': title,
@@ -424,7 +443,7 @@ def parse_commands():
             'idempotent': idem == '1', 'openWorld': ow == '1',
             'undoable': undo == '1', 'scope': scope,
             'schema': schema, 'exposed': exposed, 'needsSelection': sel,
-            'requires': reqs, 'outputSchema': outschema,
+            'requires': reqs, 'outputSchema': outschema, 'assertion': assertion,
             'nfields': len(fields),
         })
     return out, text, consts
@@ -1118,6 +1137,42 @@ def main():
             fail(f'{cmds_writing} 可改该状态，但 exbar/state 无法回读 {field}（{why}）')
     else:
         ok(f'{len(WRITABLE_STATE)} 个可写状态字段都能回读')
+
+    # ---------------------------------------------------------------- 18
+    print('\n18. 自断言必须可求值（防假绿）')
+    # 断言的左值必须取自 exbar/state 的真实字段；$arg: 引用的键必须在
+    # argsSchema 里声明。否则这条断言要么永远为真、要么永远为假 ——
+    # 两种都是假绿，比没有断言更危险（它让人以为验证过了）。
+    state_fields = set()
+    for m2 in re.finditer(r'v\.Set\(L"(\w+)"', ai_cpp):
+        state_fields.add(m2.group(1))
+    bad_assert = []
+    checked_assert = 0
+    for c in cmds:
+        a = c.get('assertion')
+        if not a:
+            continue
+        checked_assert += 1
+        if '=' not in a:
+            bad_assert.append((c['name'], a, '缺少 ='))
+            continue
+        lhs, rhs = a.split('=', 1)
+        lhs, rhs = lhs.strip(), rhs.strip()
+        if lhs not in state_fields:
+            bad_assert.append((c['name'], a, '左值 %s 不在 exbar/state 里' % lhs))
+        if rhs.startswith('$arg:'):
+            key = rhs[5:]
+            if key.endswith('.length'):
+                key = key[:-len('.length')]
+            schema_txt = c.get('schema') or ''
+            needed = '"' + key + '"'
+            if needed not in schema_txt:
+                bad_assert.append((c['name'], a, '引用的入参 %s 未在 argsSchema 声明' % key))
+    if bad_assert:
+        for name, a, why in bad_assert:
+            fail('%s 的断言「%s」不可求值：%s' % (name, a, why))
+    else:
+        ok('%d 条命令带自断言，且左值与入参引用都可求值' % checked_assert)
 
     print()
     if g_fail:

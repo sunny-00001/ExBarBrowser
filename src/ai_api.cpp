@@ -10,6 +10,7 @@
 // 写实现，与工具栏/快捷键的行为分叉（架构规则 §4 原则 6）。
 #include "ai_api.h"
 
+#include "assert_check.h"
 #include "str.h"
 
 #include "cmd_naming.h"
@@ -283,6 +284,37 @@ CallResult Call(const std::wstring& command, const json::Value& args, bool appro
         const std::wstring& blocked = CommandBus::Get().lastBlockReason();
         r.error = blocked.empty() ? L"命令执行失败" : blocked;
     }
+
+    // ---- 自断言求值 ----
+    //
+    // 只在命令成功时求值：失败时状态未必变，断言失败只会盖住真正的原因
+    // （"op 失败"比"op 失败且 sortMode 不对"更该被看到）。
+    //
+    // 状态取执行**之后**的快照 —— 断言要回答的是"做完之后符合预期吗"。
+    if (r.ok) {
+        if (const CommandDef* def = FindCommand(spec.name)) {
+            if (def->assertion && *def->assertion) {
+                const std::wstring expr = str::FromUtf8(def->assertion);
+                json::Value state;
+                const std::wstring stateText = StateToJson(GetState());
+                std::wstring jerr;
+                if (json::Parse(stateText, state, &jerr)) {
+                    auto one = assert_check::Check(expr, args, state);
+                    if (one.malformed) {
+                        // 断言写错是实现缺陷：进审计，但不改 ok ——
+                        // 网络对面看到"命令成功但断言非法"，该去修命令表。
+                        LogDbg(L"[ai] %s 的断言非法：%s（%s）", command.c_str(),
+                               one.expr.c_str(), one.error.c_str());
+                    } else if (!one.ok) {
+                        LogDbg(L"[ai] %s 断言不符：%s 期望 %s 实际 %s", command.c_str(),
+                               one.expr.c_str(), one.expect.c_str(), one.actual.c_str());
+                    }
+                    r.assertions = assert_check::ToJson({one});
+                    r.hasAssertions = true;
+                }
+            }
+        }
+    }
     return r;
 }
 
@@ -314,6 +346,9 @@ std::wstring ResultToJson(const CallResult& r) {
         v.Set(L"structuredContent", r.result);
         v.Set(L"content", Str(json::Stringify(r.result, 0)));
     }
+    // 自断言：与 structuredContent 同级给出，便于客户端只看一处就知道
+    // "命令说成了" 与 "效果确实对" 是否一致。
+    if (r.hasAssertions) v.Set(L"assertions", r.assertions);
     return json::Stringify(v, 0);
 }
 
