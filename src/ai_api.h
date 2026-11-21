@@ -135,6 +135,14 @@ struct StateSnapshot {
     bool navPaneVisible = false;          // view.toggle.nav 改写
     bool previewPaneVisible = false;      // view.toggle.preview 改写
 
+    // ---- 当前是否在搜索结果里（search.find 改写）----
+    // 只有写没有读时，"搜索成功"就只能靠命令自己的回执来证明 —— 而回执
+    // 恰恰是最容易说假话的地方（宿主没换视图也会返回 ok）。这三个字段是
+    // 搜索态的**唯一**可回读来源。
+    bool searching = false;               // 正在显示搜索结果
+    std::wstring searchScope;             // 搜索来源目录（空 = 不在搜索里）
+    std::wstring searchQuery;             // 当前生效的搜索词
+
     // ---- 选中与焦点（观测面：AI 要能回答"用户此刻选中了什么、焦点在哪"）----
     // selectionPaths 与 selectionCount 同源（同一条 shell 枚举路径）；
     // paths 是按快照上限截断后的部分，truncated=true 表示没带全。

@@ -174,9 +174,16 @@ IShellView* App::ActiveView() {
     return t && t->view ? t->view->CurrentView() : nullptr;
 }
 
-void App::CopyText(const std::wstring& text) {
+bool App::CopyText(const std::wstring& text) {
     // 剪贴板写入唯一实现（clipboard.cpp）—— 以前这里和 BookmarkBar 各写一遍。
-    if (!SetClipboardText(hwnd_, text)) LogDbg(L"[clip] 写入失败（剪贴板被占用？）");
+    // 失败必须回传：调用方（命令 handler）要据此报 ok=false，
+    // 否则"剪贴板被占用、其实没复制"会被记成成功（审计与 AI 都会被误导）。
+    if (!SetClipboardText(hwnd_, text)) {
+        LogDbg(L"[clip] 写入失败（剪贴板被占用？）");
+        CommandBus::Get().NoteFailure(L"剪贴板写入失败（可能被其他程序占用）");
+        return false;
+    }
+    return true;
 }
 
 void App::ShowPathProperties(const std::wstring& path) {
@@ -278,7 +285,14 @@ bool App::TransferTargets(const Args& args, bool move) {
         // 循环里"选一个转一个"会产生 N 次 IFileOperation 与 N 次刷新，
         // 而且中途失败时用户看到的是一半已移动、一半没动。
         const int hit = shellops::SelectByPaths(v, targets);
-        if (hit == 0) return false;
+        if (hit == 0) {
+            // fs.* 的语义边界：只操作**当前视图里**的项（不靠路径凭空动视图外的目录）。
+            // 目标不在视图里时过去只说"命令执行失败" —— 与"权限不足/被占用"混在一起，
+            // 调用方没法判断该换个目录还是该换条路径（2026-11-21 实测：把 sub\a.txt
+            // 移回父目录，因为 sub 不在视图里而失败）。
+            CommandBus::Get().NoteFailure(L"目标不在当前视图：" + targets.front());
+            return false;
+        }
         const bool ok = shellops::TransferToFolder(v, hwnd_, to, move);
         RefreshActive();
         if (hit < static_cast<int>(targets.size()))
@@ -310,21 +324,57 @@ void App::RegisterCommands() {
 }
 
 // ---------------------------------------------------------------- 菜单
+// 标签切换器：与"溢出 » 菜单"同源的列表，但它是全局入口（Ctrl+Shift+A），
+// 并且预选当前标签、支持键入前缀定位（PopupList 的 type-ahead）。
+// 不新写一套浮层：同一份渲染/键盘/取消语义，行为才不会与菜单分叉。
+void App::ShowTabSwitcher() {
+    const int n = tabSet_.Count();
+    if (n <= 0) return;
+    ui::Menu menu;
+    int initial = -1;
+    const int active = ActiveIndex();
+    for (int i = 0; i < n; ++i) {
+        const auto& t = tabSet_.items()[static_cast<size_t>(i)];
+        std::wstring label = core::DisplayTitle(t);
+        if (label.empty()) label = L"新标签";
+        const int row = menu.AddPathChecked(label, i == active, t.path, i, false);
+        if (i == active) initial = row;
+    }
+    POINT at{};
+    GetCursorPos(&at);
+    ui::MenuOptions opt;
+    opt.maxRows = std::max(8, std::min(n, 24));
+    opt.toggleKey = L"tab.switcher";
+    opt.initialRow = initial;
+    const int action = menu.Show(hwnd_, theme_, at, opt);
+    if (action < 0) return;                 // 取消：不改状态
+    const int id = tabSet_.IdAt(action);    // action 就是标签下标
+    if (id) Activate(id);
+}
+
 void App::ShowTabMenu(int index, int action) {
     int id = tabSet_.IdAt(index);
     const core::TabRef* ref = tabSet_.Find(id);
     if (!ref) return;
+    // 关闭历史条目：动作号 = 基址 + 序号。先于 switch 处理，
+    // 避免为 20 条历史各写一个 case（枚举会被撑成噪声）。
+    if (action >= kTabMenuReopenBase) {
+        ReopenClosed(action - kTabMenuReopenBase);
+        return;
+    }
     switch (action) {
     // "新建标签页"与"+"按钮、tab.new 同义：开一个此电脑作为全新起点。
     // 以前它和 kTabMenuClone 一模一样（都复制当前路径），两个菜单项名不副实 ——
     // 现在"新建"= 新起点、"复制标签"= 同路径副本，语义分开。
     case kTabMenuNew: NewTab(nav::kThisPc, NewTabIndex()); break;
+    case kTabMenuSwitcher: ShowTabSwitcher(); break;
     case kTabMenuClose: CloseTab(id); break;
     case kTabMenuCloseOther: CloseOthers(id); break;
     case kTabMenuCloseLeft: CloseSide(id, true); break;
     case kTabMenuCloseRight: CloseSide(id, false); break;
     case kTabMenuClone: NewTab(ref->path, NewTabIndex()); break;
     case kTabMenuToggleLock: ToggleLock(id); break;
+    case kTabMenuTogglePin: TogglePin(id); break;
     case kTabMenuCopyPath: CopyText(ref->path); break;
     case kTabMenuCopyTitle: CopyText(core::DisplayTitle(*ref)); break;
     case kTabMenuRename: {
@@ -343,11 +393,13 @@ void App::ShowTabMenu(int index, int action) {
     case kTabMenuMoveRight: MoveTab(id, tabSet_.IndexOf(id) + 1); break;
     case kTabMenuMoveFirst: MoveTab(id, 0); break;
     case kTabMenuMoveLast: MoveTab(id, tabSet_.Count() - 1); break;
-    case kTabMenuReopen: {
-        std::wstring path;
-        if (tabSet_.PopClosed(&path)) NewTab(path);
+    case kTabMenuMoveNewWindow:
+        if (!ref->locked && !ref->pinned && !ref->path.empty()) {
+            OpenPathInNewWindow(ref->path);
+            CloseTab(id);
+        }
         break;
-    }
+    case kTabMenuReopen: ReopenClosed(0); break;
     default:
         break;
     }

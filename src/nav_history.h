@@ -41,6 +41,8 @@ public:
                                                                     : kEmpty;
     }
     const std::wstring& at(size_t i) const { return hist_[i]; }
+    // 会话持久化用：完整历史栈（只读）。恢复走 Restore。
+    const std::vector<std::wstring>& entries() const { return hist_; }
 
     bool canBack() const { return idx_ > 0; }
     bool canForward() const { return idx_ >= 0 && idx_ + 1 < static_cast<int>(hist_.size()); }

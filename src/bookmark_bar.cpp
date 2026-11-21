@@ -865,6 +865,7 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
         .Add(L"复制路径", 2, ico::IconId::Copy, it.folder)
         .Separator()
         .Add(L"编辑...", 3, ico::IconId::Edit)
+        .Add(L"复制书签", 9, ico::IconId::Copy)
         .Add(L"删除", 4, ico::IconId::Delete)
         .Separator()
         .Add(L"新建分类", 5, ico::IconId::Add)
@@ -947,6 +948,12 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
             CommandBus::Get().Invoke(CmdId::BmkClearAll, Args::Empty(), L"ui");
         }
         break;
+    case 9: {  // 复制书签（分类连子树）：与 bmk.copy 同一命令，AI/面板可达同一动作
+        json::Value a = json::Value::MakeObject();
+        a.Set(L"id", json::Value::MakeStr(it.id));
+        CommandBus::Get().Invoke(CmdId::BmkCopy, Args::FromJson(a), L"ui");
+        break;
+    }
     default:
         break;
     }
@@ -956,6 +963,7 @@ void BookmarkBar::ShowEmptyMenu(POINT screen) {
     BookmarkStore& store = BookmarkStore::Get();
     ui::Menu menu;
     menu.Add(L"添加当前目录为书签", 1, ico::IconId::Add)
+        .Add(L"收藏所有标签页", 11, ico::IconId::Add)
         .Add(L"新建分类", 2, ico::IconId::Add)
         .Add(L"撤销删除", 8, ico::IconId::Undo, !store.CanUndo())
         .Separator()
@@ -976,6 +984,25 @@ void BookmarkBar::ShowEmptyMenu(POINT screen) {
     case 1:
         CommandBus::Get().InvokeLegacy(CmdId::BmkAddCurrent, L"", L"ui");
         break;
+    case 11: {  // 收藏所有打开标签页（与 bmk.add.tabs 同一命令）
+        // 与 dedupe 同款反馈：批量动作必须报数，不能静默。
+        json::Value result;
+        const bool ok = CommandBus::Get().InvokeResult(CmdId::BmkAddTabs, Args::Empty(), &result, L"ui");
+        const int added = ok ? result.GetInt(L"added", 0) : -1;
+        const int skipped = ok ? result.GetInt(L"skipped", 0) : 0;
+        if (added > 0)
+            MessageBoxW(hwnd_,
+                        (L"已收藏 " + std::to_wstring(added) + L" 个标签页目录" +
+                         (skipped > 0 ? (L"（跳过 " + std::to_wstring(skipped) +
+                                         L" 个：已收藏或空标签）") : L"")).c_str(),
+                        L"收藏所有标签页", MB_OK | MB_ICONINFORMATION);
+        else if (added == 0 && skipped > 0)
+            MessageBoxW(hwnd_,
+                        (L"没有新增（" + std::to_wstring(skipped) +
+                         L" 个标签页目录均已收藏或无目录）").c_str(),
+                        L"收藏所有标签页", MB_OK | MB_ICONINFORMATION);
+        break;
+    }
     case 2: {
         std::wstring name;
         if (PromptText(hwnd_, *theme_, L"新建分类", L"分类名称", L"新建分类", &name)) {

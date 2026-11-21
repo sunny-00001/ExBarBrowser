@@ -35,6 +35,7 @@ constexpr Entry kEntries[] = {
     {IconId::Add, L"add", 0xE710},        // 新建标签的 ＋（曾由 tab_strip 折线自绘）
     {IconId::Close, L"close", 0xE711},
     {IconId::Lock, L"lock", 0xE72E},
+    {IconId::Pin, L"pin", 0xE718},
     {IconId::Search, L"search", 0xE721},
     {IconId::Settings, L"settings", 0xE713},
 

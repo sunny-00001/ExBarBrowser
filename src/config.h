@@ -37,6 +37,20 @@ struct TabMeta {
     int color = 0;        // 0 = 无颜色
 };
 
+// 单标签的导航历史（会话持久化用）。paths 是完整栈，idx 是当前游标。
+// 只存路径字符串：重启后由 History::Restore 装填，不重放 Shell 导航。
+struct TabHistory {
+    std::vector<std::wstring> paths;
+    int idx = 0;
+};
+
+// 命名会话（P2：多条标签组的保存/列出/恢复/删除）。
+// 不含活动下标与选中项：恢复 = 整组重开，恢复后的活动标签由恢复时序决定。
+struct NamedSession {
+    std::wstring name;
+    std::vector<std::wstring> paths;
+};
+
 struct Settings {
     // 栏显隐（对应 mod 的 tab / nav / bookmark / statusbar）
     bool showTab = true;
@@ -55,6 +69,13 @@ struct Settings {
     int holdDelayMs = 800;
 
     std::wstring tabNewPos = L"right";
+    // 关闭窗口且标签数 > 1 时先确认。默认开：多标签是一次上下文，
+    // 误按 Alt+F4 的代价比多一次点击高。最后一个标签关闭（= 退出）不弹。
+    bool confirmCloseTabs = true;
+    // 标签宽度（逻辑像素）。默认 112–230 与旧行为一致；紧凑=80/160，
+    // 宽松=140/320。固定标签不吃这两个值（恒为图标宽）。
+    int tabMinWidth = 112;
+    int tabMaxWidth = 230;
 
     // 视图：8 档模式下标（0..7，见 app_commands.cpp 的 kViewModes）、排序与分组
     int viewMode = 3;
@@ -76,7 +97,13 @@ struct Settings {
     std::vector<std::wstring> sessionPaths;  // 上次关闭时的标签
     int sessionActive = 0;
     std::vector<std::wstring> sessionSelection;  // 关闭时活动标签的选中项（重启恢复用）
+    // 与 sessionPaths 一一对应的每标签历史（可缺省：旧配置没有这一段）。
+    std::vector<TabHistory> sessionHistory;
+    // 命名会话：多条标签组（session.save/list/restore/delete 操作的是"当前那条"，
+    // named.* 命令按名字操作这里的条目）。按名字覆盖保存。
+    std::vector<NamedSession> namedSessions;
     std::vector<std::wstring> lockedPaths;   // 锁定标签（按路径持久化）
+    std::vector<std::wstring> pinnedPaths;   // 固定标签（按路径持久化）
     std::vector<TabMeta> tabMeta;            // 标签改名/颜色（按路径持久化）
     std::vector<std::wstring> closedTabs;    // 关闭历史（可重开）
 
@@ -128,7 +155,8 @@ public:
 
     void AddRecent(const std::wstring& path);
     void RememberSession(const std::vector<std::wstring>& paths, int active,
-                         const std::vector<std::wstring>& selection = {});
+                         const std::vector<std::wstring>& selection = {},
+                         const std::vector<TabHistory>& history = {});
     // 标签个性化（改名/颜色）的写入口。path 是定位键，alias 空 + color 0 = 删除该项。
     // 只改内存；落盘时机与其它会话状态一致（App 退出流程统一 Save）。
     void SetTabMeta(const std::wstring& path, const std::wstring& alias, int color);

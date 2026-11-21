@@ -153,6 +153,13 @@ void Config::Load() {
     if (s_.holdDelayMs < 300) s_.holdDelayMs = 800;
 
     s_.tabNewPos = root.GetStr(L"tabNewPos", s_.tabNewPos);
+    s_.confirmCloseTabs = root.GetBool(L"confirmCloseTabs", s_.confirmCloseTabs);
+    s_.tabMinWidth = root.GetInt(L"tabMinWidth", s_.tabMinWidth);
+    s_.tabMaxWidth = root.GetInt(L"tabMaxWidth", s_.tabMaxWidth);
+    if (s_.tabMinWidth < 60) s_.tabMinWidth = 60;
+    if (s_.tabMinWidth > 320) s_.tabMinWidth = 320;
+    if (s_.tabMaxWidth < s_.tabMinWidth) s_.tabMaxWidth = s_.tabMinWidth;
+    if (s_.tabMaxWidth > 420) s_.tabMaxWidth = 420;
 
     // 视图：越界值一律夹回合法范围，避免配置被手改成 99 后整块视图异常。
     s_.viewMode = root.GetInt(L"viewMode", s_.viewMode);
@@ -190,6 +197,34 @@ void Config::Load() {
     s_.sessionActive = root.GetInt(L"sessionActive", 0);
     s_.sessionSelection = ReadStringArray(root, L"sessionSelection");
     s_.lockedPaths = ReadStringArray(root, L"lockedPaths");
+    s_.pinnedPaths = ReadStringArray(root, L"pinnedPaths");
+    // 每标签历史：旧配置没有这一段（向后兼容），坏项跳过而不是整份丢弃。
+    s_.sessionHistory.clear();    if (const json::Value* hist = root.Find(L"sessionHistory"); hist && hist->IsArray()) {
+        for (const auto& e : hist->arr) {
+            if (!e.IsObject()) continue;
+            TabHistory h;
+            if (const json::Value* ps = e.Find(L"paths"); ps && ps->IsArray())
+                for (const auto& p : ps->arr)
+                    if (p.IsString()) h.paths.push_back(p.str);
+            h.idx = e.GetInt(L"idx", 0);
+            if (h.idx < 0 || h.idx >= static_cast<int>(h.paths.size())) h.idx = 0;
+            s_.sessionHistory.push_back(std::move(h));
+        }
+    }
+    // 命名会话：同样向后兼容，坏项/无名项跳过。
+    s_.namedSessions.clear();
+    if (const json::Value* ns = root.Find(L"namedSessions"); ns && ns->IsArray()) {
+        for (const auto& e : ns->arr) {
+            if (!e.IsObject()) continue;
+            NamedSession sess;
+            sess.name = e.GetStr(L"name");
+            if (sess.name.empty()) continue;
+            if (const json::Value* ps = e.Find(L"paths"); ps && ps->IsArray())
+                for (const auto& p : ps->arr)
+                    if (p.IsString()) sess.paths.push_back(p.str);
+            s_.namedSessions.push_back(std::move(sess));
+        }
+    }
     s_.tabMeta = ReadTabMeta(root);
     s_.closedTabs = ReadStringArray(root, L"closedTabs");
 
@@ -231,6 +266,9 @@ void Config::Save() {
     root.Set(L"seqUniqueAuto", json::Value::MakeBool(s_.seqUniqueAuto));
     root.Set(L"holdDelayMs", json::Value::MakeInt(s_.holdDelayMs));
     root.Set(L"tabNewPos", json::Value::MakeStr(s_.tabNewPos));
+    root.Set(L"confirmCloseTabs", json::Value::MakeBool(s_.confirmCloseTabs));
+    root.Set(L"tabMinWidth", json::Value::MakeInt(s_.tabMinWidth));
+    root.Set(L"tabMaxWidth", json::Value::MakeInt(s_.tabMaxWidth));
     root.Set(L"viewMode", json::Value::MakeInt(s_.viewMode));
     root.Set(L"sortMode", json::Value::MakeInt(s_.sortMode));
     root.Set(L"sortAscending", json::Value::MakeBool(s_.sortAscending));
@@ -254,6 +292,27 @@ void Config::Save() {
     root.Set(L"sessionActive", json::Value::MakeInt(s_.sessionActive));
     root.Set(L"sessionSelection", MakeStringArray(s_.sessionSelection));
     root.Set(L"lockedPaths", MakeStringArray(s_.lockedPaths));
+    root.Set(L"pinnedPaths", MakeStringArray(s_.pinnedPaths));
+    {
+        json::Value hist = json::Value::MakeArray();
+        for (const auto& h : s_.sessionHistory) {
+            json::Value o = json::Value::MakeObject();
+            o.Set(L"paths", MakeStringArray(h.paths));
+            o.Set(L"idx", json::Value::MakeInt(h.idx));
+            hist.arr.push_back(std::move(o));
+        }
+        root.Set(L"sessionHistory", hist);
+    }
+    {
+        json::Value ns = json::Value::MakeArray();
+        for (const auto& sess : s_.namedSessions) {
+            json::Value o = json::Value::MakeObject();
+            o.Set(L"name", json::Value::MakeStr(sess.name));
+            o.Set(L"paths", MakeStringArray(sess.paths));
+            ns.arr.push_back(std::move(o));
+        }
+        root.Set(L"namedSessions", ns);
+    }
     root.Set(L"tabMeta", MakeTabMeta(s_.tabMeta));
     root.Set(L"closedTabs", MakeStringArray(s_.closedTabs));
     root.Set(L"statusSegs", MakeIntArray(s_.statusSegs));
@@ -289,12 +348,14 @@ void Config::AddRecent(const std::wstring& path) {
 }
 
 void Config::RememberSession(const std::vector<std::wstring>& paths, int active,
-                             const std::vector<std::wstring>& selection) {
+                             const std::vector<std::wstring>& selection,
+                             const std::vector<TabHistory>& history) {
     s_.sessionPaths = paths;
     s_.sessionActive = active;
     // 选中项恢复是"尽力"语义：视图就绪后 SelectItem 可能因目录已变而部分失败，
     // 静默容忍（保存仍在，下次关闭会覆盖）。
     s_.sessionSelection = selection;
+    s_.sessionHistory = history;
 }
 
 void Config::SetTabMeta(const std::wstring& path, const std::wstring& alias, int color) {

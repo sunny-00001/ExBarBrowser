@@ -62,6 +62,19 @@ const Alias kAliases[] = {
     {L"TabCloseDuplicates", L"tab.close.duplicates"},
     {L"TabLock",           L"tab.lock"},
     {L"TabCopyTitle",      L"tab.copy.title"},
+    // 关闭历史 / 固定 / 切换器：同一域的新命令，显式登记 legacy 名，
+    // 让 keymap 与旧脚本能用 CamelCase 引用（FindCommand 两个方向都认）。
+    {L"TabClosedList",     L"tab.closed.list"},
+    {L"TabReopenAt",       L"tab.reopen.index"},
+    {L"TabPin",            L"tab.pin"},
+    {L"TabSwitcher",       L"tab.switcher"},
+    {L"TabCycleNext",      L"tab.cycle.next"},
+    {L"TabCyclePrev",      L"tab.cycle.prev"},
+    {L"TabMoveNewWindow",  L"tab.move.window"},
+    {L"NamedSessionSave",    L"session.named.save"},
+    {L"NamedSessionList",    L"session.named.list"},
+    {L"NamedSessionRestore", L"session.named.restore"},
+    {L"NamedSessionDelete",  L"session.named.delete"},
 
     // --- Go（group=Go）：跳转到已知位置 ---
     {L"GoHome",          L"go.home"},

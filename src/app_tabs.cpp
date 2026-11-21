@@ -4,10 +4,20 @@
 // 画与命中全在 TabStrip，本文件不碰 GDI。改这里只有一个理由：标签怎么开、关、切。
 #include "app.h"
 #include "str.h"
+#include "text_file.h"   // tf::Exists（长路径安全的存在性判断，规则：不直连 GetFileAttributesW）
 
 #include "icon_resolve.h"
 
 // ---------------------------------------------------------------- 标签
+bool App::PathOpenable(const std::wstring& path) {
+    if (path.empty()) return false;
+    // 虚拟命名空间（此电脑/回收站/控制面板…）与 search-ms: 之类没有文件系统
+    // 语义，不能拿 GetFileAttributes 判存在 —— 一律放行，交给 Shell。
+    if (nav::IsNamespace(path)) return true;
+    if (path.rfind(L"shell:", 0) == 0) return true;
+    return tf::Exists(path);
+}
+
 int App::NewTab(const std::wstring& path, int index) {
     std::wstring target = path.empty() ? HomePath() : path;
     auto tab = std::make_unique<Tab>();
@@ -39,6 +49,11 @@ int App::NewTab(const std::wstring& path, int index) {
 
     for (const auto& locked : Config::Get().s().lockedPaths)
         if (str::IEquals(locked, initial)) tabSet_.SetLocked(id, true);
+    // 固定状态也按路径恢复：否则"固定了几个常用目录"重启后全部失效。
+    // 放在 SetLocked 之后、Activate 之前：SetPinned 会调整顺序，
+    // 新标签本身就在固定区末尾，通常是无操作。
+    for (const auto& pinned : Config::Get().s().pinnedPaths)
+        if (str::IEquals(pinned, initial)) tabSet_.SetPinned(id, true);
 
     // 改名/颜色按路径持久化：恢复会话时同一个目录应当还是用户给它起的名字与颜色，
     // 否则"重命名 + 设色"在重启后全部丢失（那等于没做这两个功能）。
@@ -54,6 +69,7 @@ int App::NewTab(const std::wstring& path, int index) {
 
     Activate(id);
     Layout();
+    MarkSessionDirty();   // 2s 去抖落盘：崩溃也不丢刚开的标签
     return id;
 }
 
@@ -67,6 +83,10 @@ bool App::CloseTab(int id) {
     const core::TabRef* ref = tabSet_.Find(id);
     if (!ref) return false;
     if (ref->locked) {
+        // 原因要跟着失败一起回传：调用方（AI/脚本/命令面板）拿到的不该只是
+        // 笼统的"命令执行失败"——它无法区分"标签已锁定"和"实现出错"，
+        // 也就无法决定下一步（解锁后重试，还是放弃）。
+        CommandBus::Get().NoteFailure(L"标签页已锁定，未关闭");
         MessageBeep(MB_ICONWARNING);
         return false;   // 锁定标签没被关掉 —— 必须让调用方知道
     }
@@ -101,6 +121,7 @@ bool App::CloseTab(int id) {
         SyncChrome();
     }
     Layout();
+    MarkSessionDirty();
     return true;
 }
 
@@ -110,8 +131,8 @@ int App::CloseOthers(int keepId) {
     int skipped = 0;
     for (const auto& t : tabSet_.items()) {
         if (t.id == keepId) continue;
-        // 先过滤锁定标签：CloseTab 会逐个 MessageBeep，批量关闭时那是一串提示音。
-        if (t.locked) { ++skipped; continue; }
+        // 先过滤锁定/固定标签：CloseTab 会逐个 MessageBeep，批量关闭时那是一串提示音。
+        if (t.locked || t.pinned) { ++skipped; continue; }
         ids.push_back(t.id);
     }
     int closed = 0;
@@ -124,6 +145,24 @@ int App::CloseOthers(int keepId) {
     return closed;
 }
 
+bool App::ReopenClosed(int index) {
+    const auto& closed = tabSet_.closed();
+    if (index < 0 || index >= static_cast<int>(closed.size())) return false;
+    const std::wstring path = closed[static_cast<size_t>(index)];
+    // 先建标签、成功后才弹栈：否则路径已失效时（目录被删/盘符下线）
+    // 关闭历史会被白白消耗掉，用户再点也没有第二条可试。
+    if (!PathOpenable(path)) {
+        CommandBus::Get().NoteFailure(L"无法重新打开：" + path + L"（目录可能已不存在）");
+        return false;
+    }
+    if (!NewTab(path)) {
+        CommandBus::Get().NoteFailure(L"无法重新打开：" + path + L"（视图创建失败）");
+        return false;
+    }
+    tabSet_.PopClosedAt(index, nullptr);
+    return true;
+}
+
 int App::CloseSide(int id, bool left) {
     const int index = tabSet_.IndexOf(id);
     if (index < 0) return 0;
@@ -133,7 +172,7 @@ int App::CloseSide(int id, bool left) {
     for (int i = 0; i < tabSet_.Count(); ++i) {
         if (!(left ? (i < index) : (i > index))) continue;
         const core::TabRef* t = tabSet_.Find(tabSet_.IdAt(i));
-        if (t && t->locked) { ++skipped; continue; }
+        if (t && (t->locked || t->pinned)) { ++skipped; continue; }
         ids.push_back(tabSet_.IdAt(i));
     }
     int closed = 0;
@@ -148,6 +187,9 @@ int App::CloseSide(int id, bool left) {
 
 void App::Activate(int id) {
     if (!tabSet_.Find(id)) return;
+    // 非循环激活 = 用户重新选了一个标签：结束 MRU 循环快照。
+    // 循环内部的 Activate 由 mruCycling_ 标记，不能在这里清掉快照。
+    if (!mruCycling_) tabSet_.ResetMruCycle();
     activeId_ = id;
     for (auto& kv : tabs_) kv.second->view->SetVisible(kv.first == id);
     tabSet_.Touch(id);
@@ -160,12 +202,14 @@ void App::Activate(int id) {
     const bool focusInView =
         !focus || focus == viewArea_ || (viewArea_ && IsChild(viewArea_, focus));
     if (focusInView && t->view->hwnd()) SetFocus(t->view->hwnd());
+    MarkSessionDirty();   // sessionActive 变了
 }
 
 void App::MoveTab(int id, int toIndex) {
     tabSet_.Move(id, toIndex);
     SyncChrome();
     Layout();
+    MarkSessionDirty();
 }
 
 // 锁定状态的唯一写入点。**按值设定**而不是"切换"，是因为命令侧要能
@@ -192,6 +236,38 @@ void App::ToggleLock(int id) {
     const core::TabRef* ref = tabSet_.Find(id);
     if (!ref) return;
     SetTabLocked(id, !ref->locked);
+}
+
+void App::SetTabPinned(int id, bool pinned) {
+    const core::TabRef* ref = tabSet_.Find(id);
+    if (!ref) return;
+    if (ref->pinned == pinned) return;   // 已是目标值：不写盘、不刷界面
+    const std::wstring path = ref->path;
+    tabSet_.SetPinned(id, pinned);
+    auto& list = Config::Get().mutableSettings().pinnedPaths;
+    if (pinned) {
+        if (std::find(list.begin(), list.end(), path) == list.end()) list.push_back(path);
+    } else {
+        list.erase(std::remove(list.begin(), list.end(), path), list.end());
+    }
+    Config::Get().Save();
+    SyncChrome();
+}
+
+void App::TogglePin(int id) {
+    const core::TabRef* ref = tabSet_.Find(id);
+    if (!ref) return;
+    SetTabPinned(id, !ref->pinned);
+}
+
+bool App::CycleMru(bool forward) {
+    if (tabSet_.Count() < 2) return true;   // 幂等：一个标签时无事可做
+    const int id = tabSet_.CycleMru(forward ? 1 : -1);
+    if (!id) return false;
+    mruCycling_ = true;          // 保护循环快照不被 Activate 重置
+    Activate(id);
+    mruCycling_ = false;
+    return true;
 }
 
 // 改名/颜色的落盘口径只有一份：写进 Config 的内存态（落盘由退出流程统一 Save）。
@@ -228,9 +304,9 @@ int App::CloseDuplicates(int keepId) {
     const std::vector<int> dups = tabSet_.DuplicatesOf(keepId);
     int closed = 0;
     for (int id : dups) {
-        // 锁定标签不关（CloseTab 会拒绝并响铃）：先过滤，避免这里响一串提示音。
+        // 锁定/固定标签不关（CloseTab 会拒绝并响铃）：先过滤，避免这里响一串提示音。
         const core::TabRef* d = tabSet_.Find(id);
-        if (!d || d->locked) continue;
+        if (!d || d->locked || d->pinned) continue;
         if (CloseTab(id)) ++closed;
     }
     if (closed) Activate(keepId);
@@ -291,7 +367,8 @@ void App::SyncChrome() {
     SetWindowTextW(hwnd_, (title + L" — " + id::kBrandShort).c_str());
 
     // 只喂模型：标题兜底、图标解析/缓存都在 TabStrip 内（App 不持有 HICON）。
-    tabStrip_.SetTabs(tabSet_.items(), ActiveIndex(), !tabSet_.closed().empty());
+    tabStrip_.SetTabs(tabSet_.items(), ActiveIndex(), !tabSet_.closed().empty(),
+                      tabSet_.closed());
     navBar_.SetPath(t->path(), ico::DisplayName(t->path(), t->display));
     // 后退/前进的可用态只有历史栈知道。以前这两颗按钮恒亮 ——
     // SyncChrome 是"任何导航完成/失败都会经过"的唯一位置，所以它是最合适的喂点

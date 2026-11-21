@@ -26,7 +26,7 @@ enum class IconId {
     // 方向
     ChevronDown, ChevronUp, ChevronLeft, ChevronRight,
     // 状态
-    Check, Add, Close, Lock, Search, Settings,
+    Check, Add, Close, Lock, Search, Settings, Pin,
     // 状态栏段
     Folder, Page, Calendar, HardDrive, Eye, Tag,
     // 菜单动作

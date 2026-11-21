@@ -415,6 +415,16 @@ bool ShellView::DoNavigate(const std::wstring& path) {
         while (p.size() > 3 && p.back() == L'\\') p.pop_back();
     }
 
+    // search-ms: 是**协议处理器 URL**，不是可浏览的 folder。IExplorerBrowser 没有
+    // 搜索带（search band），BrowseToObject 对它返回 S_OK 却把视图留在原地 ——
+    // 于是"搜索成功"变成一句假话（实测：零结果查询后 itemCount 一个不少）。
+    // 在这里明确拒绝，让调用方拿到失败而不是假成功；真做搜索需要换宿主或接
+    // 搜索 API（IExplorerBrowser 不支持 search-ms），记在文档的已知缺口里。
+    if (p.rfind(L"search-ms:", 0) == 0) {
+        LogDbg(L"[nav] 宿主不支持 search-ms（无搜索带）：%s", p.c_str());
+        return false;
+    }
+
     ComPtr<IShellItem> item;
     HRESULT hr = SHCreateItemFromParsingName(p.c_str(), nullptr, IID_IShellItem,
                                              reinterpret_cast<void**>(&item));
@@ -570,6 +580,12 @@ unsigned ShellView::SelectionPaths(unsigned cap, std::vector<SelectionItem>& out
     if (!view) return 0;
     IFolderView* fv = nullptr;
     if (SUCCEEDED(view->QueryInterface(IID_IFolderView, reinterpret_cast<void**>(&fv))) && fv) {
+        // Items() 交出的是**相对当前 folder 的子 PIDL**。以前用
+        // SHCreateItemFromIDList 解析，等于按桌面根拼接：在 E:\x 里选中 a 会被
+        // 读成 C:\Users\<me>\Desktop\a —— 文件名对、父目录错，且错得不容易看出来。
+        // 必须带上父 folder 解析（与 StatItem 同一条口径）。
+        IShellFolder* folder = nullptr;
+        fv->GetFolder(IID_IShellFolder, reinterpret_cast<void**>(&folder));
         IEnumIDList* en = nullptr;
         if (SUCCEEDED(fv->Items(SVGIO_SELECTION, IID_IEnumIDList,
                                 reinterpret_cast<void**>(&en))) && en) {
@@ -578,7 +594,8 @@ unsigned ShellView::SelectionPaths(unsigned cap, std::vector<SelectionItem>& out
                 PITEMID_CHILD pidl = nullptr;
                 if (en->Next(1, &pidl, nullptr) != S_OK || !pidl) break;
                 IShellItem* item = nullptr;
-                if (SUCCEEDED(SHCreateItemFromIDList(pidl, IID_IShellItem,
+                if (folder &&
+                    SUCCEEDED(SHCreateItemWithParent(nullptr, folder, pidl, IID_IShellItem,
                                                      reinterpret_cast<void**>(&item))) && item) {
                     SelectionItem si;
                     PWSTR name = nullptr;
@@ -598,6 +615,7 @@ unsigned ShellView::SelectionPaths(unsigned cap, std::vector<SelectionItem>& out
             }
             en->Release();
         }
+        if (folder) folder->Release();
         fv->Release();
     }
     view->Release();
@@ -892,12 +910,24 @@ void ShellView::DiagnosePreviewPaneState() {
 
 
 void ShellView::TogglePreviewPane() {
-    // 以"窗格现在是否可见"为准取反；FOLDERFLAGS 没有预览窗格位，不能作为状态源。
-    const bool visible = PreviewPaneVisibleNow(container_);
-    previewPaneWanted_ = !visible;
+    // 【状态源】用"意图"而不是"此刻可见"。
+    //
+    // 原先以 PreviewPaneVisibleNow 为准取反，理由是 FOLDERFLAGS 没有预览窗格位。
+    // 但预览窗格宿主在某些视图下**根本不会显示**（见上面 206 行记录的现象：
+    // 配置为 true、宿主窗口已创建，实际仍不可见）。此时"可见"恒为 false，
+    // 取反后永远是 true —— 表现为按 Alt+P / 调用命令毫无反应，且配置也不变，
+    // 而命令照样返回成功（2026-11-21 结构化全量测试实测）。
+    //
+    // 现在的判据：真的可见 → 关；不可见 → 跟随上次意图（未知则用配置值）。
+    // 这样"开→关→开"可靠，同时仍然尊重用户从 shell 自己的界面把窗格打开的情形。
+    const bool visibleNow = PreviewPaneVisibleNow(container_);
+    const bool current = visibleNow ||
+                         (previewPaneWantedKnown_ ? previewPaneWanted_
+                                                  : Config::Get().s().showPreviewPane);
+    previewPaneWanted_ = !current;
     previewPaneWantedKnown_ = true;
-    LogDbg(L"[preview] toggle visible=%d -> wanted=%d", visible ? 1 : 0,
-            previewPaneWanted_ ? 1 : 0);
+    LogDbg(L"[preview] toggle visible=%d current=%d -> wanted=%d", visibleNow ? 1 : 0,
+            current ? 1 : 0, previewPaneWanted_ ? 1 : 0);
 
     IShellView* view = CurrentView();
     ApplyPreviewPaneState(view);

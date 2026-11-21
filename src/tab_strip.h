@@ -65,12 +65,14 @@ inline int TabMouseTarget(bool onClose, bool onTab, bool onNew, bool onOverflow)
 // 标签右键菜单动作（TabStrip -> App，走 WM_APP_TAB_MENU 的 lParam）
 enum TabMenuAction {
     kTabMenuNew = 1,
+    kTabMenuSwitcher,   // 打开标签切换器（全局动作，但挂在标签菜单里便于发现）
     kTabMenuClose,
     kTabMenuCloseOther,
     kTabMenuCloseLeft,
     kTabMenuCloseRight,
     kTabMenuClone,
     kTabMenuToggleLock,
+    kTabMenuTogglePin,   // 固定/取消固定（与 locked 分开）
     kTabMenuCopyPath,
     kTabMenuReopen,
     // ---- 下列为后加：同一套消息通道，动作号只增不改（C1）----
@@ -81,7 +83,11 @@ enum TabMenuAction {
     kTabMenuMoveRight,
     kTabMenuMoveFirst,
     kTabMenuMoveLast,
+    kTabMenuMoveNewWindow,   // 有损近似：新实例按路径打开 + 关闭源标签
     kTabMenuColor,       // 不是动作本身：TabStrip 内部再弹一层色板，选中值走 WM_APP_TAB_COLOR
+    // 关闭历史条目：action = kTabMenuReopenBase + 序号（0 = 最近关闭）。
+    // 用基址+偏移而不是为每条加一个枚举项：栈深 20，枚举会被撑成噪声。
+    kTabMenuReopenBase = 1000,
 };
 
 class TabStrip {
@@ -92,7 +98,10 @@ public:
     // 只吃模型：标题兜底、图标解析与缓存都在本类内完成（App 不再持有 HICON）。
     // canReopen：关闭历史栈是否非空。菜单里"重新打开"能否点由它决定，
     // 不能让一个必然空操作的菜单项亮着（与"边界要灰掉"的原则冲突）。
-    void SetTabs(const std::vector<core::TabRef>& refs, int active, bool canReopen);
+    // closed：关闭历史（front = 最近关闭）。菜单用它列出最近 10 条，
+    // 让"重开"从盲盒变成可选项。
+    void SetTabs(const std::vector<core::TabRef>& refs, int active, bool canReopen,
+                 const std::vector<std::wstring>& closed = {});
     void ReloadTheme();
     // 释放图标缓存；WM_DESTROY 与析构都会调，重复调用安全。
     void ReleaseIcons();
@@ -104,6 +113,7 @@ private:
         std::wstring title;
         std::wstring path;  // tooltip 用
         bool locked = false;
+        bool pinned = false;   // 固定：图标化、无关闭钮、不被批量关闭
         HICON icon = nullptr;
         // 颜色：下标回传菜单打勾用；两个 COLORREF 是算好的绘制值。
         // 存 COLORREF 而不是每帧查主题：绘制热路径不该再算一次混色。
@@ -197,6 +207,9 @@ private:
     int rapidCloseIndex_ = -1;
     // 关闭历史是否非空（来自 App 的 TabSet，决定"重新打开"菜单项是否可点）。
     bool canReopen_ = false;
+    // 关闭历史快照（front = 最近关闭）。只用于菜单展示；真正的重开走
+    // WM_APP_TAB_MENU，由 App 从 TabSet 里取走 —— 本类不持有业务状态。
+    std::vector<std::wstring> closed_;
     Hover hoverKind_ = kNone;
     int hoverIndex_ = -1;
     bool tracking_ = false;

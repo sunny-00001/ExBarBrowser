@@ -42,17 +42,23 @@ void TabStrip::Paint(HWND h) {
                 textLeft = r.left + theme_->S(8) + iconPx + theme_->S(6);
             }
 
-            // 字体沿用外层已选的 theme_->font（传 nullptr 表示不换字体），
-            // 颜色/文本/还原交给原语统一处理。
-            const RECT tr{textLeft, r.top, r.right - theme_->S(26), r.bottom};
-            ui::DrawTextRow(mem, nullptr, items_[i].title, tr,
-                            isActive ? theme_->text : theme_->sub,
-                            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            // 固定标签只画图标（宽度已压到 40dp）：标题画进去也只会是省略号，
+            // 反而挤掉图标。悬停提示（tooltip）仍给完整路径。
+            if (!items_[i].pinned) {
+                const RECT tr{textLeft, r.top, r.right - theme_->S(26), r.bottom};
+                ui::DrawTextRow(mem, nullptr, items_[i].title, tr,
+                                isActive ? theme_->text : theme_->sub,
+                                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            }
 
             // 部分可见的标签（右缘在 » 之后）如果照画关闭钮，会把 X 画进溢出按钮区。
             const RECT& crc = closeRects_[i];
             const bool closeInView = crc.right > 0 && crc.left < clipR;
-            if (items_[i].locked) {
+            if (items_[i].pinned) {
+                // 固定标签没有关闭钮，用图钉图标占位（恒定可见，不靠悬停）。
+                if (closeInView)
+                    ui::DrawGlyph(mem, ico::IconId::Pin, crc, theme_->iconGlyph(), theme_->sub);
+            } else if (items_[i].locked) {
                 if (closeInView)
                     ui::DrawGlyph(mem, ico::IconId::Lock, crc, theme_->iconGlyph(), theme_->sub);
             } else if (closeInView && CloseVisible(static_cast<int>(i))) {

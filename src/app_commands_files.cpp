@@ -243,7 +243,16 @@ void App::RegisterFileCommands() {
         const std::wstring newName = args.Str(L"newName");
         if (target.empty() || newName.empty()) return false;
         return WithView([&](IShellView* v) {
+            // RenameTo 内部会校验"目标在当前视图里"，失败原因却只能返回 false。
+            // 先用同一份 shell 枚举（StatItem）确认存在性，把"不在视图"与
+            // "名字非法/被占用"区分开 —— 两者对调用方意味着完全不同的下一步。
+            shellops::ItemInfo probe;
+            if (!shellops::StatItem(v, target, &probe)) {
+                CommandBus::Get().NoteFailure(L"目标不在当前视图：" + target);
+                return false;
+            }
             bool ok = shellops::RenameTo(v, hwnd_, target, newName);
+            if (!ok) CommandBus::Get().NoteFailure(L"重命名失败（名称非法或目标被占用）：" + newName);
             if (ok) RefreshActive();
             return ok;
         }, L"重命名");
@@ -260,7 +269,10 @@ void App::RegisterFileCommands() {
             // 中途失败会留下"删了一半"且说不清删了哪些。
             // 一次操作则让系统的冲突/进度处理只走一轮。
             const int hit = shellops::SelectByPaths(v, targets);
-            if (hit == 0) return false;
+            if (hit == 0) {
+                CommandBus::Get().NoteFailure(L"目标不在当前视图：" + targets.front());
+                return false;
+            }
             const bool ok = shellops::DeleteSelection(v, hwnd_);
             RefreshActive();
             // 只命中一部分也算部分成功：返回 false 让调用方知道"没全照办"，
@@ -286,12 +298,19 @@ void App::RegisterFileCommands() {
     // 三种不同意图，各自值得一个名字；塞进一个枚举会让调用方先查"有哪些 mode"。
     reg(CmdId::FsOpen, [this](const Args& args) {
         const std::wstring path = args.Str(L"path");
-        if (path.empty()) return false;
+        if (path.empty()) {
+            CommandBus::Get().NoteFailure(L"缺少必填参数：path");
+            return false;
+        }
 
         // 路径不存在就明确失败，不要交给 ShellExecute（它会弹"找不到"的系统框，
         // 那是交互式行为，确定式调用不该卡在没人看的对话框上）。
         if (!tf::Exists(path)) {
             LogDbg(L"[cmd] FsOpen 目标不存在：%s", path.c_str());
+            // 人侧走 NavigateActive 会弹"无法打开"，机器侧原来只有一句
+            // "命令执行失败" —— 同一件事两套反馈，调用方分不清是路径错、
+            // 权限还是别的原因。把原因如实交出去。
+            CommandBus::Get().NoteFailure(L"目标不存在：" + path);
             return false;
         }
 
@@ -314,7 +333,12 @@ void App::RegisterFileCommands() {
     reg(CmdId::FsOpenInNewTab, [this](const Args& args) {
         const std::wstring path = args.Str(L"path");
         if (path.empty() || !tf::Exists(path)) {
-            if (!path.empty()) LogDbg(L"[cmd] FsOpenInNewTab 目标不存在：%s", path.c_str());
+            if (!path.empty()) {
+                LogDbg(L"[cmd] FsOpenInNewTab 目标不存在：%s", path.c_str());
+                CommandBus::Get().NoteFailure(L"目标不存在：" + path);
+            } else {
+                CommandBus::Get().NoteFailure(L"缺少必填参数：path");
+            }
             return false;
         }
         return NewTab(path) != 0;
@@ -322,7 +346,12 @@ void App::RegisterFileCommands() {
     reg(CmdId::FsOpenInNewWindow, [this](const Args& args) {
         const std::wstring path = args.Str(L"path");
         if (path.empty() || !tf::Exists(path)) {
-            if (!path.empty()) LogDbg(L"[cmd] FsOpenInNewWindow 目标不存在：%s", path.c_str());
+            if (!path.empty()) {
+                LogDbg(L"[cmd] FsOpenInNewWindow 目标不存在：%s", path.c_str());
+                CommandBus::Get().NoteFailure(L"目标不存在：" + path);
+            } else {
+                CommandBus::Get().NoteFailure(L"缺少必填参数：path");
+            }
             return false;
         }
         OpenPathInNewWindow(path);
@@ -410,11 +439,21 @@ void App::RegisterFileCommands() {
     // 撤销（Ctrl+Z）：转发给 shell 视图自己的撤销栈。
     // 本工程所有落盘操作都带 FOF_ALLOWUNDO，已经进了系统栈 —— 自己再记一份会错位。
     reg(CmdId::CmdUndo, [this](const Args&) {
-        return WithView([this](IShellView* v) {
-            const bool ok = shellops::Undo(v);
-            if (ok) RefreshActive();   // 撤销后的列表必须立刻反映出来
-            return ok;
+        const bool ok = WithView([this](IShellView* v) {
+            const bool r = shellops::Undo(v);
+            if (r) RefreshActive();   // 撤销后的列表必须立刻反映出来
+            return r;
         }, L"撤销");
+        // 撤销走的是视图背景菜单里的 undo 谓词（不自建栈）。谓词不存在时
+        // shellops::Undo 返回 false，调用方只看到"命令执行失败" —— 分不清是
+        // "真的没有可撤的"还是"撤销执行失败"。2026-11-21 实测：删除/改名之后
+        // 这条路径在 IExplorerBrowser 里拿不到 undo 行，撤销无效（缺陷未修，
+        // 见 docs/FULL-COVERAGE 的已知缺口）；这里至少把话说清楚。
+        if (!ok) {
+            CommandBus::Get().NoteFailure(
+                L"当前视图没有可撤销的操作（系统撤销栈为空，或视图已重建）");
+        }
+        return ok;
     });
 
     // ---- 选择族（Ctrl+I 反选 / 只选文件 / 只选文件夹 / 按模式选）----

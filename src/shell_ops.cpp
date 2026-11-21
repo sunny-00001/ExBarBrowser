@@ -711,7 +711,21 @@ bool ItemFullPath(IShellFolder* folder, PCUITEMID_CHILD pidl, std::wstring* out)
 bool SamePath(const std::wstring& a, const std::wstring& b) {
     // 大小写不敏感比较：Windows 路径语义。用 CompareStringOrdinal 而不是 _wcsicmp，
     // 后者依赖当前 locale，在土耳其语等区域会错。
-    return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_EQUAL;
+    //
+    // 先统一分隔符：Win32 文件路径里 '/' 与 '\\' 等价（Shell 解析、CreateFile 都接受），
+    // 但序数比较不认。fs.* 的路径来自外部（AI / 脚本 / 命令行），传 "C:/x/a.txt"
+    // 而视图回读是 "C:\x\a.txt" 时，全部 fs.* 会判成"目标不在当前视图"并报
+    // "命令执行失败"（2026-11-21 结构化测试实测：rename/copy/move 三条全挂）。
+    // 在这里收口，比在每个 handler 各写一遍规范化可靠。
+    auto slash = [](const std::wstring& s) {
+        std::wstring out = s;
+        for (auto& c : out)
+            if (c == L'/') c = L'\\';
+        return out;
+    };
+    const std::wstring na = slash(a);
+    const std::wstring nb2 = slash(b);
+    return CompareStringOrdinal(na.c_str(), -1, nb2.c_str(), -1, TRUE) == CSTR_EQUAL;
 }
 
 }  // namespace
@@ -940,8 +954,15 @@ int SelectByPattern(IShellView* view, const std::wstring& patterns, const Patter
         [&](const DirEntry& e) {
             if (!opt.matchFolders && e.isFolder) return false;
             if (e.name.empty()) return false;
+            // 【必须用磁盘上的名字，不能用显示名】DirEntry::name 是视图显示名，
+            // 关掉"显示扩展名"时它是 "a_r" 而不是 "a_r.txt" —— 拿它匹配 "*.txt"
+            // 永远匹配不上（2026-11-21 实测：修掉 S_FALSE 之后变成"一个都选不中"）。
+            const wchar_t* leaf = e.path.empty() ? nullptr : PathFindFileNameW(e.path.c_str());
+            const std::wstring target = (leaf && *leaf) ? std::wstring(leaf) : e.name;
             for (const auto& p : pats) {
-                if (SUCCEEDED(PathMatchSpecExW(e.name.c_str(), p.c_str(), kFlags))) return true;
+                // 【必须写 == S_OK】PathMatchSpecExW 用 S_OK / S_FALSE 表示匹配 / 不匹配，
+                // 而 SUCCEEDED(S_FALSE) 为真 —— 写成 SUCCEEDED(...) 等于"全都匹配"。
+                if (PathMatchSpecExW(target.c_str(), p.c_str(), kFlags) == S_OK) return true;
             }
             return false;
         },

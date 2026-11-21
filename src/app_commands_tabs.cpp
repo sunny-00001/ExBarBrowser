@@ -4,6 +4,7 @@
 #include "app.h"
 
 #include "app_commands.h"
+#include "text_file.h"   // tf::IsDirectory（go.powershell 的目录存在性判定）
 
 namespace {
 
@@ -32,6 +33,7 @@ std::wstring ToUnc(const std::wstring& p) {
 
 void App::RegisterTabCommands() {
     auto reg = cmd_reg::Register;
+    auto regR = cmd_reg::RegisterWithResult;
     // 少数带 index 的命令按序号取标签；省略时仍作用于当前标签。
     auto tabIdFromArgs = [this](const Args& args) {
         if (!args.Has(L"index")) return activeId_;
@@ -47,8 +49,17 @@ void App::RegisterTabCommands() {
         // path 参数照旧支持：调用方明确给了目录就按目录开（此前 handler 丢弃它，
         // 现已修复；这里保留该能力，不因改默认值而回退）。
         std::wstring p = args.Str(L"path");
-        NewTab(p.empty() ? nav::kThisPc : p, NewTabIndex());
-        return true;
+        const std::wstring target = p.empty() ? std::wstring(nav::kThisPc) : p;
+        // 预检路径：不存在的文件系统路径直接拒绝，不制造"标签建了但没打开"的假成功。
+        if (!PathOpenable(target)) {
+            CommandBus::Get().NoteFailure(L"路径不存在或不可访问：" + target);
+            return false;
+        }
+        // 透传真实创建结果：路径不存在/盘符离线时 NewTab 返回 0，
+        // 此时报 ok=true 会让审计与 AI 都以为标签已开（旧实现在这里恒 true）。
+        const int id = NewTab(target, NewTabIndex());
+        if (!id) CommandBus::Get().NoteFailure(L"无法打开：" + target);
+        return id != 0;
     });
     reg(CmdId::TabClose, [this](const Args&) {
         // 透传真实结果：锁定标签会拒绝关闭，那时不能报 ok=true。
@@ -59,15 +70,24 @@ void App::RegisterTabCommands() {
         // 如实回传：所有其他标签都锁定时一个也没关，不能报 ok=true。
         return CloseOthers(activeId_) > 0;
     });
+    // 边界返回 0 条时必须给原因：同族的 close.prev/close.next 会说"已在最左/最右"，
+    // 而这里曾经只返回 false —— 调用方只看到"命令执行失败"，分不清是边界
+    // 还是真出错（2026-11-21 全量结构化测试实测）。
     reg(CmdId::TabCloseLeft, [this](const Args&) {
-        return CloseSide(activeId_, true) > 0;
+        if (CloseSide(activeId_, true) > 0) return true;
+        CommandBus::Get().NoteFailure(L"左侧没有标签");
+        return false;
     });
     reg(CmdId::TabCloseRight, [this](const Args&) {
-        return CloseSide(activeId_, false) > 0;
+        if (CloseSide(activeId_, false) > 0) return true;
+        CommandBus::Get().NoteFailure(L"右侧没有标签");
+        return false;
     });
     reg(CmdId::TabClone, [this](const Args&) {
-        NewTab(ActivePath(), NewTabIndex());
-        return true;
+        const std::wstring p = ActivePath();
+        const int id = NewTab(p, NewTabIndex());
+        if (!id) CommandBus::Get().NoteFailure(L"无法复制当前标签：" + p);
+        return id != 0;
     });
     // ---- 标签个性化：与右键菜单共用同一份实现（R6：动作只有一份）----
     // 菜单路径直接调 RenameTab/SetTabColor；命令路径经这里转一道，
@@ -123,13 +143,52 @@ void App::RegisterTabCommands() {
         if (!id) return false;
         const core::TabRef* ref = tabSet_.Find(id);
         if (!ref) return false;
-        CopyText(core::DisplayTitle(*ref));
+        return CopyText(core::DisplayTitle(*ref));
+    });
+    // 固定标签：语义与 tab.lock 同构（按值幂等，省略 = 切换）。
+    // 给 pinned 而不是复用 locked：两者保护的东西不同 ——
+    // 固定管"位置 + 不被批量/中键误关"，锁定管"连显式关闭也拒绝"。
+    reg(CmdId::TabPin, [this](const Args& args) {
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        const int id = tabSet_.IdAt(idx);
+        if (!id) return false;
+        const core::TabRef* ref = tabSet_.Find(id);
+        if (!ref) return false;
+        const bool want = args.Has(L"pinned") ? args.Bool(L"pinned", true) : !ref->pinned;
+        SetTabPinned(id, want);
         return true;
     });
-    reg(CmdId::TabReopenClosed, [this](const Args&) {
-        std::wstring path;
-        if (tabSet_.PopClosed(&path)) NewTab(path);
+    reg(CmdId::TabSwitcher, [this](const Args&) {
+        ShowTabSwitcher();
         return true;
+    });
+    // Ctrl+Tab / Ctrl+Shift+Tab：按 MRU 循环，而不是按位置序。
+    // 位置序仍可用 Ctrl+PageDown/PageUp（tab.next / tab.prev）。
+    reg(CmdId::TabCycleNext, [this](const Args&) { return CycleMru(true); });
+    reg(CmdId::TabCyclePrev, [this](const Args&) { return CycleMru(false); });
+    reg(CmdId::TabMoveNewWindow, [this](const Args& args) {
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        const int id = tabSet_.IdAt(idx);
+        const core::TabRef* ref = tabSet_.Find(id);
+        if (!ref) return false;
+        if (ref->locked || ref->pinned) {
+            CommandBus::Get().NoteFailure(L"锁定/固定的标签不能移到新窗口");
+            return false;
+        }
+        if (ref->path.empty()) {
+            CommandBus::Get().NoteFailure(L"该标签没有可打开的路径");
+            return false;
+        }
+        // 有损近似：ShellView 是进程内 COM 对象，不能跨进程搬。新实例按路径打开，
+        // 源标签关闭；历史/视图状态不迁移（描述里已注明）。
+        OpenPathInNewWindow(ref->path);
+        return CloseTab(id);
+    });
+    reg(CmdId::TabReopenClosed, [this](const Args&) {
+        // 先建后弹栈，失败时保留关闭历史（见 App::ReopenClosed）。
+        return ReopenClosed(0);
     });
     reg(CmdId::TabMoveLeft, [this](const Args&) {
         MoveTab(activeId_, ActiveIndex() - 1);
@@ -227,8 +286,18 @@ void App::RegisterTabCommands() {
         return go(L"::{26EE0668-A00A-44D7-9371-BEB064C98683}");
     });
     reg(CmdId::GoPowerShell, [this](const Args&) {
-        RunTerminal(hwnd_, ActivePath(), false);
-        return true;
+        // 名字（go.powershell）、分组（Go=跳转到已知位置）、标题（"PowerShell 目录"）
+        // 三处说的都是"去这个目录"。以前实现是 RunTerminal(当前目录) —— 起终端、
+        // 不导航，名实不符，且与 ext.terminal 完全重复。
+        // 起终端归 ext.terminal，这条只做导航。
+        wchar_t win[MAX_PATH] = L"";
+        if (!GetWindowsDirectoryW(win, MAX_PATH)) return false;
+        std::wstring dir = std::wstring(win) + L"\\System32\\WindowsPowerShell\\v1.0";
+        if (!tf::IsDirectory(dir)) {
+            dir = std::wstring(win) + L"\\System32";   // 旧系统没有 v1.0 子目录
+            if (!tf::IsDirectory(dir)) return false;
+        }
+        return NavigateActive(dir, true);
     });
 
     // ---------------- 导航 ----------------
@@ -247,8 +316,7 @@ void App::RegisterTabCommands() {
             if (!all.empty()) all += L"\r\n";
             all += p;
         }
-        CopyText(all);
-        return true;
+        return CopyText(all);
     });
     reg(CmdId::PathCopyName, [this](const Args&) {
         auto paths = SelectedOrFolder();
@@ -257,12 +325,15 @@ void App::RegisterTabCommands() {
             if (!all.empty()) all += L"\r\n";
             all += LeafOf(p);
         }
-        CopyText(all);
-        return true;
+        return CopyText(all);
     });
-    reg(CmdId::PathCopyDir, [this](const Args&) {
-        CopyText(ActivePath());
-        return true;
+    // 复制当前目录：把写入的内容一并返回。剪贴板没有读回面（不打算给 AI 读
+    // 剪贴板——里面有密码），所以"到底复制了什么"只能由命令自己回报。
+    regR(CmdId::PathCopyDir, [this](const Args&, json::Value* out) {
+        const std::wstring text = ActivePath();
+        const bool okc = CopyText(text);
+        if (okc && out) out->Set(L"text", json::Value::MakeStr(text));
+        return okc;
     });
     reg(CmdId::PathCopyUnc, [this](const Args&) {
         auto paths = SelectedOrFolder();
@@ -271,8 +342,7 @@ void App::RegisterTabCommands() {
             if (!all.empty()) all += L"\r\n";
             all += ToUnc(p);
         }
-        CopyText(all);
-        return true;
+        return CopyText(all);
     });
     reg(CmdId::PathCopyExt, [this](const Args&) {
         auto paths = SelectedOrFolder();
@@ -282,16 +352,96 @@ void App::RegisterTabCommands() {
             if (!all.empty()) all += L"\r\n";
             all += (ext && *ext) ? ext + 1 : L"";
         }
-        CopyText(all);
-        return true;
+        return CopyText(all);
     });
-    reg(CmdId::PathCopyTab, [this](const Args&) {
+    regR(CmdId::PathCopyTab, [this](const Args&, json::Value* out) {
         std::wstring all;
         for (const auto& t : tabSet_.items()) {
             if (!all.empty()) all += L"\r\n";
             all += t.path;
         }
-        CopyText(all);
+        const bool okc = CopyText(all);
+        if (okc && out) out->Set(L"text", json::Value::MakeStr(all));
+        return okc;
+    });
+
+    // ---- 关闭历史 ----
+    // 列表只读：菜单/命令面板/AI 都从这里拿"第几条"，再用 tab.reopen.index 打开。
+    // 没有它，"最近关闭"就只能是一个盲盒按钮（用户不知道会开出哪个目录）。
+    regR(CmdId::TabClosedList, [this](const Args&, json::Value* out) {
+        json::Value paths = json::Value::MakeArray();
+        for (const auto& p : tabSet_.closed()) paths.arr.push_back(json::Value::MakeStr(p));
+        out->Set(L"paths", paths);
+        out->Set(L"count", json::Value::MakeInt(static_cast<int>(tabSet_.closed().size())));
+        return true;
+    });
+    regR(CmdId::TabReopenAt, [this](const Args& args, json::Value* out) {
+        const int idx = args.Int(L"index", -1);
+        if (idx < 0 || idx >= static_cast<int>(tabSet_.closed().size())) {
+            CommandBus::Get().NoteFailure(L"关闭历史里没有第 " + std::to_wstring(idx) + L" 条");
+            return false;
+        }
+        if (!ReopenClosed(idx)) return false;   // 失败原因已由 ReopenClosed 给出
+        out->Set(L"path", json::Value::MakeStr(ActivePath()));
+        return true;
+    });
+
+    // ---- 导航栏历史（后端下拉菜单的结构化版本）----
+    //
+    // 这三条补的是同一处缺口：地址框下拉里的历史只有鼠标能看能点。没有结构化
+    // 入口时，AI 只能盲按 nav.back 再读回路径 —— 想跳到第 3 条得试三次，
+    // 而且不知道中途会经过哪。列表先给出来，"会退到哪"就成了可核对的事实。
+    regR(CmdId::NavHistoryList, [this](const Args& args, json::Value* out) {
+        if (!out) return false;
+        const bool backward = args.Bool(L"backward", true);
+        const std::vector<std::wstring> paths = HistoryList(backward);
+        json::Value arr = json::Value::MakeArray();
+        for (const auto& p : paths) arr.arr.push_back(json::Value::MakeStr(p));
+        out->Set(L"backward", json::Value::MakeBool(backward));
+        out->Set(L"paths", arr);
+        out->Set(L"count", json::Value::MakeInt(static_cast<int>(paths.size())));
+        return true;
+    });
+    regR(CmdId::NavHistoryJump, [this](const Args& args, json::Value* out) {
+        if (!out) return false;
+        const int depth = args.Int(L"depth", -1);
+        const bool backward = args.Bool(L"backward", true);
+        if (depth < 0) {
+            CommandBus::Get().NoteFailure(L"缺少必填参数：depth");
+            return false;
+        }
+        // 越界先拒绝：GotoHistory 对越界是静默忽略（按钮灰显已挡过一层），
+        // 机器侧拿到"成功但没动"就会误以为跳过了。
+        const std::vector<std::wstring> list = HistoryList(backward);
+        const int n = static_cast<int>(list.size());
+        if (depth >= n) {
+            CommandBus::Get().NoteFailure(L"历史条目不够：只有 " + std::to_wstring(n) + L" 条");
+            return false;
+        }
+        // to 取**历史条目**而不是跳完再读 ActivePath()：导航是异步的（Shell 回调
+        // 才写路径），立刻回读只会读到出发地 —— 那正是"回报成功但内容不对"。
+        const std::wstring from = ActivePath();
+        const std::wstring to = list[depth];
+        JumpHistory(depth, backward);
+        out->Set(L"from", json::Value::MakeStr(from));
+        out->Set(L"to", json::Value::MakeStr(to));
+        return true;
+    });
+    regR(CmdId::NavHistoryClear, [this](const Args&, json::Value* out) {
+        if (!out) return false;
+        // 与地址框下拉底部「清除历史记录」同一实现（App::ClearHistory）。
+        const int recentCleared = ClearHistory();
+        out->Set(L"path", json::Value::MakeStr(ActivePath()));
+        out->Set(L"recentCleared", json::Value::MakeInt(recentCleared));
+        return true;
+    });
+    regR(CmdId::NavRecentList, [this](const Args&, json::Value* out) {
+        if (!out) return false;
+        const auto& recent = Config::Get().s().recentPaths;
+        json::Value arr = json::Value::MakeArray();
+        for (const auto& p : recent) arr.arr.push_back(json::Value::MakeStr(p));
+        out->Set(L"paths", arr);
+        out->Set(L"count", json::Value::MakeInt(static_cast<int>(recent.size())));
         return true;
     });
 }

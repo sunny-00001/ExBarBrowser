@@ -103,17 +103,24 @@ bool App::RunSearch(const std::wstring& query, std::wstring* url) {
         if (searchFrom_.empty()) return true;   // 本来就不在搜索里：什么也不用做
         const std::wstring back = searchFrom_;
         searchFrom_.clear();
+        searchQuery_.clear();
         return NavigateActive(back, true);
     }
     // 已经是搜索视图时，来源目录要用最早的（否则"在搜索结果里再搜"会搜到 0 项）。
-    if (searchFrom_.empty()) searchFrom_ = t->path();
-    const std::wstring u = searchurl::Build(q, searchFrom_);
+    // 注意"最早"必须在**成功进入搜索之后**才记进 searchFrom_：先记账再导航，
+    // 导航失败就会留下一个假的搜索态（state 说在搜、视图还在原目录）。
+    const std::wstring scope = searchFrom_.empty() ? t->path() : searchFrom_;
+    const std::wstring u = searchurl::Build(q, scope);
     if (url) *url = u;
     if (!t->view->Navigate(u)) {
         LogDbg(L"[search] 无法搜索：%s", u.c_str());
         MessageBeep(MB_ICONWARNING);
         return false;
     }
+    // 宿主视图（IExplorerBrowser）不接受 search-ms，见 ShellView::DoNavigate：
+    // navigate 已经失败，这里只处理"将来换了宿主、真的切过去了"的成功路径。
+    searchFrom_ = scope;
+    searchQuery_ = q;
     return true;
 }
 
@@ -135,21 +142,22 @@ void App::JumpHistory(int depth, bool backward) {
     GotoHistory(target);
 }
 
-void App::ClearHistory() {
+int App::ClearHistory() {
     Tab* t = Active();
-    if (!t) return;
+    if (!t) return 0;
     const std::wstring cur = t->path();
     t->nav.ClearKeepingHere();
 
     // 下拉里还混着"最近访问"（Config::recentPaths）—— 不清它的话，用户点了
     // "清除历史记录"会发现列表下半截原样还在，像是没生效。
     auto& recent = Config::Get().mutableSettings().recentPaths;
-    const size_t recentN = recent.size();
+    const int recentN = static_cast<int>(recent.size());
     recent.clear();
     Config::Get().Save();
 
-    LogDbg(L"[nav] 清除历史：标签栈保留当前=%s，最近访问清掉 %zu 条", cur.c_str(), recentN);
+    LogDbg(L"[nav] 清除历史：标签栈保留当前=%s，最近访问清掉 %d 条", cur.c_str(), recentN);
     SyncChrome();  // 重新算导航栏/标签栏状态（后退前进可用态跟着变）
+    return recentN;
 }
 
 // ---------------------------------------------------------------- 回调
@@ -213,6 +221,7 @@ void App::OnTabNav(ShellView* view, const std::wstring& path, const std::wstring
     // 前台/后台标签都走同一条刷新路径：曾经这里有一份"后台标签只重建标签栏"的
     // 复制粘贴版本，图标只从缓存取，新出现的路径永远没有图标。
     SyncChrome();
+    MarkSessionDirty();   // 路径变了：会话里的标签路径/历史要重新落盘
 }
 
 // 导航失败（同步失败或 Shell 回调 OnNavigationFailed）：把乐观写入的历史回滚掉。

@@ -1,23 +1,67 @@
-# 变更记录
-
-本文件记录 ExBarBrowser 的所有可见变更。
-格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
-
-分类约定：
-
-| 分类 | 含义 |
-|---|---|
-| `新增` | 新能力、新文件、新脚本 |
-| `变更` | 行为/接口/视觉调整（不兼容的写进 `不兼容`） |
-| `修复` | 修 bug |
-| `移除` | 删掉的能力或文件 |
-| `安全` | 注册表、权限、路径处理相关 |
-
-> 计划中的工作不进本文件，见 [docs/ROADMAP.md](docs/ROADMAP.md)。
-
----
-
 ## [Unreleased]
+
+### 新增（AI 通道：失败可机器分类 + 能力面自述）
+
+让"新会话 → 提需求 → 调命令 → 缺什么补什么"这条闭环真正落在产品通道里，而不是外部脚本里：
+
+- **`errorCode`（10 类）**：`tools/call` 的响应与 `command` 事件新增机器码，与中文 `error` 并存。
+  `unknown_tool` / `not_exposed` / `not_implemented` 三态分离 —— 以前同一句
+  "未知或未暴露给 AI 的命令" 混着三种修法完全不同的情况（新增命令 / 补元数据 / 写 handler）。
+  另有 `bad_args` / `schema_invalid` / `danger_disabled` / `need_approval` / `blocked` /
+  `failed` / `effect_not_met`（handler 成功但断言不符）。
+- **`exbar/capabilities`（旧格式也可 `capabilities`）**：直接由命令表算出
+  `{total, implemented, aiExposed, notImplemented[], notExposed[]}`。
+  客户端不再需要 grep 源码推断"是没这条命令，还是有但没开放"。
+- **`check_ai_meta.py` 第 22 项**：钉住 errorCode 白名单、三态可区分、
+  两条通道都暴露能力面、能力面必须数命令表（不另存清单）、单测必须守着。
+- `tests/ai_api_test.cpp`：新增 errorCode 五类断言与能力面计数一致性
+  （`aiExposed` 必须等于 `tools/list` 条数，两个面不能各说各话）。
+
+### 修复
+
+- `app_commands_misc.cpp` 缺 `#include "prompt.h"`：`NamedSessionSave` 调用 `PromptText` 时
+  `use of undeclared identifier`，整仓编不过（其余用 `PromptText` 的分片都包含该头）。
+- `tests/run_all.sh` 的链接库补 `-luiautomationcore`：`shell_input` / `tab_uia` 引入 UIA 后，
+  主构建的 `LIBS` 有这一项而测试脚本漏了，导致全量单测在链接期
+  `undefined symbol: UiaReturnRawElementProvider`（与任何单个测试无关）。
+
+### 新增（导航栏能力缺口：历史 / 最近访问 / 复制内容回读）
+
+导航栏全操作面复核（AI 通道逐条实测）列出的缺口，逐条补成结构化入口：
+
+- **`nav.history.list`**：列出当前标签可后退/可前进的条目（最近的在前）。过去下拉历史只有
+  鼠标能看，机器侧只能盲按 `nav.back` 再回读路径 —— 跳到第 3 条得试三次，且不知道会路过哪。
+- **`nav.history.jump`**：`{depth, backward?}` 跳到第 N 条。越界先拒绝（`GotoHistory` 对越界
+  是静默忽略，机器侧会误以为跳过了）；`to` 取自历史条目而不是跳完再读 `activePath` ——
+  导航是异步的，立刻回读只会读到出发地。
+- **`nav.history.clear`**：与地址框下拉底部「清除历史记录」同一实现（`App::ClearHistory`），
+  返回被清掉的「最近访问」条数。破坏性，需 `aiAllowDanger` + `approve`。
+- **`nav.recent.list`**：地址框下拉里「最近访问」的结构化读面。
+- **`path.copy.dir` / `path.copy.tab` 返回 `text`**：剪贴板没有读回面（也不打算给 AI 读剪贴板
+  ——里面可能有密码），"到底复制了什么"只能由命令自己回报。
+- **`state` 新增 `searching` / `searchScope` / `searchQuery`**：搜索态的唯一可回读来源；
+  `check_ai_meta.py` 第 17 项把它登记进 `WRITABLE_STATE`，缺回读会直接 FAIL。
+
+### 修复（导航栏复核发现的 5 处缺陷）
+
+- **选中路径错挂到桌面（严重）**：`ShellView::SelectionPaths` 拿 `IFolderView::Items` 的子 PIDL
+  去 `SHCreateItemFromIDList` 解析，等于按桌面根拼接 —— 在 `E:\ExBarBrowser` 选中 10 个文件夹，
+  回读全成了 `C:\Users\<me>\Desktop\src`。改用 `SHCreateItemWithParent(当前 folder, pidl)`。
+  受影响的不只是观测面：`bmk.add.selection` 直接采信这些路径且不校验存在性，
+  会把桌面前的假路径写进书签。
+- **搜索"假成功"**：`search.find` 与导航栏搜索框都返回 ok + `searching:true`，但视图原地不动
+  （零结果查询后 `itemCount` 一个不少）。根因是 `search-ms:` 是协议处理器 URL，
+  `IExplorerBrowser` 没有搜索带，`BrowseToObject` 返回 S_OK 却不切视图。
+  现在 `ShellView::DoNavigate` 明确拒绝 `search-ms:`，`RunSearch` 只在导航成功后才记
+  `searchFrom_/searchQuery_`（先记账再导航会留下假搜索态）。**真正的搜索仍是缺口**，
+  见 docs/AI-INTERFACE.md §8。
+- **`fs.open` 错误不透明**：目标不存在时只报"命令执行失败"，而人侧 `NavigateActive` 会弹
+  "无法打开：…"。补 `NoteFailure("目标不存在：<path>")`；`fs.open.tab` / `fs.open.window` 同步。
+- **`go.powershell` 名实不符**：标题"PowerShell 目录"、分组 `Go`（跳转到已知位置），
+  实现却是 `RunTerminal(当前目录)` —— 起终端、不导航，且与 `ext.terminal` 完全重复。
+  改为真导航到 `%SystemRoot%\System32\WindowsPowerShell\v1.0`（不存在则退回 `System32`）。
+- **`nav.up` 在命名空间根的拒绝文案偏**：站在控制面板上按向上得到"已经是顶层（此电脑或网络根）"，
+  与现场不符。改为"已经是顶层（此电脑、命名空间或网络根）"。
 
 ### 新增（开发期进程生命周期：`tools/agentctl.py`）
 
@@ -44,27 +88,41 @@
 
 ### 修复
 
-- `tests/run_all.sh` 的链接库补 `-luiautomationcore`：主构建 `build_fast.py` 的
-  `LIBS` 早有这一项，单测脚本漏了。两边链的是同一个 obj 目录，单测链接时少一个
-  导入库，只要被链进去的 TU 引用了 uiautomationcore 导出的函数，就会在链接期统一
-  报 `undefined symbol` —— 与任何单个测试无关，看起来像"测试全坏了"。
+- `app_wnd.cpp` 的 `WM_TIMER` 分支把成员函数 `App::hwnd()` 当成 HWND 值传给 `KillTimer`
+  （`WndProc` 是静态成员，没有 `this`），编译报 "call to non-static member function without
+  an object argument"；改用消息参数 `h`。
 
-### 新增（AI 通道：失败可机器分类 + 能力面自述）
+### 修复（结构化审计缺陷 #1–#4：撤销边界/路径校验/返回值/错误透明）
 
-让"新会话 → 提需求 → 调命令 → 缺什么补什么"这条闭环真正落在产品通道里，而不是外部脚本里：
+- **撤销按 actor 划边界**：快照栈带来源标签，AI 的撤销只到自己的上一次修改为止；
+  顶快照来自界面操作时机器侧 undo 被拒（"上一次修改来自界面操作，AI 撤销到此为止"），
+  不再穿透回滚用户几天前的手工整理。界面侧撤销不变（完整 LIFO）。
+- **shell 命名空间路径入口校验**：`::{8-4-4-4-12}` 纯格式校验（40 字符），
+  `bmk.add.path` / `bmk.edit` 双入口拦截——缺 `}` 的 CLSID 曾照单落盘，
+  之后"打不开 + 通用图标"两头排查（当日真实踩坑两次）。
+- **三条旧命令补返回值契约**：`bmk.add.path` / `bmk.add.current` / `bmk.newfolder`
+  声明 outputSchema 并真实返回 `{"id": ...}`（add.path 移动场景返回 `{"id","moved"}`）；
+  连带修复 AI 调 add.current 遇已收藏路径会弹 MessageBox 卡管道线程的问题
+  （机器侧改结构化失败）。
+- **8 个 handler 补 NoteFailure**：缺少参数 / 幽灵 id / 路径已收藏 / parentId 非分类 /
+  空书清空 / 无历史撤销，均报具体原因而非笼统"命令执行失败"。
 
-- **`errorCode`（10 类）**：`tools/call` 的响应与 `command` 事件新增机器码，与中文 `error` 并存。
-  `unknown_tool` / `not_exposed` / `not_implemented` 三态分离 —— 以前同一句
-  "未知或未暴露给 AI 的命令" 混着三种修法完全不同的情况（新增命令 / 补元数据 / 写 handler）。
-  另有 `bad_args` / `schema_invalid` / `danger_disabled` / `need_approval` / `blocked` /
-  `failed` / `effect_not_met`（handler 成功但断言不符）。
-- **`exbar/capabilities`（旧格式也可 `capabilities`）**：直接由命令表算出
-  `{total, implemented, aiExposed, notImplemented[], notExposed[]}`。
-  客户端不再需要 grep 源码推断"是没这条命令，还是有但没开放"。
-- **`check_ai_meta.py` 第 22 项**：钉住 errorCode 白名单、三态可区分、
-  两条通道都暴露能力面、能力面必须数命令表（不另存清单）、单测必须守着。
-- `tests/ai_api_test.cpp`：新增 errorCode 五类断言与能力面计数一致性
-  （`aiExposed` 必须等于 `tools/list` 条数，两个面不能各说各话）。
+### 新增（书签能力缺口：批量收藏与复制）
+
+书签全操作面结构化审查确认的两处能力缺口，本次补齐（命令 + 右键菜单双入口，R20 人机等价）：
+
+- **新命令 `bmk.add.tabs`（收藏所有打开标签页）**：把当前所有标签页的目录批量加入书签栏，
+  已收藏/空标签跳过（`skipped` 计数）。返回 `added` / `skipped` / `ids`（新条目 id，
+  顺序同标签顺序）。入口：书签栏空白处右键 →「收藏所有标签页」（带报数反馈）。
+- **新命令 `bmk.copy`（复制书签）**：复制一条书签，分类连子树深拷贝；副本名加「副本」
+  后缀、插到原条目之后，返回新条目 `id`。子树所有 id 重新分配——原样拷贝会让副本与
+  原件撞 id（Find 命中前一条，删除/改名作用到别人身上）。入口：书签右键 →「复制书签」。
+- 两条新命令都带 outputSchema 并**真实返回 id**——与既有 `add.current`/`add.path`/
+  `newfolder` 成功时不返回 id 的缺口相反，新命令从第一天就是全返回值契约。
+
+验证：单测 42/42 绿；`check_ai_meta` 21 项全过；`check_commands` 三方一致；E2E 实测
+`add.tabs`（added=2/skipped=1 → 二次调用 added=0/skipped=3 幂等）、`copy`（书签副本
+紧挨原件；分类副本内子项 id 全新）。测试产物已清理，书签恢复基线。
 
 ### 变更（多实例与 AI 通道形态）
 

@@ -21,7 +21,9 @@ void TabStrip::ShowTabMenu(int index, POINT screen) {
     // 锁定标签不可关；批量关闭还要看"目标集合里有没有非锁定的"。
     bool hasClosableOther = false, hasClosableLeft = false, hasClosableRight = false;
     for (int j = 0; j < n; ++j) {
-        if (items_[static_cast<size_t>(j)].locked) continue;
+        // 固定与锁定都不参与批量关闭：固定是"常用目录，别顺手关掉"，
+        // 锁定是"明确不许关"。两者都不该让"关闭其他"变成部分成功的盲盒。
+        if (items_[static_cast<size_t>(j)].locked || items_[static_cast<size_t>(j)].pinned) continue;
         if (j != index) hasClosableOther = true;
         if (j < index) hasClosableLeft = true;
         if (j > index) hasClosableRight = true;
@@ -29,6 +31,7 @@ void TabStrip::ShowTabMenu(int index, POINT screen) {
 
     ui::Menu menu;
     menu.Add(L"新建标签页", kTabMenuNew, ico::IconId::Add)
+        .Add(L"标签切换器...", kTabMenuSwitcher, ico::IconId::Search)
         .Add(L"关闭", kTabMenuClose, ico::IconId::Close, items_[i].locked)
         .Add(L"关闭其他", kTabMenuCloseOther, ico::IconId::Close, !hasClosableOther)
         .Add(L"关闭左侧", kTabMenuCloseLeft, ico::IconId::ChevronLeft, !hasClosableLeft)
@@ -42,6 +45,9 @@ void TabStrip::ShowTabMenu(int index, POINT screen) {
         .Add(L"复制标签", kTabMenuClone, ico::IconId::Copy)
         .Add(items_[i].locked ? L"解锁标签" : L"锁定标签", kTabMenuToggleLock,
              ico::IconId::Lock)
+        // 固定与锁定并列但语义不同：固定管位置与误触，锁定管"关不掉"。
+        .Add(items_[i].pinned ? L"取消固定" : L"固定标签", kTabMenuTogglePin,
+             ico::IconId::Pin)
         .Add(L"复制路径", kTabMenuCopyPath, ico::IconId::Copy)
         // 改名之后"复制标签名"才有意义；单独一条而不是让"复制路径"二义。
         .Add(L"复制标签名", kTabMenuCopyTitle, ico::IconId::Copy)
@@ -50,13 +56,29 @@ void TabStrip::ShowTabMenu(int index, POINT screen) {
         .Add(L"向右移动", kTabMenuMoveRight, ico::IconId::ChevronRight, !canRight)
         .Add(L"移动到开头", kTabMenuMoveFirst, ico::IconId::Back, !canLeft)
         .Add(L"移动到末尾", kTabMenuMoveLast, ico::IconId::Forward, !canRight)
+        .Add(L"移到新窗口（不迁移历史）", kTabMenuMoveNewWindow, ico::IconId::NewWindow,
+             items_[i].locked || items_[i].pinned || items_[i].path.empty())
         .Separator()
         .Add(L"重新打开关闭的标签", kTabMenuReopen, ico::IconId::Refresh, !canReopen_);
+
+    // 最近关闭：栈深 20，菜单只列前 10 条（再多会压过主菜单，也会把
+    // 用户真正要点的“关闭/锁定”挤到滚动区）。标题行是禁用态，
+    // 只为分组；真正的动作号是 kTabMenuReopenBase + 序号。
+    if (!closed_.empty()) {
+        menu.Separator().Add(L"最近关闭", -1, ico::IconId::Refresh, true);
+        const int shown = std::min<int>(10, static_cast<int>(closed_.size()));
+        for (int k = 0; k < shown; ++k) {
+            const std::wstring& p = closed_[static_cast<size_t>(k)];
+            std::wstring label = nav::Leaf(p);
+            if (label.empty()) label = p;
+            menu.AddPath(label, p, kTabMenuReopenBase + k, false);
+        }
+    }
 
     // 锚点键带标签下标：不同标签的右键菜单是不同锚点。
     const std::wstring toggleKey = L"tab.menu." + std::to_wstring(index);
     ui::MenuOptions opt;
-    opt.maxRows = 24;   // 21 行，默认 20 会平白多一条滚动条
+    opt.maxRows = 36;   // 原 21 行 + 最近关闭最多 12 行（标题+10 条+分隔）
     opt.toggleKey = toggleKey.c_str();
     const int action = menu.Show(hwnd_, *theme_, screen, opt);
     if (action < 0) return;

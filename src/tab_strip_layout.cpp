@@ -3,6 +3,7 @@
 // 所有尺寸都过 theme_->S()，本文件不出现裸像素；DPI 变化由 ReloadTheme 触发重算。
 #include "tab_strip.h"
 
+#include "config.h"
 #include "ui_draw.h"
 
 void TabStrip::EnsureVisible(int index) {
@@ -47,7 +48,11 @@ void TabStrip::Layout() {
     const int h = rc.bottom;
     const int n = static_cast<int>(items_.size());
 
-    std::vector<int> widths(static_cast<size_t>(n), theme_->S(112));
+    // 宽度区间来自设置（默认 112–230dp，与旧行为一致）。
+    // 只用一处读取，量字/均分/溢出三种分支共用同一对边界。
+    const int minW = theme_->S(Config::Get().s().tabMinWidth);
+    const int maxW = theme_->S(Config::Get().s().tabMaxWidth);
+    std::vector<int> widths(static_cast<size_t>(n), minW);
     int total = 0;
 
     // Chromium 的快速关闭：关掉一个标签后，右侧标签左移、下一个关闭钮仍落在
@@ -69,24 +74,32 @@ void TabStrip::Layout() {
         }
     } else {
         for (int i = 0; i < n; ++i) {
+            // 固定标签只留图标：宽度固定、不参与"按标题量字"。
+            // 这是 pin 的核心视觉信号 —— 与 Chrome/VS Code 的图标化一致，
+            // 也让固定区在标签很多时占用可控。
+            if (items_[static_cast<size_t>(i)].pinned) {
+                widths[static_cast<size_t>(i)] = theme_->S(40);
+                total += widths[static_cast<size_t>(i)];
+                continue;
+            }
             int w = ui::MeasureText(dc, theme_->font, items_[static_cast<size_t>(i)].title) +
                     theme_->S(62);
-            w = std::max(theme_->S(112), std::min(w, theme_->S(230)));
+            w = std::max(minW, std::min(w, maxW));
             widths[static_cast<size_t>(i)] = w;
             total += w;
         }
     }
 
     overflow_ = false;
-    int width = theme_->S(112);
+    int width = minW;
     if (!rapid && n > 0) {
         if (total <= avail) {
             // 按内容宽排，剩余空间留白
-        } else if (n * theme_->S(112) <= avail) {
+        } else if (n * minW <= avail) {
             width = avail / n;
         } else {
             overflow_ = true;
-            width = theme_->S(112);
+            width = minW;
         }
     }
 
@@ -101,9 +114,12 @@ void TabStrip::Layout() {
     lastWidths_.reserve(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i) {
         const int w = rapid ? widths[static_cast<size_t>(i)]
-                            : (overflow_ ? width
-                                         : (total <= avail ? widths[static_cast<size_t>(i)]
-                                                           : width));
+                            : (items_[static_cast<size_t>(i)].pinned
+                                   ? widths[static_cast<size_t>(i)]
+                                   : (overflow_ ? width
+                                                : (total <= avail
+                                                       ? widths[static_cast<size_t>(i)]
+                                                       : width)));
         lastWidths_.push_back(w);
         RECT r{x, 0, x + w, h};
         tabRects_.push_back(r);

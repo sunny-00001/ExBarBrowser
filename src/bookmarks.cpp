@@ -2,6 +2,7 @@
 
 #include "bmk_html.h"
 
+#include "commands.h"   // PushUndo 标 actor：读 CommandBus::fromMachine（撤销边界用）
 #include "common.h"
 #include "str.h"
 #include "config.h"
@@ -376,6 +377,44 @@ std::wstring BookmarkStore::AddFolder(const std::wstring& name, const std::wstri
     return list->back().id;
 }
 
+namespace {
+
+// 找到 id 所在的（父）列表与下标；找不到返回 nullptr。用于"插到原条目后面"。
+BookmarkList* ListContaining(BookmarkList& list, const std::wstring& id, size_t* idx) {
+    for (size_t i = 0; i < list.size(); ++i) {
+        if (list[i].id == id) { *idx = i; return &list; }
+        if (BookmarkList* sub = ListContaining(list[i].children, id, idx)) return sub;
+    }
+    return nullptr;
+}
+
+// 子树全部清 id（AssignIds 只给空 id 发新号，不清就会与原件撞 id）。
+void ClearIds(BookmarkList& list) {
+    for (auto& n : list) {
+        n.id.clear();
+        ClearIds(n.children);
+    }
+}
+
+}  // namespace
+
+std::wstring BookmarkStore::Copy(const std::wstring& id) {
+    size_t idx = 0;
+    BookmarkList* list = ListContaining(roots_, id, &idx);
+    if (!list || idx >= list->size()) return std::wstring();
+    PushUndo();
+    const BookmarkNode src = (*list)[idx];   // 拷贝一份再插入，insert 后引用会失效
+    BookmarkNode n = src;
+    n.id.clear();
+    ClearIds(n.children);
+    n.name = src.name + L" 副本";
+    AssignIds(n.children, seq_);
+    n.id = NewId(n.isFolder);
+    list->insert(list->begin() + static_cast<long>(idx) + 1, std::move(n));
+    Touch();
+    return (*list)[idx + 1].id;
+}
+
 bool BookmarkStore::Remove(const std::wstring& id) {
     if (id.empty()) return false;
     PushUndo();
@@ -701,15 +740,38 @@ size_t BookmarkStore::RemoveDuplicatePaths() {
 
 void BookmarkStore::PushUndo() {
     if (undo_.size() >= 20) undo_.erase(undo_.begin());
-    undo_.push_back(roots_);
+    undo_.push_back({roots_, CommandBus::Get().fromMachine()});
+}
+
+bool BookmarkStore::TopUndoFromMachine() const {
+    return !undo_.empty() && undo_.back().byMachine;
 }
 
 bool BookmarkStore::Undo() {
     if (undo_.empty()) return false;
-    roots_ = std::move(undo_.back());
+    roots_ = std::move(undo_.back().roots);
     undo_.pop_back();
     Touch();
     return true;
+}
+
+// shell 命名空间路径的纯格式校验：::{8-4-4-4-12}，共 40 字符。
+// 只查形态（确定性、可单测）；"形态合法但 GUID 不存在"只能靠 shell 解析，
+// 那是点击导航的事。文件系统路径（不以 ::{ 开头）不归这条规则管。
+bool IsValidShellNamespacePath(const std::wstring& path) {
+    if (path.compare(0, 3, L"::{") != 0) return true;
+    if (path.size() != 40 || path.back() != L'}') return false;
+    static constexpr int kSegLens[] = {8, 4, 4, 4, 12};
+    size_t pos = 3;
+    for (int i = 0; i < 5; ++i) {
+        for (int k = 0; k < kSegLens[i]; ++k, ++pos)
+            if (!std::iswxdigit(path[pos])) return false;
+        if (i < 4) {
+            if (path[pos] != L'-') return false;
+            ++pos;
+        }
+    }
+    return pos == 39;
 }
 
 FILETIME BookmarkStore::LastWriteOf(const std::wstring& path) const {

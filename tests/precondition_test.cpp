@@ -81,7 +81,7 @@ int main() {
         SetStateProbe([] { return MakeState(0, 0, false, 1, false, false); });
         std::wstring r;
         Check(!Can(L"NavUp", &r), "canGoUp=false 时不可执行");
-        Check(r == L"已经是顶层（此电脑或网络根）", "原因指出是顶层");
+        Check(r == L"已经是顶层（此电脑、命名空间或网络根）", "原因指出是顶层");
 
         SetStateProbe([] { return MakeState(0, 0, false, 1, false, true); });
         Check(Can(L"NavUp"), "canGoUp=true 时可执行");

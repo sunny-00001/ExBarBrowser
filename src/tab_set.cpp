@@ -105,6 +105,22 @@ const TabRef* TabSet::Find(int id) const {
     return nullptr;
 }
 
+void TabSet::SetPinned(int id, bool pinned) {
+    const int from = IndexOf(id);
+    if (from < 0) return;
+    if (items_[static_cast<size_t>(from)].pinned == pinned) return;
+    items_[static_cast<size_t>(from)].pinned = pinned;
+    // 固定区 = 开头的连续 pinned。
+    //   pin   ：移到固定区末尾 → 最终下标 = 固定项总数 - 1。
+    //   unpin ：移到第一个未固定位（Chrome 语义）→ 最终下标 = 剩余固定项数。
+    // 用"总数"而不是"前缀长度"：待固定项此刻可能还在非固定区中间，
+    // 前缀长度只数到第一个未固定项就停了。
+    int total = 0;
+    for (const auto& t : items_)
+        if (t.pinned) ++total;
+    Move(id, pinned ? total - 1 : total);
+}
+
 void TabSet::Move(int id, int toIndex) {
     int from = IndexOf(id);
     if (from < 0) return;
@@ -128,6 +144,36 @@ int TabSet::PrevMru(int currentId) const {
     return mru_[1];
 }
 
+int TabSet::CycleMru(int dir) {
+    if (items_.size() < 2) return 0;
+    auto alive = [this](int id) { return IndexOf(id) >= 0; };
+    if (!cycleActive_) {
+        // 快照：先按实时 MRU，再补上尚未 Touch 过的标签（保持固定顺序）。
+        cycleOrder_.clear();
+        for (int id : mru_)
+            if (alive(id)) cycleOrder_.push_back(id);
+        for (const auto& t : items_)
+            if (std::find(cycleOrder_.begin(), cycleOrder_.end(), t.id) == cycleOrder_.end())
+                cycleOrder_.push_back(t.id);
+        cycleActive_ = true;
+        cyclePos_ = 0;   // mru_[0] 就是当前标签
+    }
+    // 循环期间可能有标签被关掉：先剔除失效 id，再取模，避免返回到已不存在的标签。
+    cycleOrder_.erase(std::remove_if(cycleOrder_.begin(), cycleOrder_.end(),
+                                     [&](int id) { return !alive(id); }),
+                      cycleOrder_.end());
+    if (cycleOrder_.empty()) return 0;
+    const int n = static_cast<int>(cycleOrder_.size());
+    cyclePos_ = ((cyclePos_ + dir) % n + n) % n;
+    return cycleOrder_[static_cast<size_t>(cyclePos_)];
+}
+
+void TabSet::ResetMruCycle() {
+    cycleActive_ = false;
+    cycleOrder_.clear();
+    cyclePos_ = 0;
+}
+
 void TabSet::PushClosed(const std::wstring& path) {
     if (path.empty()) return;
     closed_.erase(std::remove(closed_.begin(), closed_.end(), path), closed_.end());
@@ -139,6 +185,13 @@ bool TabSet::PopClosed(std::wstring* path) {
     if (closed_.empty()) return false;
     if (path) *path = closed_.front();
     closed_.erase(closed_.begin());
+    return true;
+}
+
+bool TabSet::PopClosedAt(int index, std::wstring* path) {
+    if (index < 0 || index >= static_cast<int>(closed_.size())) return false;
+    if (path) *path = closed_[static_cast<size_t>(index)];
+    closed_.erase(closed_.begin() + index);
     return true;
 }
 

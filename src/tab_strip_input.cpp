@@ -3,6 +3,8 @@
 // 只回答"点到了谁"，不改标签状态：选中/关闭/移动一律 PostMessage 给 App。
 #include "tab_strip.h"
 
+#include "tab_uia.h"
+
 #include "ui_draw.h"
 #include "mouse_rules.h"
 
@@ -182,7 +184,9 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         int tab = HitTab(x, y);
         if (sink_ && sink_(tab >= 0 ? MT_TAB : MT_EMPTY, m, MBTN_MIDDLE, CurrentMods(), pt))
             return 0;
-        if (tab >= 0 && !items_[static_cast<size_t>(tab)].locked) NotifyClose(tab);
+        if (tab >= 0 && !items_[static_cast<size_t>(tab)].locked &&
+            !items_[static_cast<size_t>(tab)].pinned)
+            NotifyClose(tab);
         return 0;
     }
     case WM_XBUTTONDOWN:
@@ -246,20 +250,19 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (HitClose(x, y) >= 0) return 0;
         int tab = HitTab(x, y);
         if (tab >= 0) {
-            // 双击标签正文 = 关闭该标签（Chrome / Edge / VS Code 的惯例）。
-            // 与关闭钮不同：正文是可双击的控件，这里才真正执行关闭。
+            // 双击标签正文**不再默认关闭**。
             //
-            // 顺序要点：
-            //   · sink 优先 —— 鼠标规则可以把某个标签的双击绑成别的动作，
-            //     吞掉了就不再走默认关闭（与其它输入的契约一致）。
-            //   · 锁定标签不关 —— 与中键关闭（见 WM_MBUTTONDOWN）同一口径。
-            //     双击是"好心"的快捷方式，不该绕开"锁定=关不掉"的硬约束。
-            //   · 不碰 dragIdx_ —— DBLCLK 后还有一次 UP，它由 suppressDblUp_
-            //     吞掉；在这里清反而会让误触发的默认行为漏过去。
+            // 这里曾按"Chrome / Edge / VS Code 的惯例"写成关闭，但那句话是错的：
+            // 三家对标签正文的双击都不关闭（VS Code 的双击是把预览标签固定）。
+            // 而 Windows 用户的肌肉记忆是"双击 = 打开/激活"，照旧实现的结果是
+            // 想切换却误关标签 —— 关闭已有中键、关闭钮、右键菜单三条明确入口，
+            // 不需要把双击也变成关闭。
+            //
+            // 仍然先问鼠标规则：用户若显式把"双击标签"绑成某个动作，规则优先
+            // （与其它输入的契约一致）。规则没接管就什么都不做。
             POINT pt{x, y};
             ClientToScreen(h, &pt);
             if (sink_ && sink_(MT_TAB, m, MBTN_LEFT, CurrentMods(), pt)) return 0;
-            if (!items_[static_cast<size_t>(tab)].locked) NotifyClose(tab);
             return 0;
         }
         // 空白/新增/溢出区：只把命中交给规则引擎，不再内置"双击空白 = 新建标签"。
@@ -288,6 +291,28 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (next >= static_cast<int>(items_.size())) next = 0;
             NotifySelect(next);
         }
+        return 0;
+    }
+    case WM_GETOBJECT:
+        // OBJID_CLIENT：UIA/读屏软件要这个窗口的可访问性树。
+        if (static_cast<LONG>(l) == OBJID_CLIENT)
+            return uia::HandleGetObject(this, h, w, l);
+        break;
+    case uia::kMsgCount:
+        return static_cast<LRESULT>(items_.size());
+    case uia::kMsgItem: {
+        auto* info = reinterpret_cast<uia::ItemInfo*>(l);
+        const int i = static_cast<int>(w);
+        if (!info || i < 0 || i >= static_cast<int>(items_.size())) return FALSE;
+        info->name = items_[static_cast<size_t>(i)].title;
+        info->path = items_[static_cast<size_t>(i)].path;
+        info->rect = tabRects_[static_cast<size_t>(i)];
+        info->selected = (i == active_);
+        return TRUE;
+    }
+    case uia::kMsgSelect: {
+        const int i = static_cast<int>(w);
+        if (i >= 0 && i < static_cast<int>(items_.size())) NotifySelect(i);
         return 0;
     }
     default:
@@ -350,6 +375,9 @@ int TabStrip::HitClose(int x, int y) const {
 bool TabStrip::CloseVisible(int index) const {
     if (index < 0 || index >= static_cast<int>(items_.size())) return false;
     if (items_[static_cast<size_t>(index)].locked) return false;
+    // 固定标签不画关闭钮：误点率最高的一块区域不该放"关掉常用目录"。
+    // 真要关，走右键菜单/命令（显式意图）。
+    if (items_[static_cast<size_t>(index)].pinned) return false;
     return index == active_ || (hoverKind_ == kTab && hoverIndex_ == index) ||
            (hoverKind_ == kClose && hoverIndex_ == index);
 }

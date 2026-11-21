@@ -121,6 +121,27 @@ enum class CmdId : int {
     // enum class 无显式赋值，往中间插会让后面所有 id 整体位移，
     // 基线（data/commands-baseline.json）与既有持久化引用全部失配。
     BmkAddSelection,   // 无参，needsSelection：收藏文件视图当前选中的文件夹（可多选）
+    BmkAddTabs,        // 无参：收藏当前所有打开标签页的目录（已收藏/空路径跳过），返回 added/skipped/ids
+    BmkCopy,           // {id}：复制书签条目（分类连子树深拷贝），插到原条目后，返回新 id
+    // ---- 标签关闭历史（P0：关闭栈已有 20 条，但过去只能"重开最近一个"）----
+    TabClosedList,     // 无参，只读：列出关闭历史（0 = 最近关闭）
+    TabReopenAt,       // {index}：重开第 index 条关闭记录（先建后弹栈）
+    TabPin,            // {index?, pinned?}：固定/取消固定（省略 pinned = 切换）
+    // ---- 导航栏历史（能力缺口补齐）----
+    // 下拉历史、"跳到第 N 条"、"清除历史" 过去只有鼠标一条路：快捷键绑不上、
+    // 命令面板里也没有，AI 更是连"后退会退到哪"都看不见。
+    NavHistoryList,    // {backward?}        只读：列出可后退/可前进的条目（最近的在前）
+    NavHistoryJump,    // {depth, backward?} 跳到第 depth 条（0 = 最近一条）
+    NavHistoryClear,   // 无参，破坏性：清空当前标签历史 + 全局""最近访问"
+    NavRecentList,     // 无参，只读：列出地址栏下拉里的"最近访问"
+    TabSwitcher,       // 无参：打开标签切换器（可键入前缀定位）。UI 模态，不暴露给 AI
+    TabCycleNext,      // 无参：按 MRU 循环到下一个（Ctrl+Tab）
+    TabCyclePrev,      // 无参：按 MRU 循环到上一个（Ctrl+Shift+Tab）
+    TabMoveNewWindow,  // {index?}：在新窗口打开该标签路径并关闭源标签（不迁移历史）
+    NamedSessionSave,    // {name}：把当前标签组存成命名会话（同名覆盖）
+    NamedSessionList,    // 无参，只读：列出全部命名会话
+    NamedSessionRestore, // {name}：整组重开一个命名会话（追加开新标签）
+    NamedSessionDelete,  // {name}：删除一个命名会话
 };
 
 // 命令的风险等级（与 mod 的 risk / 架构规则 R18 对齐）。

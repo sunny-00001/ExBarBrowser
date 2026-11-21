@@ -58,6 +58,9 @@ private:
     bool CreateMainWindow(HINSTANCE hInst);
     void OnCreate();
     void OnDestroy();
+    // 退出前确认（多标签 + confirmCloseTabs）。true = 继续退出。
+    // WM_CLOSE 与 win.quit / 系统菜单退出共用这一份判定。
+    bool ConfirmExit();
     void RegisterCommands();
     // 命令注册按域分片（app_commands*.cpp），RegisterCommands 只做调度。
     void RegisterTabCommands();
@@ -73,6 +76,13 @@ private:
     static constexpr UINT_PTR kStatsTimer = 1;
     // AI 通道的请求泵定时器：监听线程排队 → 本定时器在 UI 线程执行命令。
     static constexpr UINT_PTR kAiTimer = 2;
+    // 会话自动快照：标签增删/移动/切换/导航后 2s 落盘一次（去抖）。
+    // 正常退出仍会立即保存；这个定时器只为"崩溃/断电"兜底。
+    static constexpr UINT_PTR kSessionTimer = 3;
+    // 标记会话已变：重启 2s 去抖定时器（重复 SetTimer 只改间隔，不叠加）。
+    void MarkSessionDirty();
+    // 会话快照的唯一写入点（内存 + 落盘）。退出与自动快照共用。
+    void SaveSessionSnapshot();
     // 系统菜单（标题栏右键 / Alt+Space）自定义项的命令 ID 段。
     // 避开系统保留的 SC_* (0xF000+)：LOWORD(WM_SYSCOMMAND::wParam) 落在这一段时
     // 由 WndProc 转投命令总线，其余交 DefWindowProc（还原/移动/大小/最小化…）。
@@ -92,6 +102,18 @@ private:
     // 标签
     int NewTab(const std::wstring& path, int index = -1);
     int NewTabIndex() const;  // tabNewPos: right = 当前标签右侧, end = 末尾
+    // 路径是否值得开一个标签：命名空间/shell: 一律允许；文件系统路径要求存在。
+    //
+    // 为什么需要预检：ShellView::Create 对不存在的目录也可能成功（导航失败是
+    // 异步回报），于是 tab.new 会先报 ok=true、再留下一个空标签。命令侧
+    // 宁可不建，也不要制造"开成功了但其实没打开"的假成功。
+    static bool PathOpenable(const std::wstring& path);
+    // 重开关闭历史里的第 index 条（0 = 最近关闭）。
+    //
+    // 先建成功再弹栈：老实现先 PopClosed 再 NewTab，路径已不存在时
+    // NewTab 返回 0，关闭记录却已被弹掉 —— 条目永久丢失。返回值是
+    // "真的重开了"，失败由 handler 用 NoteFailure 给出具体路径。
+    bool ReopenClosed(int index = 0);
     // 关闭标签。返回是否**真的关掉了**：
     //   false = 标签不存在，或已锁定（只响一声提示）
     //   true  = 已关闭（注意：关掉最后一个标签会让程序退出）
@@ -111,6 +133,15 @@ private:
     // 读者得回去查"true 是锁还是切换"。
     void SetTabLocked(int id, bool locked);
     void ToggleLock(int id);
+    // 固定/取消固定（按值设定，幂等）。持久化口径与锁一致：按路径存，
+    // 重启恢复会话时同一目录仍是固定的。
+    void SetTabPinned(int id, bool pinned);
+    void TogglePin(int id);
+    // Ctrl+Tab / Ctrl+Shift+Tab：按 MRU 循环（forward=false 时反向）。
+    bool CycleMru(bool forward);
+    // 标签切换器（Ctrl+Shift+A）：列出全部标签，支持键入前缀定位。
+    // 选中后激活；取消不改状态。
+    void ShowTabSwitcher();
     // 用户重命名。空串 = 取消改名（退回跟随路径/Shell 名）。
     // 存 TabRef::alias 而不是覆盖 title：title 每次导航都会被 Shell 回调重写。
     void RenameTab(int id, const std::wstring& name);
@@ -156,7 +187,8 @@ private:
     // 清空地址框下拉里的历史：当前标签的后退/前进栈 + 全局"最近访问"。
     // 两者都清是因为下拉把它们合并成一个列表，只清一半会让人以为没生效。
     // 保留当前目录作为唯一历史条，且不触发导航。
-    void ClearHistory();
+    // 返回"最近访问"被清掉的条数（命令层要如实报数，不能只说成功）。
+    int ClearHistory();
     void OnTabNav(ShellView* view, const std::wstring& path, const std::wstring& display,
                   unsigned items);
     void OnTabNavFailed(ShellView* view);
@@ -194,7 +226,10 @@ private:
     // 把 (FOLDERVIEWMODE, 图标尺寸) 反查回 0..7 的预留下标。无匹配返回 -1。
     // 导航栏视图菜单给的是这两个值，而命令系统要的是下标。
     static int ViewModeIndexFor(int fvm, int iconPx);
-    void CopyText(const std::wstring& text);
+    // 复制文本到剪贴板。返回是否真的写入了 —— 命令 handler 直接把它当结果：
+    // 剪贴板被别的程序占用时 OpenClipboard 会失败（已内部重试），
+    // 这时报 ok=true 等于骗调用方"复制好了"。
+    bool CopyText(const std::wstring& text);
     // 书签保存的统一善后：成功什么都不做；被"外部已改"拦下时告诉用户
     // 内存里的书签被另存到了哪个文件。
     //
@@ -222,6 +257,9 @@ private:
     core::TabSet tabSet_;
     std::map<int, std::unique_ptr<Tab>> tabs_;
     int activeId_ = 0;
+    // MRU 循环进行中：CycleMru 自己调 Activate，不能让它把循环快照重置掉；
+    // 其余任何激活（点击/命令/新建）都会结束循环。
+    bool mruCycling_ = false;
     // 视图模式 0..7（与导航栏的 8 档一致）。排序/分组/方向不在这里留副本：
     // 它们只在 Config::Settings 里存一份，需要时现取，避免两份值漂移。
     int viewMode_ = 3;
@@ -230,4 +268,7 @@ private:
     // 搜索视图没有"上一级"，取消搜索必须靠它回到进来时的目录 ——
     // 否则取消之后用户只能自己重新输一遍路径。
     std::wstring searchFrom_;
+    // 当前生效的搜索词。与 searchFrom_ 同生同灭：只给观测面（state.searchQuery）用，
+    // 不参与判定 —— 判定一律看 searchFrom_ 是否为空。
+    std::wstring searchQuery_;
 };

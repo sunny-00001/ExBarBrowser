@@ -35,7 +35,10 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             self.RefreshStats();
         else if (w == kAiTimer)
             ai::PumpRequests();   // 命令 handler 只能在 UI 线程跑
-        else
+        else if (w == kSessionTimer) {
+            KillTimer(h, kSessionTimer);
+            self.SaveSessionSnapshot();   // 崩溃前的最后一份可恢复会话
+        } else
             self.input_.OnTimer(w);
         return 0;
 
@@ -155,6 +158,7 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
 
     case WM_CLOSE:
+        if (!self.ConfirmExit()) return 0;
         self.OnDestroy();
         DestroyWindow(h);
         return 0;

@@ -125,6 +125,10 @@ HUMAN_PATH = {
     'dev.rollback': '命令面板选中后先弹破坏性确认，再按 schema 追问 path（与 AI 侧 approve 等价）',
     'tool.stat': '状态栏「选中容量」段 + 详细信息视图列展示同一组字段'
                  '（名称/大小/类型/隐藏/只读）',
+    # 清除历史：人在地址框下拉（历史/最近访问）底部点「清除历史记录」，
+    # 与命令走同一个 App::ClearHistory（不是两套实现）。
+    'nav.history.clear': '地址框下拉底部「清除历史记录」→ NavBar clearHistory_ '
+                         '→ App::ClearHistory（与命令同一实现）',
 
     # 文件集工具三条（2026-11-21）：设计是"空参数 = 取界面现状，带参数 = 机器点名"，
     # 所以 hash / dupfinder 无必填参数、走命令面板自动满足；compare 有两个必填路径，
@@ -180,6 +184,9 @@ WRITABLE_STATE = [
     ('bookmarkBarVisible', 'bmk.show / bmk.hide / bmk.toggle'),
     ('navPaneVisible', 'view.toggle.nav'),
     ('previewPaneVisible', 'view.toggle.preview'),
+    # 搜索态：search.find 改它。没有回读时"搜索成功"只能信命令自己的回执，
+    # 而宿主视图不换页也会返回 ok（2026-11-21 实测的假成功就是这样漏掉的）。
+    ('searching', 'search.find'),
 ]
 
 MENU_ACTIONS = {
@@ -196,10 +203,15 @@ MENU_ACTIONS = {
     '标签·复制路径': 'path.copy',
     '标签·锁定': 'tab.lock',
     '标签·复制标签名': 'tab.copy.title',
+    '标签·标签切换器': 'tab.switcher',
     '标签·向左移动': 'tab.move.left',
     '标签·向右移动': 'tab.move.right',
     '标签·移动到开头': 'tab.move.first',
     '标签·移动到末尾': 'tab.move.last',
+    '标签·移到新窗口': 'tab.move.window',
+    '标签·移到新窗口（不迁移历史）': 'tab.move.window',
+    '标签·固定标签': 'tab.pin',
+    '标签·取消固定': 'tab.pin',
     '标签·重新打开关闭的标签': 'tab.reopen',
     # ---- 书签右键菜单（bookmark_bar.cpp 的 ShowItemMenu）----
     '书签·添加当前目录为书签': 'bmk.add.current',

@@ -82,10 +82,10 @@ const std::vector<CommandDef> kTable = {
     // ---- Path ----
     {CmdId::PathCopy, L"path.copy", L"Path", L"导航栏", L"复制完整路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, true, Requirements{Req::HasSelection}},
     {CmdId::PathCopyName, L"path.copy.name", L"Path", L"导航栏", L"复制文件名", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, true, Requirements{Req::HasSelection}},
-    {CmdId::PathCopyDir, L"path.copy.dir", L"Path", L"导航栏", L"复制当前目录", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::PathCopyDir, L"path.copy.dir", L"Path", L"导航栏", L"复制当前目录", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"实际写入剪贴板的内容\"}},\"required\":[\"text\"]}"},
     {CmdId::PathCopyUnc, L"path.copy.unc", L"Path", L"导航栏", L"复制 UNC 路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, true},
     {CmdId::PathCopyExt, L"path.copy.ext", L"Path", L"导航栏", L"复制扩展名", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, true},
-    {CmdId::PathCopyTab, L"path.copy.tab", L"Path", L"导航栏", L"复制所有标签路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
+    {CmdId::PathCopyTab, L"path.copy.tab", L"Path", L"导航栏", L"复制所有标签路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"实际写入剪贴板的内容（每行一条）\"}},\"required\":[\"text\"]}"},
     {CmdId::PathCopyLink, L"path.copy.link", L"Path", L"导航栏", L"复制为快捷方式", false, Effects{0, 1, 0, 1, 0, Scope::CurrentTab}, kNoArgs, false, false},
     // ---- File ----
     {CmdId::CmdNewTextFile, L"file.new.text", L"File", L"文件视图", L"新建文本文件", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
@@ -170,7 +170,7 @@ const std::vector<CommandDef> kTable = {
     {CmdId::RunCommand, L"ext.run", L"External", L"全局", L"运行命令", false, Effects{0, 1, 0, 1, 0, Scope::System}, kNoArgs, false, false},
     {CmdId::SendKeys, L"ext.sendkeys", L"External", L"全局", L"发送按键", false, Effects{0, 1, 0, 1, 0, Scope::System}, kNoArgs, false, false},
     // ---- Bookmark ----
-    {CmdId::BmkAddCurrent, L"bmk.add.current", L"Bookmark", L"书签栏", L"收藏当前目录", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true, false},
+    {CmdId::BmkAddCurrent, L"bmk.add.current", L"Bookmark", L"书签栏", L"收藏当前目录", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"新条目 id\"}},\"required\":[\"id\"],\"additionalProperties\":false}"},
     {CmdId::BmkShowBar, L"bmk.show", L"Bookmark", L"书签栏", L"显示书签栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, nullptr, "bookmarkBarVisible=true"},
     {CmdId::BmkHideBar, L"bmk.hide", L"Bookmark", L"书签栏", L"隐藏书签栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, nullptr, "bookmarkBarVisible=false"},
     {CmdId::BmkToggleBar, L"bmk.toggle", L"Bookmark", L"书签栏", L"切换书签栏", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false},
@@ -178,17 +178,23 @@ const std::vector<CommandDef> kTable = {
     // 删除/清空/排序都进撤销栈，所以 destructive=0（可回退）；undoable=1。
     {CmdId::BmkEdit, L"bmk.edit", L"Bookmark", L"书签栏", L"编辑书签", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"书签 id\"},\"name\":{\"type\":\"string\",\"description\":\"新名称\"},\"path\":{\"type\":\"string\",\"description\":\"新路径；空串表示改成纯分类\"}},\"required\":[\"id\"],\"additionalProperties\":false}", true , false},
     {CmdId::BmkRemove, L"bmk.remove", L"Bookmark", L"书签栏", L"删除书签", true, Effects{0, 1, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"书签 id\"}},\"required\":[\"id\"],\"additionalProperties\":false}", true , false},
-    {CmdId::BmkNewFolder, L"bmk.newfolder", L"Bookmark", L"书签栏", L"新建分类", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"分类名称\"},\"parentId\":{\"type\":\"string\",\"description\":\"父分类 id；省略=顶层\"}},\"additionalProperties\":false}", true , false},
+    {CmdId::BmkNewFolder, L"bmk.newfolder", L"Bookmark", L"书签栏", L"新建分类", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"分类名称\"},\"parentId\":{\"type\":\"string\",\"description\":\"父分类 id；省略=顶层\"}},\"additionalProperties\":false}", true , false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"新分类 id\"}},\"required\":[\"id\"],\"additionalProperties\":false}"},
     {CmdId::BmkUndo, L"bmk.undo", L"Bookmark", L"书签栏", L"撤销书签操作", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true , false},
     {CmdId::BmkClearAll, L"bmk.clear", L"Bookmark", L"书签栏", L"清除全部书签", true, Effects{0, 1, 0, 0, 1, Scope::App}, kNoArgs, true , false},
     {CmdId::BmkSort, L"bmk.sort", L"Bookmark", L"书签栏", L"按名称排序", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"recursive\":{\"type\":\"boolean\",\"description\":\"是否连分类内部一起排，默认 true\"},\"ascending\":{\"type\":\"boolean\",\"description\":\"升序（默认 true），false 为降序\"}},\"additionalProperties\":false}", true , false},
     {CmdId::BmkDedupe, L"bmk.dedupe", L"Bookmark", L"书签栏", L"清理重复书签", true, Effects{0, 1, 0, 0, 1, Scope::App}, kNoArgs, true , false},
     // ---- 补齐三处"只有鼠标能做"的动作（拖放添加 / 拖拽重排 / 读取树）----
     // 前两条与拖放走**同一份实现**：菜单、拖放、脚本、AI 都调它们。
-    {CmdId::BmkAdd, L"bmk.add.path", L"Bookmark", L"书签栏", L"添加书签（指定路径）", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要收藏的目录完整路径\"},\"name\":{\"type\":\"string\",\"description\":\"显示名；省略则取末段\"},\"parentId\":{\"type\":\"string\",\"description\":\"父分类 id；省略=顶层\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false},
+    {CmdId::BmkAdd, L"bmk.add.path", L"Bookmark", L"书签栏", L"添加书签（指定路径）", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要收藏的目录完整路径\"},\"name\":{\"type\":\"string\",\"description\":\"显示名；省略则取末段\"},\"parentId\":{\"type\":\"string\",\"description\":\"父分类 id；省略=顶层\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"新条目 id；路径已存在且给了 parentId 时为移动后的已存在条目\"},\"moved\":{\"type\":\"boolean\",\"description\":\"true=路径已存在，本次是移动而非新增\"}},\"required\":[\"id\"],\"additionalProperties\":false}"},
     // 收藏**选中的**文件夹（与 bmk.add.current 的"当前目录"是两个意图：选中≠当前）。
     // needsSelection + HasSelection 前置：无选中时前置拒绝，不猜用户意图。
     {CmdId::BmkAddSelection, L"bmk.add.selection", L"Bookmark", L"书签栏", L"收藏选中的文件夹", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true, true, Requirements{Req::HasSelection}},
+    // 收藏**所有打开标签页**的目录（与 add.current 只收当前目录互补）。
+    // 返回 added/skipped/ids —— 批量动作必须可验证：调用方从响应直接拿到
+    // 新条目 id，不再需要按名字回查（那是重名场景下会失能的临时做法）。
+    {CmdId::BmkAddTabs, L"bmk.add.tabs", L"Bookmark", L"书签栏", L"收藏所有打开标签页", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"added\":{\"type\":\"integer\",\"description\":\"新增条数\"},\"skipped\":{\"type\":\"integer\",\"description\":\"跳过条数（已收藏/空路径）\"},\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"新增条目的 id，顺序同标签顺序\"}},\"required\":[\"added\",\"skipped\",\"ids\"]}"},
+    // 复制书签（分类连子树）。返回新 id —— 复制的下一步（编辑副本）必须有 id 才能做。
+    {CmdId::BmkCopy, L"bmk.copy", L"Bookmark", L"书签栏", L"复制书签", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"要复制的书签 id\"}},\"required\":[\"id\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"新条目 id，紧挨原条目之后\"}},\"required\":[\"id\"]}"},
     {CmdId::BmkMove, L"bmk.move", L"Bookmark", L"书签栏", L"移动书签", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"要移动的书签 id\"},\"toId\":{\"type\":\"string\",\"description\":\"目标分类 id（移入它内部）\"},\"toIndex\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"在目标内的位置；省略=末尾\"}},\"required\":[\"id\"],\"additionalProperties\":false}", true, false},
     // bmk.list 是**读**：其余 bmk.* 要的 id 由它给出。没有它，
     // AI 拿到"删除书签"却无从知道有哪些 id —— 命令表就是断的。
@@ -206,13 +212,18 @@ const std::vector<CommandDef> kTable = {
     // ---- 开发面：让 Agent 能自己完成「读现状 → 改 → 编译 → 测 → 回滚」----
     // 这五条不新增业务逻辑，只是把仓库里已有的 build.sh / tests/run_all.sh / git
     // 收进同一条命令总线。人从命令面板可达（R20），机器从 AI 通道可达。
-    {CmdId::DevSnapshot, L"dev.snapshot", L"Dev", L"开发", L"读取代码工作树快照", true, Effects{1, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"head\":{\"type\":\"string\"},\"status\":{\"type\":\"string\"},\"diffStat\":{\"type\":\"string\"},\"repo\":{\"type\":\"string\"},\"profile\":{\"type\":\"string\"},\"bash\":{\"type\":\"string\"},\"python\":{\"type\":\"string\"},\"error\":{\"type\":\"string\"}},\"required\":[\"head\",\"status\"]}"},
-    {CmdId::DevBuild, L"dev.build", L"Dev", L"开发", L"异步编译当前工作树", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"description\":\"可选：编译目标，默认整个工程\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\"}},\"required\":[\"jobId\"]}"},
-    {CmdId::DevTest, L"dev.test", L"Dev", L"开发", L"异步运行测试", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"filter\":{\"type\":\"string\",\"description\":\"只跑名字含该串的测试；省略=全量\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\"}},\"required\":[\"jobId\"]}"},
-    {CmdId::DevJob, L"dev.job", L"Dev", L"开发", L"查询异步作业结果", true, Effects{1, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"dev.build/dev.test 返回的 jobId\"}},\"required\":[\"id\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\"},\"done\":{\"type\":\"boolean\"},\"exitCode\":{\"type\":\"integer\"},\"output\":{\"type\":\"string\"},\"error\":{\"type\":\"string\"}},\"required\":[\"id\",\"done\"]}"},
+    {CmdId::DevSnapshot, L"dev.snapshot", L"Dev", L"开发", L"读取代码工作树快照", true, Effects{1, 0, 1, 1, 0, Scope::App}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"head\":{\"type\":\"string\"},\"status\":{\"type\":\"string\"},\"diffStat\":{\"type\":\"string\"},\"repo\":{\"type\":\"string\"},\"profile\":{\"type\":\"string\"},\"bash\":{\"type\":\"string\"},\"python\":{\"type\":\"string\"},\"error\":{\"type\":\"string\"}},\"required\":[\"head\",\"status\"]}"},
+    // target 是**枚举**不是自由文本：以前这里是字符串拼接，一个 `&& calc` 就是任意执行。
+    // openWorld=1：它会真的起外部进程（python build_fast.py）。
+    {CmdId::DevBuild, L"dev.build", L"Dev", L"开发", L"异步编译当前工作树", true, Effects{0, 0, 1, 1, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"enum\":[\"all\",\"clean\"],\"description\":\"all=编译整个工程（默认）；clean=先清空产物再全量编译。不接受自由文本。\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"}},\"required\":[\"jobId\"]}"},
+    // filter 只允许字母数字下划线连字符与点：tests/run_all.sh 拿它做子串匹配，
+    // 别的字符没有意义，只会成为注入面。openWorld=1：它会起 bash 并执行测试二进制。
+    {CmdId::DevTest, L"dev.test", L"Dev", L"开发", L"异步运行测试", true, Effects{0, 0, 1, 1, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"filter\":{\"type\":\"string\",\"description\":\"只跑名字含该串的测试；省略=全量。只接受字母、数字、下划线、连字符与点。\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"}},\"required\":[\"jobId\"]}"},
+    {CmdId::DevJob, L"dev.job", L"Dev", L"开发", L"查询异步作业结果", true, Effects{1, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"dev.build/dev.test 返回的 jobId\"}},\"required\":[\"id\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\"},\"done\":{\"type\":\"boolean\"},\"exitCode\":{\"type\":\"integer\"},\"output\":{\"type\":\"string\",\"description\":\"stdout+stderr；超长时保留头尾，truncated=true 表示中间被省略\"},\"truncated\":{\"type\":\"boolean\"},\"error\":{\"type\":\"string\"}},\"required\":[\"id\",\"done\"]}"},
     // 不可撤销：回滚会丢掉工作树里对该文件的改动。调用方必须先 dev.snapshot
     // 记下 before，并在需要时自行备份；approve=true 表示人已确认这一次覆盖。
-    {CmdId::DevRollback, L"dev.rollback", L"Dev", L"开发", L"把仓库内文件恢复到 HEAD", true, Effects{0, 1, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"仓库内相对路径，如 src/commands.cpp\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"before\":{\"type\":\"string\"},\"after\":{\"type\":\"string\"}},\"required\":[\"before\",\"after\"]}"},
+    // openWorld=1：它会起 git。
+    {CmdId::DevRollback, L"dev.rollback", L"Dev", L"开发", L"把仓库内文件恢复到 HEAD", true, Effects{0, 1, 0, 1, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"仓库内相对路径，如 src/commands.cpp\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"before\":{\"type\":\"string\"},\"after\":{\"type\":\"string\"}},\"required\":[\"before\",\"after\"]}"},
     {CmdId::BmkFocus, L"bmk.focus", L"Bookmark", L"书签栏", L"聚焦书签栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false},
     // ---- Session ----
     {CmdId::SessionSave, L"session.save", L"Session", L"标签栏", L"保存标签组", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false},
@@ -255,6 +266,35 @@ const std::vector<CommandDef> kTable = {
     {CmdId::TabCloseDuplicates, L"tab.close.duplicates", L"Tab", L"标签栏", L"关闭重复标签页", true, Effects{0, 1, 0, 0, 1, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}},
     {CmdId::TabLock, L"tab.lock", L"Tab", L"标签栏", L"锁定标签页", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"locked\":{\"type\":\"boolean\",\"description\":\"true=锁定，false=解锁；省略=切换\"},\"index\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"标签序号；省略=当前标签\"}},\"additionalProperties\":false}", true, false},
     {CmdId::TabCopyTitle, L"tab.copy.title", L"Tab", L"标签栏", L"复制标签名", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"index\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"标签序号；省略=当前标签\"}},\"additionalProperties\":false}", true , false},
+    // 关闭历史：列表只读、按索引重开。栈深 20（TabSet::PushClosed），
+    // 菜单只展示前 10 条；命令侧不截断，调用方自己决定展示多少。
+    {CmdId::TabClosedList, L"tab.closed.list", L"Tab", L"标签栏", L"最近关闭的标签", true, Effects{1, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"count\":{\"type\":\"integer\"}},\"required\":[\"paths\",\"count\"]}"},
+    {CmdId::TabReopenAt, L"tab.reopen.index", L"Tab", L"标签栏", L"重新打开第 N 个关闭的标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"index\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"关闭历史序号，0=最近关闭\"}},\"required\":[\"index\"],\"additionalProperties\":false}", true, false, Requirements{Req::HasClosedTabs}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}"},
+    {CmdId::TabPin, L"tab.pin", L"Tab", L"标签栏", L"固定标签页", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"pinned\":{\"type\":\"boolean\",\"description\":\"true=固定，false=取消；省略=切换\"},\"index\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"标签序号；省略=当前标签\"}},\"additionalProperties\":false}", true, false},
+    // 切换器要弹模态层并等用户按键，AI 调用会被 UI 超时打断 —— 不暴露。
+    // 机器侧切标签用 tab.activate / tab.next / tab.prev，语义更明确。
+    {CmdId::TabSwitcher, L"tab.switcher", L"Tab", L"标签栏", L"标签切换器", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, false, false},
+    // MRU 循环：状态依赖前一次按键（循环快照），不适合作为 AI 的"确定性单步"；
+    // 机器侧切标签用 tab.activate / tab.next / tab.prev。人侧键位 Ctrl+Tab。
+    {CmdId::TabCycleNext, L"tab.cycle.next", L"Tab", L"标签栏", L"切换到最近使用的下一个", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasMultipleTabs}},
+    {CmdId::TabCyclePrev, L"tab.cycle.prev", L"Tab", L"标签栏", L"切换到最近使用的上一个", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasMultipleTabs}},
+    // 跨窗口搬 ShellView 不可行（COM 进程内对象）。这里是有损近似：
+    // 新实例按路径打开，源标签关闭；历史/视图状态不迁移，必须在描述里说清。
+    {CmdId::TabMoveNewWindow, L"tab.move.window", L"Tab", L"标签栏", L"移到新窗口（不迁移历史）", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"index\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"标签序号；省略=当前标签\"}},\"additionalProperties\":false}", true, false, Requirements{Req::HasTabs}},
+    // 命名会话：与"当前那条" session.* 的取舍不同 —— 按名字操作多条，
+    // 保存即覆盖同名（幂等），恢复是追加开新标签（不关已有标签）。
+    {CmdId::NamedSessionSave, L"session.named.save", L"Session", L"会话", L"保存命名会话", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"minLength\":1,\"description\":\"会话名；同名覆盖\"}},\"required\":[\"name\"],\"additionalProperties\":false}", true, false},
+    {CmdId::NamedSessionList, L"session.named.list", L"Session", L"会话", L"列出命名会话", true, Effects{1, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"names\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"count\":{\"type\":\"integer\"}},\"required\":[\"names\",\"count\"]}"},
+    {CmdId::NamedSessionRestore, L"session.named.restore", L"Session", L"会话", L"恢复命名会话", true, Effects{0, 0, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"会话名\"}},\"required\":[\"name\"],\"additionalProperties\":false}", true, false},
+    {CmdId::NamedSessionDelete, L"session.named.delete", L"Session", L"会话", L"删除命名会话", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"会话名\"}},\"required\":[\"name\"],\"additionalProperties\":false}", true, false},
+    // ---- 导航栏历史（下拉菜单的结构化入口）----
+    // 这三条补的都是"只有鼠标能做"的动作：没有它们，AI 想跳到第 3 条历史只能
+    // 盲按 nav.back 再回读路径，且永远不知道会路过哪些目录。
+    {CmdId::NavHistoryList, L"nav.history.list", L"Nav", L"导航栏", L"历史列表", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"backward\":{\"type\":\"boolean\",\"description\":\"true=可后退的条目（默认），false=可前进\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"backward\":{\"type\":\"boolean\"},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"最近的在前\"},\"count\":{\"type\":\"integer\"}},\"required\":[\"backward\",\"paths\",\"count\"]}"},
+    {CmdId::NavHistoryJump, L"nav.history.jump", L"Nav", L"导航栏", L"跳转到第 N 条历史", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"depth\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"第 depth 条，0=最近的一条\"},\"backward\":{\"type\":\"boolean\",\"description\":\"true=往后退（默认），false=往前进\"}},\"required\":[\"depth\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}"},
+    {CmdId::NavHistoryClear, L"nav.history.clear", L"Nav", L"导航栏", L"清除历史记录", true, Effects{0, 1, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"清除后保留的唯一历史条目（当前目录）\"},\"recentCleared\":{\"type\":\"integer\",\"description\":\"被清掉的最近访问条数\"}},\"required\":[\"path\",\"recentCleared\"]}"},
+    {CmdId::NavRecentList, L"nav.recent.list", L"Nav", L"导航栏", L"最近访问列表", true, Effects{1, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"count\":{\"type\":\"integer\"}},\"required\":[\"paths\",\"count\"]}"},
+
 };
 
 }  // namespace
@@ -400,7 +440,10 @@ const wchar_t* ReqReason(Req r) {
     case Req::HasSelection:      return L"未选中任何项目";
     case Req::HasTabs:           return L"没有打开的标签";
     case Req::HasClipboard:      return L"剪贴板没有可粘贴的内容";
-    case Req::CanGoUp:           return L"已经是顶层（此电脑或网络根）";
+    // 三种"顶层"共用这一句：盘符根（去此电脑）、命名空间根（控制面板/回收站）、
+    // UNC 根。以前只写"此电脑或网络根"，站在控制面板上按向上会得到一句与现场
+    // 不符的解释 —— 用户会以为是程序判断错了，而不是"这里确实没有上级"。
+    case Req::CanGoUp:           return L"已经是顶层（此电脑、命名空间或网络根）";
     case Req::StateUnavailable:  return L"界面尚未就绪";
     case Req::CanMoveTabLeft:    return L"当前标签已在最左";
     case Req::CanMoveTabRight:   return L"当前标签已在最右";

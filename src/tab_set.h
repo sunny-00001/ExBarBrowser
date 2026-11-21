@@ -31,6 +31,10 @@ struct TabRef {
     // 本文件零 Win32，且颜色必须与深浅主题配套换算（见 Theme::TabColorFill）。
     int color = 0;
     bool locked = false;
+    // 固定标签（Chrome/VS Code 的 pin）：置左、图标化、持久化，
+    // 且不被"关闭其他/左/右"与中键误关。与 locked 分开：
+    //   pinned = 位置与误触保护；locked = 连显式关闭也拒绝。
+    bool pinned = false;
 };
 
 // 标签最终显示名：用户改名 > Shell 名 > 路径末级。
@@ -68,6 +72,9 @@ public:
     void SetTitle(int id, const std::wstring& title);
     void SetPath(int id, const std::wstring& path);
     void SetLocked(int id, bool locked);
+    // 固定/取消固定。固定时移到固定区末尾（与其他固定标签相邻），
+    // 取消固定保持当前位置 —— 不把标签"弹"到别处，避免用户找不到。
+    void SetPinned(int id, bool pinned);
     // 空串 = 取消改名（回到跟随路径）。
     void SetAlias(int id, const std::wstring& alias);
     // 0..Theme::kTabColorCount-1；越界视为 0（无颜色）。
@@ -86,9 +93,18 @@ public:
     void Move(int id, int toIndex);
     void Touch(int id);                 // MRU 置顶
     int PrevMru(int currentId) const;   // 上一个激活的标签 id（无则 0）
+    // MRU 循环（Chrome/Edge/Windows Terminal 的 Ctrl+Tab 语义）。
+    // 第一次调用以当前 MRU 顺序做快照，之后 dir=+1/-1 在快照上前/后移动；
+    // 循环期间 Activate 仍会 Touch 实时 mru_，但**不影响**快照 ——
+    // 这正是"连续按 Ctrl+Tab 能走完一圈"而不是两个标签来回跳的原因。
+    int CycleMru(int dir);
+    void ResetMruCycle();               // 任何非循环激活/关闭后调用
 
     void PushClosed(const std::wstring& path);
     bool PopClosed(std::wstring* path);
+    // 按索引取走关闭历史（0 = 最近关闭）。菜单列多条、tab.reopen.index 用。
+    // 只有真的取走才改变栈 —— 先建标签再弹栈的调用方应先读 closed() 再调它。
+    bool PopClosedAt(int index, std::wstring* path);
     const std::vector<std::wstring>& closed() const { return closed_; }
     void SetClosed(const std::vector<std::wstring>& list);
 
@@ -98,6 +114,10 @@ private:
     std::vector<TabRef> items_;
     std::vector<int> mru_;
     std::vector<std::wstring> closed_;
+    // MRU 循环的瞬态：仅在按住 Ctrl 连续切换期间有效。
+    std::vector<int> cycleOrder_;
+    int cyclePos_ = 0;
+    bool cycleActive_ = false;
     int nextId_ = 1;
 };
 

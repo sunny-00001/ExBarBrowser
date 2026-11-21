@@ -139,7 +139,7 @@ void App::OnCreate() {
                          [this](int depth, bool back) { JumpHistory(depth, back); });
     navBar_.SetSettingsFn([this](POINT at) { ShowSettingsPanel(at); });
     navBar_.SetRecentFn([] { return Config::Get().s().recentPaths; });
-    navBar_.SetClearHistoryFn([this] { ClearHistory(); });
+    navBar_.SetClearHistoryFn([this] { (void)ClearHistory(); });
     // 视图菜单打勾用：当前档位来自 viewMode_（用户偏好），排序/分组从**视图**现读。
     // 不从 Config 直接抄排序：用户可能在 shell 里点了列头反向排序，
     // 那时配置里的 sortAscending 是旧的 —— 菜单会打勾到错误的方向上。
@@ -259,6 +259,12 @@ void App::OnCreate() {
         s.navPaneVisible = cfg.showNavPane;
         s.previewPaneVisible = cfg.showPreviewPane;
 
+        // 搜索态：source/query 是 RunSearch 的同一份状态（R19 同源），
+        // 不另存副本。空 scope = 不在搜索里。
+        s.searching = !searchFrom_.empty();
+        s.searchScope = searchFrom_;
+        s.searchQuery = searchQuery_;
+
         // ---- 选中与焦点（观测面）----
         // 与命令前置同一来源（活动标签的 shell 视图），R19 同源不另存副本。
         // 选中路径走 shell 枚举（IFolderView::Items），快照带上限防响应爆炸。
@@ -328,8 +334,20 @@ int App::Run(HINSTANCE hInst, const std::wstring& initialPath) {
     } else {
         const Settings& s = Config::Get().s();
         if (!s.sessionPaths.empty()) {
-            for (const auto& p : s.sessionPaths)
-                if (tf::Exists(p) || p.rfind(L"::", 0) == 0) NewTab(p);
+            for (size_t i = 0; i < s.sessionPaths.size(); ++i) {
+                const std::wstring& p = s.sessionPaths[i];
+                if (!(tf::Exists(p) || p.rfind(L"::", 0) == 0)) continue;
+                const int id = NewTab(p);
+                // 每标签历史：对齐 sessionPaths 的下标（跳过已失效路径时也不移位）。
+                // Restore 只装填栈，不重放导航 —— 打开成本仍是"一次"。
+                if (id && i < s.sessionHistory.size()) {
+                    const TabHistory& h = s.sessionHistory[i];
+                    if (Tab* t = ById(id); t && !h.paths.empty()) {
+                        t->nav.Restore(h.paths, h.idx);
+                        SyncChrome();
+                    }
+                }
+            }
             int idx = s.sessionActive;
             if (idx >= 0 && idx < tabSet_.Count()) Activate(tabSet_.IdAt(idx));
             // 会话里的目录可能全被删了：别开一个没有标签的空窗口。
@@ -403,6 +421,57 @@ bool App::OnChromeMouse(int target, UINT msg, int button, int mods, POINT pt) {
     }
 }
 
+bool App::ConfirmExit() {
+    // 只有多标签才问：最后一个标签关闭 = 正常结束，不该再拦一次。
+    // 默认按钮是"否"：误按 Enter 的常见场景（Alt+F4 后手还没离开键盘）
+    // 不该把整组标签关掉；会话虽能恢复，但用户此刻未必想退出。
+    if (!Config::Get().s().confirmCloseTabs) return true;
+    const int n = tabSet_.Count();
+    if (n <= 1) return true;
+    const std::wstring text =
+        L"当前打开了 " + std::to_wstring(n) + L" 个标签页。\n\n确定要退出吗？";
+    return MessageBoxW(hwnd_, text.c_str(), L"退出 ExBarBrowser",
+                       MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES;
+}
+
+void App::MarkSessionDirty() {
+    if (!hwnd_) return;
+    // 去抖：每次变更都把 2s 计时重新开始，连续操作（新建一批标签）只落盘一次。
+    SetTimer(hwnd_, kSessionTimer, 2000, nullptr);
+}
+
+void App::SaveSessionSnapshot() {
+    if (!hwnd_) return;
+    Config& cfg = Config::Get();
+    std::vector<std::wstring> paths;
+    for (const auto& t : tabSet_.items())
+        if (!t.path.empty()) paths.push_back(t.path);
+    // 选中状态一并入会话：重启后活动标签的选中项可恢复（尽力语义）。
+    std::vector<std::wstring> selPaths;
+    if (Tab* t = Active(); t && t->view) {
+        std::vector<ShellView::SelectionItem> sel;
+        t->view->SelectionPaths(256, sel);
+        for (const auto& it : sel) selPaths.push_back(it.path);
+    }
+    cfg.RememberSession(paths, ActiveIndex(), selPaths, [&] {
+        // 与 paths 同序、同数量：每个非空路径对应一份 nav 历史。
+        std::vector<TabHistory> hist;
+        hist.reserve(paths.size());
+        for (const auto& t : tabSet_.items()) {
+            if (t.path.empty()) continue;
+            TabHistory h;
+            if (Tab* tab = ById(t.id)) {
+                h.paths = tab->nav.entries();
+                h.idx = tab->nav.idx();
+            }
+            hist.push_back(std::move(h));
+        }
+        return hist;
+    }());
+    cfg.mutableSettings().closedTabs = tabSet_.closed();
+    cfg.Save();
+}
+
 void App::OnDestroy() {
     if (inDestroy_) return;
     inDestroy_ = true;
@@ -423,24 +492,14 @@ void App::OnDestroy() {
         s.winH = wp.rcNormalPosition.bottom - wp.rcNormalPosition.top;
     }
 
-    std::vector<std::wstring> paths;
-    for (const auto& t : tabSet_.items())
-        if (!t.path.empty()) paths.push_back(t.path);
-    // 选中状态一并入会话：重启后活动标签的选中项可恢复（尽力语义）。
-    std::vector<std::wstring> selPaths;
-    if (Tab* t = Active(); t && t->view) {
-        std::vector<ShellView::SelectionItem> sel;
-        t->view->SelectionPaths(256, sel);
-        for (const auto& it : sel) selPaths.push_back(it.path);
-    }
-    cfg.RememberSession(paths, ActiveIndex(), selPaths);
-    s.closedTabs = tabSet_.closed();
-    cfg.Save();
+    // 会话快照与自动快照共用一份实现（含 closedTabs 与 Save）。
+    SaveSessionSnapshot();
 
     // 只做"保存 + 停表"：Shell 视图与字体必须等 DestroyWindow 之后
     // （WM_DESTROY 里）再释放，否则子窗口在销毁过程中重绘会用到已删字体。
     KillTimer(hwnd_, kStatsTimer);
     KillTimer(hwnd_, kAiTimer);
+    KillTimer(hwnd_, kSessionTimer);
     ai::StopServer();   // 先停监听线程，避免它持有请求排队时窗口已销毁
     ai::SetStateProvider(nullptr);
     input_.Cancel();

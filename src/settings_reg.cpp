@@ -280,6 +280,18 @@ const std::vector<Entry>& Table() {
         v.push_back({L"tabNewPos", Kind::Str, [&cfg] { return json::Value::MakeStr(cfg.s().tabNewPos); },
                      StrEnumSet(&m.tabNewPos, L"tabNewPos", {L"right", L"after_current", L"end"}),
                      L"新标签位置：right 最右 / after_current 当前右侧 / end 末尾"});
+        v.push_back({L"confirmCloseTabs", Kind::Bool,
+                     [&cfg] { return json::Value::MakeBool(cfg.s().confirmCloseTabs); },
+                     BoolSet(&m.confirmCloseTabs, L"confirmCloseTabs"),
+                     L"关闭窗口且标签多于一个时先确认（最后一个标签关闭不弹）"});
+        v.push_back({L"tabMinWidth", Kind::Int,
+                     [&cfg] { return json::Value::MakeInt(cfg.s().tabMinWidth); },
+                     IntSet(&m.tabMinWidth, L"tabMinWidth", 60, 320),
+                     L"标签最小宽度（逻辑像素）：紧凑可设 80", 60, 320});
+        v.push_back({L"tabMaxWidth", Kind::Int,
+                     [&cfg] { return json::Value::MakeInt(cfg.s().tabMaxWidth); },
+                     IntSet(&m.tabMaxWidth, L"tabMaxWidth", 60, 420),
+                     L"标签最大宽度（逻辑像素）：长标题在上限处省略", 60, 420});
 
         // ---- 窗口几何（只读）----
         // 直接改 window.x/y 而不改 window.valid，窗口会在下次启动落到奇怪位置；
@@ -314,6 +326,23 @@ const std::vector<Entry>& Table() {
         v.push_back({L"lockedPaths", Kind::StrArray,
                      [&cfg] { return StrArrayValue(cfg.s().lockedPaths); }, nullptr,
                      L"锁定的标签路径（只读：用 tab.lock / tab.unlock）"});
+        v.push_back({L"pinnedPaths", Kind::StrArray,
+                     [&cfg] { return StrArrayValue(cfg.s().pinnedPaths); }, nullptr,
+                     L"固定的标签路径（只读：用 tab.pin / tab.unpin）"});
+        v.push_back({L"namedSessions", Kind::Object,
+                     [&cfg] {
+                         json::Value a = json::Value::MakeArray();
+                         for (const auto& e : cfg.s().namedSessions) {
+                             json::Value o = json::Value::MakeObject();
+                             o.Set(L"name", json::Value::MakeStr(e.name));
+                             json::Value ps = json::Value::MakeArray();
+                             for (const auto& p : e.paths) ps.arr.push_back(json::Value::MakeStr(p));
+                             o.Set(L"paths", ps);
+                             a.arr.push_back(std::move(o));
+                         }
+                         return a;
+                     }, nullptr,
+                     L"命名会话（只读：用 session.named.save / .restore / .delete）"});
         v.push_back({L"tabMeta", Kind::Object,
                      [&cfg] { return TabMetaValue(cfg.s().tabMeta); }, nullptr,
                      L"标签改名/颜色（只读：用 tab.rename / tab.color）"});

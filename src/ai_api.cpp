@@ -429,6 +429,11 @@ std::wstring StateToJson(const StateSnapshot& s) {
     v.Set(L"navPaneVisible", json::Value::MakeBool(s.navPaneVisible));
     v.Set(L"previewPaneVisible", json::Value::MakeBool(s.previewPaneVisible));
 
+    // ---- 搜索态（search.find 的回读面）----
+    v.Set(L"searching", json::Value::MakeBool(s.searching));
+    v.Set(L"searchScope", Str(s.searchScope));
+    v.Set(L"searchQuery", Str(s.searchQuery));
+
     // ---- 选中与焦点（观测面）：AI 回答"用户选中了什么/焦点在哪"的唯一来源 ----
     v.Set(L"selectionCount", json::Value::MakeInt(static_cast<int>(s.selectionCount)));
     json::Value sel = json::Value::MakeArray();

@@ -63,6 +63,10 @@ public:
     std::wstring AddPath(const std::wstring& name, const std::wstring& path,
                          const std::wstring& parentId = L"");
     std::wstring AddFolder(const std::wstring& name, const std::wstring& parentId = L"");
+    // 复制一条书签（分类则连子树深拷贝），插到原条目后面。返回新条目 id（失败为空）。
+    // 子树所有 id（含根）重新分配 —— 原样拷贝会让副本与原件撞 id，
+    // Find 命中前一条，删除/改名作用到别人身上。
+    std::wstring Copy(const std::wstring& id);
     bool Remove(const std::wstring& id);
     bool Rename(const std::wstring& id, const std::wstring& name);
     // 编辑：同时改名与路径（任一为空串表示该项不变）。路径为空且原名非空时视为只改名。
@@ -108,6 +112,10 @@ public:
 
     // 撤销：删除/移动前的快照栈（上限 20 步）。
     bool CanUndo() const { return !undo_.empty(); }
+    // 顶快照是否来自机器（AI/脚本）。AI 的撤销只到自己的上一次修改为止，
+    // 不穿透界面操作 —— 否则 AI 侧一次批量 undo 能把用户几天前的手工整理
+    // 全部滚掉（2026-11-21 结构化审计实测：40 次 undo 穿透回滚了全部历史）。
+    bool TopUndoFromMachine() const;
     bool Undo();
 
     // 外部变更检测：书签文件被其它进程（mod/编辑器）改过后返回 true。
@@ -158,7 +166,11 @@ private:
     // 上次 Save 因外部变更被拒，并把内存树另存成了 .conflict.html。
     bool conflictSaved_ = false;
     int seq_ = 1;
-    std::vector<BookmarkList> undo_;      // 删除/重排前快照（≤20）
+    struct UndoEntry {
+        BookmarkList roots;
+        bool byMachine = false;   // 快照产生时的 actor（CommandBus::fromMachine）
+    };
+    std::vector<UndoEntry> undo_; // 删除/重排前快照（≤20，带 actor 标签）
     FILETIME fileStamp_{};                // Load/Save 时的文件时间，用于外部变更检测
     // 与 fileStamp_ 配套的**文件大小**。单看 mtime 会漏判：FAT/网络共享时间戳
     // 粒度可达 2 秒、CopyFile 保留时间戳、SetFileTime 可回拨。
@@ -168,3 +180,8 @@ private:
 // HTML 与路径互转（供拖放/复制路径复用）
 std::wstring BookmarkPathToUrl(const std::wstring& path);
 std::wstring BookmarkUrlToPath(const std::wstring& url);
+
+// shell 命名空间路径的纯格式校验（::{8-4-4-4-12}）。实现见 bookmarks.cpp。
+// bmk.add.path / bmk.edit 的入口必须过它：缺 } 的 CLSID 曾经照单落盘，
+// 之后"打不开 + 通用图标"两头排查（2026-11-21 真实踩坑两次）。
+bool IsValidShellNamespacePath(const std::wstring& path);

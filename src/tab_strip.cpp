@@ -4,6 +4,7 @@
 // 几何在 tab_strip_layout、菜单在 tab_strip_actions。本文件不画也不命中。
 #include "tab_strip.h"
 
+#include "tab_uia.h"
 #include "platform_win.h"
 
 #include "icon_resolve.h"
@@ -20,7 +21,10 @@ void TabStrip::Create(HWND parent, const Theme& theme) {
     if (!hwnd_) return;
 }
 
-TabStrip::~TabStrip() { ReleaseIcons(); }
+TabStrip::~TabStrip() {
+    uia::Release(hwnd_);   // 释放 UIA 根 provider（客户端仍持有的引用由 COM 计数管理）
+    ReleaseIcons();
+}
 
 void TabStrip::ReleaseIcons() {
     for (auto& kv : iconCache_)
@@ -55,7 +59,8 @@ void TabStrip::PruneIcons(const std::vector<core::TabRef>& refs) {
     }
 }
 
-void TabStrip::SetTabs(const std::vector<core::TabRef>& refs, int active, bool canReopen) {
+void TabStrip::SetTabs(const std::vector<core::TabRef>& refs, int active, bool canReopen,
+                       const std::vector<std::wstring>& closed) {
     // 上限 256：HICON 是真实分配（非 stock 共享），长会话浏览上百目录会一直涨。
     // 到顶才清，清的是本次不再展示的 path，热路径上图标仍复用。
     if (iconCache_.size() >= 256) PruneIcons(refs);
@@ -74,6 +79,7 @@ void TabStrip::SetTabs(const std::vector<core::TabRef>& refs, int active, bool c
         if (it.title.empty()) it.title = L"新标签";
         it.path = ref.path;
         it.locked = ref.locked;
+        it.pinned = ref.pinned;
         it.icon = TabIcon(ref.path);
         it.colorIdx = ref.color;
         // 颜色换算只在这里做一次，绘制处直接用结果。
@@ -84,6 +90,7 @@ void TabStrip::SetTabs(const std::vector<core::TabRef>& refs, int active, bool c
     }
     active_ = active;
     canReopen_ = canReopen;
+    closed_ = closed;
     // rapidClose 状态由 NotifyClose 设置、鼠标离开时取消，跨 SetTabs 保留 ——
     // 这正是"关闭后鼠标不动、连续点下一个关闭钮"能成立的前提。
     if (hoverIndex_ >= static_cast<int>(items_.size())) hoverIndex_ = -1;

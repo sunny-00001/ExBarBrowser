@@ -273,3 +273,48 @@ $w = New-Object System.IO.StreamWriter($c); $w.AutoFlush = $true
 $w.WriteLine("{`"token`":`"$token`",`"method`":`"tools/list`"}")
 (New-Object System.IO.StreamReader($c)).ReadLine()
 ```
+
+
+---
+
+## 8. 导航栏历史的读面与搜索的已知缺口
+
+### 8.1 历史 / 最近访问（2026-11-21 补齐）
+
+地址框下拉里的历史过去只有鼠标能看能点，机器侧只能盲按 `nav.back` 再回读路径。
+现在有三条只读/确定式命令：
+
+| 命令 | 参数 | 作用 |
+|---|---|---|
+| `nav.history.list` | `{backward?: bool}` | 列出可后退/可前进的条目（最近的在前），带 `count` |
+| `nav.history.jump` | `{depth: int, backward?: bool}` | 跳到第 N 条；返回 `{from,to}`，`to` 取自历史条目 |
+| `nav.history.clear` | 无 | 破坏性，需 `aiAllowDanger` + `approve`；返回 `{path,recentCleared}` |
+| `nav.recent.list` | 无 | 地址框下拉里「最近访问」的结构化读面 |
+
+`nav.history.jump` 的 `to` **不能**在跳转后回读 `activePath`：导航是异步的（Shell 回调才写路径），
+立刻读只会读到出发地 —— 这正是"回报成功但内容不对"的典型。它取的是历史条目本身。
+
+`path.copy.dir` / `path.copy.tab` 现在把写入剪贴板的文本一并返回（`structuredContent.text`）。
+剪贴板没有读回面，这是刻意不给 AI 读剪贴板（里面可能有密码）的取舍。
+
+### 8.2 搜索：`search-ms:` 宿主不支持（未解决，已如实失败）
+
+`search.find` 与导航栏搜索框共用 `App::RunSearch`，构造 `search-ms:query=…&crumb=location:…`
+并交给 `IExplorerBrowser`。**这条链路在本工程里从来没有生效过**：
+
+- `BrowseToObject` 对 `search-ms:` 项返回 `S_OK`，但视图留在原目录；
+- 实测：零结果查询（`zzzz-no-such-token`）之后 `itemCount` 与 `tool.list` 条目数一个不少；
+- `IExplorerBrowser` 没有 Explorer 的搜索带（search band），协议处理器 URL 不是可浏览 folder。
+
+处理方式（失败关闭，不再假成功）：
+
+1. `ShellView::DoNavigate` 明确拒绝 `search-ms:` 并记日志；
+2. `RunSearch` 只在 `Navigate` 成功后写 `searchFrom_` / `searchQuery_`（先记账再导航会留下
+   "state 说在搜、视图还在原目录"的假状态）；
+3. `search.find` 返回 `isError=true`，`error` 带实际 URL；
+4. `state` 新增 `searching` / `searchScope` / `searchQuery`，是搜索态的唯一可回读来源；
+   `check_ai_meta.py` 第 17 项已登记 `searching`，缺回读会 FAIL。
+
+真要修，需要换宿主（自带搜索带）或接 Windows Search（`ISearchFolderItemFactory` /
+`IQueryParser`）。当前工具链的 MinGW 头里没有 `searchapi.h` / `structuredquery.h`，
+要做就得自带声明 —— 属于独立任务，别混在导航修复里。
