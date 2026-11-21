@@ -82,7 +82,6 @@ inline constexpr DefHotkey kHotkeys[] = {
     {L"hotkeyFolderCompare", L"FolderCompare", L""},
     {L"hotkeySessionSave", L"SessionSave", L""},
     {L"hotkeySessionRestore", L"SessionRestore", L""},
-    {L"hotkeyAiTogglePanel", L"AiTogglePanel", L"Ctrl+Alt+A"},
     {L"hotkeyGoTab1", L"GoTab1", L"Ctrl+1"},
     {L"hotkeyGoTab2", L"GoTab2", L"Ctrl+2"},
     {L"hotkeyGoTab3", L"GoTab3", L"Ctrl+3"},

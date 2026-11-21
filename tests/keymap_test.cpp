@@ -22,7 +22,7 @@
 // 原来那两条重复绑定没有意义）。**不是随手改数字**：改完后
 // `check_commands.py` 的"命令目录 / keymap / 处理器三方一致"仍是绿的，
 // 说明没有命令因此失去入口。
-constexpr size_t kExpectedHotkeys = 82;
+constexpr size_t kExpectedHotkeys = 81;
 constexpr size_t kExpectedSequences = 38;
 
 int main(int argc, char** argv) {

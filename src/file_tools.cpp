@@ -347,7 +347,8 @@ bool HasInvalidChar(const std::wstring& s) {
 }
 
 bool ExpandPattern(const std::wstring& pattern, const std::wstring& oldName, int index,
-                   std::wstring* out, bool* usedAny) {
+                   std::wstring* out, bool* usedAny, bool* usedExt) {
+    if (usedExt) *usedExt = false;
     std::wstring stem, ext;
     SplitName(oldName, &stem, &ext);
     std::wstring r;
@@ -370,8 +371,14 @@ bool ExpandPattern(const std::wstring& pattern, const std::wstring& oldName, int
         const std::wstring token = str::Lower(pattern.substr(i + 1, close - i - 1));
         bool replaced = true;
         if (token == L"name") r += stem;
-        else if (token == L"ext") r += ext;
-        else if (token == L"old") r += oldName;
+        else if (token == L"ext") {
+            r += ext;
+            if (usedExt) *usedExt = true;
+        }
+        else if (token == L"old") {
+            r += oldName;
+            if (usedExt) *usedExt = true;   // {old} 已含扩展名，不能再追加一次
+        }
         else if (token == L"n") r += PadNum(index, 1);
         else if (token == L"nn") r += PadNum(index, 2);
         else if (token == L"nnn") r += PadNum(index, 3);
@@ -410,9 +417,9 @@ bool PlanBatchRename(const std::vector<std::wstring>& oldNames,
     // 一次预扫描：有没有任何有效占位符。没有的话每个结果都相同，必然重名，
     // 直接说清楚（否则用户会收到一条"第 2 项重名"的误导性报错）。
     {
-        bool dummy = false;
+        bool dummy = false, dummyExt = false;
         std::wstring tmp;
-        ExpandPattern(pattern, L"x.txt", 1, &tmp, &dummy);
+        ExpandPattern(pattern, L"x.txt", 1, &tmp, &dummy, &dummyExt);
         if (!dummy) {
             if (err) *err = L"模式里没有占位符（可用 {name} {ext} {old} {n} {nn} {nnn}）";
             return false;
@@ -425,8 +432,19 @@ bool PlanBatchRename(const std::vector<std::wstring>& oldNames,
     for (size_t k = 0; k < oldNames.size(); ++k) {
         const std::wstring& oldName = oldNames[k];
         std::wstring newName;
-        bool used = false;
-        ExpandPattern(pattern, oldName, static_cast<int>(k) + 1, &newName, &used);
+        bool used = false, usedExt = false;
+        ExpandPattern(pattern, oldName, static_cast<int>(k) + 1, &newName, &used, &usedExt);
+
+        // 模式里没写 {ext} 就**自动保留原扩展名**。
+        // 理由：批量改名最怕的是文件失去关联（双击打不开），而"改前半段"
+        // （`{name}_{n}`）是最常见的意图。要改扩展名就显式写 {ext}，
+        // 模式串里写字面量扩展名（`{name}_x.jpg`）会得到 `a_x.jpg.txt` ——
+        // 这在预览里一眼可见，比"悄悄丢掉 .txt"安全得多。
+        if (!usedExt) {
+            std::wstring stem0, ext0;
+            SplitName(oldName, &stem0, &ext0);
+            newName += ext0;
+        }
 
         if (newName.empty()) {
             if (err) *err = L"“" + oldName + L"”算出了空名字";

@@ -32,8 +32,9 @@ PENDING = {
     #     Ctrl+Alt+D / Ctrl+Shift+K 现在真的有效）；
     #   · 撤销：shellops::Undo 把 Ctrl+Z 转发给 shell 视图自己的撤销栈
     #     （所有落盘操作都带 FOF_ALLOWUNDO，已在系统栈里）。
-    # 批量重命名建议直接接 PowerRename，不自建规则编辑器（OPERATION-MODEL §7）。
-    "hotkeyBatchRename": "BatchRename 待实现（接 PowerRename）",
+    # 批量重命名已于 2026-11-21 实现（Ctrl+Shift+R）：不接 PowerRename，
+    # 只做"模式串 + 预览 + 全部先校验再动手"的最小集合（filetools::PlanBatchRename），
+    # 因为外部依赖不能保证存在，而"按了没反应"是当时要解决的问题本身。
     # 搜索框与 Ctrl+F 已于 2026-11-21 落地（NavBar::FocusSearch + search-ms）。
     # 工具集三条已于 2026-11-21 实现：DupFinder / FileHash / FolderCompare
     # （file_hash.cpp + file_tools.cpp，预算内同步扫描 + 只读报告窗口）。
@@ -41,8 +42,11 @@ PENDING = {
     # 预算是显式的（timedOut/complete 如实上报），单文件哈希本来就必须读完整文件，
     # 用 helper 换来的只是"扫描时界面不卡"，代价是一整套 IPC 与生命周期管理。
     # 代价是预算耗尽会少扫一部分 —— 报告里写清楚了，比假死或假数字好。
-    # AI 面板：接口层（ai_api / ai_server）已通，缺窗口内对话 UI 与历史（ROADMAP §5 P4）。
-    "hotkeyAiTogglePanel": "AiTogglePanel 待实现（缺面板 UI，接口层已就绪）",
+    # AI 面板（Ctrl+Alt+A）的键位已删（2026-11-21）。原因不是"还没做"，而是
+    # **形态就不对**：本工程的 AI 是外部 agent 通过命名管道驱动窗口（MCP 客户端），
+    # 窗口内没有也不需要"聊天"；真要给用户看的是"管道名/令牌/最近调用"，
+    # 那是另一条命令，不该占用 AiTogglePanel 这个名字。
+    # 留着一个永远不会响应的 Ctrl+Alt+A，等于对用户撒谎。
     # 已删键位（2026-11-21）：hotkeyMergeAllWindows（Ctrl+Alt+W）与
     # hotkeyToggleCheckboxes（Ctrl+Alt+M）。这两条不是"待补"而是"本工程做不到"：
     #   · 合并窗口 —— 单窗口模型，没有 explorer 标签可合并（PARITY §3.1）；

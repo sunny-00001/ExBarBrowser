@@ -124,6 +124,11 @@ HUMAN_PATH = {
     # 文件集工具三条（2026-11-21）：设计是"空参数 = 取界面现状，带参数 = 机器点名"，
     # 所以 hash / dupfinder 无必填参数、走命令面板自动满足；compare 有两个必填路径，
     # 人由两框输入给出（左侧预填当前目录），结果统一进只读报告窗口（report.cpp）。
+    # 批量重命名：参数只有一个模式串，人就是"按一下、填个模式"。
+    "file.rename.batch": "Ctrl+Shift+R（或命令面板）→ PromptText 问命名模式"
+                         "（初值 {name}_{nn}，可选 {ext}/{old}/{n}/{nn}/{nnn}）→ "
+                         "MessageBox 预览前 20 条「旧 → 新」并确认 → "
+                         "逐项 shellops::RenameTo（FOF_ALLOWUNDO，Ctrl+Z 可退）",
     'tool.compare': '命令面板 → tool.compare：弹 PromptText2 两个输入框'
                     '（左=当前目录预填，右=手工填或粘贴目标目录），确认后调 CompareFolders；'
                     '结果弹只读报告窗口（report.cpp），可 Ctrl+A / Ctrl+C 取走',
@@ -1238,6 +1243,32 @@ def main():
             fail('事件流缺：' + label)
     else:
         ok('事件可订阅/可补历史/带序号，状态变化由服务端推送')
+
+    # ---------------------------------------------------------------- 20
+    print('\n20. 多实例必须有独立 profile（测试不污染用户数据）')
+    main_cpp = (ROOT / 'src/main.cpp').read_text(encoding='utf-8', errors='replace')
+    cfg_h = (ROOT / 'src/config.h').read_text(encoding='utf-8', errors='replace')
+    cfg_cpp = (ROOT / 'src/config.cpp').read_text(encoding='utf-8', errors='replace')
+    ident = (ROOT / 'src/identity.h').read_text(encoding='utf-8', errors='replace')
+    profile_missing = []
+    for label, cond in [
+        ('环境变量常量', 'kProfileEnv' in ident),
+        ('Config 提供目录切换', 'void SetProfileDir' in cfg_h and 'void Config::SetProfileDir' in cfg_cpp),
+        ('切目录重置内存配置', 'loaded_ = false' in cfg_cpp and 's_ = Settings{}' in cfg_cpp),
+        ('MULTI 与 PROFILE 都参与判定', 'kMultiInstanceEnv' in main_cpp and 'kProfileEnv' in main_cpp),
+        ('显式 profile 真的传给 Config', 'SetProfileDir(profileBuf)' in main_cpp),
+        ('目录切换早于单实例互斥', main_cpp.find('SetProfileDir(') < main_cpp.find('CreateMutexW(')),
+        ('路径全部从 Dir() 派生', all(f'Dir()' in cfg_cpp for _ in range(1)) and
+         'SettingsPath() const { return tf::Join(Dir()' in cfg_cpp and
+         'BookmarksPath() const { return tf::Join(Dir()' in cfg_cpp),
+        ('有隔离单测', (ROOT / 'tests/profile_isolation_test.cpp').exists()),
+    ]:
+        if not cond: profile_missing.append(label)
+    if profile_missing:
+        for label in profile_missing:
+            fail('测试隔离缺：' + label)
+    else:
+        ok('MULTI/PROFILE 实例落在独立目录，派生路径与内存配置都随之切换')
 
     print()
     if g_fail:

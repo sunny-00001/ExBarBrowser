@@ -99,6 +99,9 @@ class Config {
 public:
     static Config& Get();
 
+    // 指定用户数据目录。必须在第一次 Load/Save 之前调用（main 启动时调用）。
+    // 改目录会重置内存配置，保证不会把 A 目录的设置写进 B 目录。
+    void SetProfileDir(const std::wstring& dir);
     void Load();
     void Save();          // 全量写盘（调用点很少：改配置、关窗口）
 

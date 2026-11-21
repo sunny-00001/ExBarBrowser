@@ -230,6 +230,64 @@ int main() {
               "左侧是文件被拒绝");
     }
 
+    std::printf("\n批量改名计划（纯函数）\n");
+    {
+        std::vector<filetools::RenamePair> plan;
+        unsigned same = 0;
+        std::wstring err;
+
+        // 基本展开：{name}_{nn}，序号 1 起、补零到 2 位
+        std::vector<std::wstring> old = {L"a.txt", L"b.jpg", L"c"};
+        Check(filetools::PlanBatchRename(old, old, L"{name}_{nn}", &plan, &same, &err),
+              "基本模式成功");
+        Check(plan.size() == 3, "3 项");
+        if (plan.size() == 3) {
+            Check(plan[0].to == L"a_01.txt", "a.txt → a_01.txt（{ext} 自动带上）");
+            Check(plan[1].to == L"b_02.jpg", "b.jpg → b_02.jpg");
+            Check(plan[2].to == L"c_03", "无扩展名 → c_03");
+        }
+
+        // {old} 与 {ext} 的边界：多段扩展名按最后一个点拆
+        Check(filetools::PlanBatchRename({L"a.tar.gz"}, {L"a.tar.gz"}, L"{name}{ext}_x", &plan,
+                                         &same, &err),
+              "多段扩展名成功");
+        if (plan.size() == 1) Check(plan[0].to == L"a.tar.gz_x", "a.tar.gz → a.tar.gz_x");
+
+        // 隐藏文件风格：开头的点不算扩展名分隔
+        Check(filetools::PlanBatchRename({L".gitignore"}, {L".gitignore"}, L"{name}{ext}.bak", &plan,
+                                         &same, &err),
+              "点开头文件成功");
+        if (plan.size() == 1) Check(plan[0].to == L".gitignore.bak", ".gitignore → .gitignore.bak");
+
+        // 没有占位符 → 所有文件同名，必须早点拒绝
+        Check(!filetools::PlanBatchRename(old, old, L"fixed", &plan, &same, &err),
+              "无占位符被拒绝");
+        Check(err.find(L"占位符") != std::wstring::npos, "原因指向占位符");
+
+        // 批内重名（大小写不敏感）
+        Check(!filetools::PlanBatchRename({L"a.txt", L"A.txt"}, {L"a.txt", L"A.txt"}, L"{name}_1",
+                                          &plan, &same, &err),
+              "批内同名被拒绝");
+
+        // 撞到目录里现有、但不在本批的文件
+        Check(!filetools::PlanBatchRename({L"a.txt"}, {L"a.txt", L"keep.txt"}, L"keep{ext}", &plan,
+                                          &same, &err),
+              "撞已有文件被拒绝");
+        Check(err.find(L"已存在") != std::wstring::npos, "原因写明目标已存在");
+
+        // 非法字符
+        Check(!filetools::PlanBatchRename({L"a.txt"}, {L"a.txt"}, L"x:y{name}", &plan, &same, &err),
+              "冒号被拒绝");
+        // 末尾空格：只有"没有扩展名"的文件才可能真的把空格留在末尾
+        Check(!filetools::PlanBatchRename({L"noext"}, {L"noext"}, L"{name} ", &plan, &same, &err),
+              "末尾空格被拒绝");
+
+        // 全部不变 → 不是成功（否则用户会以为改了）
+        Check(!filetools::PlanBatchRename({L"a.txt"}, {L"a.txt"}, L"{old}", &plan, &same, &err),
+              "全部不变被拒绝");
+        if (same != 1) std::printf("        skippedSame=%u\n", same);
+    }
+
     Cleanup(root);
     std::printf("\n%s（失败 %d 项）\n", g_fail == 0 ? "全部通过" : "有失败", g_fail);
     return g_fail;

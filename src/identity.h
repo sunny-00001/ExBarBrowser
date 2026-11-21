@@ -54,6 +54,8 @@ constexpr wchar_t kAiServiceName[] = L"exbarbrowser";
 
 // 调试用环境变量：设为非空可绕过单实例（便于与被占用的实例并存）
 constexpr wchar_t kMultiInstanceEnv[] = L"EXBARBROWSER_MULTI";
+// 显式指定用户数据目录（相对/绝对均可）。测试用独立 profile，避免污染用户数据。
+constexpr wchar_t kProfileEnv[] = L"EXBARBROWSER_PROFILE";
 
 // WM_COPYDATA 单实例路径转发的魔数。
 //

@@ -83,6 +83,15 @@ std::wstring Config::Dir() const {
     return dir_;
 }
 
+void Config::SetProfileDir(const std::wstring& dir) {
+    if (dir.empty() || dir_ == dir) return;
+    dir_ = dir;
+    // 目录换了却留着旧的内存配置，会把 A profile 的会话/热键写进 B profile。
+    s_ = Settings{};
+    loaded_ = false;
+    parseFailed_ = false;
+}
+
 std::wstring Config::DataDir() const { return Dir(); }
 std::wstring Config::SettingsPath() const { return tf::Join(Dir(), L"settings.json"); }
 std::wstring Config::BookmarksPath() const { return tf::Join(Dir(), L"bookmarks.html"); }

@@ -575,14 +575,18 @@ std::wstring HandleRpcLine(const json::Value& req) {
         json::Value text = json::Value::MakeObject();
         text.Set(L"type", json::Value::MakeStr(L"text"));
 
-        if (r.hasResult) {
+        // 失败优先：以前 hasResult 为真时会把（空的）结果对象当正文输出，
+        // 于是调用方只看到 "{}"，真正的原因 r.error（"目标已存在……"）被丢掉 ——
+        // 声明了 outputSchema 的命令统统踩这一条。失败时原因必须在文本块里。
+        if (!r.ok) {
+            text.Set(L"text", json::Value::MakeStr(L"失败：" + r.error));
+            if (r.hasResult) result.Set(L"structuredContent", r.result);
+        } else if (r.hasResult) {
             // 有结构化结果时，文本块里放序列化 JSON（兼容只认文本的客户端）。
             text.Set(L"text", json::Value::MakeStr(json::Stringify(r.result, 0)));
             result.Set(L"structuredContent", r.result);
-        } else if (r.ok) {
-            text.Set(L"text", json::Value::MakeStr(L"ok: " + r.command));
         } else {
-            text.Set(L"text", json::Value::MakeStr(L"失败：" + r.error));
+            text.Set(L"text", json::Value::MakeStr(L"ok: " + r.command));
         }
         content.arr.push_back(text);
         // content 在断言块之后再 Set：json::Value::Set 是 move 语义，

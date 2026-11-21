@@ -110,7 +110,7 @@ const std::vector<CommandDef> kTable = {
     {CmdId::SelectInvert, L"file.select.invert", L"File", L"文件视图", L"反向选择", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
     {CmdId::SelectFiles, L"file.select.files", L"File", L"文件视图", L"仅选文件", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
     {CmdId::SelectFolders, L"file.select.folders", L"File", L"文件视图", L"仅选文件夹", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
-    {CmdId::SelectByType, L"file.select.type", L"File", L"文件视图", L"按类型选择", false, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    {CmdId::SelectByType, L"file.select.type", L"File", L"文件视图", L"按类型选择", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, true, Requirements{Req::HasSelection}},
     {CmdId::FileFocusTop, L"file.focus.top", L"File", L"文件视图", L"定位到第一项", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
     {CmdId::FileFocusBottom, L"file.focus.bottom", L"File", L"文件视图", L"定位到最后一项", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false},
     {CmdId::CmdRefresh, L"file.refresh", L"File", L"文件视图", L"刷新", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{Req::HasTabs}},
@@ -118,7 +118,9 @@ const std::vector<CommandDef> kTable = {
     {CmdId::CopyToFolder, L"file.copy.to", L"File", L"文件操作", L"复制到文件夹", true, Effects{0, 1, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, true},
     {CmdId::MoveToFolder, L"file.move.to", L"File", L"文件操作", L"移动到文件夹", true, Effects{0, 1, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, true},
     // 批量重命名交给 PowerRename，按模式选择需要"选中集"抽象，本轮不造。
-    {CmdId::BatchRename, L"file.rename.batch", L"File", L"文件操作", L"批量重命名", false, Effects{0, 1, 0, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    // 批量重命名：destructive=true（可能不可逆），但 undoable 走的是 shell 的撤销栈
+    // （每个改名都是 FOF_ALLOWUNDO），所以 Ctrl+Z 能退回 —— 见 filetools::PlanBatchRename。
+    {CmdId::BatchRename, L"file.rename.batch", L"File", L"文件操作", L"批量重命名", true, Effects{0, 1, 0, 0, 1, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"命名模式：{name} 原名（不含扩展名）、{ext} 扩展名、{old} 原名全称、{n}/{nn}/{nnn} 从 1 起的序号（补零）\"},\"targets\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"要改名的完整路径；省略则用当前选中项（必须在当前目录内）\"}},\"required\":[\"pattern\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"renamed\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}},\"failed\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"改失败的原名（被占用/权限不足）\"},\"skippedSame\":{\"type\":\"integer\",\"description\":\"算出的名字与原名相同、被跳过的项数\"}},\"required\":[\"pattern\",\"renamed\",\"failed\"]}"},
     {CmdId::SelectByPattern, L"file.select.pattern", L"File", L"文件视图", L"按模式选择", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"匹配模式，分号分隔多个，如 *.txt;*.md；省略则弹输入框\"},\"folders\":{\"type\":\"boolean\",\"description\":\"是否也匹配文件夹（默认 false）\"},\"caseSensitive\":{\"type\":\"boolean\",\"description\":\"区分大小写（默认 false）\"}},\"additionalProperties\":false}", true, false},
     // ---- 确定式文件操作（P5：目标由参数点名，绝不弹框、绝不读选中）----
     // 与上面的 CmdRename/CmdDelete/CopyToFolder/MoveToFolder 是同一个业务的两种入口。

@@ -247,12 +247,16 @@ assertions   执行后应满足什么
 | **设置数据化** | ✅ `config.list/get/set` + 键表 32 项（18 可写 / 14 只读）+ 设置面板 | 保持（新增项只加一行） |
 | **事件流** | ✅ `events/subscribe` 保持连接推送 + `events/since` 补历史 | 保持 |
 | **断言元数据** | ✅ 命令表第十字段 `assertion`，6 条已带 | 扩到高频写命令 |
-| **测试隔离** | ⚠️ `MULTI=1` 绕单实例，但配置目录共用 | 独立 profile |
+| **测试隔离** | ✅ `EXBARBROWSER_PROFILE` / `MULTI=1` 落到独立目录 | 保持 |
 | 可诊断失败 | ✅ 前置拒绝 + handler 失败原因都进 `lastBlockReason` / 审计 | 保持 |
 | **陈旧构建产物** | ⚠️ `build_fast.py` 不清理已删源文件的 `obj/*.obj`（会与新实现重复符号） | 构建时按源文件清单裁剪 |
 
 **备注**：曾疑「124 标记已实现但只有 123 handler」是缺口，已核实为统计口径差异
 （正则把 `regT(CmdId::X` 等模板计入），实际**无缺失**。
+
+**环境性失败**：`clipboard_test` 需要独占系统剪贴板。本机 `cliphost-app.exe`
+持有时 `OpenClipboard` 返回 `err=5`，测试会失败；这不是实现缺陷（用 ctypes 直接
+调 `OpenClipboard` 同样失败）。判据：`GetLastError()==5` 且失败与本次代码改动无关。
 
 ---
 
@@ -263,7 +267,7 @@ assertions   执行后应满足什么
 2. ✅ **设置数据化**：`config.list` / `config.get` / `config.set` 三条命令 + 键表
    `settings_reg`（32 项）+ 设置面板。契约见 §10.1。
 3. ✅ **事件流**：`events/subscribe` 推 `command` / `state.changed`，`events/since` 补历史。契约见 §10.2。
-4. **测试隔离**：独立 profile 目录，让「启动第二个实例做测试」不污染用户数据。
+4. ✅ **测试隔离**：`EXBARBROWSER_PROFILE` 指定目录，`MULTI=1` 默认 `data\profile-multi`。契约见 §10.3。
 5. **开发面**：快照 + 编译 + 测试 + 回滚。**最后做**，因为它依赖前四层的判据。
 
 > 顺序的理由：前四项都是**让判据成立**，第五项是**让 Agent 自主使用判据**。
@@ -329,6 +333,27 @@ assertions   执行后应满足什么
 `state.changed(5) → command(config.set) → state.changed(4)`；
 命令事件里 `ok=true`、参数 `{"key":"viewMode","value":4}`，紧随其后的状态事件里
 `viewMode=4`。序号单调唯一。检查器第 19 项已用「故意改名 PollStateChanges」验证能真失败。
+
+---
+
+### 10.3 测试隔离的契约（第二个实例不能碰用户数据）
+
+`MULTI=1` 只绕开单实例互斥，原来仍读写同一个 `data\` —— 这不是隔离，是两
+个进程同时写一份 `settings.json`，后写的整体覆盖前写的。判据不是"能不能起
+第二个窗口"，而是"用户数据与测试数据的文件是否物理分开"。
+
+| 契约 | 落地 | 为什么必须这样 |
+|---|---|---|
+| **一个环境变量** | `EXBARBROWSER_PROFILE=<目录>` 显式指定；只给 `MULTI=1` 时落到 `data\profile-multi` | 测试能用固定目录，也能并发开多个不同目录 |
+| **启动最早一步** | `main.cpp` 在创建单实例互斥之前切换目录 | Config 是懒加载；晚一步就会先把用户配置读进内存 |
+| **所有路径派生** | 设置/书签/键位/鼠标/审计/AI 管道与令牌全部走 `Config::Dir()` | 只要有一处硬编码 `data\`，隔离就是假的 |
+| **换目录即清空内存态** | `SetProfileDir` 重置 `Settings` 与 `loaded_` | 否则 B profile 启动时会把 A 的会话/热键写回去 |
+| **文件级验证** | 单测写 a、切 b、再写 b，断言两份文件内容不同 | "路径看起来不同"证明不了没覆盖，要读回文件比对 |
+
+**验收（真实双实例）**：`EXBARBROWSER_MULTI=1 EXBARBROWSER_PROFILE=...\profile-e2e`
+启动的实例从自己的 `settings.json` 读到 `viewMode=2`，`config.set` 改成 3 后只有
+该 profile 的文件变化，用户 `data\settings.json` 的 SHA-256 前后一致。检查器
+第 20 项已用「把 profileBuf 换成空串」验证能真失败。
 
 ---
 

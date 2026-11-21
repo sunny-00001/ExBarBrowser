@@ -50,6 +50,9 @@ bool PickFolder(HWND owner, const std::wstring& start, std::wstring* out) {
 
 void App::RegisterFileCommands() {
     auto reg = cmd_reg::Register;
+    // 产出结构化结果的命令用 regR（检查脚本按 `regR(CmdId::` 字面扫描"谁注册了谁"，
+    // 所以不能写 cmd_reg::RegisterWithResult，也不能靠循环传 id）。
+    auto regR = cmd_reg::RegisterWithResult;
 
     // ---------------- 文件操作 ----------------
     // 返回 fn 的真实成败：以前 `fn(view); return true;` 让删除/粘贴/新建/重命名
@@ -87,6 +90,136 @@ void App::RegisterFileCommands() {
         return WithView([this](IShellView* v) {
             return shellops::InvokeSelectionVerb(v, hwnd_, "rename");
         }, L"重命名");
+    });
+
+    // ---- 批量重命名（Ctrl+Shift+R）----
+    //
+    // 刻意**不做**规则编辑器（查找替换 / 正则 / 大小写 / 日期 / 元数据）：那是
+    // PowerRename 的领域，自建一套只能做一半，且解释成本比模式串高一个量级。
+    // 这里只提供最小可解释集合：{name} {ext} {old} {n} {nn} {nnn}。
+    //
+    // 三条安全约束（都由 filetools::PlanBatchRename 保证，可单测）：
+    //   1. 先算完整计划、全部校验通过才动手（重名/撞已有文件/非法字符/空名）；
+    //   2. 人看到的是一份"旧 → 新"预览，确认后才落盘；
+    //   3. 每个改名都走 shellops::RenameTo（FOF_ALLOWUNDO），所以 Ctrl+Z 能整体退回。
+    regR(CmdId::BatchRename, [this](const Args& args, json::Value* result) {
+        if (!result) return false;
+        const bool human = args.IsEmpty();
+
+        std::wstring pattern = args.Str(L"pattern");
+        if (pattern.empty() && human) {
+            // 人的路径：弹框问模式。初值给一个最常见的"原名 + 序号"，直接回车也有用。
+            pattern = L"{name}_{nn}";
+            if (!PromptText(hwnd_, theme_, L"批量重命名",
+                            L"模式：{name} 原名　{ext} 扩展名　{n}/{nn}/{nnn} 序号　{old} 原名全称",
+                            pattern, &pattern))
+                return false;
+        }
+        if (str::Trim(pattern).empty()) {
+            if (human)
+                MessageBoxW(hwnd_, L"模式为空。", id::kBrandShort, MB_ICONINFORMATION);
+            return false;
+        }
+
+        return WithView([&](IShellView* v) -> bool {
+            // 目标：参数点名优先，否则用当前选中项（人的路径）。
+            std::vector<std::wstring> targets = args.StrArray(L"targets");
+            if (targets.empty()) targets = shellops::SelectedPaths(v);
+            if (targets.empty()) {
+                CommandBus::Get().NoteFailure(L"没有目标：targets 为空，且当前没有选中项");
+                if (human)
+                    MessageBoxW(hwnd_, L"先选中要改名的项目。", id::kBrandShort,
+                                MB_ICONINFORMATION);
+                return false;
+            }
+
+            // 目录里现有的全部名字（用视图列表，和用户看到的完全一致）。
+            // limit=0 表示不截断：冲突检测少看一个名字就可能覆盖一个真文件。
+            shellops::DirListing listing;
+            if (!shellops::ListView(v, 0, &listing)) return false;
+            std::vector<std::wstring> existing;
+            existing.reserve(listing.entries.size());
+            for (const auto& e : listing.entries)
+                if (!e.name.empty()) existing.push_back(e.name);
+
+            // 只取名字：RenameTo 要的是"名字"，路径由它自己算父目录。
+            std::vector<std::wstring> oldNames;
+            oldNames.reserve(targets.size());
+            for (const auto& t : targets) {
+                const size_t slash = t.find_last_of(L"\\/");
+                oldNames.push_back(slash == std::wstring::npos ? t : t.substr(slash + 1));
+            }
+
+            std::vector<filetools::RenamePair> plan;
+            unsigned same = 0;
+            std::wstring err;
+            if (!filetools::PlanBatchRename(oldNames, existing, pattern, &plan, &same, &err)) {
+                LogDbg(L"[cmd] file.rename.batch 计划失败：%s", err.c_str());
+                CommandBus::Get().NoteFailure(err);   // 具体到"哪一条冲突/哪个字符非法"
+                if (human)
+                    MessageBoxW(hwnd_, (L"没有改名：\r\n" + err).c_str(), id::kBrandShort,
+                                MB_ICONWARNING);
+                return false;
+            }
+
+            if (human) {
+                // 预览最多 20 行：确认框不是给人读完整清单的，是给人判断"方向对不对"。
+                std::wstring preview;
+                size_t shown = 0;
+                for (const auto& p : plan) {
+                    if (shown++ >= 20) {
+                        preview += L"…（共 " + std::to_wstring(plan.size()) + L" 项）\r\n";
+                        break;
+                    }
+                    preview += p.from + L"  →  " + p.to + L"\r\n";
+                }
+                const std::wstring msg = L"即将改名 " + std::to_wstring(plan.size()) + L" 项" +
+                                         (same ? L"（" + std::to_wstring(same) + L" 项不变）" : L"") +
+                                         L"：\r\n\r\n" + preview + L"\r\n改名可用 Ctrl+Z 撤销。";
+                if (MessageBoxW(hwnd_, msg.c_str(), L"批量重命名",
+                                MB_OKCANCEL | MB_ICONQUESTION) != IDOK)
+                    return false;
+            }
+
+            json::Value renamed = json::Value::MakeArray();
+            json::Value failures = json::Value::MakeArray();
+            std::wstring dir = ViewFolderPath(v);
+            unsigned okCount = 0;
+            for (const auto& p : plan) {
+                const std::wstring from = dir.empty() ? p.from : tf::Join(dir, p.from);
+                if (shellops::RenameTo(v, hwnd_, from, p.to)) {
+                    ++okCount;
+                    json::Value o = json::Value::MakeObject();
+                    o.Set(L"from", json::Value::MakeStr(p.from));
+                    o.Set(L"to", json::Value::MakeStr(p.to));
+                    renamed.arr.push_back(std::move(o));
+                } else {
+                    failures.arr.push_back(json::Value::MakeStr(p.from));
+                }
+            }
+            if (okCount) RefreshActive();
+
+            result->Set(L"pattern", json::Value::MakeStr(pattern));
+            result->Set(L"renamed", renamed);
+            result->Set(L"failed", failures);
+            result->Set(L"skippedSame", json::Value::MakeNum(static_cast<double>(same)));
+
+            if (failures.arr.empty()) return true;
+            LogDbg(L"[cmd] file.rename.batch：%u 项失败", static_cast<unsigned>(failures.arr.size()));
+            if (human) {
+                MessageBoxW(hwnd_,
+                            (L"改了 " + std::to_wstring(okCount) + L" 项，" +
+                             std::to_wstring(failures.arr.size()) +
+                             L" 项失败（可能被其他程序占用）。\r\n改成功的部分可用 Ctrl+Z 撤销。")
+                                .c_str(),
+                            L"批量重命名", MB_ICONWARNING);
+            }
+            // 部分失败必须如实报失败，不能因为"改了一些"就算成功
+            CommandBus::Get().NoteFailure(L"改了 " + std::to_wstring(okCount) + L" 项，" +
+                                          std::to_wstring(failures.arr.size()) +
+                                          L" 项失败（被占用/权限不足）");
+            return false;
+        }, L"批量重命名");
     });
     reg(CmdId::CmdProps, [this](const Args&) {
         return WithView([this](IShellView* v) {
@@ -352,8 +485,41 @@ void App::RegisterFileCommands() {
             return n > 0;   // 没匹配到要如实报 false，不能假装成功
         }, L"按模式选择");
     });
-    reg(CmdId::CmdNewFolder, [this](const Args&) {
+    reg(CmdId::SelectByType, [this](const Args&) {
+        // 按类型 = "和第一个选中项同扩展名的都选上"（Total Commander 的 Num+ 口径）。
+        // 不取"所有选中项类型的并集"：那样选了两三种之后点一次就等于全选，
+        // 命令会退化成"全选"，用户第二次就会觉得它坏了。
         return WithView([this](IShellView* v) {
+            const std::vector<std::wstring> cur = shellops::SelectedPaths(v);
+            if (cur.empty()) {
+                MessageBoxW(hwnd_, L"先选中一个文件作为样板（按它的扩展名选同类）。",
+                            id::kBrandShort, MB_ICONINFORMATION);
+                return false;
+            }
+            const std::wstring& sample = cur.front();
+            const size_t slash = sample.find_last_of(L"\\/");
+            const std::wstring base =
+                slash == std::wstring::npos ? sample : sample.substr(slash + 1);
+            const size_t dot = base.rfind(L'.');
+            if (dot == std::wstring::npos || dot == 0) {
+                MessageBoxW(hwnd_,
+                            (L"“" + base + L"”没有扩展名，无法按类型选择。").c_str(),
+                            id::kBrandShort, MB_ICONINFORMATION);
+                return false;
+            }
+            const std::wstring ext = str::Lower(base.substr(dot));
+
+            const int n = shellops::SelectWhere(v, [&ext](const shellops::DirEntry& e) {
+                if (e.isFolder || e.name.empty()) return false;
+                const size_t d = e.name.rfind(L'.');
+                if (d == std::wstring::npos || d == 0) return false;
+                return str::Lower(e.name.substr(d)) == ext;
+            });
+            RefreshStats();
+            return n > 0;   // 只有样板本身时也算成功（它已经在选中里）
+        }, L"按类型选择");
+    });
+    reg(CmdId::CmdNewFolder, [this](const Args&) {        return WithView([this](IShellView* v) {
             bool ok = shellops::NewFolder(v, hwnd_);
             if (ok) RefreshActive();
             return ok;
@@ -514,8 +680,6 @@ void App::RegisterFileCommands() {
     // 这两条是第一批带 outputSchema 的命令。它们证明"命令能返回数据"这条路
     // 走得通 —— 以前 handler 只返回 bool，所以"列目录"这类需求只能另起一套
     // 并行的查询 API，破坏"命令是唯一契约"（P1）。
-    auto regR = cmd_reg::RegisterWithResult;
-
     regR(CmdId::OpListDir, [this](const Args& args, json::Value* result) {
         Tab* t = Active();
         if (!t || !t->view || !result) return false;
@@ -668,6 +832,9 @@ void App::RegisterFileCommands() {
             // 认不出的算法：失败，不静默退回 SHA-256。否则"我算的是 SHA-512"
             // 与实际结果无法区分 —— 拿错算法去核对下载包会得出错误结论。
             LogDbg(L"[cmd] tool.hash：认不出的算法 %s", args.Str(L"algorithm").c_str());
+            // 原因要带给调用方：名字打错和"值超范围"该做的下一步完全不同。
+            CommandBus::Get().NoteFailure(L"不支持的算法：" + args.Str(L"algorithm") +
+                                          L"（可用 md5 / sha1 / sha256）");
             return false;
         }
 
@@ -680,6 +847,7 @@ void App::RegisterFileCommands() {
             }
         }
         if (paths.empty()) {
+            CommandBus::Get().NoteFailure(L"没有目标：paths 为空，且当前没有选中项");
             if (human)
                 MessageBoxW(hwnd_, L"先在文件列表里选中要计算摘要的文件。", id::kBrandShort,
                             MB_ICONINFORMATION);
@@ -750,6 +918,7 @@ void App::RegisterFileCommands() {
             }
         }
         if (root.empty()) {
+            CommandBus::Get().NoteFailure(L"没有目录：path 为空，且当前视图没有文件系统路径");
             if (human)
                 MessageBoxW(hwnd_, L"拿不到当前目录（虚拟位置没有文件系统路径）。",
                             id::kBrandShort, MB_ICONINFORMATION);
@@ -760,6 +929,7 @@ void App::RegisterFileCommands() {
         std::wstring err;
         if (!filetools::FindDuplicates(root, opt, &r, &err)) {
             LogDbg(L"[cmd] tool.dupfinder 失败：%s", err.c_str());
+            CommandBus::Get().NoteFailure(L"查找重复文件失败：" + err);
             if (human)
                 MessageBoxW(hwnd_, (L"查找重复文件失败：\r\n" + err).c_str(), id::kBrandShort,
                             MB_ICONWARNING);
@@ -839,7 +1009,10 @@ void App::RegisterFileCommands() {
                              L"右侧（要对比的目录）", right, &right))
                 return false;
         }
-        if (left.empty() || right.empty()) return false;
+        if (left.empty() || right.empty()) {
+            CommandBus::Get().NoteFailure(L"两个目录都必须给：left / right");
+            return false;
+        }
 
         filetools::CompareOptions opt;
         if (args.Has(L"byContent")) opt.byContent = args.Bool(L"byContent", true);
@@ -853,6 +1026,7 @@ void App::RegisterFileCommands() {
         std::wstring err;
         if (!filetools::CompareFolders(left, right, opt, &r, &err)) {
             LogDbg(L"[cmd] tool.compare 失败：%s", err.c_str());
+            CommandBus::Get().NoteFailure(L"比较失败：" + err);
             if (human)
                 MessageBoxW(hwnd_, (L"比较失败：\r\n" + err).c_str(), id::kBrandShort,
                             MB_ICONWARNING);

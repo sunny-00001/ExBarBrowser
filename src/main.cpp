@@ -8,7 +8,9 @@
 #include <cstring>   // memcpy
 
 #include "app.h"
+#include "config.h"
 #include "icon_resolve.h"
+#include "text_file.h"
 #include "str.h"
 
 namespace {
@@ -133,6 +135,19 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
     // 调试用：设置 EXBARBROWSER_MULTI=1 可绕过单实例，便于与用户正在运行的实例并存
     const bool multi = GetEnvironmentVariableW(id::kMultiInstanceEnv, nullptr, 0) > 0;
+
+    // 测试隔离（优先级4）：显式 profile 优先；只给 MULTI=1 时落到固定子目录。
+    // 必须在任何 Config::Get().s()/Load() 之前 —— Config 只在第一次访问时读盘，
+    // 晚设目录会把用户的 settings.json 读进测试实例，再写回去就是污染。
+    wchar_t profileBuf[MAX_PATH * 2] = L"";
+    const DWORD profileLen = GetEnvironmentVariableW(id::kProfileEnv, profileBuf,
+                                                     static_cast<DWORD>(_countof(profileBuf)));
+    if (profileLen > 0 && profileLen < _countof(profileBuf)) {
+        Config::Get().SetProfileDir(profileBuf);
+    } else if (multi) {
+        Config::Get().SetProfileDir(tf::Join(tf::ExeDir(), L"data\\profile-multi"));
+    }
+
     HANDLE mutex = multi ? nullptr : CreateMutexW(nullptr, TRUE, id::kInstanceMutex);
     const bool alreadyRunning = mutex && GetLastError() == ERROR_ALREADY_EXISTS;
 
