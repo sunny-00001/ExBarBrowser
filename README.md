@@ -394,6 +394,7 @@ ExBarBrowser/                       独立 git 仓库（main）
 | [docs/INPUT.md](docs/INPUT.md) | 要改键位/序列/鼠标规则的人 | 输入端主线、keymap/mouse 文件格式、时序语义、管理器用法、排查 |
 | [docs/AI-INTERFACE.md](docs/AI-INTERFACE.md) | 要接 AI / 写 MCP 封装的人 | **AI 操作接口**（已实现）：命令白名单规则、JSON-RPC 管道协议、令牌与双门授权、错误码 |
 | [docs/OPERATION-MODEL.md](docs/OPERATION-MODEL.md) | 要定操作契约的人 | **操作模型**（已实现 1–10 步）：MCP / VS Code / Blender / Opus 四家的做法、七条原则、与现状的差距、迁移的做法与取舍 |
+| [docs/FULL-COVERAGE.md](docs/FULL-COVERAGE.md) | 要让「所有操作」都可程序化/可观测/可闭环的人 | **全覆盖模型**（设计）：四原语（Action/Query/Navigation/Event）、覆盖的三条可证伪判据、控制/观测/开发三平面、能力注册表、闭环模板、分层授权、差距清单、落地顺序 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 要排期的人 | P1 收尾 → P4 的里程碑、验收标准、风险与回退 |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 想推翻现有设计的人 | ADR：独立进程、托管视图、GDI chrome、单实例、无配置 |
 | [docs/NAMING.md](docs/NAMING.md) | 要起名/改名的人 | **命名与标识规范**：品牌串唯一来源、跨软件契约（不许改）、命名空间按领域、命令点分名与 legacy 规则、业界比对（Blender/VS Code/Qt/Opus/TC/Far/Chromium/Tauri） |
