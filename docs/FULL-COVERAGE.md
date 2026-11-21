@@ -118,9 +118,9 @@ AI 应当接「意图层」，永不接「输入层」。
 - 高频交互（拖拽中的流式位移）**不必逐帧成命令**：松手那一刻生成一条结构化命令
   进撤销栈与审计。这是双轨，不是例外。
 
-### 4.2 观测面（本项目最薄的一环）
+### 4.2 观测面（快照 + 事件流 + 断言，三者齐备）
 
-控制面解决「做」，观测面解决「做完怎么知道」。三类能力：
+控制面解决「做」，观测面解决「做完怎么知道」。三类能力（均已落地，契约见 §10.2）：
 
 | 能力 | 形态 | 用途 |
 |---|---|---|
@@ -132,15 +132,27 @@ AI 应当接「意图层」，永不接「输入层」。
 例如「删除文件」：快照显示文件不在了，但它可能是被移走、被别的进程删掉、
 或操作半途失败而文件本就不在。**只有事件能区分这些。**
 
-**这是当前最大的缺口**：项目只有轮询式快照，没有事件流。
+**事件流已补齐**：服务端检测状态变化后主动推 `state.changed` / `command`，
+带全局单调序号，订阅用 `events/subscribe`（同连接先 ack 再推）、断线用 `events/since`
+按 `after=lastSeq` 补历史。于是「中间发生了什么」不再靠两次快照猜。
+
+**选中与焦点已补齐（2026-11-21）**：快照新增 `selectionCount` / `selection` /
+`selectionFolders` / `selectionTruncated`（枚举上限截断标记）与 `focus`
+（`GetGUIThreadInfo` 按窗口祖先链判定焦点落在 file_view / nav_tree / bookmark_bar /
+address_bar / unknown）。在此之前的缺口是致命的：`ShellView::SelectedCount()`
+内部存在但仅用于命令前置，观测面看不到选中——AI「收藏选中的文件夹」这类需求
+只能靠猜（实测踩坑：重启丢现场后把 `D:\` 当成目标写进书签）。同时新增
+`bmk.add.selection`（`needsSelection=true`）：AI 先读快照确认选中，再调用收藏，
+`check_ai_meta.py` 第 4/14 项保证「观测面读不到选中」时这类命令自动收紧不暴露。
+恢复用户上次选中由会话持久化承担（`sessionSelection`）。
 
 ### 4.3 开发面
 
 改代码 → 编译 → 测试 → 保留或回滚。三条硬约束：
 
-1. **必须隔离**：测试实例用独立配置目录/profile，不污染用户环境。
-   当前 `EXBARBROWSER_MULTI=1` 只绕过单实例，**配置目录仍是同一份 `<exe>/data`** ——
-   两个实例会互相覆盖 settings.json。这是真实缺口。
+1. **已经隔离**：测试实例用 `EXBARBROWSER_PROFILE=<目录>` 指定独立配置目录，
+   只给 `MULTI=1` 时落到 `data\profile-multi`；所有路径派生自 `Config::Dir()`，
+   并在任何配置读写之前切换。契约与双实例文件级验证见 §10.3。
 2. **必须可回滚**：改动前有快照（git 提交或 stash），失败能整体丢弃。
 3. **必须最严授权**：开发面默认关闭，需人工批准 + 沙箱，不与文件操作共用通道。
 
@@ -221,6 +233,40 @@ assertions   执行后应满足什么
 
 **同一模板覆盖两类对象**（文件与软件自身），这正是「所有操作」的含义。
 
+### 7.1 把闭环从"模板"变成"一条命令"（ebbctl + 意图目录）
+
+上面的模板此前要靠 Agent 手工执行：读命令表找名字、读 handler 猜参数、读磁盘找
+id、另写脚本回读验证。那不叫自动化，只是"知道怎么手动做"。现在把这段编排固化成
+**声明式配方**，模板的 8 步收敛为一条意图命令：
+
+```
+# 程序用 --ai 启动（不碰 settings.json）；然后：
+python tools/ebbctl.py call bmk.list '{}'              # 任何单条命令：统一通道
+python tools/intents.py bookmark.move-to-end name=坚果云  # 一个意图：定位→执行→验收
+```
+
+四层工具，逐层消灭一类手工操作（对应 §9 的差距逐项转绿）：
+
+| 层 | 解决什么 | 落地 |
+|---|---|---|
+| **P0 通道自举** | 以前要临时改 `aiEnabled` 再重启，且退出回写会污染用户设置 | `--ai` 开关 / `EXBARBROWSER_AI=1` 只置进程内标志（Config::AiChannelEnabled），**永不写盘** |
+| **P1 统一客户端** | 以前每次手写 ctypes 管道客户端、拼 JSON-RPC、处理推送混流 | `tools/ebbctl.py`：发现 pipe/token、call/list/state/events/subscribe 全覆盖，连接带重试 |
+| **P2 内置验证** | 以前 `ok=true` 不等于效果对，要另写脚本回读 | 每次响应带顶层 `verdict`（ok + 断言），`ebbctl call --verdict` 一行出判定 |
+| **P3 意图目录** | 以前"移到最后"要手工翻译成 list→找 id→move→回读 | `tools/intents.py` 声明式配方表，加意图=加一行；幂等（已在末位则跳过 move） |
+
+**为什么意图放在客户端而不是新增 `intent.run` 命令**：命令总线的 `lastBlockReason_`
+是单槽、可重入敏感；handler 嵌套调用会踩掉外层原因。意图本质是**已有命令的编排**，
+每步仍走普通 `tools/call`（没有旁路），编排层放统一客户端里既是单一真源，也不引入
+可重入缺陷。
+
+**验收**：`tests/e2e/bookmark_move_e2e.py` 用新范式跑完整闭环，覆盖"已在末位"（幂等）
+与"从第一位移到末位"（真移动）两种场景，逐项检查 verdict、独立回读、磁盘落盘、
+审计、以及 `aiEnabled` 未被改动。
+
+> 已知环境性 flaky：`pipe_e2e_test` 与真实实例共用全局命名管道，连续/并发跑时偶发
+> `tools/list` 拿到空集（单连接模型的时序竞争）；单独重跑即通过。这类失败不是功能
+> 回归，记为"环境不满足"，不静默算绿也不假装是 bug。
+
 ---
 
 ## 8. 分层与授权
@@ -240,7 +286,7 @@ assertions   执行后应满足什么
 
 | 维度 | 现状 | 目标 |
 |---|---|---|
-| 命令可枚举 | ✅ 161 条（143 已实现） | 保持 |
+| 命令可枚举 | ✅ 全部登记在 `src/commands.cpp`，条数由 `check_ai_meta.py` / `check_commands.py` 实测 | 保持（数字随并行开发变动，本文不写死） |
 | 参数 schema | ✅ 全部合法，且与 handler 取用对齐 | 保持 |
 | 前置条件 | ✅ 43 条声明 | 扩展 |
 | 双向覆盖判据 | ✅ 第 15/16/16b/19/20/21 项（能真失败） | 保持 |
@@ -250,7 +296,12 @@ assertions   执行后应满足什么
 | **测试隔离** | ✅ `EXBARBROWSER_PROFILE` / `MULTI=1` 落到独立目录 | 保持 |
 | 可诊断失败 | ✅ 前置拒绝 + handler 失败原因都进 `lastBlockReason` / 审计 | 保持 |
 | **开发面** | ✅ `dev.snapshot/build/test/job/rollback` + 完成事件 | 保持 |
-| **陈旧构建产物** | ⚠️ `build_fast.py` 不清理已删源文件的 `obj/*.obj`（会与新实现重复符号） | 构建时按源文件清单裁剪 |
+| **通道自举** | ✅ `--ai` / `EXBARBROWSER_AI` 进程内开启，不写 `settings.json` | 保持 |
+| **统一客户端** | ✅ `tools/ebbctl.py` 封装 pipe/token/RPC/订阅，连接带重试 | 保持 |
+| **内置验证** | ✅ 每次响应带顶层 `verdict`（ok + 断言），`call --verdict` 一行判定 | 保持 |
+| **意图目录** | ✅ `tools/intents.py` 声明式配方，一条命令完成定位→执行→验收（幂等） | 加意图只加一行 |
+| **并行构建隔离** | ✅ `run_all.sh` 用独立 objdir + `ExBarBrowser.test.exe`，不撞主构建的 `obj/`/exe | 保持 |
+| **陈旧构建产物** | ⚠️ 主构建 `build_fast.py` 不清理已删源文件的 `obj/*.obj`（会与新实现重复符号）；测试已用独立 objdir 规避 | 构建时按源文件清单裁剪 |
 
 **备注**：曾疑「124 标记已实现但只有 123 handler」是缺口，已核实为统计口径差异
 （正则把 `regT(CmdId::X` 等模板计入），实际**无缺失**。
@@ -302,7 +353,7 @@ assertions   执行后应满足什么
 越界 `viewMode=9`、未知键、只读键 `window.x`、布尔项给整数，四种拒绝都带各自原因；
 `config.set viewMode=6` 后 `state.viewMode` 同步变成 6，`config.set bookmark=false` 后
 `state.bookmarkBarVisible` 同步翻转——证明「写配置」确实推到了活状态，而不只是落盘。
-全量 `tests/run_all.sh` 34/34 通过，三项静态检查通过。
+全量 `tests/run_all.sh` 39/39 通过，三项静态检查通过。
 
 **命令面板（R20）随之修正**：旧规则把「带必填参数」的命令整条从面板剔除，导致
 `config.get/set`、`file.rename` 等只有 AI 能触发。现在面板列出所有已实现命令，
@@ -339,14 +390,16 @@ assertions   执行后应满足什么
 
 ### 10.3 测试隔离的契约（第二个实例不能碰用户数据）
 
-`MULTI=1` 只绕开单实例互斥，原来仍读写同一个 `data\` —— 这不是隔离，是两
-个进程同时写一份 `settings.json`，后写的整体覆盖前写的。判据不是"能不能起
-第二个窗口"，而是"用户数据与测试数据的文件是否物理分开"。
+`MULTI=1` 让实例落到 `data\profile-multi`（不再与用户数据同目录），
+`EXBARBROWSER_PROFILE=<目录>` 可指定任意独立目录。判据不是"能不能起第二个窗口"，
+而是"用户数据与测试数据的文件是否物理分开"。共享同一份 `settings.json` 的多实例
+之所以安全，是因为写盘走原子写（`<file>.<pid>.tmp` + `MoveFileEx(REPLACE_EXISTING)`），
+后写不会截断前写。
 
 | 契约 | 落地 | 为什么必须这样 |
 |---|---|---|
 | **一个环境变量** | `EXBARBROWSER_PROFILE=<目录>` 显式指定；只给 `MULTI=1` 时落到 `data\profile-multi` | 测试能用固定目录，也能并发开多个不同目录 |
-| **启动最早一步** | `main.cpp` 在创建单实例互斥之前切换目录 | Config 是懒加载；晚一步就会先把用户配置读进内存 |
+| **启动最早一步** | `main.cpp` 在读取/写入任何配置之前切换目录 | Config 是懒加载；晚一步就会先把用户配置读进内存 |
 | **所有路径派生** | 设置/书签/键位/鼠标/审计/AI 管道与令牌全部走 `Config::Dir()` | 只要有一处硬编码 `data\`，隔离就是假的 |
 | **换目录即清空内存态** | `SetProfileDir` 重置 `Settings` 与 `loaded_` | 否则 B profile 启动时会把 A 的会话/热键写回去 |
 | **文件级验证** | 单测写 a、切 b、再写 b，断言两份文件内容不同 | "路径看起来不同"证明不了没覆盖，要读回文件比对 |

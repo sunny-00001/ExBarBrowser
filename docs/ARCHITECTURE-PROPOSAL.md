@@ -108,7 +108,7 @@ src/
 
 ```
 src/
-├─ main.cpp                               ~80   进程入口：DPI/COM/单实例/命令行
+├─ main.cpp                               ~80   进程入口：DPI/COM/激活优先启动/命令行
 ├─ contract/
 │  ├─ window_ids.h                        ~40   6 个窗口类名 + WM_APP_TAB_*
 │  ├─ messages.h                          ~30   CopyDataPayload + kCopyDataMagic

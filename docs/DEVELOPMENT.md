@@ -147,15 +147,34 @@ bash build.sh --out /tmp/ebb_check.exe
 **一条命令跑全部单测（推荐）**：
 
 ```bash
-bash tests/run_all.sh            # 当前 32 个单测，32/32 通过约 40 秒
+bash tests/run_all.sh            # 全量单测（数量自动枚举，以实跑输出为准；末行给出通过/总数）
 bash tests/run_all.sh keymap     # 只跑名字含 keymap 的
 ```
 
-它先跑一次 `bash build.sh` 刷新 `obj/`，然后**复用这批 obj** 链接每个测试
+**用结构化通道操作/验证程序（不用鼠标、不改持久设置）**：
+
+```bash
+./ExBarBrowser.exe --ai          # 或 EXBARBROWSER_AI=1：进程内开通道，不写 settings.json
+python tools/ebbctl.py list                          # 列出全部工具
+python tools/ebbctl.py call bmk.list '{}'            # 调命令，返回含顶层 verdict
+python tools/ebbctl.py call view.sort '{"by":2}' --verdict   # 只输出判定，脚本可读退出码
+python tools/intents.py list                         # 列出声明式意图
+python tools/intents.py bookmark.move-to-end name=坚果云       # 一条命令完成定位→执行→验收
+python tests/e2e/bookmark_move_e2e.py 坚果云           # E2E 闭环验收（含落盘/审计/设置未被改）
+```
+
+要点：`--ai` 只置进程内标志（`Config::AiChannelEnabled`），**不写** `settings.json`，
+所以测试实例关闭不会把用户的 `aiEnabled` 翻成 true。意图配方在 `tools/intents.py`
+的 `INTENTS` 表里，加一个意图只需加一行。详见 `FULL-COVERAGE.md` §7.1。
+
+它用**测试专属的 obj 目录**（`$TMPDIR/ebb_tests/obj`）和独立产物名 `ExBarBrowser.test.exe`
+（经 `build.sh --objdir --out`），然后复用这批 obj 链接每个测试
 （排除 `main.obj` / `*_test.obj` / `*.check.obj`），所以：
+- **多会话隔离**：主构建/另一个会话清空重建自己的 `obj/` 时，不会抽走测试链接到一半的 obj
+  （曾导致 25 个测试同时 COMPILE-FAIL）；
 - 不需要维护"每个测试要链哪些 `.cpp`"的依赖表（那种表必然过期，这正是下面那些长命令的由来）；
 - 每条测试的链接只要 ~3 秒，而不是把 60 个 `.cpp` 重编一遍的 3 分钟；
-- 依赖关系由主构建保证，改 `src/` 后不会出现"文档里的命令突然链接失败"。
+- 依赖关系由构建脚本保证，改 `src/` 后不会出现"文档里的命令突然链接失败"。
 
 > 为什么以前没人跑全量：每个测试都得手抄一串 `.cpp`，抄错就链接失败，于是只跑记得住的那几条。
 > `tests/keymap_test.cpp` 因此**红着很久没人发现**（硬编码 70 条，实际早已 84），
@@ -487,7 +506,7 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1          # 还原
 ```powershell
 # 1. 冷启动
 .\ExBarBrowser.exe "C:\Windows"
-# 2. 单实例转发：再开一个，应复用窗口并新增标签
+# 2. 路径转发（激活优先）：再开一个，应复用窗口并新增标签
 .\ExBarBrowser.exe "C:\Windows\System32"
 # 3. 截图
 python scripts\shot.py after.png
@@ -502,7 +521,7 @@ Get-Content "$env:TEMP\ExBarBrowser.log" -Tail 20 -Encoding Unicode
 | 现象 | 诊断 | 处理 |
 |---|---|---|
 | 链接 `Permission denied` | exe 正在运行 | 关实例或改 `-o` |
-| 启动即退，无窗口 | 单实例互斥量残留 / 已有隐藏实例 | 任务管理器结束 `ExBarBrowser.exe`；检查是否有 `Local\ExBarBrowser.Instance` 占用 |
+| 启动即退，无窗口 | 路径转发给了已有窗口（默认行为） | 属预期；要独立窗口用 `--new-window`；确实异常再查日志 `[nav]` |
 | 窗口出来但视图区全白 | `Initialize` 失败或视图尺寸 0 | 看日志 `[init] Initialize hr=`；确认 `Layout` 里 `viewH > 0`（窗口最小 560×360） |
 | 视图白底、工具栏深色 | uxtheme 序号取不到 | 旧 Win10（<1903）或被安全软件拦；可接受降级 |
 | 地址栏输入路径回车无反应 | 解析失败 | 看 `[nav] parse` 的 hr；多为路径不存在或权限 |
@@ -510,7 +529,7 @@ Get-Content "$env:TEMP\ExBarBrowser.log" -Tail 20 -Encoding Unicode
 | 高 DPI 下文字被裁 | 某处写死了像素 | 全量搜 `S(` 之外的裸数字，改成 `theme_.S()` |
 | 切标签闪白 | 容器没填背景 | `ShellView::EraseBackground` 是否被调用；`ViewArea` 的背景刷是否随主题更新 |
 | `shot.py` 抓到黑图 | 窗口最小化 / `PrintWindow` 被拦 | 先 `ShowWindow(SW_RESTORE)`；换 `PW_CLIENTONLY` 试 |
-| 编过但行为没变 | 跑的是旧 exe | 确认 `build.sh` 输出时间戳；单实例会复用旧进程 |
+| 编过但行为没变 | 跑的是旧 exe | 确认 `build.sh` 输出时间戳；默认启动会转发给仍在跑的旧窗口 |
 
 ---
 

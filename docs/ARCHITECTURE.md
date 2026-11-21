@@ -27,7 +27,7 @@ baseline: 2026-11-21 11:00
 
 ```
 ┌──────────────────────────── 进程 ────────────────────────────┐
-│ main.cpp  DPI / COM(STA) / 单实例 / 命令行                    │
+│ main.cpp  DPI / COM(STA) / 激活优先启动 / 命令行              │
 │                                                              │
 │ App（单例，唯一状态所有者）                                   │
 │  ├ Theme        颜色令牌 / 字体 / DPI 缩放（唯一视觉来源）      │
@@ -174,7 +174,7 @@ ExBarBrowser_Popup                   WS_POPUP | WS_EX_TOOLWINDOW | CS_DROPSHADOW
 | `app_commands_tabs.cpp` | 标签 / 跳转 / 导航 / 路径 四组命令 | 视图内文件操作 | 同上 |
 | `app_commands_files.cpp` | 文件操作 / 视图 两组命令（都经 `App::WithView` 判成败） | 标签与历史 | 同上、`shell_ops.h` |
 | `app_commands_misc.cpp` | 窗口/系统、外部程序（`RunTerminal`）、书签、会话 | 单视图操作 | 同上、`bookmarks.h` |
-| `main.cpp` | DPI、`InitCommonControlsEx`、进程深色、COM、单实例、命令行 | 窗口逻辑 | `app.h` |
+| `main.cpp` | DPI、`InitCommonControlsEx`、进程深色、COM、激活优先启动（转发或新开）、命令行 | 窗口逻辑 | `app.h` |
 
 行数约束：单文件 ≤300 行（[ARCHITECTURE-RULES.md](ARCHITECTURE-RULES.md) R3）。
 2026-11-20：`app.cpp` 已按 `app_wnd` / `app_tabs` / `app_nav` / `app_layout` / `app_stats`
@@ -440,24 +440,30 @@ struct Tab {
 
 ---
 
-## 8. 单实例与命令行
+## 8. 启动形态与命令行
 
 ```
 WinMain
  ├ EnableDpiAwareness
  ├ InitCommonControlsEx(ICC_TREEVIEW_CLASSES | ICC_STANDARD_CLASSES)
  ├ ApplyProcessDarkMode(SystemIsDark())
- ├ CoInitializeEx(COINIT_APARTMENTTHREADED)
- ├ InitialPath()                     命令行解析
- ├ CreateMutex(Local\ExBarBrowser.Instance)
- └ alreadyRunning && ForwardToExisting(path) ? 直接退出 : App::Run
+ ├ OleInitialize(nullptr)              剪贴板 + 拖放需要的 OLE
+ ├ InitialPath()                       命令行解析
+ ├ profile 判定（PROFILE > MULTI > 默认 data\）
+ ├ forceNew = EXBARBROWSER_MULTI 或 --new-window
+ └ !forceNew && ForwardToExisting(path, 400ms) ? 转发+激活后退出 : App::Run
 ```
 
-- **为什么用 `Local\` 而不是 `Global\`**：作用域限制在当前登录会话，多用户同时登录互不干扰。
-- **转发等待**：`FindWindowW(kMainClass)` 最多重试 60 次 ×50 ms。首个实例可能还没建完窗口，直接放弃会
-  变成"开了两个进程"。
-- **payload 校验三重**：`dwData == kCopyDataMagic`、`cbData == sizeof(CopyDataPayload)`、
-  `payload->magic == kCopyDataMagic`。`WM_COPYDATA` 的 `lParam` 是 `COPYDATASTRUCT*`，不是数据本身。
+- **没有单实例锁**：不存在"已在运行 → 拒绝启动"的分支。默认启动是**激活优先** —— 找得到已有
+  主窗口就把路径经 `WM_COPYDATA` 转发过去开新标签并前置窗口，新进程随后退出（360 行为）；
+  找不到（最多等 400 ms 吃掉"双击时首实例还没建好窗口"的窄竞态）就直接新开实例。
+- **显式多开**：`--new-window`（"在新窗口打开"命令启动子进程时自动带上，共享同一份用户数据）
+  或 `EXBARBROWSER_MULTI`（同时落到独立 `data\profile-multi`，用于与正跑着的实例隔离测试）。
+- **转发用 `SendMessageTimeout(SMTO_ABORTIFHUNG, 2s)`**：目标卡在模态框时不拖死新进程；
+  处理结果必须校验（返回 FALSE = 没转成 → 按"没有实例"处理，继续往下新开）。
+- **payload 校验**：`dwData == kCopyDataMagic` + `payload->magic == kCopyDataMagic`，
+  路径按 `cbData` 的实际长度读（**不**要求 `cbData == sizeof(CopyDataPayload)`），
+  因此深路径不会被静默截断，新旧版本之间也能互相转发。
 - **命令行**：`/select,<path>` 与 `/select <path>` 都取父目录；其他 `/xxx` 开关忽略；第一个非开关参数当路径；
   都没有则用 `FOLDERID_Profile`。
 
@@ -544,7 +550,7 @@ mingw 头只声明 1 个。多出的参数走寄存器、被忽略即可，**不
 4. **chrome 不调 shell**：`TabStrip`/`StatusBar` 不认识 `ShellView`；`NavBar` 只经 `std::function` 回调。
 5. **`ShellView` 是唯一接触 `IExplorerBrowser` 的类**；其他模块不得包含 `shobjidl.h` 的浏览器接口。
 6. **视觉只走 `Theme`**：颜色、字号、间距、圆角、线宽都从 `theme_` 取。
-7. **窗口类名是外部契约**：`ExBarBrowser_*` 11 个类名被脚本、单实例、自动化依赖；
+7. **窗口类名是外部契约**：`ExBarBrowser_*` 11 个类名被脚本、路径转发、自动化依赖；
    定义只在 `identity.h`，改一个名字要同步 `scripts/shot.py` 与文档（规则 R10）。
 8. **路径内部一律反斜杠**，命名空间保持原样；跨模块传递路径不做二次规范化。
 9. **`Theme` 的生命周期覆盖所有 `ShellView`**：析构顺序必须是"先视图后主题"。
@@ -566,7 +572,7 @@ mingw 头只声明 1 个。多出的参数走寄存器、被忽略即可，**不
     `SetForegroundWindow` / `SetActiveWindow` / `BringWindowToTop` 改用户的前台窗口。
     一切操作走结构化命令：进程内 `CommandBus::Invoke`，进程外 AI 命名管道；
     需要验证必须真点才成立的流程时，**人工点、脚本只观察**（`tools/probe_toggle.py`）。
-    `src/` 里的 `SetForegroundWindow`（单实例转发、弹层取键盘输入）是**用户触发**的产品行为，
+    `src/` 里的 `SetForegroundWindow`（转发激活已有窗口、弹层取键盘输入）是**用户触发**的产品行为，
     不在此列。规则 R21，判据在 `tools/check_components.py` 的 `INPUT_GUARD` 段（4 条），
     理由与替代方案见 [ARCHITECTURE-RULES.md §3.1](ARCHITECTURE-RULES.md)。
 

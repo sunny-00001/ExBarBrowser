@@ -34,7 +34,7 @@ baseline: 2026-11-21 11:00
 
 ```cpp
 // src/identity.h —— 品牌串唯一来源
-constexpr wchar_t kBrand[] = L"ExBarBrowser";   // 正式名：窗口类/管道/日志/互斥体
+constexpr wchar_t kBrand[] = L"ExBarBrowser";   // 正式名：窗口类/管道/日志
 constexpr wchar_t kBrandShort[] = L"ExBar";     // 显示名：窗口标题/对话框标题
 ```
 
@@ -47,7 +47,6 @@ constexpr wchar_t kBrandShort[] = L"ExBar";     // 显示名：窗口标题/对�
 | 窗口标题 | `L"ExBar"` × 2 | 用 `kBrandShort` | 自用 |
 | 对话框标题 | `L"ExBar"` × 4 | 用 `kBrandShort` | 自用 |
 | 窗口类名 | `ExBarBrowser_*` × 11 | 用 `kBrand` 拼，**并减到 3 个** | 自用；R12 要求 ≤3 |
-| 单实例互斥体 | `Local\ExBarBrowser.Instance` | 用 `kBrand` | 自用 |
 | 命名管道 | `\\.\pipe\ExBarBrowser_ai_` | 用 `kBrand` | 自用 |
 | AI 服务名 | `exbarbrowser` | 用 `kBrand` 小写 | 自用 |
 | 环境变量 | `EXBARBROWSER_MULTI` | 用 `kBrand` 大写 | 自用 |

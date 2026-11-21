@@ -78,7 +78,7 @@ baseline: 2026-11-19 20:40
 |---|---|---|
 | Lister / Tab / View 三层对象模型 | **抄** | 我们已有 `App → Tab → ShellView`，只差命名与职责边界；Tab 持有历史/格式，Lister 持有集合 |
 | 命令是唯一动作入口 | **抄** | 现在 `ACCEL` 表 + `WM_COMMAND` 的 switch 就是雏形；提前到 B2，命令面板/AI/外部调用才有落点 |
-| 外部调用走独立 helper + 稳定命令行 | **抄一半** | 我们已有单实例 `WM_COPYDATA`；P3 加 `/cmd` 解析即可，不需要新进程（`ExBarHelper` 是 AI/工具侧，别混） |
+| 外部调用走独立 helper + 稳定命令行 | **抄一半** | 我们已有路径转发 `WM_COPYDATA`；P3 加 `/cmd` 解析即可，不需要新进程（`ExBarHelper` 是 AI/工具侧，别混） |
 | 按类型分插件（Viewer/VFS/元数据） | **不抄** | 我们的"视图"就是 shell 自己；没有 VFS 需求；引 DLL ABI 会带来版本/崩溃面 |
 | 脚本 add-in（JS/VBS + 事件） | **暂不抄** | 引入脚本引擎是另一个工程；P3 的命令注册表已能覆盖"自定义命令"的需求 |
 | 声明式工具栏/菜单（XML） | **部分抄** | 我们不打算让用户改 chrome；但**命令表应该是数据**（`contract/commands.h` 或 JSON），不是散落的 switch |

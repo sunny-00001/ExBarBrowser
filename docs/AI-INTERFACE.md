@@ -44,9 +44,14 @@ baseline: 2026-11-21 11:00
 | `implemented == true` | 未实现的命令调用只会失败，暴露出去是噪音 |
 | `aiExposed == true` | 显式登记，不是默认开放 |
 | `argsSchema` 是合法 JSON | MCP `inputSchema` 直接复用；缺失会让客户端 schema 校验失败 |
-| `needsSelection == false` | 依赖当前选中项的命令，AI 无法用参数指定目标 |
+| `needsSelection == false`，**或** `needsSelection == true` 且观测面能读选中 | 依赖当前选中项的命令，AI 必须先能"看见"选中才能用 |
 
-**为什么不暴露依赖选中项的命令**（`CmdDelete` / `CmdRename` / `CmdCopy` / `CmdPaste`…）：
+**needsSelection 例外（2026-11-21）**：`bmk.add.selection` 是第一条带 `needsSelection=true` 暴露的命令。
+前提是观测面已能读回选中（`state` 返回 `selectionCount` / `selection` / `selectionFolders` /
+`selectionTruncated` / `focus`），AI 先读快照确认选中的是哪个文件夹，再调用收藏。
+`check_ai_meta.py` 第 4/14 项守这条规则：观测面字段不在源码里时，needsSelection 命令一律收紧为不暴露。
+
+**为什么不暴露其余依赖选中项的命令**（`CmdDelete` / `CmdRename` / `CmdCopy` / `CmdPaste`…）：
 它们的语义是"对用户当前选中的东西做什么"。AI 只知道自己想删什么，不知道用户此刻
 选了什么 —— 暴露出去的结果就是"AI 以为删了 A，实际删了用户选中的 B"。要支持这类
 操作，正确做法是新增能**用参数指定目标**的语义命令（mod 的 `ebop` 层），而不是
@@ -68,16 +73,21 @@ baseline: 2026-11-21 11:00
 
 本地命名管道，一行一个请求（UTF-8 JSON），一行一个响应。
 
-**默认关闭。** 在 `data\settings.json` 里设 `"aiEnabled": true` 才监听。
+**默认开启**（2026-11-21 起）。`data\settings.json` 的 `"aiEnabled": false` 才关闭。
+**支持热插拔**：设置面板 / `config.set` 改 `aiEnabled` 立即启停监听，无需重启程序。
 
-启动后写两个发现文件（同目录）：
+启动后写发现文件（同目录）：
 
 | 文件 | 内容 |
 |---|---|
-| `ai-pipe.txt` | 完整管道名（`\\.\pipe\ExBarBrowser_ai_<窗柄>`） |
+| `ai-pipe.txt` | 完整管道名（`\\.\pipe\ExBarBrowser_ai_<窗柄>_<pid>`） |
 | `ai-token.txt` | 本次运行的随机令牌（16 字节 hex） |
+| `ai-pipe.<pid>.txt` / `ai-token.<pid>.txt` | 每实例一份的副本（多实例并存时枚举用） |
 
-令牌每次启动重新生成，进程退出即失效。客户端必须先读这两个文件再连接。
+令牌每次启动重新生成，进程退出即失效。客户端必须先读这些文件再连接。
+多实例并存时，规范名 `ai-pipe.txt` / `ai-token.txt` 指向**最后启动**的实例；
+要枚举全部在监听的实例，遍历 `ai-token.*.txt`（pid 后缀）。实例退出时只删
+属于自己的发现文件，不会误删其他实例的。
 
 ### 协议有两种，靠有无 `jsonrpc` 字段区分
 
@@ -133,7 +143,9 @@ baseline: 2026-11-21 11:00
 // 查状态
 → {"token":"...","method":"state"}
 ← {"ok":true,"activePath":"D:\\Windhawk","activeTab":0,
-   "tabs":["D:\\Windhawk"],"itemCount":15,"viewMode":3}
+   "tabs":["D:\\Windhawk"],"itemCount":15,"viewMode":3,
+   "selectionCount":1,"selection":["D:\\Windhawk\\src"],"selectionFolders":["D:\\Windhawk\\src"],
+   "selectionTruncated":false,"focus":"file_view"}
 
 // 调用命令
 → {"token":"...","method":"tools/call","name":"ViewMode","args":{"preset":5}}
@@ -165,7 +177,7 @@ baseline: 2026-11-21 11:00
 
 | 层 | 机制 | 防的是什么 |
 |---|---|---|
-| 通道 | 默认关闭，需显式改配置 | 安装即对外开放 |
+| 通道 | 会话内令牌 + 可热插拔的 aiEnabled | 同机其他进程随手乱调 |
 | 连接 | 每进程随机令牌 | 同机其他进程随手乱调 |
 | 命令 | `aiExposed` 白名单 | 未审计的动作被触发 |
 | 目标 | 拒绝 `needsSelection` 命令 | AI 操作到"用户碰巧选中的"对象上 |

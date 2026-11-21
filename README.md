@@ -8,7 +8,7 @@ ExBar mod 分片，可并存、可整体拷走、可单独卸载。
 | 项 | 现状（2026-11-21 09:05，v0.2.2） |
 |---|---|
 | 阶段 | **P2 完成 + P3 起步**：标签/导航/书签/状态栏 + 键盘/序列/鼠标 + 命令契约 + AI 接口全部落地，日常浏览可用 |
-| 规模 | `src/` 约 2.33 万行（61 个 `.cpp` + 53 个 `.h`）；`tests/` 32 个单测、475 项断言（2026-11-21 11:00 快照；仓库在活跃并行开发，**行数每几分钟就变**，要看当前值见下方口径命令） |
+| 规模 | `src/` 约 2.33 万行（61 个 `.cpp` + 53 个 `.h`）；`tests/` 39 个单测、548 项断言（2026-11-21 实测；仓库在活跃并行开发，**行数每几分钟就变**，要看当前值见下方口径命令） |
 | 产物 | 单 exe 20.2 MB（含 `-g` 调试符号；`strip` 后约 1.3 MB），静态链接 libstdc++/libgcc |
 | 命令 | 由 `python tools/check_commands.py` 首行给出（目录 / 已实现 / 处理器），`check_ai_meta.py` 给出对 AI 暴露条数。**这三个数每加一条命令就变，本文不写死** |
 | 配置 | 便携模式，全部在 `<exe>\data`：`settings.json` / `bookmarks.html` / `keymap.json` / `mouse.json` / `audit.log` |
@@ -53,7 +53,7 @@ ExBarBrowser.exe（本进程）
 ```
 
 - **不注入、不挂钩子**：explorer 崩不崩与本程序无关；本程序崩了 explorer 也不受影响。
-- **单实例**：第二次"打开文件夹"不新起进程，经 `WM_COPYDATA` 把路径转给已有窗口开新标签（360 行为）。
+- **多实例 + 激活优先**：再次启动默认把路径经 `WM_COPYDATA` 转给已有窗口开新标签并激活（360 行为）；显式 `--new-window`（"在新窗口打开"命令自动带上）直接新开一个进程实例。不存在单实例锁——永不因"已在运行"而拒绝启动。
 - **视图不自绘**：`IExplorerBrowser` 是微软文档化的"在自有窗口里托管资源管理器视图"的 API，
   右键菜单、拖放、重命名、缩略图、排序分组、命名空间全部由 shell 提供，不需要重写视图。
 - **导航窗格不自绘**：`SetOptions(EBO_SHOWFRAMES)` 让 shell 在浏览器内部画自己的导航树
@@ -118,10 +118,10 @@ ExBarBrowser.exe（本进程）
 | 配置与状态 | `src/config.cpp`、`src/json.cpp`、`src/text_file.cpp` | 便携模式写 `<exe>\data\settings.json`；窗口几何、会话、锁定标签、最近访问、状态栏段、视图/排序/分组、窗格偏好 |
 | 会话 | `src/app_commands_misc.cpp`、`src/config.cpp` | 启动恢复上次标签组与关闭历史；`SessionSave` / `SessionRestore` |
 | 深浅色 / 高 DPI | `src/theme.cpp`、`src/main.cpp` | 跟随系统；Per-Monitor V2；`WM_DPICHANGED` 重建令牌与字体 |
-| 单实例转发 | `src/main.cpp`、`src/identity.h` | 命名互斥量 + `WM_COPYDATA`（magic `0x45584242`，见 `id::kCopyDataMagic`） |
+| 激活优先启动 | `src/main.cpp`、`src/identity.h` | 有窗口则 `WM_COPYDATA` 转发 + 激活（magic `0xEBB1`，见 `id::kCopyDataMagic`）；`--new-window` / `EXBARBROWSER_MULTI` 直接新开 |
 | 命令行 | `src/main.cpp` | 目录参数、`/select,<文件>`（打开父目录） |
 | 基础设施收编 | `platform_win` / `str` / `log` / `clipboard` / `ui_draw` / `ui_palette` / `icon_glyph` | 窗口类注册、字符串、日志轮转、剪贴板、量字/填充/描边/双缓冲、色值令牌、字形码位各只有一份实现；`tools/check_components.py` 拦回退 |
-| 工程标识 | `src/identity.h` | 品牌串、11 个窗口类名、互斥体、管道、日志文件名、`WM_COPYDATA` 魔数的唯一来源；改名只动一个文件。规范见 `docs/NAMING.md` |
+| 工程标识 | `src/identity.h` | 品牌串、11 个窗口类名、管道、日志文件名、`WM_COPYDATA` 魔数的唯一来源；改名只动一个文件。规范见 `docs/NAMING.md` |
 | 右键菜单动词 | `scripts/install.ps1` | 可选接管；全部写 `HKCU`，不需要管理员 |
 
 ### 2.2 未实现（诚实清单）
@@ -337,7 +337,7 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
 ## 5. 架构速览
 
 ```
-main.cpp            进程级：DPI → COM(STA)/OLE → 单实例 → 命令行
+main.cpp            进程级：DPI → COM(STA)/OLE → 转发或新开 → 命令行
   └ App            窗口/布局/标签生命周期/命令注册/消息路由
       ├ identity.h 品牌串 / 11 个窗口类名 / 互斥体 / 管道 / 日志名 / 魔数（唯一来源）
       ├ Theme      颜色令牌 + 字体 + DPI 缩放（唯一视觉来源）
@@ -390,7 +390,7 @@ main.cpp            进程级：DPI → COM(STA)/OLE → 单实例 → 命令行
 ```
 ExBarBrowser/                       独立 git 仓库（main）
 ├─ src/                             按职责命名（平铺，60 .cpp / 52 .h，22,065 行）
-│  ├─ main.cpp                      进程入口：DPI / COM+OLE / 单实例 / 命令行
+│  ├─ main.cpp                      进程入口：DPI / COM+OLE / 转发或新开 / 命令行
 │  ├─ app.{h,cpp}                   装配：单例 / 窗口创建 / 生命周期 / 鼠标入口
 │  ├─ app_wnd / app_tabs / app_nav  主窗口过程、标签生命周期、导航与历史栈
 │  ├─ app_layout / app_stats        布局与主题、状态栏取数
@@ -413,7 +413,7 @@ ExBarBrowser/                       独立 git 仓库（main）
 │  ├─ platform_win / str / log / clipboard / tooltip_host   收编后的基础设施
 │  ├─ config / json / text_file                             配置、JSON、原子文本写
 │  └─ common.h                                              共享类型与常量（并转发 identity 的类名）
-├─ tests/                           32 个单测（每个 .cpp 自带 main + Check；`bash tests/run_all.sh` 一键跑全量）
+├─ tests/                           39 个单测（每个 .cpp 自带 main + Check；`bash tests/run_all.sh` 一键跑全量，数量自动枚举）
 ├─ tools/                           check_commands / check_ai_meta / check_components / gen_keymap / gen_icon / probe_highlight / probe_toggle
 ├─ scripts/                         shot.py / install.ps1 / uninstall.ps1
 ├─ docs/                            见下表（15 篇）
@@ -442,7 +442,7 @@ ExBarBrowser/                       独立 git 仓库（main）
 | [docs/OPERATION-MODEL.md](docs/OPERATION-MODEL.md) | 要定操作契约的人 | **操作模型**（已实现 1–10 步）：MCP / VS Code / Blender / Opus 四家的做法、七条原则、与现状的差距、迁移的做法与取舍 |
 | [docs/FULL-COVERAGE.md](docs/FULL-COVERAGE.md) | 要让「所有操作」都可程序化/可观测/可闭环的人 | **全覆盖模型**（设计）：四原语（Action/Query/Navigation/Event）、覆盖的三条可证伪判据、控制/观测/开发三平面、能力注册表、闭环模板、分层授权、差距清单、落地顺序 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 要排期的人 | P1 收尾 → P4 的里程碑、验收标准、风险与回退 |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | 想推翻现有设计的人 | ADR：独立进程、托管视图、GDI chrome、单实例、无配置 |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | 想推翻现有设计的人 | ADR：独立进程、托管视图、GDI chrome、多实例、无配置 |
 | [docs/NAMING.md](docs/NAMING.md) | 要起名/改名的人 | **命名与标识规范**：品牌串唯一来源、跨软件契约（不许改）、命名空间按领域、命令点分名与 legacy 规则、业界比对（Blender/VS Code/Qt/Opus/TC/Far/Chromium/Tauri） |
 | [CHANGELOG.md](CHANGELOG.md) | 所有人 | 变更记录（Keep a Changelog 中文版） |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献者 / AI Agent | 代码规范、提交规范、验证清单、禁止事项 |
@@ -457,7 +457,7 @@ ExBarBrowser/                       独立 git 仓库（main）
 | 视图固定白底、工具栏却是深色 | uxtheme 序号 135/133 取不到（旧 Win10 / 被安全软件拦） | 功能不受影响，仅视觉降级；`ApplyProcessDarkMode` 静默失败 |
 | 导航失败、日志 `parse hr=0x80070057` | 路径含正斜杠，`SHCreateItemFromParsingName` 返回 `E_INVALIDARG` | 已在 `ShellView::DoNavigate` 统一转反斜杠；新入口仍要遵守 |
 | `Initialize` 崩溃或视图空白 | mingw 的 `shobjidl.h` 把第三参写成 `const FOLDERSETTINGS*`，真实 ABI 是 `FOLDERVIEWOPTIONS` 按值 | 已按 vtable 索引 3 直接调真实签名（`InitBrowser`），不要改回头文件声明 |
-| 第二次启动没开新窗口 | 单实例转发把路径给了已有窗口 | 预期行为；要并行比较就先把已有窗口关掉 |
+| 第二次启动没开新窗口 | 默认启动把路径转发给了已有窗口并激活 | 预期行为（360 形态）；要新开窗口用"在新窗口打开"命令 / `--new-window`，或设 `EXBARBROWSER_MULTI`（独立 profile） |
 | 日志看起来是乱码/带空字符 | 日志是 UTF-16 LE 追加写、**无 BOM**，`cmd` 的 `type` 会按 ANSI 解释 | 用 `powershell -Command "Get-Content $env:TEMP\ExBarBrowser.log -Encoding Unicode -Tail 20"`，或 VS Code 手动选 UTF-16 LE |
 | 找不到窗口 | 脚本按类名 `ExBarBrowser_Main` 找 | 类名常量在 `src/identity.h`（`id::kMainClass`），改名要同步 `scripts/shot.py` |
 | 下拉菜单点一下就没 | 弹层在 `WM_ACTIVATE(WA_INACTIVE)` 时自动关闭；前台锁定/焦点被抢会立刻触发 | 确认点击前主窗口是前台；排查见 `docs/DEVELOPMENT.md` §3.4 |
@@ -470,7 +470,7 @@ ExBarBrowser/                       独立 git 仓库（main）
 ## 9. 路线（摘要）
 
 - **P1（已完成）**：窗口骨架、多标签、导航栏（5 按钮 + 分裂箭头 / 面包屑 / 地址编辑 / Tab 补全 /
-  方向历史 / 分段子目录与折叠下拉 / 8 档视图模式）、自绘下拉弹层、状态栏、深色模式、单实例转发、
+  方向历史 / 分段子目录与折叠下拉 / 8 档视图模式）、自绘下拉弹层、状态栏、深色模式、激活优先启动（支持多实例）、
   注册表动词、原生导航窗格（`EBO_SHOWFRAMES`）。
 - **P1.1（已完成）**：标签溢出滚动与 `»` 菜单、弹层、视图菜单、`nav_bar` 拆分。
 - **P2 / M0–M7（已完成，2026-11-19）**：命令管线与命令面板、键盘/序列/鼠标输入端、

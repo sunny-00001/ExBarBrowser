@@ -21,7 +21,7 @@ baseline: 2026-11-21 11:00
 ## 1. 对象模型（唯一命名口径）
 
 ```
-Runtime（进程）                         app/runtime       进程装配：单实例、COM、命令行
+Runtime（进程）                         app/runtime       进程装配：启动形态、COM、命令行
 └─ Lister（顶层载体）                   app/lister        布局：Bar 区 / 视图区 / Panel / 状态 Bar
    ├─ Tab（文件夹上下文） 1..n          core/tab          路径、历史、显示名、项目数、格式
    │  ├─ History（每 Tab 独立）         core/history      线性历史 + 截断 + 跳转
@@ -37,7 +37,7 @@ Feature（业务组合，编译期）              features/<name>  实例化载
 
 | 对象 | 拥有什么 | 不拥有什么 | 现状对应 |
 |---|---|---|---|
-| Runtime | 进程生命周期、单实例、COM、命令行 | 标签、视图 | `main.cpp` + `App::Get()` |
+| Runtime | 进程生命周期、启动形态、COM、命令行 | 标签、视图 | `main.cpp` + `App::Get()` |
 | Lister | Tab 集合、激活索引、布局、载体树、主题 | 单个 Tab 的路径/历史 | `App`（混在一起） |
 | Tab | 路径、History、显示名、项目数、格式 | 视图窗口句柄、组件 | `App::Tab` |
 | View | 一个 `IExplorerBrowser` 与容器窗口 | 历史、标题 | `ShellView` |
@@ -59,7 +59,7 @@ Feature（业务组合，编译期）              features/<name>  实例化载
 src/
 ├─ main.cpp
 ├─ contract/              跨层契约（唯一允许被所有层包含的目录）
-│  ├─ object_ids.h        窗口类名、WM_APP_*、单实例 payload
+│  ├─ object_ids.h        窗口类名、WM_APP_*、路径转发 payload
 │  ├─ commands.h          CommandId + CommandSpec（数据，含 argsSchema/risk/aiExposed）
 │  └─ ports.h             Navigator / PathSource / CommandSink / StateSource
 ├─ core/                  零 Win32，可单测
@@ -216,7 +216,7 @@ contract  ←  core  ←  platform  ←  pipeline  ←  features  ←  app
 | `tools/probe_reopen.py` | **已不存在**（未入库的历史探针，同样在循环投合成点击）。其判据已并入 `probe_toggle.py` 的"收起后不得重弹"断言 |
 | `tools/probe_highlight.cpp` | 屏幕外窗口 + `SW_SHOWNOACTIVATE` + 只发 `WM_THEMECHANGED`（非输入消息）—— **符合** |
 | `scripts/shot.py` | `PrintWindow` 只读 —— **符合** |
-| `src/` 中的 `SetForegroundWindow`（`app_wnd.cpp` / `main.cpp` / `hotkey_manager.cpp` / `popup_list.cpp`） | **不受本禁令约束**：这些是**用户主动发起**的动作（单实例转发激活已有窗口、热键管理器唤出、弹层取得键盘输入），不是自动化脚本替用户操作。判据是"触发源是人还是脚本"，不是 API 名字 |
+| `src/` 中的 `SetForegroundWindow`（`app_wnd.cpp` / `main.cpp` / `hotkey_manager.cpp` / `popup_list.cpp`） | **不受本禁令约束**：这些是**用户主动发起**的动作（转发激活已有窗口、热键管理器唤出、弹层取得键盘输入），不是自动化脚本替用户操作。判据是"触发源是人还是脚本"，不是 API 名字 |
 
 > 判定口径写清楚，是为了避免后来人把 `app_wnd.cpp` 里那句 `SetForegroundWindow` 一起删掉 ——
 > 那句删了，"第二次启动打开新路径"就变成"窗口在后台默默多开一个标签"，用户以为没反应。

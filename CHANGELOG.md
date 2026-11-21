@@ -19,6 +19,65 @@
 
 ## [Unreleased]
 
+### 变更（多实例与 AI 通道形态）
+
+- **移除单实例锁**：删除 `Local\ExBarBrowser.Instance` 命名互斥体，不存在任何
+  "已在运行 → 拒绝启动"的分支。默认启动改为**激活优先**：找得到已有主窗口就把路径经
+  `WM_COPYDATA` 转发过去开新标签并前置窗口，随后新进程退出（360 行为）；找不到
+  （最长等 400ms 吃掉双击竞态）就直接新开实例。显式多开：`--new-window`
+  （"在新窗口打开"命令自动带上，共享同一份数据）或 `EXBARBROWSER_MULTI`
+  （同时落到独立 `data\profile-multi`）。（docs/DECISIONS.md D4 已按复检条件修订）
+- **AI 通道默认开启**：`aiEnabled` 默认值由 `false` 改为 `true`；settings.json 里
+  显式写 `false` 才关闭。安全口径不变：仍需令牌（`ai-token.txt`），fail-closed 的是
+  `aiAllowDanger`（高危命令开关，仍默认关）。
+- **AI 通道热插拔**：`aiEnabled` 从"只读、重启生效"改为运行期可切——设置面板/
+  `config.set` 改完立即启停管道监听，无需重启（内部走 `WM_APP_SYNC_AI`，避免在
+  通道自己的连接上执行 Stop）。
+- **每实例发现文件**：新增 `ai-token.<pid>.txt` / `ai-pipe.<pid>.txt`（数据目录下），
+  多实例并存时客户端可枚举全部在监听的实例；规范名 `ai-token.txt` / `ai-pipe.txt`
+  指向最后启动的实例。退出时只删属于自己的文件（内容校验），不会误删别人的。
+
+### 修复
+
+- **宽字符 printf 的 `%s` 截断**（4 处）：此编译环境下宽字符 printf 的 `%s` 按
+  `char*` 解析，`wchar_t*` 实参只剩首字节。实测后果：AI 每实例发现文件被写成
+  `a.<pid>.txt`（token/pipe 两份同名互相覆盖）；JSON 报错信息只剩首字符；状态栏
+  容量单位只剩首字符；.txt 关联读取异常。统一改 `%ls`（`ai_server.cpp` / `json.cpp` /
+  `shell_ops.cpp` / `view_stats.cpp`）。
+- AI 订阅推送由 `Sleep(20)` 轮询改为事件等待（最多 20ms）唤醒，空闲订阅者不占 CPU；
+  订阅确认写回后才切推模式（客户端看到的顺序恒为「订阅成功 → 事件」）。
+- **订阅者断开后通道不再被堵死**：订阅分支原先忽略 `PeekNamedPipe` 的失败返回值，
+  客户端一断开，服务端就在订阅态里无限空转 —— 既不重建监听实例，也不释放那个唯一的
+  管道实例，之后所有客户端都拿到 `ERROR_PIPE_BUSY`（实测 err=231），直到重启程序才恢复。
+  现在断开的管道会被立刻识别并退出该连接，服务端重建监听实例。
+- 无订阅者时跳过状态快照轮询：AI 通道默认开启后，快照生成开销不应在没人看时每
+  100ms 付一次。
+- **命令枚举顺序**：`bmk.add.selection` 从枚举中间移到末尾。`CmdId` 无显式赋值，
+  往中间插会让后面所有 id 整体位移，基线（`data/commands-baseline.json`）失配
+  （`check_commands.py` 的 C1b 规则）。
+
+### 新增（观测面：选中与焦点）
+
+实测「将选中的文件夹添加到书签」暴露的观测面缺口：`ShellView::SelectedCount()` 内部存在
+但仅用于命令前置，`state` 快照看不到选中与焦点，AI 只能靠猜目标。本次补齐：
+
+- **状态快照新增 5 个字段**：`selectionCount` / `selection`（全部选中路径）/
+  `selectionFolders`（其中文件夹）/ `selectionTruncated`（超过枚举上限时的截断标记，
+  上限 256）/ `focus`（焦点面板：file_view / nav_tree / bookmark_bar / address_bar /
+  unknown，按 `GetGUIThreadInfo` 焦点窗口的祖先链判定）。核心在 `ShellView::SelectionPaths`
+  （IFolderView 枚举 + `SHParseDisplayName` 查 isFolder）。
+- **新增命令 `bmk.add.selection`**：收藏选中的文件夹（过滤非文件夹与已收藏项，返回
+  added/skipped）。第一条 `needsSelection=true` 暴露给 AI 的命令——AI 先读快照确认选中，
+  再执行。`check_ai_meta.py` 第 4/14 项升级：观测面读不到选中（源码无 `selectionCount`）
+  时这类命令自动收紧不暴露；第 8 项顺带修复 requires 元素匹配 bug。
+- **会话持久化补 `sessionSelection`**：退出保存选中、切标签恢复选中，
+  重开程序不再丢失现场。
+- **`ShellView::SelectPaths`**：按路径列表恢复选中（IPersistFolder2 定位文件夹 +
+  ILFindChild + SelectItem），供会话恢复使用。
+
+文档同步：FULL-COVERAGE §4.2、OPERATION-MODEL 第 12 步、AI-INTERFACE（needsSelection
+例外规则 + 快照字段示例）。
+
 ### 修复（审查 explore 对齐：功能断线接线）
 
 全面审查本项目相对 explore 的输入/命令/UI 可达性，修复 4 处"数据或链路齐备但没接上"的断线：

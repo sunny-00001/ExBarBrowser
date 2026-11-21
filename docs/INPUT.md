@@ -40,9 +40,9 @@ baseline: 2026-11-21 11:00
 |---|---|
 | 默认资产 | `<仓库>/data/keymap.json`（与 ExBar mod 的 `data/defaults/keymap.json` 同格式）—— 注意 `data/` 不入库，此文件是本地真实配置；内置兜底表在 `src/keymap.gen.h`，由 `tools/gen_keymap.py` 从这里生成 |
 | 用户文件 | `data\keymap.json`（直接编辑；缺失时用内置默认键位） |
-| 规模 | **83 条热键 + 38 条序列**（2026-11-21 09:05 实测）。其中 13 条热键指向 `implemented=false` 的命令（占位，`check_commands.py` 会列出），按下无反应是**预期**，不是 bug |
+| 规模 | **81 条热键 + 38 条序列**（2026-11-21 15:00 实测）。其中若干条热键指向 `implemented=false` 的命令（占位，`check_commands.py` 会列出），按下无反应是**预期**，不是 bug |
 | 结构 | `hotkeys[] {setting, command, key}`；`sequences[] {seq, command}` |
-| 解析 | `Ctrl+Shift+T` / `Alt+←` / `F5` / `Shift+Left` / `Ctrl+Shift+1` |
+| 解析 | `Ctrl+Shift+T` / `Alt+←` / `F5` / `Alt+P`（预览窗格）/ `Shift+Left` / `Ctrl+Shift+1` |
 | 生效顺序 | 用户覆盖 → 文件默认键 → mod 的系统原生键参考表（`keymap.cpp` 的 `SystemKeyFor`） |
 | 冲突 | 先到先得（与 mod 的 `orderDispatch` 同口径）；管理器把重复项标"冲突" |
 
@@ -117,6 +117,16 @@ baseline: 2026-11-21 11:00
 | 文件列表空白 | 左键双击 | `NavUp` |
 | 书签栏空白 | 左键双击 | `BmkToggleBar` |
 | 状态栏空白 | 左键双击 | `PathCopyDir` |
+| 空白/标签/导航/状态/预览等区（见 `kSideTargets`） | 侧键 X1 | `NavBack`（后退） |
+| 同上 | 侧键 X2 | `NavForward`（前进） |
+
+> 侧键默认不铺在 `file`/`folder` 项上：这两类用户可能想绑定别的动作（如"侧键=关闭"），
+> 默认只覆盖无争议的后退/前进区域。要在文件项上用侧键前进/后退，在 `mouse.json` 里加一条
+> `{target:file, button:x1/x2, trigger:single, action:command, command:NavBack/NavForward}` 即可。
+> 四个自绘栏（标签/导航/书签/状态）与文件视图各自把 `WM_XBUTTONDOWN/UP` 的 wParam
+> 经 `XButtonFromWParam` 解析成 `MBTN_X1/X2`，口径一致，侧键规则在所有区域都可达。
+> 系统菜单（标题栏右键 / Alt+Space）另有「视图菜单/命令面板/首选项/快捷键管理器/退出」入口，
+> 全部转投命令总线，与导航栏按钮同源。
 
 > 不装低级鼠标钩子：窗口是我们自己的，消息直达。`SendKeys` 不迁移（安全风险）。
 
