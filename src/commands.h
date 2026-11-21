@@ -73,10 +73,15 @@ enum class CmdId : int {
     BmkAddCurrent, BmkShowBar, BmkHideBar, BmkToggleBar,
     // Session
     SessionSave, SessionRestore, SessionDelete, SessionList,
-    // 仅目录占位（本工程未实现）
+    // 目录占位（部分已实现）。以下 Op* 六项已废弃：
+    // 它们从未有 handler，且是 fs.open / tool.list 的语义重复。命令表条目已删除
+    // （见 commands.cpp），但**枚举项必须保留** —— C1b：enum class 无显式赋值，
+    // 删中间项会让后续所有 id 位移；legacy 名也必须留（C2：用户 keymap 只增不减）。
     DupFinder, FileHash, FolderCompare, SearchEverything, OpListDir, OpStat,
-    OpTopN, OpDiskUsage, OpSearch, OpReadText, OpNavigate, OpReveal, OpSelect,
-    OpOpen, OpListCurrentView, AiTogglePanel, AiStop,
+    OpTopN, OpDiskUsage, OpSearch,
+    // 废弃，勿用（仅占位维持 id 顺序）：
+    OpReadText, OpNavigate, OpReveal, OpSelect, OpOpen, OpListCurrentView,
+    AiTogglePanel, AiStop,
     // ---- 标签个性化（只允许追加在末尾，见 C1 与 commands-baseline.json）----
     // 这三条原本只是右键菜单项；登记成命令是为了满足 R20（人机等价）：
     // 右键弹出来的每个动作都必须有键盘/面板可达路径，否则只有鼠标能做。

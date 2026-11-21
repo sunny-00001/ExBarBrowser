@@ -19,6 +19,41 @@
 
 ## [Unreleased]
 
+### 修复（审查 explore 对齐：功能断线接线）
+
+全面审查本项目相对 explore 的输入/命令/UI 可达性，修复 4 处"数据或链路齐备但没接上"的断线：
+
+- **Alt+P 预览窗格开关**：`data/keymap.json` 中 `hotkeyTogglePreviewPane` 原绑 `Ctrl+Alt+P`，
+  与 `keymap.cpp` 系统键兜底表声明的 `Alt+P` 不一致（快捷键管理器显示前者、用户按后者无反应）。
+  改为 `Alt+P` 并重跑 `gen_keymap.py` 同步 `keymap.gen.h`，出厂文件与编译期兜底一致。
+- **侧键前进/后退无默认规则**：按钮枚举、shell_input 解析、InputRouter 派发都就绪，但内置默认表
+  与 `mouse.json` 都没有侧键规则，侧键完全无反应。补内置默认：X1=后退、X2=前进，覆盖
+  空白/标签/导航/地址/树/状态/预览/书签等全部可达 target；文件/文件夹项留给用户自配。
+- **侧键消息未接入四个自绘栏**：标签栏、导航栏、书签栏、状态栏原本都不处理
+  `WM_XBUTTONDOWN/UP`，侧键落在这些栏上被 `DefWindowProc` 静默吞掉。四栏统一接 XBUTTON，
+  经新增的 `XButtonFromWParam`（与 shell_input 同口径，含 PARENTNOTIFY 物理状态兜底）
+  解析按钮编号后交给 `MouseSink`，规则引擎在所有区域可达。
+- **系统菜单缺应用入口**：窗口有标准系统菜单（`WS_OVERLAPPEDWINDOW` 含 `WS_SYSMENU`），
+  但视图菜单/命令面板/首选项/快捷键管理器/退出只有导航栏与命令面板入口。追加到标题栏右键 /
+  Alt+Space 系统菜单，`WM_SYSCOMMAND` 自定义 ID 段转投命令总线，与按钮同源，不复制视图菜单实现。
+
+新增 `tests/mouse_rules_test.cpp` 固化侧键默认规则与方向（X1=后退/X2=前进）、target 覆盖、
+wParam 解析；全量 42/42 通过，静态检查（keymap/component/command）全绿，全量重编通过。
+
+### 移除（6 条假能力命令）
+
+- **`tool.readtext` / `tool.navigate` / `tool.reveal` / `tool.select` / `tool.open` / `tool.listview`**：
+  六条 `Op*` 声明从命令表删除。它们是 `fs.open` / `tool.list` 的语义重复，且**从未有 handler、
+  没有键位、没有 agent 暴露**（`aiExposed=false`）—— 挂在目录里只是永远不会兑现的假能力。
+  命令表 161 → 155，未实现 14 → 8，Tool 组 7/7 全实现。
+  **枚举项保留并标废弃**（C1b：`enum class` 无显式赋值，删中间项会让后续 id 位移）；
+  **legacy 映射与基线旧名同步删除**：C2"legacy 名只增不减"保护的是"用户配置引用过的
+  工作命令"，而这 6 条从未实现、无 handler、无键位、无 agent 暴露——命令面板过滤
+  `implemented=false`，内置 keymap 也没绑，不存在"用户 keymap 会失效"的场景。
+  留着指向不存在命令的别名只会让 `check_ai_meta` 报"源命令不存在"。基线 id 数不变（161），
+  旧名数 150 → 147。
+
+
 ### 修复（AI 管道并发串线）
 
 - **管道名进程唯一**：无窗口进程（单测、headless e2e、启动早期）原来一律用

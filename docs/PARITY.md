@@ -41,14 +41,14 @@ baseline: 2026-11-21 21:00
 | Config | 3 | 3 | 0 |
 | Dev | 5 | 5 | 0 |
 | Session | 4 | 4 | 0 |
-| Tool | 13 | 7 | 6 |
+| Tool | 7 | 7 | 0 |
 | Search | 2 | 1 | 1（`search.everything`） |
-| **合计** | **161** | **147** | **14** |
+| **合计** | **155** | **147** | **8** |
 
 > 口径：脚本按 `src/commands.cpp` 里 `{CmdId::X, …}` 字面形式逐条统计分组与 `implemented`，
 > 不按 README 宣称。命令行：见 `tools/check_commands.py`（同时校验 keymap × 处理器三方一致）。
 >
-> 总数 161 里，10 条确定式命令
+> 总数 155 里，10 条确定式命令
 > （`fs.open` / `fs.open.tab` / `fs.open.window` / `fs.copy.toclip` / `fs.cut.toclip` /
 > `fs.properties` / `fs.rename` / `fs.delete` / `fs.copy` / `fs.move`）不是"mod 有而我们没有"，
 > 而是"机器需要按路径点名操作"的补充 —— 详见 §3.5 与 `docs/OPERATION-MODEL.md` 第 4 步。
@@ -65,9 +65,9 @@ baseline: 2026-11-21 21:00
 > （旧版本手写的 90/36 与代码不一致：`GoTab1..9` 在 keymap 里绑了但目录里没有，
 > `CopyToFolder`/`MoveToFolder` 也一直缺，已补齐。）
 
-一句话结论：**File / Bookmark / Config / Dev / Session 五组全部落地；剩下的 14 条是 Everything 搜索（1，要接它的 IPC）、
-AI 面板（2，缺窗口内对话 UI）、6 条与既有 `fs.*` 语义重叠的 `tool.*` 包装命令，
-以及少量"本工程模型下没有意义/没有把握"的项（合并窗口、复选框、RunCommand/SendKeys 等）。**
+一句话结论：**File / Bookmark / Config / Dev / Session / Tool 六组全部落地；剩下的 8 条是 Everything 搜索（1，要接它的 IPC）、
+AI 面板（2，缺窗口内对话 UI），以及少量"本工程模型下没有意义/没有把握"的项
+（合并窗口、复制为快捷方式、复选框、RunCommand/SendKeys 等）。**
 
 ---
 
@@ -198,7 +198,7 @@ mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
 （要有名字、重名与覆盖策略），不该用这两条命令名去冒充 —— 否则"能列出 / 能删"
 会在只有一条会话时变成假能力。
 
-### 3.11 Tool（13）—— 已实现 7
+### 3.11 Tool（7）—— 全实现
 
 | 命令 | 状态 | 说明 |
 |---|---|---|
@@ -209,7 +209,7 @@ mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
 | `FileHash` | 已实现 | MD5/SHA-1/SHA-256，BCrypt 流式读（64 KB 块），`paths` 省略则用选中项 |
 | `DupFinder` | 已实现 | 先按大小分组再比 SHA-256；`Ctrl+Shift+Y` / 命令面板；返回组 + `wastedBytes` |
 | `FolderCompare` | 已实现 | 相对路径配对（大小写不敏感），同大小再比内容；`byContent=false` 只比大小 |
-| `OpReadText` / `OpNavigate` / `OpReveal` / `OpSelect` / `OpOpen` / `OpListCurrentView` | 未实现 | 与既有的 `fs.open` / `fs.copy` / `tool.list` 语义重叠，属于"包装命令"，等确认没有第二种语义再接线 |
+| ~~`OpReadText` / `OpNavigate` / `OpReveal` / `OpSelect` / `OpOpen` / `OpListCurrentView`~~ | **已删除命令表条目** | 六条是 `fs.open` / `tool.list` 的语义重复，且无 handler、无键位、无 agent 暴露。保留声明只是在目录里挂着永远不会实现的假能力，故删除。**枚举项与 legacy 名仍保留**（C1b/C2：删中间枚举会让后续 id 位移，删 legacy 名会让用户已有 keymap 失效），仅标废弃。 |
 
 > `OpTopN` 与 `OpDiskUsage` 是**新写**的（mod 没有）：`src/disk_scan.cpp` 纯文件系统遍历、
 > 不碰 COM，因此能脱离窗口单测。三条硬约束写在文件头：必须能中途停（deadline + 部分结果）、

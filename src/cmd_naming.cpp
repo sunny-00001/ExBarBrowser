@@ -196,12 +196,6 @@ const Alias kAliases[] = {
     {L"OpStat",            L"tool.stat"},
     {L"OpTopN",            L"tool.topn"},
     {L"OpDiskUsage",       L"tool.diskusage"},
-    {L"OpReadText",        L"tool.readtext"},
-    {L"OpNavigate",        L"tool.navigate"},
-    {L"OpReveal",          L"tool.reveal"},
-    {L"OpSelect",          L"tool.select"},
-    {L"OpOpen",            L"tool.open"},
-    {L"OpListCurrentView", L"tool.listview"},
     // AI 面板是窗口级 UI（group=Window），不是"工具"——它开/关的是窗口里的一块区域。
     {L"AiTogglePanel",     L"win.ai.toggle"},
     {L"AiStop",            L"win.ai.stop"},

@@ -236,12 +236,6 @@ const std::vector<CommandDef> kTable = {
     // 人侧：搜索框直接输入、或命令面板追问搜索词（留空＝退出搜索）；agent 侧：{"query":"..."} → 结构化结果。
     {CmdId::OpSearch, L"search.find", L"Search", L"文件视图", L"搜索", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"搜索词；空串＝退出搜索回到来源目录\"}},\"required\":[\"query\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\"},\"url\":{\"type\":\"string\"},\"searching\":{\"type\":\"boolean\"}},\"required\":[\"query\",\"scope\",\"searching\"]}"},
 
-    {CmdId::OpReadText, L"tool.readtext", L"Tool", L"文件视图", L"读取文本", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
-    {CmdId::OpNavigate, L"tool.navigate", L"Tool", L"导航栏", L"导航", false, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
-    {CmdId::OpReveal, L"tool.reveal", L"Tool", L"文件视图", L"定位", false, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
-    {CmdId::OpSelect, L"tool.select", L"Tool", L"文件视图", L"选择", false, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
-    {CmdId::OpOpen, L"tool.open", L"Tool", L"文件视图", L"打开", false, Effects{0, 0, 0, 1, 0, Scope::System}, kNoArgs, false, false},
-    {CmdId::OpListCurrentView, L"tool.listview", L"Tool", L"文件视图", L"列出当前视图", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
     {CmdId::AiTogglePanel, L"win.ai.toggle", L"Window", L"窗口", L"AI 助手", false, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, false, false},
     {CmdId::AiStop, L"win.ai.stop", L"Window", L"窗口", L"停止 AI", false, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, false, false},
 
