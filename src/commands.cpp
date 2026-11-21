@@ -160,7 +160,10 @@ const std::vector<CommandDef> kTable = {
     {CmdId::HotkeyManager, L"win.hotkeys", L"Window", L"窗口", L"快捷键管理器", true, Effects{0, 1, 0, 0, 0, Scope::System}, kNoArgs, false, false},
     {CmdId::FocusAddress, L"win.focus.address", L"Window", L"导航栏", L"聚焦地址栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false},
     {CmdId::FocusSearch, L"win.focus.search", L"Window", L"导航栏", L"聚焦搜索框", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false},
-    {CmdId::Preferences, L"win.preferences", L"Window", L"窗口", L"首选项", false, Effects{0, 1, 0, 0, 0, Scope::System}, kNoArgs, false, false},
+    // 原声明是 implemented=false + destructive=1 + Scope::System，三条都不对：
+    // 面板早就有（导航栏右键「设置…」），开的是一扇窗、不改任何不可逆状态，
+    // 也不碰进程外。声明错了的直接后果是命令面板里搜不到它、键位绑不上。
+    {CmdId::Preferences, L"win.preferences", L"Window", L"窗口", L"首选项", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, false, false},
     // ---- External ----
     {CmdId::OpenTerminal, L"ext.terminal", L"External", L"导航栏", L"在此打开终端", true, Effects{0, 0, 0, 1, 0, Scope::System}, kNoArgs, true, false},
     {CmdId::OpenTerminalAdmin, L"ext.terminal.admin", L"External", L"导航栏", L"管理员终端", true, Effects{0, 1, 0, 1, 0, Scope::System}, kNoArgs, true, false},

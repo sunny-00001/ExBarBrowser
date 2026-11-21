@@ -360,6 +360,19 @@ void NavBar::ShowDropMenu(POINT screen) {
     }
 }
 
+// 「设置…」面板的锚点：视图按钮的左下角，与右键菜单弹在同一处。
+//
+// 抽成函数的原因：鼠标路径（右键菜单 900 项）与命令路径（win.preferences）
+// 是两条独立入口，锚点各算一份就会在布局调整后指向不同按钮。
+POINT NavBar::SettingsAnchor() const {
+    RECT anchor = fieldRc_;
+    for (const auto& b : buttons_)
+        if (b.id == kView) anchor = b.rc;
+    POINT at{anchor.left, anchor.bottom};
+    ClientToScreen(hwnd_, &at);
+    return at;
+}
+
 void NavBar::ShowViewMenu(POINT screen) {
     (void)screen;
     // 视图菜单要回答"现在用的是哪一档、按什么排序、怎么分组"。
@@ -400,11 +413,7 @@ void NavBar::ShowViewMenu(POINT screen) {
     menu.Separator();
     menu.Add(L"设置…", 900, ico::IconId::Settings);
 
-    RECT anchor = fieldRc_;
-    for (const auto& b : buttons_)
-        if (b.id == kView) anchor = b.rc;
-    POINT at{anchor.left, anchor.bottom};
-    ClientToScreen(hwnd_, &at);
+    const POINT at = SettingsAnchor();
     // 预选当前档位：键盘用户按 ↓ 从这里继续，鼠标用户一眼看到自己在哪一档。
     ui::MenuOptions opt;
     opt.toggleKey = L"nav.view";

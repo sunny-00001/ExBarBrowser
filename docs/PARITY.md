@@ -25,7 +25,7 @@ baseline: 2026-11-21 21:00
 
 ---
 
-## 2. 总览（2026-11-21 21:00 实测，脚本对账）
+## 2. 总览（2026-11-21 22:10 实测，脚本对账）
 
 | 组 | 条数 | 已实现 | 未实现 |
 |---|---:|---:|---|
@@ -35,19 +35,20 @@ baseline: 2026-11-21 21:00
 | Path | 7 | 6 | 1（`path.copy.link`） |
 | File | 35 | 35 | 0 |
 | View | 12 | 11 | 1（`view.toggle.checkboxes`） |
-| Window | 12 | 9 | 3（`win.preferences` / `win.ai.toggle` / `win.ai.stop`） |
+| Window | 12 | 10 | 2（`win.ai.toggle` / `win.ai.stop`） |
 | External | 4 | 2 | 2（`ext.run` / `ext.sendkeys`） |
 | Bookmark | 15 | 15 | 0 |
 | Config | 3 | 3 | 0 |
+| Dev | 5 | 5 | 0 |
 | Session | 4 | 2 | 2（`session.delete` / `session.list`） |
 | Tool | 13 | 7 | 6 |
 | Search | 2 | 0 | 2 |
-| **合计** | **156** | **138** | **18** |
+| **合计** | **161** | **144** | **17** |
 
 > 口径：脚本按 `src/commands.cpp` 里 `{CmdId::X, …}` 字面形式逐条统计分组与 `implemented`，
 > 不按 README 宣称。命令行：见 `tools/check_commands.py`（同时校验 keymap × 处理器三方一致）。
 >
-> 总数 156 里，10 条确定式命令
+> 总数 161 里，10 条确定式命令
 > （`fs.open` / `fs.open.tab` / `fs.open.window` / `fs.copy.toclip` / `fs.cut.toclip` /
 > `fs.properties` / `fs.rename` / `fs.delete` / `fs.copy` / `fs.move`）不是"mod 有而我们没有"，
 > 而是"机器需要按路径点名操作"的补充 —— 详见 §3.5 与 `docs/OPERATION-MODEL.md` 第 4 步。
@@ -64,7 +65,7 @@ baseline: 2026-11-21 21:00
 > （旧版本手写的 90/36 与代码不一致：`GoTab1..9` 在 keymap 里绑了但目录里没有，
 > `CopyToFolder`/`MoveToFolder` 也一直缺，已补齐。）
 
-一句话结论：**File 组 35 条全部落地；剩下的 18 条是搜索（2，要接 Everything 的 IPC）、
+一句话结论：**File 组 35 条全部落地；剩下的 17 条是搜索（2，要接 Everything 的 IPC）、
 AI 面板（2，缺窗口内对话 UI）、6 条与既有 `fs.*` 语义重叠的 `tool.*` 包装命令，
 以及少量"本工程模型下没有意义/没有把握"的项（合并窗口、复选框、RunCommand/SendKeys 等）。**
 
@@ -151,14 +152,20 @@ mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
 
 未实现：`ToggleCheckboxes`。
 
-### 3.7 Window（12）—— 已实现 9
+### 3.7 Window（12）—— 已实现 10
 
 新窗口、退出程序（`QuitExplorer` 重定义为关闭本程序，点分名 `win.quit`）、文件夹选项、
 映射/断开网络驱动器、命令面板、快捷键管理器、聚焦地址栏、**聚焦搜索框（`Ctrl+F`，
-2026-11-21 落地：`search-ms:` 协议）**。
+2026-11-21 落地：`search-ms:` 协议）**、**首选项（2026-11-21 接上命令总线）**。
 
-未实现：`Preferences`（设置面板已存在且视图菜单能打开，但**没有**走命令 —— 属"声明了没接线"，
-应改为 `reg(CmdId::Preferences, …)` 打开同一个面板）、`AiTogglePanel` / `AiStop`
+首选项这条原来记的是"面板已存在且视图菜单能打开，但没有走命令"——**两句都错**：
+面板的真实入口是导航栏右键 →「设置…」（动作号 900），视图菜单里从来没有这一项；
+命令目录里那条 `CmdId::Preferences` 则一直是 `implemented=false`，于是命令面板搜不到、
+键位绑不上、agent 看不见。现在 `reg(CmdId::Preferences, …)` 打开的就是同一个面板，
+锚点复用 `NavBar::SettingsAnchor()`，鼠标与命令两条路径弹在同一处。同时改掉那条声明里
+另外两个错字段：`destructive=1`（开一扇窗不改任何不可逆状态）、`Scope::System`（不碰进程外）。
+
+未实现：`AiTogglePanel` / `AiStop`
 （缺窗口内对话 UI，接口层 `ai_api` / `ai_server` 已就绪）。
 
 > `QuitExplorer` 是本组唯一的命名债：mod 期它的行为是"重启 explorer.exe"，本工程里是"退出本程序"。

@@ -35,33 +35,38 @@ static int fails = 0;
 
 // 前置条件探针：本进程能不能碰剪贴板。
 //
-// 【为什么必须先探】剪贴板是**全系统独占**资源。在没有交互桌面权限的环境里
-// （沙箱、非交互会话、被别的进程长期持有），OpenClipboard 直接返回
-// ERROR_ACCESS_DENIED(5)。此时下面每一条 CHECK 都会 FAIL —— 但这不是
-// SetClipboardText 的结论，而是"根本没测"。把它报成 9 个 FAIL 的后果是
-// 每次全量跑都红着一条假问题，久了真正的回归会被"这条一直红"掩盖。
+// 【为什么必须先探】剪贴板是**全系统独占**资源：别的进程正持有时，OpenClipboard
+// 直接返回 ERROR_ACCESS_DENIED(5)；没有交互桌面权限的环境（沙箱、非交互会话）同样
+// 是这个错误码。这时下面每一条 CHECK 都会 FAIL —— 但这不是 SetClipboardText 的结论，
+// 而是"根本没测"。把它报成 9 个 FAIL 的后果是每次全量跑都红着一条假问题，久了真正
+// 的回归会被"这条一直红"掩盖。实测过这个来回：同一批 CHECK 上午 9 红、下午两次全绿，
+// 代码一个字节没变。
 //
 // 所以：探不通 → 退出码 77（run_all.sh 记为"无法运行"），一句话说清是环境。
 // 探得通 → 下面的 CHECK 全部是真判据，失败就是代码的问题。
 //
+// 探针比产品代码等得更久（20 × 25ms ≈ 0.5s，SetClipboardText 只重试 100ms）：
+// 产品那个预算是"让一次复制别偶发失败"，探针问的是"这台机器现在能不能测"，
+// 标准不该一样 —— 探针太急会把"占用 200ms"误判成"测不了"。
+//
 // 说明用的是窄字符串：printf 的 %ls 在 C locale 下遇到非 ASCII 就截断，
 // 曾经把这条诊断打成半句"OpenClipboard "，最要紧的错误码反而丢了。
 static bool ProbeClipboard(std::string* why) {
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 20; ++i) {
         if (OpenClipboard(nullptr)) {
             CloseClipboard();
             return true;
         }
-        Sleep(20);
+        Sleep(25);
     }
     const DWORD err = GetLastError();
     *why = "OpenClipboard 失败，GetLastError=" + std::to_string(err);
     if (err == ERROR_ACCESS_DENIED) {
-        // 把会话也打出来：下次换台机器一眼能看出是不是会话隔离。
+        // 把会话也打出来：换台机器时能一眼区分"别的进程占着"和"会话隔离"。
         DWORD sid = 0;
         ProcessIdToSessionId(GetCurrentProcessId(), &sid);
         *why += "（进程会话 " + std::to_string(sid) +
-                "，通常是没有交互桌面权限或被沙箱限制）";
+                "；要么别的进程正持有剪贴板，要么本进程没有交互桌面权限）";
     }
     return false;
 }

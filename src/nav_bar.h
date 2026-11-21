@@ -108,6 +108,10 @@ public:
     void SetRecentFn(RecentFn fn) { recentList_ = std::move(fn); }
     void SetClearHistoryFn(ClearHistoryFn fn) { clearHistory_ = std::move(fn); }
     void SetSettingsFn(SettingsFn fn) { onSettings_ = std::move(fn); }
+    // 「设置…」面板的锚点（屏幕坐标）。鼠标路径（右键菜单第 900 项）与
+    // 命令路径（win.preferences / 命令面板 / 键位）必须落在**同一个**位置 ——
+    // 两处各算一份，早晚会因为布局调整而指向不同的按钮。
+    POINT SettingsAnchor() const;
     // 退出地址编辑后把焦点还回视图（Enter/Esc/Tab 三条路径共用）
     void SetRefocusFn(std::function<void()> fn) { refocus_ = std::move(fn); }
 

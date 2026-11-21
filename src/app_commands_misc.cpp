@@ -93,6 +93,14 @@ void App::RegisterMiscCommands() {
         ShowHotkeyManager(hwnd_, theme_, input_);
         return true;
     });
+    // 首选项面板本身早就存在，但只有一条入口：导航栏右键 →「设置…」。
+    // 于是命令面板里搜不到它、键位绑不上、Agent 更看不到 —— 用户被告知
+    // "有首选项"却只能靠右键碰运气。这里补的是**入口**，不是新面板：
+    // 锚点也复用导航栏那一个（NavBar::SettingsAnchor），两条路径弹在同一处。
+    reg(CmdId::Preferences, [this](const Args&) {
+        ShowSettingsPanel(navBar_.SettingsAnchor());
+        return true;
+    });
     reg(CmdId::FocusAddress, [this](const Args&) { navBar_.FocusAddress(); return true; });
 
     // ---------------- 外部 ----------------
