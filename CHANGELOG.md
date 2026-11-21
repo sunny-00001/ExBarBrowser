@@ -19,6 +19,13 @@
 
 ## [Unreleased]
 
+### 新增（`AGENTS.md`）
+
+给 AI Agent 的工程入口：三条不可协商（R21 / 无第三方库 / 视觉与品牌串单一来源）、命令速查、
+代码规则、命名与命令契约、加东西的五条路径、真实坑位表、收工判据、文档索引。
+§8「闭环流程」明确写成**通道优先**：结构化 = `tools/list` + `CommandBus` + `verdict/assertions`
++ `errorCode` + `exbar/capabilities`，外部脚本只做进程生命周期。
+
 ### 修复
 
 - `tests/run_all.sh` 的链接库补 `-luiautomationcore`：主构建 `build_fast.py` 的
