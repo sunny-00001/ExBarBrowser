@@ -19,6 +19,7 @@
 #define PATH_UTIL_H_
 
 #include <string>
+#include <vector>
 
 namespace pathutil {
 
@@ -48,6 +49,13 @@ std::wstring CollapseSeparators(const std::wstring& path);
 //     （分隔符）完全看不出来。
 // 同一类输入在不同命令上表现不同，本身就是一种 bug。
 std::wstring ToShellPath(const std::wstring& path);
+
+// 一组路径的 ToShellPath（逐项归一化，顺序与大小写都不变）。
+//
+// 为什么需要批量版本：fs.* 那组命令的 targets 参数本来就是数组，
+// 批量版让"整批一起归一化"成为**一次**调用 —— 逐项在调用点写循环，
+// 迟早有人漏掉其中一项（漏掉的那一项就是那个报 E_INVALIDARG 的）。
+std::vector<std::wstring> ToShellPaths(const std::vector<std::wstring>& paths);
 
 }  // namespace pathutil
 

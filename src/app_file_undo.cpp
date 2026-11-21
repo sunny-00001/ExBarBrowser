@@ -8,7 +8,7 @@
 #include "app.h"
 
 #include "file_undo.h"
-#include "shell_ops.h"
+#include "shell_ops_path.h"
 #include "text_file.h"
 
 void App::NoteFileOp(fileundo::Op op, std::vector<fileundo::Item> items,
@@ -30,7 +30,7 @@ bool App::ApplyFileUndo(fileundo::Entry& e, std::wstring* why) {
     // 【为什么用按路径的那组 shellops】
     // 撤销时目标已经不在当前视图里了（移动过的到了别的目录、复制出的副本在别处），
     // 既有的 Selection 语义与 RenameTo 的"必须在视图里"校验都用不了。
-    // 见 shell_ops.h 里"按路径的文件操作"一段。
+    // 见 shell_ops_path.h 里"按路径的文件操作"一段。
     std::vector<fileundo::Item> failed;
     for (auto& it : e.items) {
         bool ok = false;

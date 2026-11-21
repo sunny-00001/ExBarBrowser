@@ -1,5 +1,7 @@
 #include "path_util.h"
 
+#include <vector>
+
 namespace pathutil {
 
 std::wstring CollapseSeparators(const std::wstring& path) {
@@ -43,6 +45,13 @@ std::wstring ToShellPath(const std::wstring& path) {
     // 去尾分隔符：盘根 `C:\` 必须留（去掉就变成 `C:`，语义从"根"变成"当前目录"）。
     while (p.size() > 3 && p.back() == L'\\') p.pop_back();
     return CollapseSeparators(p);
+}
+
+std::vector<std::wstring> ToShellPaths(const std::vector<std::wstring>& paths) {
+    std::vector<std::wstring> out;
+    out.reserve(paths.size());
+    for (const auto& p : paths) out.push_back(ToShellPath(p));
+    return out;
 }
 
 }  // namespace pathutil

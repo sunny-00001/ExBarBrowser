@@ -79,17 +79,9 @@ bool RenameTo(IShellView* view, HWND owner, const std::wstring& fullPath,
 
 // ---- 按路径的文件操作（撤销栈专用）----
 //
-// 为什么单独有一组：撤销时目标**已经不在当前视图里**了（移动过的文件到了别的
-// 目录、复制出的副本在别处），"Selection" 语义与 RenameTo 的"必须在视图里"
-// 校验都用不了 —— 而那条校验的用意是"不要凭空操作视图外的目录"，
-// 撤销恰恰必须操作视图外。
-//
-// 只被撤销栈调用，不参与命令路径：命令路径（file.* / fs.*）仍然只有一份实现。
-// 共同点：走 IFileOperation、不弹 UI、冲突时改名而不是覆盖（FOF_RENAMEONCOLLISION）。
-bool RenamePath(HWND owner, const std::wstring& fullPath, const std::wstring& newName);
-bool MovePathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir);
-bool CopyPathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir);
-bool DeletePath(HWND owner, const std::wstring& fullPath);
+// 见 src/shell_ops_path.h —— 那组按**完整路径**操作的文件操作已单独成文件：
+// 它们的作用域（路径）与本文件其余部分（视图）不同，混在一起会让读的人
+// 一路翻到文件末尾才发现还有另一套语义。
 
 // ---- 只读查询（业界 P6：读操作返回值）----
 //

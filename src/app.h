@@ -66,6 +66,8 @@ private:
     // 命令注册按域分片（app_commands*.cpp），RegisterCommands 只做调度。
     void RegisterTabCommands();
     void RegisterFileCommands();
+    // fs.*（按路径操作）单独成文件：作用域与 file.*（选中集）不同。
+    void RegisterFsCommands();
     void RegisterMiscCommands();
     void RegisterDevCommands();
     void Layout();
