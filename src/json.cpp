@@ -121,7 +121,7 @@ struct Parser {
             for (size_t k = 0; k < i && k < s.size(); ++k)
                 if (s[k] == L'\n') ++line;
             wchar_t buf[128];
-            swprintf(buf, 128, L"第 %d 行：%s", line, msg);
+            swprintf(buf, 128, L"第 %d 行：%ls", line, msg);
             err = buf;
         }
     }

@@ -310,7 +310,7 @@ std::wstring FormatSize(unsigned long long bytes) {
     if (u == 0)
         swprintf(buf, 64, L"%llu B", bytes);
     else
-        swprintf(buf, 64, L"%.1f %s", v, units[u]);
+        swprintf(buf, 64, L"%.1f %ls", v, units[u]);
     return buf;
 }
 

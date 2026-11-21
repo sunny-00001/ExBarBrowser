@@ -361,7 +361,7 @@ std::wstring LocalizedNewTextName() {
             ERROR_SUCCESS &&
         doc[0]) {
         wchar_t keyPath[256] = L"";
-        _snwprintf_s(keyPath, _countof(keyPath), _TRUNCATE, L"%s", doc);
+        _snwprintf_s(keyPath, _countof(keyPath), _TRUNCATE, L"%ls", doc);
         wchar_t localized[256] = L"";
         cb = sizeof(localized) - sizeof(wchar_t);
         if (RegGetValueW(HKEY_CLASSES_ROOT, keyPath, L"FriendlyTypeName", RRF_RT_REG_SZ, nullptr,
