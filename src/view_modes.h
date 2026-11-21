@@ -16,24 +16,27 @@
 
 #include <shobjidl.h>   // FVM_*（FOLDERVIEWMODE）；不靠 PCH 间接提供
 
+#include "icon_glyph.h"
+
 namespace viewmode {
 
 struct ViewMode {
     int fvm;              // FOLDERVIEWMODE
     int icon;             // 图标像素（96 DPI 基准，调用方按 DPI 缩放）
     const wchar_t* label; // 菜单显示文案
+    ico::IconId glyph;    // 视图菜单行图标（与本档位同表，不另写一份映射）
 };
 
 // 8 个档位，顺序即 `view.mode` 命令的 arg 取值（0..7）。
 inline constexpr ViewMode kModes[] = {
-    {FVM_THUMBNAIL, 256, L"超大图标"},
-    {FVM_THUMBNAIL, 96, L"大图标"},
-    {FVM_THUMBNAIL, 48, L"中图标"},
-    {FVM_ICON, 16, L"小图标"},
-    {FVM_LIST, 16, L"列表"},
-    {FVM_DETAILS, 16, L"详细信息"},
-    {FVM_TILE, 48, L"平铺"},
-    {FVM_CONTENT, 48, L"内容"},
+    {FVM_THUMBNAIL, 256, L"超大图标", ico::IconId::GridView},
+    {FVM_THUMBNAIL, 96, L"大图标", ico::IconId::GridView},
+    {FVM_THUMBNAIL, 48, L"中图标", ico::IconId::GridView},
+    {FVM_ICON, 16, L"小图标", ico::IconId::ListView},
+    {FVM_LIST, 16, L"列表", ico::IconId::ListView},
+    {FVM_DETAILS, 16, L"详细信息", ico::IconId::DetailsView},
+    {FVM_TILE, 48, L"平铺", ico::IconId::GridView},
+    {FVM_CONTENT, 48, L"内容", ico::IconId::Page},
 };
 
 inline constexpr int kCount = static_cast<int>(sizeof(kModes) / sizeof(kModes[0]));

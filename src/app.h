@@ -83,11 +83,29 @@ private:
     // 返回值是为命令总线准备的 —— 以前它是 void，handler 只能无条件 return true，
     // 于是"锁定标签没关掉"在审计里被记成成功（ok=1），AI 也以为自己做到了。
     bool CloseTab(int id);
-    void CloseOthers(int keepId);
-    void CloseSide(int id, bool left);
+    // 返回**实际关闭数**。锁定标签会被跳过且不调用 CloseTab（否则每留一个就
+    // 响一次铃）；一个都没关掉时命令必须如实报 false，不能记成 ok=1。
+    int CloseOthers(int keepId);
+    int CloseSide(int id, bool left);
     void Activate(int id);
     void MoveTab(int id, int toIndex);
+    // 锁定状态的唯一写入点（按值设定，幂等）。ToggleLock 是它的"切换"用法。
+    // 分两个名字而不是一个 bool 参数：命令侧要"确保锁着"，菜单要"翻转"，
+    // 两种意图都常见，而 bool 参数在调用点读起来永远是 `ToggleLock(id, true)` ——
+    // 读者得回去查"true 是锁还是切换"。
+    void SetTabLocked(int id, bool locked);
     void ToggleLock(int id);
+    // 用户重命名。空串 = 取消改名（退回跟随路径/Shell 名）。
+    // 存 TabRef::alias 而不是覆盖 title：title 每次导航都会被 Shell 回调重写。
+    void RenameTab(int id, const std::wstring& name);
+    // 标签颜色下标（0 = 无颜色，见 Theme::TabColorFill）。
+    void SetTabColor(int id, int color);
+    // 关掉与 keepId 同路径的其他标签。返回真正关掉的个数（锁定标签不关）。
+    int CloseDuplicates(int keepId);
+    // 把某标签当前的 alias/color 写进配置（按路径）。改名与着色共用 ——
+    // 两处各写一遍"先改模型、再回读、再写配置"必然分叉：一处漏写 color，
+    // 表现就是"改了颜色，再改名时颜色被清掉"。
+    void PersistTabMeta(int id);
     Tab* Active();
     Tab* ById(int id);
     int ActiveIndex() const;
@@ -124,6 +142,7 @@ private:
     void ShowStatusMenu(POINT screen);
     void ShowCommandPalette();
     void ShowTabMenu(int index, int action);
+    void ShowTabColor(int index, int color);
     void ShowViewMenuAt();
 
     // 命令辅助
@@ -139,6 +158,16 @@ private:
     // 导航栏视图菜单给的是这两个值，而命令系统要的是下标。
     static int ViewModeIndexFor(int fvm, int iconPx);
     void CopyText(const std::wstring& text);
+    // 书签保存的统一善后：成功什么都不做；被"外部已改"拦下时告诉用户
+    // 内存里的书签被另存到了哪个文件。
+    //
+    // 为什么必须集中：Save() 有 16 个调用点（拖放、菜单、导入、命令），
+    // 那条"拒绝覆盖 + 另存 .conflict.html"的护栏如果只在某一处提示，
+    // 其余 15 处都会安静失败 —— 用户以为加上了，其实没落盘。
+    void NotifyBookmarkSave(bool ok);
+    // 对**指定路径**弹 shell 属性框。与 CmdProps 的区别：那个作用于"当前选中项"，
+    // 这个按路径点名（面包屑段右键要用，右键的那一刻那段并不在选中集里）。
+    void ShowPathProperties(const std::wstring& path);
     std::vector<std::wstring> SelectedOrFolder();
     void OpenPathInNewWindow(const std::wstring& path);
     void ApplyViewMode(int index);

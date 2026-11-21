@@ -3,7 +3,6 @@
 // 数据来自 BookmarkStore（%APPDATA%\ExBar\bookmarks.html，与 mod 共用）；
 // 本类只读展示 + 发导航/命令，增删改由 App 的 Bmk* 命令完成。
 #pragma once
-#include <map>
 #include <string>
 #include <vector>
 
@@ -20,9 +19,16 @@ public:
     HWND hwnd() const { return hwnd_; }
     void SetNavigateFn(std::function<void(const std::wstring&)> fn) { onNavigate_ = std::move(fn); }
     void SetMouseSink(MouseSink fn) { sink_ = std::move(fn); }
+    // 键盘退出本栏（Esc）时把焦点还给视图。与 nav_bar 的 SetRefocusFn 同一契约：
+    // 焦点卡在栏上会让文件视图的 Delete / type-ahead 全部失效。
+    void SetRefocusFn(std::function<void()> fn) { refocus_ = std::move(fn); }
     void Reload();        // 用内存中的 store 重排
     void ReloadFromDisk();// 重新读文件
     void ReloadTheme();
+    // 键盘进入本栏：把焦点给窗口并把 kbdIdx_ 落在第一项。
+    // 本程序不跑 IsDialogMessage，Tab 不是焦点遍历键 —— 所以"到达书签栏"
+    // 必须由一条命令/热键显式触发（与 F4 到地址栏同一模式）。
+    void FocusBar();
 
     // OLE 拖放支持（bookmark_drop 调用）：
     int FolderItemAt(POINT screen) const;            // 屏幕点 → 可见项索引，-1=无
@@ -65,7 +71,6 @@ private:
     ui::TooltipHost tooltip_;
     const Theme* theme_ = nullptr;
     std::vector<Item> items_;
-    std::map<std::wstring, HICON> icons_;
     RECT ovfRc_{};
     bool overflow_ = false;
     int hover_ = -1;
@@ -78,8 +83,24 @@ private:
     bool dragging_ = false;    // 已超阈值，正在拖
     int dragIdx_ = -1;         // 起始项
     int dropIdx_ = -1;         // 插入线位置（绘制到 dropIdx_ 左缘）
+    int dropInto_ = -1;        // 拖到某个分类"内部"时该分类的项索引（-1 = 无）
     POINT dragStart_{};
 
+    // ---- 键盘访问 ----
+    //
+    // 书签栏原先**完全没有**键盘路径：只能鼠标点。而标签栏早就有焦点态与裸键处理，
+    // 于是"用键盘切换标签可以、用键盘选书签不行" —— 这不是取舍，是缺口。
+    // Opus / Total Commander / XYplorer 的收藏栏都能 Tab 进去、方向键走、Enter 打开、
+    // Shift+F10 出菜单。这里照同一套做：
+    //   · Tab / Shift+Tab 到达本栏 → kbdIdx_ 落在第一项（或上次的位置）
+    //   · ←/→ 在项间移动，Home/End 到首/尾
+    //   · Enter / 空格 → 打开（分类则展开菜单）
+    //   · Shift+F10 / 应用键 → 该项的右键菜单（无障碍要求：图标功能都要有键盘路径）
+    //   · Esc → 把焦点还给视图（不然焦点卡在栏上，Delete/type-ahead 全哑）
+    int kbdIdx_ = -1;
+    void PaintFocusRing(HDC dc) const;
+
     std::function<void(const std::wstring&)> onNavigate_;
+    std::function<void()> refocus_;
     MouseSink sink_;
 };

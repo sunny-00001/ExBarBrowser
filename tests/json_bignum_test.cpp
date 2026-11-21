@@ -82,7 +82,7 @@ int main() {
     // ---- Num 序列化：inf / nan 以前会走到 static_cast<long long> 的 UB ----
     std::printf("\nNum 序列化 inf/nan 不产生非法 JSON\n");
     {
-        const double inf = 1e999 < 1 ? 0 : std::numeric_limits<double>::infinity();
+        const double inf = std::numeric_limits<double>::infinity();
         const std::wstring si = json::Stringify(json::Value::MakeNum(inf), 0);
         Check(si == L"0", "inf -> 0（不是 inf/-9223...）");
         const std::wstring sn =
@@ -91,6 +91,12 @@ int main() {
         // 1e300 合法但超 long long：应走 %g 而不是整数分支
         const std::wstring big = json::Stringify(json::Value::MakeNum(1e300), 0);
         Check(big.find(L"e+") != std::wstring::npos || big.size() > 10, "1e300 走 %g 分支");
+        // 精确 2^63：不能因为“看起来等于 LLONG_MAX”就进整数分支（转换是 UB）
+        const std::wstring atMax = json::Stringify(json::Value::MakeNum(9223372036854775808.0), 0);
+        Check(atMax.find(L"e+") != std::wstring::npos, "2^63 走 %g 分支，不进整数转换");
+        // -2^63 是合法下界，仍应输出精确整数
+        const std::wstring atMin = json::Stringify(json::Value::MakeNum(-9223372036854775808.0), 0);
+        Check(atMin == L"-9223372036854775808", "-2^63 仍走整数分支");
     }
 
     std::printf("\n%s（失败 %d 项）\n", g_fail == 0 ? "全部通过" : "有失败", g_fail);

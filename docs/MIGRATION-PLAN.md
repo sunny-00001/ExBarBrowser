@@ -1,6 +1,6 @@
 ---
 status: done (M0–M6；M7 见 §4.1)
-baseline: 2026-11-19 22:20
+baseline: 2026-11-21 11:00
 ---
 
 # 迁移规格：ExBar mod 的自定义栏与输入系统 → ExBarBrowser
@@ -22,7 +22,7 @@ baseline: 2026-11-19 22:20
 
 | 类别 | 含义 | 例子 |
 |---|---|---|
-| **A 直接复用数据** | 文件格式/键位表/命令 id，原样读 | `keymap.json`（70 热键 + 38 序列）、`bookmarks.html`、`capabilities.json`、鼠标规则 |
+| **A 直接复用数据** | 文件格式/键位表/命令 id，原样读 | `keymap.json`（热键 + 38 序列）、`bookmarks.html`、`capabilities.json`、鼠标规则 |
 | **B 移植逻辑，重写 UI** | 状态机/取数/布局算法可搬，绘制与命中必须重写 | 序列键状态机、标签顺序/锁定/MRU、面包屑分段、状态栏段取数、鼠标触发判定 |
 | **C 不迁移** | 依赖 explorer 内部结构 | DUI/XAML 子类化、`StatusCoverSync`、窗口控制按钮、跨进程标签合并、`QuitExplorer`、`SendKeys` 注入 |
 
@@ -155,7 +155,7 @@ Netscape HTML 存储 + `EXBAR_*` 扩展属性、`BmkToggleBar` 显隐、空白�
 
 | 资产 | 现状 | 迁移方式 |
 |---|---|---|
-| `data/defaults/keymap.json` | 70 热键 + 38 序列 | 取 ExBarBrowser 支持的子集，字段名不变；未实现命令保留但标 `implemented:false` |
+| `data/defaults/keymap.json` | 热键 + 38 序列 | 取 ExBarBrowser 支持的子集，字段名不变；未实现命令保留但标 `implemented:false` |
 | 鼠标规则（`settings.json` 的 `Bindings\mouse:*`） | 目标区/按钮/触发/动作 | 转成 `data/mouse.json`，语义不变 |
 | `data/defaults/bookmarks.html` | Netscape + `EXBAR_*` | 原样读（与 mod 共用） |
 | `data/capabilities.json` | 127 条命令 | 同 id 对齐；本工程只标已实现项 |
@@ -225,7 +225,7 @@ Netscape HTML 存储 + `EXBAR_*` 扩展属性、`BmkToggleBar` 显隐、空白�
 | 批次 | 计划内容 | 实际落点 | 状态 |
 |---|---|---|---|
 | M0 命令管线 | `contract/commands.h` + `pipeline/` | `src/commands.h/.cpp`（90 条已实现 + 36 条占位，含 group/scope/implemented）+ `CommandBus`（审计 `%APPDATA%\ExBar\audit.log`） | 完成 |
-| M1 键盘 + 序列 | `input/chord`、`sequence`、`binding_table` | `src/chord.*`、`src/keymap.*`、`src/sequence.*`、`src/input_router.*`；读 `data/keymap.json`（70 热键 + 38 序列） | 完成 |
+| M1 键盘 + 序列 | `input/chord`、`sequence`、`binding_table` | `src/chord.*`、`src/keymap.*`、`src/sequence.*`、`src/input_router.*`；读 `data/keymap.json`（热键 + 38 序列） | 完成 |
 | M2 鼠标规则 | `input/mouse_rules`、`mouse_router` | `src/mouse_rules.*`、`InputRouter` 的 down/up/hold/double/wheel 时序；组件经 `MouseSink` 汇入 | 完成 |
 | M3 标签栏 | `core/tab_set` + 组件 | `src/tab_set.*`（order/locked/mru/closed）+ 重写 `src/tab_strip.cpp`（图标/溢出/拖拽/右键/中键/滚轮/锁定） | 完成 |
 | M4 导航栏 | 组件化 + 自动补全 + 最近访问 + 排序/分组 | 保留既有 `nav_bar*`，新增 `SHAutoComplete`、最近访问下拉、视图菜单里的排序/分组 | 完成（未组件化） |
@@ -245,12 +245,25 @@ Netscape HTML 存储 + `EXBAR_*` 扩展属性、`BmkToggleBar` 显隐、空白�
 ### 8.2 验证记录
 
 - 编译：clang 20.1.3，`-std=c++20 -O1 -g`，30 个 TU，0 error / 0 warning。
-- 冒烟（真实键盘 `SendInput` + 窗口消息）：
+- 冒烟（**人工操作 + 只读证据**）：
+  > 2026-11-21 修订：本节原文记的是"真实键盘 `SendInput` + 窗口消息"。按
+  > [ARCHITECTURE-RULES.md](ARCHITECTURE-RULES.md) R21，`SendInput` 会向系统输入流注入
+  > 事件、抢走用户前台，已全仓禁止；下面这份清单本身不变（它描述的是**人做的动作**），
+  > 只是把"用脚本代按"改回"人来按，用日志/状态栏/截图做证据"。
+
   - `Ctrl+T` → 2 标签；`Ctrl+W` → 1 标签；
   - 序列 `g d` → 导航到 Downloads（日志 `[seq]` + `[nav]`）；
   - `Ctrl+D` → `bookmarks.html` 写入 `b-15 C://Windows`（日志 `[bmk] saved=1`）；
   - `Ctrl+Shift+B` → 书签栏隐藏/恢复；
   - 书签栏空白双击 → 切换书签栏（鼠标规则 + `CS_DBLCLKS`）；
-  - `Alt+K` → 快捷键管理器，108 行（70 热键 + 38 序列）；
+  - `Alt+K` → 快捷键管理器（当前 83 热键 + 38 序列，其中 13 条是未实现命令的占位）；
   - 状态栏取数：`文件夹 0/81 | 文件 0/20 | 已选 0/101 | 日期 | 磁盘 25.9 G 可用 / 146.9 G`；
   - `+` 按钮新建标签、中键关闭标签、窗口关闭后配置落盘（`browser.json`）。
+
+  证据获取方式（全部只读，不动光标、不抢焦点）：
+  | 要看的 | 手段 |
+  |---|---|
+  | 标签数 / 当前路径 / 项目数 | AI 管道 `exbar/state`，或命令 `OpListDir` |
+  | `[seq]` / `[nav]` / `[bmk]` 日志 | `Get-Content $env:TEMP\ExBarBrowser.log -Encoding Unicode -Tail 20` |
+  | 界面是否正常 | `python scripts\shot.py out.png`（`PrintWindow`） |
+  | 弹层开合 | `python tools/probe_toggle.py`（人工点，脚本只数窗口） |

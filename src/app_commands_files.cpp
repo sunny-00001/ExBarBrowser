@@ -4,6 +4,7 @@
 #include "app.h"
 
 #include "app_commands.h"
+#include "prompt.h"
 #include "shell_ops.h"
 #include "disk_scan.h"
 #include "text_file.h"
@@ -259,6 +260,86 @@ void App::RegisterFileCommands() {
             RefreshStats();
             return ok;
         }, L"全选");
+    });
+
+    // 撤销（Ctrl+Z）：转发给 shell 视图自己的撤销栈。
+    // 本工程所有落盘操作都带 FOF_ALLOWUNDO，已经进了系统栈 —— 自己再记一份会错位。
+    reg(CmdId::CmdUndo, [this](const Args&) {
+        return WithView([this](IShellView* v) {
+            const bool ok = shellops::Undo(v, hwnd_);
+            if (ok) RefreshActive();   // 撤销后的列表必须立刻反映出来
+            return ok;
+        }, L"撤销");
+    });
+
+    // ---- 选择族（Ctrl+I 反选 / 只选文件 / 只选文件夹 / 按模式选）----
+    //
+    // 这四条此前 implemented=false，而 keymap.json 里都已经绑了键 ——
+    // 按下去既不触发也不报错（InputRouter 对未实现命令直接 continue）。
+    // 用户已经按了很多次"没反应"，却没有任何线索说明是键位错了还是功能没做。
+    //
+    // 语义统一交给 shellops::SelectWhere / SelectByPattern（枚举与选中各只有一份），
+    // 这里只表达"选什么"。选中后都要 RefreshStats：状态栏的"已选 N"必须立刻准。
+    reg(CmdId::SelectInvert, [this](const Args&) {
+        return WithView([this](IShellView* v) {
+            // 反选 = 当前未选中的全都选上。判据用 SelectedPaths 的集合，
+            // 而不是"再点一次 SVSI_SELECT"（那样等于全选，用户会觉得命令没区别）。
+            const std::vector<std::wstring> cur = shellops::SelectedPaths(v);
+            int n = shellops::SelectWhere(
+                v,
+                [&](const shellops::DirEntry& e) {
+                    if (e.path.empty()) return false;
+                    for (const auto& p : cur)
+                        if (str::IEquals(p, e.path)) return false;   // 已选中 -> 反掉
+                    return true;
+                },
+                shellops::SelectMode::Replace);
+            // 一项都没选上不是错误：目录里全都被选中时"反选"的结果就是空。
+            // 但要让用户看到状态变化（状态栏已选数归零），所以照样刷。
+            RefreshStats();
+            (void)n;
+            return true;
+        }, L"反向选择");
+    });
+    reg(CmdId::SelectFiles, [this](const Args&) {
+        return WithView([this](IShellView* v) {
+            const int n = shellops::SelectWhere(v, [](const shellops::DirEntry& e) {
+                return !e.isFolder && !e.path.empty();
+            });
+            RefreshStats();
+            // 一个文件都没有时必须如实失败（"只选文件"在全是目录的目录里做不到）。
+            return n > 0;
+        }, L"只选文件");
+    });
+    reg(CmdId::SelectFolders, [this](const Args&) {
+        return WithView([this](IShellView* v) {
+            const int n = shellops::SelectWhere(v, [](const shellops::DirEntry& e) {
+                return e.isFolder && !e.path.empty();
+            });
+            RefreshStats();
+            return n > 0;
+        }, L"只选文件夹");
+    });
+    reg(CmdId::SelectByPattern, [this](const Args& args) {
+        // 参数优先（命令面板/AI 可以点名模式）；没给才弹输入框。
+        std::wstring pattern = args.Str(L"pattern");
+        if (pattern.empty()) {
+            // 交互式入口：给一个提示性初值，用户直接改。
+            // 这是"人的路径"—— 与 Ctrl+Shift+K 一致（R20：同一条命令两种调用方式）。
+            pattern = L"*.txt";
+            if (!PromptText(hwnd_, theme_, L"按模式选择", L"匹配模式（分号分隔多个）", pattern,
+                            &pattern))
+                return false;
+            if (str::Trim(pattern).empty()) return false;
+        }
+        shellops::PatternOptions opt;
+        opt.matchFolders = args.Bool(L"folders", false);
+        opt.caseSensitive = args.Bool(L"caseSensitive", false);
+        return WithView([this, &pattern, &opt](IShellView* v) {
+            const int n = shellops::SelectByPattern(v, pattern, opt);
+            RefreshStats();
+            return n > 0;   // 没匹配到要如实报 false，不能假装成功
+        }, L"按模式选择");
     });
     reg(CmdId::CmdNewFolder, [this](const Args&) {
         return WithView([this](IShellView* v) {
@@ -533,6 +614,9 @@ void App::RegisterFileCommands() {
                         json::Value::MakeNum(static_cast<double>(r.scannedFiles)));
             result->Set(L"scannedDirs",
                         json::Value::MakeNum(static_cast<double>(r.scannedDirs)));
+            result->Set(L"deniedDirs",
+                        json::Value::MakeNum(static_cast<double>(r.deniedDirs)));
+            result->Set(L"complete", json::Value::MakeBool(r.complete));
 
             json::Value arr = json::Value::MakeArray();
             for (const auto& e : r.entries) {

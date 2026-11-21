@@ -74,6 +74,8 @@ enum : UINT {
     WM_APP_TAB_CLOSE,
     WM_APP_TAB_NEW,
     WM_APP_TAB_MENU,     // wParam=index, lParam=screen POINT 打包（LOWORD x / HIWORD y 不可靠，用 lParam 指针）
+    WM_APP_TAB_COLOR,    // wParam=index, lParam=颜色下标（0=无颜色）。与 MENU 分开：
+                         // 一个是"选了哪个动作"，一个是"选了什么值"，混在一个 lParam 要位打包
     WM_APP_TAB_MOVED,    // wParam=from, lParam=to
     WM_APP_CHROME_MENU,  // 通用：wParam=区域 id，lParam=POINT*
     WM_APP_STATUS_MENU,

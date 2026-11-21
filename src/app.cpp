@@ -4,6 +4,7 @@
 
 #include "ai_api.h"
 #include "ai_server.h"
+#include "app_commands.h"   // RunTerminal（面包屑段菜单的"在此打开终端"）
 #include "commands.h"
 #include "text_file.h"
 #include "mouse_rules.h"
@@ -116,6 +117,26 @@ void App::OnCreate() {
                          [this](int depth, bool back) { JumpHistory(depth, back); });
     navBar_.SetRecentFn([] { return Config::Get().s().recentPaths; });
     navBar_.SetClearHistoryFn([this] { ClearHistory(); });
+    // 视图菜单打勾用：当前档位来自 viewMode_（用户偏好），排序/分组从**视图**现读。
+    // 不从 Config 直接抄排序：用户可能在 shell 里点了列头反向排序，
+    // 那时配置里的 sortAscending 是旧的 —— 菜单会打勾到错误的方向上。
+    navBar_.SetViewStateFn([this] {
+        NavBar::ViewState vs;
+        vs.mode = viewMode_;
+        vs.sort = Config::Get().s().sortMode;
+        vs.group = Config::Get().s().groupBy;
+        vs.ascending = Config::Get().s().sortAscending;
+        if (IShellView* v = ActiveView()) {
+            int gotMode = -1;
+            bool gotAsc = true;
+            if (shellops::GetSort(v, &gotMode, &gotAsc)) {
+                if (gotMode >= 0 && gotMode < 4) vs.sort = gotMode;
+                vs.ascending = gotAsc;
+            }
+            v->Release();
+        }
+        return vs;
+    });
     // 同视图菜单：转投命令，否则排序/分组的选择不会落盘。
     navBar_.SetSortGroupFn([](int kind, int arg) {
         if (kind == 0)
@@ -125,6 +146,35 @@ void App::OnCreate() {
     });
 
     bookmarkBar_.SetNavigateFn([this](const std::wstring& p) { NavigateActive(p, true); });
+    // 书签落盘失败（被外部改动 / 加载失败 / 文件被占用）时统一提示，
+    // 见 App::NotifyBookmarkSave。回执挂在 Store 层，覆盖所有 Save 调用点
+    // （书签栏 / 拖放 / 导入 / 命令面板），不再依赖某个控件转交。
+    BookmarkStore::Get().SetSaveNotifyFn([this](bool ok) { NotifyBookmarkSave(ok); });
+    // 书签栏的键盘态按 Esc 退出后要把焦点还给视图，否则 Delete / type-ahead 全哑。
+    bookmarkBar_.SetRefocusFn([this] { FocusActiveView(); });
+
+    // 面包屑段右键：动作作用于"右键的那一段"，不是当前目录。
+    // 这里把段路径转成既有的命令/入口，不新写一套文件语义：
+    // 复制走剪贴板原语、终端走 RunTerminal、属性走 shell 动词。
+    navBar_.SetSegmentCmdFn([this](const std::wstring& path, NavBar::SegCmd action) {
+        switch (action) {
+        case NavBar::kSegOpenNewTab:
+            NewTab(path, NewTabIndex());
+            break;
+        case NavBar::kSegOpenNewWindow:
+            OpenPathInNewWindow(path);
+            break;
+        case NavBar::kSegCopyPath:
+            CopyText(path);
+            break;
+        case NavBar::kSegTerminal:
+            RunTerminal(hwnd_, path, false);
+            break;
+        case NavBar::kSegProperties:
+            ShowPathProperties(path);
+            break;
+        }
+    });
 
     // 命令前置条件的状态探测（业界 P4：运行前判定 + 可读原因）。
     // 与 ai::SetStateProvider 同一个原则：命令层不反向依赖 App，状态从外面注入。
@@ -305,6 +355,8 @@ bool App::OnChromeMouse(int target, UINT msg, int button, int mods, POINT pt) {
 void App::OnDestroy() {
     if (inDestroy_) return;
     inDestroy_ = true;
+    // Store 是进程级单例，回调捕获了 this；窗口销毁后不能再让它弹提示。
+    BookmarkStore::Get().SetSaveNotifyFn(nullptr);
 
     Config& cfg = Config::Get();
     Settings& s = cfg.mutableSettings();

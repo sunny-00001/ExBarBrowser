@@ -4,12 +4,10 @@
 // 所有绘制走 ui:: 原语（双缓冲 / 分隔线 / 填充 / 画图标 / 量字），本文件零 GDI 句柄管理。
 #include "tab_strip.h"
 
-#include <algorithm>   // std::min（焦点矩形右侧裁剪）
-
 #include "ui_draw.h"
 
 void TabStrip::Paint(HWND h) {
-    const int clipRight = overflow_ ? ovfRc_.left - theme_->S(2) : 0;
+    const int clipRight = overflow_ ? tabViewRight_ : 0;
 
     ui::PaintBuffered(h, theme_->bar, [&](HDC mem, const RECT& rc) {
         HGDIOBJ oldFont = SelectObject(mem, theme_->font);
@@ -20,14 +18,13 @@ void TabStrip::Paint(HWND h) {
             if (r.right <= 0 || r.left >= clipR) continue;
             bool isActive = static_cast<int>(i) == active_;
             bool isHover = hoverKind_ == kTab && hoverIndex_ == static_cast<int>(i);
-            bool isDrop = dragging_ && dropIdx_ == static_cast<int>(i);
 
-            // 底色优先级：激活标签 > 悬停/拖放目标 > 标签自身颜色。
-            // 彩色标签在悬停时仍要看得出"被指到了"，所以悬停色盖过颜色；
-            // 但激活标签的颜色要靠底部色条表达（否则激活色会把标签色完全盖掉）。
+            // 底色优先级：激活标签 > 悬停 > 标签自身颜色。
+            // 拖拽目标不再整格刷底色：那读起来像"这个标签被选中了"，而用户真正要看的
+            // 是插到哪一侧——改由底部那条竖线表达（DropLineX，见下方统一绘制）。
             if (isActive)
                 FillRect(mem, &r, theme_->brBg);
-            else if (isHover || isDrop)
+            else if (isHover)
                 FillRect(mem, &r, theme_->brHover);
             else if (items_[i].colorFill != CLR_INVALID)
                 ui::FillRectColor(mem, r, items_[i].colorFill);
@@ -82,6 +79,15 @@ void TabStrip::Paint(HWND h) {
             }
         }
 
+        // 拖拽插入指示：一条竖线，画在所有标签之后（不然会被后画的标签底色盖住）。
+        // 4dp 宽比 1px 分隔线粗，且用 accent 色 —— 拖拽时需要"一眼看出落点"，
+        // 而不是"隐约有个原子分隔线在那里"。
+        if (const int dropX = DropLineX(); dropX >= 0 && dropX < rc.right) {
+            const int half = theme_->S(2);
+            RECT dl{dropX - half, theme_->S(2), dropX + half, rc.bottom - theme_->S(2)};
+            ui::FillRectColor(mem, dl, theme_->accent);
+        }
+
         // 溢出按钮：用下箭头（ChevronDown）而不是 0xE76C（那是"更多/省略号"，
         // 与书签栏溢出按钮撞脸，也表达不出"滚动到看不见的标签"）。
         if (overflow_) {
@@ -93,18 +99,6 @@ void TabStrip::Paint(HWND h) {
         if (hoverKind_ == kNew) FillRect(mem, &newRect_, theme_->brHover);
         ui::DrawGlyph(mem, ico::IconId::Add, newRect_, theme_->iconGlyph(),
                       hoverKind_ == kNew ? theme_->text : theme_->sub);
-
-        // 键盘焦点可视：Shift+←/→、Home/End 等裸键的作用域就是标签栏
-        // （SetFocus(h) 在 WM_LBUTTONDOWN 里），画点线框让焦点位置始终看得见。
-        // 放在最后画，避免被后续标签底色覆盖。
-        if (GetFocus() == h && active_ >= 0 &&
-            active_ < static_cast<int>(tabRects_.size())) {
-            RECT fr = tabRects_[static_cast<size_t>(active_)];
-            if (fr.right > 0 && fr.left < clipR) {
-                fr.right = std::min<LONG>(fr.right, clipR);
-                DrawFocusRect(mem, &fr);   // XOR 点线框，深/浅主题都醒目
-            }
-        }
 
         SelectObject(mem, oldFont);
     });

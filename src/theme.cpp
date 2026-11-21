@@ -123,3 +123,67 @@ void Theme::Reload(HWND hwnd, int dpiOverride) {
     Shutdown();
     Init(hwnd, dpiOverride);
 }
+
+// ---------------------------------------------------------------- 标签颜色
+//
+// 色板是"分类标记"，不是设计工具：固定 7 档 + 1 个"无颜色"，不做取色器。
+// （自由取色会让每个标签都是近似色，既认不出分组，深色底下还看不清 —— 与
+//  VS Code / Chrome 标签组同一取舍：颜色只用来分区，不用来表达审美。）
+//
+// 两套色值（深/浅）而不是一套：同一份 RGB(0,120,215) 在浅色标签上过重、
+// 在深色标签上过暗，压到"看得见但不抢文字"的强度必须按主题分别算。
+namespace {
+
+// 把 color 按 pct% 混进 base（pct=0 -> base，100 -> color）。
+// 标签底色用它做低强度着色：文字色不变，靠色相区分，不靠明度对抗。
+COLORREF Mix(COLORREF base, COLORREF color, int pct) {
+    const int r = GetRValue(base) + (GetRValue(color) - GetRValue(base)) * pct / 100;
+    const int g = GetGValue(base) + (GetGValue(color) - GetGValue(base)) * pct / 100;
+    const int b = GetBValue(base) + (GetBValue(color) - GetBValue(base)) * pct / 100;
+    return RGB(r, g, b);
+}
+
+// 下标 0 = 无颜色；1..7 = 红/橙/黄/绿/蓝/紫/灰。
+const COLORREF kTabColorsDark[8] = {
+    0,
+    RGB(0xE0, 0x5A, 0x5A),  // 红
+    RGB(0xE0, 0x93, 0x3F),  // 橙
+    RGB(0xD6, 0xC0, 0x4A),  // 黄
+    RGB(0x5F, 0xB8, 0x6A),  // 绿
+    RGB(0x4C, 0xA0, 0xFF),  // 蓝
+    RGB(0xA0, 0x7C, 0xE0),  // 紫
+    RGB(0x8A, 0x8A, 0x8A),  // 灰
+};
+
+const COLORREF kTabColorsLight[8] = {
+    0,
+    RGB(0xC0, 0x39, 0x2B),  // 红
+    RGB(0xC4, 0x70, 0x0C),  // 橙
+    RGB(0xA8, 0x8A, 0x00),  // 黄（浅底上纯黄看不见，必须压暗）
+    RGB(0x2E, 0x7D, 0x32),  // 绿
+    RGB(0x00, 0x78, 0xD7),  // 蓝
+    RGB(0x6A, 0x3D, 0x9A),  // 紫
+    RGB(0x60, 0x60, 0x60),  // 灰
+};
+
+}  // namespace
+
+COLORREF Theme::TabColorFill(int idx) const {
+    if (idx <= 0 || idx >= kTabColorCount) return CLR_INVALID;
+    const COLORREF c = dark ? kTabColorsDark[idx] : kTabColorsLight[idx];
+    // 填充只上 22%：再重就会与文字争对比度（实测深色 30% 时 sub 色标题已看不清）。
+    return Mix(bar, c, dark ? 26 : 18);
+}
+
+COLORREF Theme::TabColorBar(int idx) const {
+    if (idx <= 0 || idx >= kTabColorCount) return CLR_INVALID;
+    return dark ? kTabColorsDark[idx] : kTabColorsLight[idx];
+}
+
+const wchar_t* Theme::TabColorName(int idx) {
+    static const wchar_t* names[kTabColorCount] = {
+        L"无颜色", L"红", L"橙", L"黄", L"绿", L"蓝", L"紫", L"灰",
+    };
+    if (idx < 0 || idx >= kTabColorCount) return names[0];
+    return names[idx];
+}

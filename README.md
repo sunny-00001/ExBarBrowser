@@ -5,19 +5,30 @@
 本仓库**自包含**（2026-11-20 起从 `D:\Windhawk` 主仓独立出来，见 §3.4）：不引用、不修改任何
 ExBar mod 分片，可并存、可整体拷走、可单独卸载。
 
-| 项 | 现状（2026-11-20 19:40，v0.2.1） |
+| 项 | 现状（2026-11-21 09:05，v0.2.2） |
 |---|---|
 | 阶段 | **P2 完成 + P3 起步**：标签/导航/书签/状态栏 + 键盘/序列/鼠标 + 命令契约 + AI 接口全部落地，日常浏览可用 |
-| 规模 | `src/` 18,486 行（57 个 `.cpp` + 48 个 `.h`，含新增 `identity.h` / `ui_draw` / `ui_palette`）；`tests/` 20 个单测、354 项断言 |
-| 产物 | 单 exe ≈18.8 MB（含 `-g` 调试符号；`strip` 后 1.29 MB），静态链接 libstdc++/libgcc |
-| 命令 | 137 条目录 / **108 已实现** / 86 条对 AI 暴露（`tools/check_commands.py` 三方对账） |
+| 规模 | `src/` 约 2.33 万行（61 个 `.cpp` + 53 个 `.h`）；`tests/` 32 个单测、475 项断言（2026-11-21 11:00 快照；仓库在活跃并行开发，**行数每几分钟就变**，要看当前值见下方口径命令） |
+| 产物 | 单 exe 20.2 MB（含 `-g` 调试符号；`strip` 后约 1.3 MB），静态链接 libstdc++/libgcc |
+| 命令 | 由 `python tools/check_commands.py` 首行给出（目录 / 已实现 / 处理器），`check_ai_meta.py` 给出对 AI 暴露条数。**这三个数每加一条命令就变，本文不写死** |
 | 配置 | 便携模式，全部在 `<exe>\data`：`settings.json` / `bookmarks.html` / `keymap.json` / `mouse.json` / `audit.log` |
-| 验证 | clang++ 20.1.3 零警告；`build_fast.py --clean` 全量 **10.5s**；真实键鼠消息冒烟通过（`docs/MIGRATION-PLAN.md` §8.2） |
-| 检查 | 3 个静态检查全绿：21 条唯一性 + 2 条禁令 + 1 条接线 + 1 条令牌消费（`check_components`）、14 组（`check_ai_meta`）、三方对账（`check_commands`，含 CmdId 顺序与 legacy 名基线） |
+| 验证 | clang++ 20.1.3 零警告；`build_fast.py --clean` 全量 **10.5s**；冒烟改为**人工操作 + 只读证据**（日志 / `exbar/state` / 截图），不注入键鼠（`docs/MIGRATION-PLAN.md` §8.2、规则 R21） |
+| 检查 | 3 个静态检查全绿（2026-11-21 10:10 复核）：`check_components`（唯一性 / 禁令 / 接线 / 令牌消费 / **输入纪律 R21** 五类，条数以脚本末行为准）、`check_ai_meta`（16 组，含 R20 人机等价）、`check_commands`（三方对账，含 CmdId 顺序与 legacy 名基线） |
 | 版本控制 | **独立仓库**（`E:\ExBarBrowser`，分支 `main`）：源码/脚本/文档/生成头入库，构建与运行产物由 `.gitignore` 排除 |
 
-> 本文所有路径均相对仓库根。文档基线：**2026-11-20 19:40**（代码仍在快速演进，
+> 本文所有路径均相对仓库根。文档基线：**2026-11-21 11:00**（代码仍在快速演进，
 > `src/` 是唯一真相；发现文档与代码不符时先信代码，并顺手改文档）。
+> 规模数字的口径（可直接复制执行）：
+> ```bash
+> ls src/*.cpp | wc -l                                  # .cpp 个数
+> ls src/*.h   | wc -l                                  # .h 个数
+> cat src/*.cpp src/*.h | wc -l                         # 总行数
+> ls tests/*.cpp | wc -l                                # 单测个数
+> grep -ho 'Check(' tests/*.cpp | wc -l                  # 断言总数
+> grep -c '^    {CmdId::' src/commands.cpp               # 命令条数
+> ```
+> 重新量之前不要凭印象改这几个数。仓库处于活跃并行开发，本文所有数字都是**快照**；
+> 与代码不符时先信代码，并把本文更新到新值。
 > 想先看"为什么这么设计"，读 [docs/DECISIONS.md](docs/DECISIONS.md)；
 > 想知道"比 ExBar mod 少了什么"，读 [docs/PARITY.md](docs/PARITY.md)；
 > 想知道"名字为什么这么起、哪些名字不许改"，读 [docs/NAMING.md](docs/NAMING.md)。
@@ -32,6 +43,7 @@ ExBarBrowser.exe（本进程）
 ├─ 导航栏 + 地址框    nav_bar.cpp / nav_bar_actions.cpp（自动补全/最近访问/排序分组）
 ├─ 书签栏            bookmark_bar.cpp（Netscape 书签树 + 图标列子目录 + 分类下拉 + 溢出）
 ├─ 自绘下拉弹层      popup_list.cpp（菜单/历史/视图/文件夹树共用）
+├─ 再点即收          popup_toggle.cpp（同一锚点连点第二下收起，所有弹层共用一份）
 ├─ 文件夹树下拉      folder_tree.cpp（面包屑 chevron 与书签图标共用的唯一入口）
 ├─ 状态栏            status_bar.cpp（9 段：计数/日期/路径/容量/磁盘/眼睛/类型）
 ├─ 输入端            input_router.cpp（组合键/序列/鼠标规则 → 命令）
@@ -56,7 +68,7 @@ ExBarBrowser.exe（本进程）
 | 改造对象 | 系统资源管理器窗口 | 自己造窗口 |
 | 能做的事 | 改 explorer 的标签栏/导航栏/命令栏，加书签栏、搜索、命令面板、AI 面板 | 只能做自己窗口里的东西；改不了系统 explorer |
 | 崩溃面 | 崩了连带 explorer | 崩了只影响自己 |
-| 现状 | 约 7.7 万行（17 个分片）、127 条命令目录（`data/capabilities.json`） | 18,486 行、137 条命令目录（108 已实现 / 86 对 AI 暴露） |
+| 现状 | 约 7.7 万行（17 个分片）、127 条命令目录（`data/capabilities.json`） | 约 2.29 万行、命令目录见 `check_commands.py`（规模比 mod 小一个量级，命令反而更多） |
 
 两者**共享设计口径而非代码**：主题色令牌、面包屑交互语义、标签栏视觉、快捷键习惯都对齐 ExBar mod
 （`ebnav` / `ebtab` / `ebstatus` 的行为），但一行代码都不互相引用，各自可独立演进、独立卸载。
@@ -86,6 +98,7 @@ ExBarBrowser.exe（本进程）
 | 方向历史 / 最近访问 | `src/nav_bar_actions.cpp`、`src/nav_history.cpp` | 分裂箭头与右键出单向历史（24 条）；地址框下拉合并前进/后退 + 最近访问（去重） |
 | 视图菜单 | `src/nav_bar_actions.cpp` | 8 档模式 + 排序（名称/日期/类型/大小）+ 分组（无/类型/日期/大小） |
 | 自绘下拉弹层 | `src/popup_list.cpp` | 图标 + 可变行高（分隔线 2 px）+ 悬停/选中底色 + 深色边框；替代 `TrackPopupMenu` |
+| 再点即收 | `src/popup_toggle.cpp` | 所有弹层同一契约：弹层开着时点它的锚点 → **收起**而不是重弹。真因是 `WM_ACTIVATE` 抢在 DOWN/UP 前关窗（捕获不阻止激活切换）；失活按"持捕获+前景同线程"分流，外点等 UP 才关 |
 | 书签栏 | `src/bookmark_bar.cpp`、`src/bookmarks.cpp` | Netscape + `EXBAR_*`；**点左侧图标列子目录**（与面包屑分隔符同一实现）/ 点文字打开或列分类 / 溢出 `»` / 右键增删改 / 拖入文件夹 / 双击空白显隐；书签存于 `data\bookmarks.html` |
 | 文件夹树下拉 | `src/folder_tree.cpp`、`src/popup_list.cpp` | 面包屑 chevron 与书签图标共用：枚举直接子文件夹 → 懒加载树 → 就地逐级展开（`NavModel::ChildFolders` 是唯一枚举实现） |
 | 书签导入导出 | `src/bookmark_io.cpp`、`src/bookmark_drop.cpp` | `IFileOpenDialog`/`IFileSaveDialog` 走 Netscape HTML；OLE 拖放接收虚拟项（`CFSTR_SHELLIDLIST`） |
@@ -96,11 +109,11 @@ ExBarBrowser.exe（本进程）
 | 序列键 | `src/sequence.cpp`、`src/sequence_hint.cpp` | 38 条（`g g`/`g t`/`x l a`…）；前缀状态机 + 3000 ms 超时 + 候选弹层 + `Esc` 取消 |
 | 鼠标规则 | `src/mouse_rules.cpp`、`src/shell_input.cpp` | 目标区 × 按钮 × 触发（单击/双击/长按/四向滚轮）× 修饰键；shell 视图命中经子类 + UIA 汇入同一条规则引擎 |
 | 快捷键管理器 | `src/hotkey_manager.cpp` | 范围筛选、改键/清除/恢复默认、冲突/系统占用/未实现标记 |
-| 命令管线 | `src/commands.cpp` | 137 条命令目录（108 已实现 / 29 未实现，与 mod 同 id 同组），参数对象化 `Invoke(id, Args, actor)`；`audit.log`；`tools/check_commands.py` 三方对账 |
-| 命令命名空间 | `src/cmd_naming.cpp` | 137 条旧名 ↔ 点分名双向映射（`nav.back` / `fs.delete`），`FindCommand` 两个方向都认；既有 keymap/序列/脚本零改动 |
+| 命令管线 | `src/commands.cpp` | 命令目录（与 mod 同 id 同组），参数对象化 `Invoke(id, Args, actor)`；`audit.log`；`tools/check_commands.py` 三方对账 |
+| 命令命名空间 | `src/cmd_naming.cpp` | 旧名 ↔ 点分名双向映射（`nav.back` / `fs.delete`），`FindCommand` 两个方向都认；既有 keymap/序列/脚本零改动 |
 | 前置条件与结构化结果 | `src/commands.h`、`src/ai_api.cpp` | 声明式 `Requirements` + `CanExecute()`；`RegisterWithResult` 通道返回 JSON（`OpListDir`/`OpStat`/`OpTopN`/`OpDiskUsage`） |
 | 磁盘统计 | `src/disk_scan.cpp` | `OpTopN`（谁最占空间）/ `OpDiskUsage`（这目录多大）；带 deadline、`truncated`/`timedOut`、不跟随重解析点 |
-| AI 操作接口 | `src/ai_api.cpp`、`src/ai_server.cpp` | JSON-RPC 2.0 over 命名管道：`initialize`/`tools/list`/`tools/call`/`exbar/state`；86 条工具；令牌 + 危险命令双门；见 `docs/AI-INTERFACE.md` |
+| AI 操作接口 | `src/ai_api.cpp`、`src/ai_server.cpp` | JSON-RPC 2.0 over 命名管道：`initialize`/`tools/list`/`tools/call`/`exbar/state`；令牌 + 危险命令双门；见 `docs/AI-INTERFACE.md` |
 | 命令面板 | `src/app_commands.cpp` | 列出全部已实现命令，选中即执行（与快捷键同一条 `CommandBus`） |
 | 配置与状态 | `src/config.cpp`、`src/json.cpp`、`src/text_file.cpp` | 便携模式写 `<exe>\data\settings.json`；窗口几何、会话、锁定标签、最近访问、状态栏段、视图/排序/分组、窗格偏好 |
 | 会话 | `src/app_commands_misc.cpp`、`src/config.cpp` | 启动恢复上次标签组与关闭历史；`SessionSave` / `SessionRestore` |
@@ -125,7 +138,7 @@ ExBarBrowser.exe（本进程）
 | AI 面板未接 | 接口已通（JSON-RPC），但窗口内没有对话 UI | P4 |
 | 无 i18n | 文案硬编码中文 | 不做 |
 
-完整对照表（按 ExBar mod 的 127 条能力逐组比对，本工程另加 10 条自研命令至 137 条）见
+完整对照表（按 ExBar mod 的 127 条能力逐组比对，本工程自研命令另计），见
 [docs/PARITY.md](docs/PARITY.md)。
 
 ---
@@ -286,9 +299,29 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
 | 操作 | 行为 |
 |---|---|
 | 点击**左侧图标** | 下拉**该路径自己的**子目录（与上面"点击分段右侧 chevron"完全同一份实现：`src/folder_tree.*`），层内可逐级展开；没有子目录时直接进入该目录 |
-| 点击右侧文字 | 分类 → 列分类内容；书签 → 打开该目录 |
-| 悬停图标格 | 该格单独高亮（`pressed` 圆角底），提示"这里能点开子目录" |
+| 点击右侧文字 | 分类 → 逐级下钻列其内容；书签 → 打开该目录 |
+| **拖动书签** | 拖到另一位置 → 顶层重排（插入线）；拖到**分类中间** → 装进该分类（整项描边提示）。拒绝拖进自己的子孙（会让子树整棵脱落） |
+| **键盘** | `Ctrl+B` 进入本栏；`←/→` 在可见项间移动，`Home/End` 首尾；`Enter`/空格打开（分类则展开）；`Shift+F10` 出该项菜单；`Esc` 焦点退回视图 |
+| 溢出 `»` | 只列**被折叠**的项（已显示在栏上的不再重复列） |
+| 右键项 | 打开 / 复制路径 / 编辑（名称+路径，清空路径=改成纯分类）/ 删除 / 新建分类 / 添加当前目录 / 撤销 / 清除全部 |
+| 右键空白 | 添加当前目录 / 新建分类 / 撤销 / 递归按名称排序 / 清理重复书签 / 重新载入 / 导入 / 导出 / 清除全部 / 隐藏栏 |
+| 从资源管理器拖入目录 | 追加为书签；**已在书签里的**会被移到落点的分类（不再静默忽略） |
+| 双击空白 | 切换书签栏显隐（`data/mouse.json` 的 `bookmark_empty` 规则） |
+| 悬停**图标格** | 该格单独高亮（`pressed` 圆角底），提示"这里能点开子目录" |
 | 在图标格上拖动 | 不触发重排（图标格是独立动作，只有文字区可拖着重排） |
+
+> 所有菜单动作都对应一条命令（`bmk.edit` / `bmk.remove` / `bmk.newfolder` / `bmk.undo` /
+> `bmk.clear` / `bmk.sort` / `bmk.dedupe` / `bmk.move` / `bmk.add.path` / `bmk.list` / `bmk.focus`），
+> 菜单与拖放都调命令 —— 鼠标、键盘、命令面板、AI 走同一份实现（R20 人机等价）。
+>
+> **导入/导出**按 UTF-8 正确解码百分号序列（`%E4%B8%AD` → 中），UNC 双向支持；
+> **保存**遇到"文件已被外部修改"时拒绝覆盖，把内存书签另存为 `bookmarks.html.conflict.html`
+> 并提示，绝不静默丢弃任何一方。
+>
+> 图标格与文字区是两个动作，因此 `Item::iconRc` 是独立命中矩形（几何与 `Paint` 里画图标的槽
+> 完全重合）。纯分类节点（只装子书签、没有路径）点图标时退回"列分类内容"，避免点了没反应。
+> 书签栏为空时显示一行浅色提示（`Ctrl+D` 收藏 / `Ctrl+B` 聚焦），而不是一条空灰带。
+> 图标统一走 `ico::Cached`（进程内按路径共享），`Reload` 变成纯查表，不再每次重建 HICON。
 | 点击溢出 `»` | 列出被折叠的书签项 |
 | 右键项 / 空白 | 打开/编辑/删除/新建分类/撤销/排序/导入导出/隐藏栏 |
 | 从资源管理器拖入目录 | 追加为书签 |
@@ -324,7 +357,7 @@ main.cpp            进程级：DPI → COM(STA)/OLE → 单实例 → 命令行
              └ nav::History   每标签一份历史栈事务
 ```
 
-七条不变量（改代码前先读；完整 13 条见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §12）：
+七条不变量（改代码前先读；完整 14 条见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §12）：
 
 1. **状态只有一份**：标签状态（历史、当前索引、显示名、项目数）只在 `App::Tab` 里；chrome 控件是纯投影。
 2. **chrome 不调 shell**：`TabStrip` / `StatusBar` 只发 `WM_APP_TAB_*`；`NavBar` 只回调 `std::function`。
@@ -334,10 +367,19 @@ main.cpp            进程级：DPI → COM(STA)/OLE → 单实例 → 命令行
    任何"绕过总线直调"的分支都会造成"按钮能点、双击没反应"这类行为分裂（`docs/ARCHITECTURE-RULES.md` R1/R16）。
 6. **品牌串只出现在 `identity.h`**：其他文件写 `L"ExBar…"` 即失败（`docs/NAMING.md` B1）。
 7. **绘制原语只有一个入口**：量字 `ui::MeasureText`、主题 `win::ThemeControl`、双缓冲 `ui::PaintBuffered`、
-   填充/描边/分隔线 `ui::Fill*` —— 自写一份即失败（`tools/check_components.py`，21 条唯一性规则）。
+   填充/描边/分隔线 `ui::Fill*` —— 自写一份即失败（`tools/check_components.py` 的 `UNIQUE` 段）。
 
 模块职责、消息流时序、COM 所有权与 ABI 补丁细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；
-写新代码前必读的硬规则见 [docs/ARCHITECTURE-RULES.md](docs/ARCHITECTURE-RULES.md)。
+写新代码前必读的硬规则见 [docs/ARCHITECTURE-RULES.md](docs/ARCHITECTURE-RULES.md)（R1–R21）。
+
+> **R21 输入纪律**：**禁止模拟鼠标/键盘、禁止抢焦点、禁止循环点击**。
+> `SendInput` / `mouse_event` / `keybd_event` / `SetCursorPos` / `BlockInput` /
+> `AttachThreadInput` 全仓零容忍；**`PostMessage` / `SendMessage` 投 `WM_LBUTTON*` / `WM_KEY*` /
+> `WM_CHAR` 同样禁止** —— 合成点击在本程序里必然走到 `ShowPopupList` → `SetForegroundWindow`，
+> 与 `SendInput` 结果相同；自动化脚本也不得改用户的前台窗口。
+> 所有操作走**结构化命令**：进程内 `CommandBus::Invoke`，进程外 AI 命名管道（`docs/AI-INTERFACE.md`）；
+> 验证逻辑用单测、看界面用 `scripts\shot.py`、验证点击流程用「**人工点、脚本只观察**」。
+> 由 `tools/check_components.py` 强制（4 条规则）。详见 [docs/ARCHITECTURE-RULES.md §3.1](docs/ARCHITECTURE-RULES.md)。
 
 ---
 
@@ -345,7 +387,7 @@ main.cpp            进程级：DPI → COM(STA)/OLE → 单实例 → 命令行
 
 ```
 ExBarBrowser/                       独立 git 仓库（main）
-├─ src/                             按职责命名（平铺，57 .cpp / 48 .h，18,486 行）
+├─ src/                             按职责命名（平铺，60 .cpp / 52 .h，22,065 行）
 │  ├─ main.cpp                      进程入口：DPI / COM+OLE / 单实例 / 命令行
 │  ├─ app.{h,cpp}                   装配：单例 / 窗口创建 / 生命周期 / 鼠标入口
 │  ├─ app_wnd / app_tabs / app_nav  主窗口过程、标签生命周期、导航与历史栈
@@ -363,15 +405,16 @@ ExBarBrowser/                       独立 git 仓库（main）
 │  ├─ bookmark_bar / bookmarks / bookmark_io / bookmark_drop               书签
 │  ├─ status_bar / view_stats                               状态栏 9 段与取数
 │  ├─ shell_view / shell_ops / disk_scan                    视图托管、文件操作、目录统计
-│  ├─ popup_list / ui_draw / ui_palette / theme             弹层、绘制原语、色值令牌、主题
+│  ├─ popup_list / popup_toggle / folder_tree               弹层、「再点即收」状态、子目录树（唯一入口）
+│  ├─ ui_draw / ui_palette / theme / icon_glyph / icon_resolve  绘制原语、色值令牌、主题、字形、图标识别
 │  ├─ identity.h                                            品牌串 / 窗口类名 / 进程级资源名（唯一来源）
-│  ├─ platform_win / str / log / clipboard / tooltip_host / icon_glyph     收编后的基础设施
+│  ├─ platform_win / str / log / clipboard / tooltip_host   收编后的基础设施
 │  ├─ config / json / text_file                             配置、JSON、原子文本写
 │  └─ common.h                                              共享类型与常量（并转发 identity 的类名）
-├─ tests/                           20 个单测 / 354 项断言（每个 .cpp 自带 main + Check）
-├─ tools/                           check_commands / check_ai_meta / check_components / gen_keymap / gen_icon / probe_highlight
+├─ tests/                           32 个单测（每个 .cpp 自带 main + Check；`bash tests/run_all.sh` 一键跑全量）
+├─ tools/                           check_commands / check_ai_meta / check_components / gen_keymap / gen_icon / probe_highlight / probe_toggle
 ├─ scripts/                         shot.py / install.ps1 / uninstall.ps1
-├─ docs/                            见下表（14 篇）
+├─ docs/                            见下表（15 篇）
 ├─ resources/                       app.ico / app.rc / icon_preview.png
 ├─ data/                            运行期配置（**不入库**，首次启动自动生成）
 ├─ build.sh / build.bat             构建入口（薄包装，透传参数）
@@ -385,12 +428,13 @@ ExBarBrowser/                       独立 git 仓库（main）
 |---|---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 要改代码的人 | **当前**分层、窗口树、模块职责、导航/标签时序、所有权、ABI 补丁、不变量 |
 | [docs/ARCHITECTURE-TARGET.md](docs/ARCHITECTURE-TARGET.md) | 要理解目标形态的人 | **目标架构**：一切皆组件（tokens/assets/components）、载体（Bar/Panel/Dialog/Popup/Lister）、输入端（键位/序列/鼠标）、命令管线、人机同源 |
-| [docs/ARCHITECTURE-RULES.md](docs/ARCHITECTURE-RULES.md) | 要写新代码的人 | **架构规则**：对象模型、目录与依赖、R1–R20 硬规则（组件/载体/输入端/管线/AI 安全）、机械校验清单 |
+| [docs/ARCHITECTURE-RULES.md](docs/ARCHITECTURE-RULES.md) | 要写新代码的人 | **架构规则**：对象模型、目录与依赖、R1–R21 硬规则（组件/载体/输入端/管线/AI 安全/输入纪律）、机械校验清单 |
 | [docs/ARCHITECTURE-PROPOSAL.md](docs/ARCHITECTURE-PROPOSAL.md) | 要参与定架构的人 | 候选方案 A/B/C 对比、推荐理由、迁移批次与风险（含 Opus 调研后的修订） |
 | [docs/DOPUS-NOTES.md](docs/DOPUS-NOTES.md) | 想参考成熟产品的人 | Directory Opus 的公开契约（对象模型/命令/插件/外部调用）与"抄什么不抄什么" |
 | [docs/MIGRATION-PLAN.md](docs/MIGRATION-PLAN.md) | 要迁移 mod 功能的人 | **迁移规格**：标签栏/导航栏/书签栏/状态栏/键盘/序列/鼠标的功能清单、可移植性分级、数据资产、顺序与估时 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 要构建/调试的人 | 工具链、构建、日志、截图、注册脚本、常见故障、扩展步骤 |
-| [docs/PARITY.md](docs/PARITY.md) | 要判断"能不能替代 explorer"的人 | 与 ExBar mod 127 条命令的逐组对照（108 已实现 / 29 未实现）、差异根因 |
+| [docs/FULL-COVERAGE.md](docs/FULL-COVERAGE.md) | 要回答"是不是所有操作都能程序化"的人 | **全覆盖模型**：操作覆盖的判据、三平面闭环（执行/观测/改进）、为什么不能靠模拟输入 |
+| [docs/PARITY.md](docs/PARITY.md) | 要判断"能不能替代 explorer"的人 | 与 ExBar mod 127 条命令的逐组对照（已实现 / 未实现）、差异根因 |
 | [docs/INPUT.md](docs/INPUT.md) | 要改键位/序列/鼠标规则的人 | 输入端主线、keymap/mouse 文件格式、时序语义、管理器用法、排查 |
 | [docs/AI-INTERFACE.md](docs/AI-INTERFACE.md) | 要接 AI / 写 MCP 封装的人 | **AI 操作接口**（已实现）：命令白名单规则、JSON-RPC 管道协议、令牌与双门授权、错误码 |
 | [docs/OPERATION-MODEL.md](docs/OPERATION-MODEL.md) | 要定操作契约的人 | **操作模型**（已实现 1–10 步）：MCP / VS Code / Blender / Opus 四家的做法、七条原则、与现状的差距、迁移的做法与取舍 |
@@ -433,7 +477,7 @@ ExBarBrowser/                       独立 git 仓库（main）
   详见 [CHANGELOG](CHANGELOG.md) 0.2.0 与 [MIGRATION-PLAN](docs/MIGRATION-PLAN.md) §8。
 - **P2.5（已完成，2026-11-20 / v0.2.1）**：操作契约结构化（10 步）—— 参数对象化、效果四维化、
   前置条件、交互与确定分离、结构化返回值、点分命名空间、MCP 兼容层、内容补全、能力缺口补齐；
-  AI 操作接口（JSON-RPC over 管道，86 工具）；导航收口为组件（`nav_path` / `nav_history`）；
+  AI 操作接口（JSON-RPC over 管道，当时 86 工具，现 89）；导航收口为组件（`nav_path` / `nav_history`）；
   存储改便携模式（`<exe>\data`）；基础设施收编（窗口类/字符串/日志/剪贴板/tooltip/字形）。
 - **P3（进行中）**：搜索（复用 `evipc`）、工具集（复用 helper：哈希/去重/文件夹比对）、预览窗格、
   选择族命令（反选/按类型/按模式）、撤销、会话管理 UI、批量复制到/移动到、可选 Shell 扩展 DLL。

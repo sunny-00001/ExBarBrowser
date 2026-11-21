@@ -27,15 +27,11 @@ KEYMAP = ROOT / "data" / "keymap.json"
 # 登记不是免死金牌：每次改动都要回头看这条到底还该不该留着。命令一旦实现，
 # 把对应项从这里删掉 —— 否则"实现了却仍被当成占位"会让这条检查失去意义。
 PENDING = {
-    # 选择族与撤销：共同前置是 SelectionModel（现在 shell_ops 只有 SelectByPath /
-    # SelectNone 两个点操作），见 docs/ROADMAP.md §4.7 P3-6。
-    "hotkeySelectInvert": "SelectInvert 待实现（前置 SelectionModel）",
-    "hotkeySelectFiles": "SelectFiles 待实现（前置 SelectionModel）",
-    "hotkeySelectFolders": "SelectFolders 待实现（前置 SelectionModel）",
-    "hotkeySelectByPattern": "SelectByPattern 待实现（前置 SelectionModel）",
-    "hotkeyCmdUndo": "CmdUndo 待实现（撤销语义要落到 IFileOperation，见 §4.7 P3-6）",
-    # 复选框：shell 视图没有公开接口（docs/DECISIONS.md D2），要等自绘或补丁方案。
-    "hotkeyToggleCheckboxes": "ToggleCheckboxes 待实现（shell 视图无可编程接口，D2）",
+    # 选择族与撤销已于 2026-11-21 实现：
+    #   · 选择：shellops::SelectWhere / SelectByPattern（Ctrl+I / Ctrl+Shift+F /
+    #     Ctrl+Alt+D / Ctrl+Shift+K 现在真的有效）；
+    #   · 撤销：shellops::Undo 把 Ctrl+Z 转发给 shell 视图自己的撤销栈
+    #     （所有落盘操作都带 FOF_ALLOWUNDO，已在系统栈里）。
     # 批量重命名建议直接接 PowerRename，不自建规则编辑器（OPERATION-MODEL §7）。
     "hotkeyBatchRename": "BatchRename 待实现（接 PowerRename）",
     # 搜索：依赖导航栏搜索框存在（ROADMAP §4.4 P3-2），Ctrl+F 先留着占位。
@@ -46,11 +42,11 @@ PENDING = {
     "hotkeyFolderCompare": "FolderCompare 待实现（需 helper 进程 + IPC，§4.5）",
     # AI 面板：接口层（ai_api / ai_server）已通，缺窗口内对话 UI 与历史（ROADMAP §5 P4）。
     "hotkeyAiTogglePanel": "AiTogglePanel 待实现（缺面板 UI，接口层已就绪）",
-    # 注意：TabMergeAll 与本表语义不符 —— 它不是"后补"而是"不适用"（本工程是单窗口
-    # 模型，没有 explorer 标签可合并，见 docs/PARITY.md §3.1 与 MIGRATION-PLAN）。
-    # 登记在这里只是为了让 CI 不因它变红；正确的处置是删掉 data/keymap.json 里的
-    # hotkeyMergeAllWindows（Ctrl+Alt+W），见提交说明。
-    "hotkeyMergeAllWindows": "TabMergeAll 不适用（单窗口模型）—— 应删键位，暂登记",
+    # 已删键位（2026-11-21）：hotkeyMergeAllWindows（Ctrl+Alt+W）与
+    # hotkeyToggleCheckboxes（Ctrl+Alt+M）。这两条不是"待补"而是"本工程做不到"：
+    #   · 合并窗口 —— 单窗口模型，没有 explorer 标签可合并（PARITY §3.1）；
+    #   · 复选框   —— shell 视图无公开接口（DECISIONS D2）。
+    # 留着键位等于对用户撒谎（按了没反应且永远不会有），所以连键位一起删掉。
 }
 
 

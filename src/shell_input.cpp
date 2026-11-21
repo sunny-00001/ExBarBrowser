@@ -2,6 +2,7 @@
 #include "str.h"
 
 #include "mouse_rules.h"
+#include "text_file.h"
 
 // SetWindowSubclass / RemoveWindowSubclass（SUBCLASSPROC）与 ListView_GetItem
 // 等控件宏都在 commctrl.h 里，且需要 _WIN32_IE >= 0x0500 才导出。
@@ -160,7 +161,7 @@ int ResolveByDir(const std::wstring& dir, const std::wstring& name, bool* isFold
         }
         return MT_FILE;
     }
-    DWORD attr = GetFileAttributesW(full.c_str());
+    DWORD attr = GetFileAttributesW(tf::ToExtended(full).c_str());
     if (attr != INVALID_FILE_ATTRIBUTES) {
         const bool folder = (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
         if (isFolder) *isFolder = folder;

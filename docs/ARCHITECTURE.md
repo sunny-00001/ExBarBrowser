@@ -1,19 +1,20 @@
 ---
 status: current
-baseline: 2026-11-20 19:40
+baseline: 2026-11-21 11:00
 ---
 
 # ExBarBrowser 架构
 
-> **注意（2026-11-20）**：模块清单已扩展到 **57 个 `.cpp` / 48 个 `.h`（18,486 行）**，
+> **注意（2026-11-21 10:05 快照）**：模块清单已扩展到 **61 个 `.cpp` / 53 个 `.h`（约 2.33 万行）**（仓库在活跃并行开发，以 `ls src/*.cpp | wc -l` 实测为准），
 > 最新目录以 [README §6](../README.md) 为准；本文的窗口树、导航时序、COM 所有权、ABI 补丁
 > 与不变量仍然有效，新增的 `ai_api`/`ai_server`/`nav_path`/`nav_history`/`shell_input`/`disk_scan`/
-> `identity.h` 与基础设施收编（`platform_win`/`str`/`log`/`clipboard`/`ui_draw`/`ui_palette`/`tooltip_host`/`icon_glyph`）
+> `folder_tree`/`popup_toggle`/`icon_resolve`/`menu`/`identity.h` 与基础设施收编
+> （`platform_win`/`str`/`log`/`clipboard`/`ui_draw`/`ui_palette`/`tooltip_host`/`icon_glyph`）
 > 见各自文件头注释与 [README §5](../README.md) 的架构图。
 > 命名约束（品牌串唯一来源、`eb` 待拆解）见 [NAMING.md](NAMING.md)。
 >
 > 目标读者：要改代码的人。看完应能回答三个问题——状态存在哪、消息怎么流、为什么这几处写法看起来"反常"。
-> 本文描述**当前实现**；**新增代码请遵守 [ARCHITECTURE-RULES.md](ARCHITECTURE-RULES.md)**（R1–R20 硬规则），
+> 本文描述**当前实现**；**新增代码请遵守 [ARCHITECTURE-RULES.md](ARCHITECTURE-RULES.md)**（R1–R21 硬规则），
 > 目标形态与组件/AI 设计见 [ARCHITECTURE-TARGET.md](ARCHITECTURE-TARGET.md)。
 > 模块清单与构建细节见 [../README.md](../README.md)；决策理由见 [DECISIONS.md](DECISIONS.md)。
 
@@ -30,6 +31,7 @@ baseline: 2026-11-20 19:40
 │                                                              │
 │ App（单例，唯一状态所有者）                                   │
 │  ├ Theme        颜色令牌 / 字体 / DPI 缩放（唯一视觉来源）      │
+│  ├ Menu         自绘菜单内容组件（唯一组装 PopupRow，返回 action）│
 │  ├ TabStrip     画 + 命中 + PostMessage（无状态）             │
 │  ├ NavBar       画 + 命中 + 回调（无业务状态）                 │
 │  │   ├ NavModel 路径 → 分段 / 父级 / 同级枚举                 │
@@ -115,30 +117,37 @@ ExBarBrowser_Popup                   WS_POPUP | WS_EX_TOOLWINDOW | CS_DROPSHADOW
 |---|---|---|---|
 | `identity.h` | **品牌串、11 个窗口类名、互斥体、管道前缀、日志文件名、`WM_COPYDATA` 魔数**的唯一来源（`namespace id`） | 任何行为、任何 I/O | `<windows.h>` |
 | `common.h` | `WM_APP_*`、`CopyDataPayload`、`ComPtr`、`DpiOf`、PIDL/路径工具、`SystemIsDark`、`ApplyDarkTitleBar`；并把 `identity.h` 的类名 `using` 出来供既有代码沿用 | 任何业务、品牌串定义 | 系统头、`identity.h` |
-| `theme.h/.cpp` | 颜色令牌、字体、DPI 缩放 `S()`、进程级深色 | 布局、绘制 | `common.h` |
-| `ui_draw.h/.cpp` | **绘制原语唯一实现**（`namespace ui`）：`MeasureText` / `DrawGlyph` / `DrawChevron` / `FillRectColor` / `FrameRectColor` / `FillRound` / `DrawSeparator` / `DrawIcon*` / `PaintBuffered`（`GetUiFont` / `GlyphFace` 在 `ui::detail`，不对外）。原 `eb_ui.*` + `namespace eb`（= Ex**B**ar，上一个项目的前缀），2026-11-20 改名 | 任何栏的业务布局、任何输入状态读取、色值 | `common.h`、`icon_glyph.h` |
+| `theme.h/.cpp` | 颜色令牌、字体、DPI 缩放 `S()`、进程级深色；**图标尺寸令牌**（`iconChevron` / `iconGlyph` / `iconCompact` / `iconSmall`，96 DPI 逻辑值，四档按角色分）。字形表只管码位、`DrawGlyph` 只管画法，"画多大"归这里 | 布局、绘制 | `common.h` |
+| `icon_resolve.h/.cpp` | **图标识别的唯一入口**：友好名 → 命名空间 GUID → PIDL → `SHGetFileInfo`，四层分级解析（特殊命名空间/云盘 NSE 才有真实图标）。`ico::ParsingPath` 也在这里（友好名 → 解析串）；`Cached`/`ClearCache` 是菜单与树弹层唯一的路径图标入口 | 绘制（尺寸归 `Theme`、字形归 `icon_glyph`） | `common.h` |
+| `icon_glyph.h/.cpp` | 字形码位表（`ico::IconId`）+ `ico::Glyph` 取名 | 取尺寸、绘制 | 无 |
+| `ui_draw.h/.cpp` | **绘制原语唯一实现**（`namespace ui`）：`MeasureText` / `DrawGlyph` / `DrawChevron` / `FillRectColor` / `FrameRectColor` / `FillRound` / `DrawSeparator` / `DrawIconCentered` / `DrawIconVCentered` / `PaintBuffered`（`GetUiFont` / `GlyphFace` 在 `ui::detail`，不对外）。图标绘制只有一套规则：落笔尺寸 = 图标真实像素，槽宽只作上限不放大（`DrawIconFit` 已并入）。原 `eb_ui.*` + `namespace eb`（= Ex**B**ar，上一个项目的前缀），2026-11-20 改名 | 任何栏的业务布局、任何输入状态读取、色值 | `common.h`、`icon_glyph.h` |
 | `ui_palette.h` | 色值令牌表（`UiPalette`）：栏基础色 / 编辑框 / 选中 / 分隔线。原 `eb_theme.h` | 逻辑与布局 | `common.h` |
 | `tooltip_host.h/.cpp` | `ui::TooltipHost`：一次全量替换 tooltip 项，内部管好 id 与字符串生命周期 | 任何绘制 | `<windows.h>` |
 | `mouse_rules.h/.cpp` | 鼠标规则模型 + **`CurrentMods()` 唯一实现**（含 AltGr 特判：右 Alt+左 Ctrl 是字符输入，返回 0） | 绘制 | `common.h` |
 | `platform_win.h/.cpp` | `RegisterClassOnce` / `CreateChild` / `CreatePopup` / `ThemeControl` | 任何栏的业务 | `<windows.h>` |
 | `shell_view.h/.cpp` | 一个标签 = 一个 `IExplorerBrowser`；导航、刷新、显隐、尺寸、主题、事件接收 | 标签顺序、历史、标题 | `theme.h` |
-| `tab_strip.h/.cpp` | 标签栏生命周期与模型装配：建窗、吃 `core::TabRef`、图标缓存、`WM_APP_TAB_*` 投递 | 绘制、命中、几何、菜单（各自分片） | `theme.h`、`icon_resolve.h` |
-| `tab_strip_input.cpp` | 消息分发、悬停态、命中测试（谁被点到） | 标签状态 | `mouse_rules.h` |
-| `tab_strip_layout.cpp` | 标签宽度分配、溢出判定、滚动量、tooltip 热区 | 绘制 | `theme.h` |
-| `tab_strip_paint.cpp` | 底色/图标/标题/关闭钮/锁定字形/溢出箭头/新建 + | 任何状态写入 | `ui_draw.h` |
-| `tab_strip_actions.cpp` | 标签右键菜单、溢出 » 菜单（只回传动作号） | 执行业务 | `popup_list.h` |
+| `tab_strip.h/.cpp` | 标签栏生命周期与模型装配：建窗、吃 `core::TabRef`、图标缓存（DPI 变化时整批重取）、快速关闭宽度表、`WM_APP_TAB_*` 投递 | 绘制、命中、几何、菜单（各自分片） | `theme.h`、`icon_resolve.h` |
+| `tab_strip_input.cpp` | 消息分发（含 `WM_CONTEXTMENU` 键盘菜单、焦点消息）、悬停态、命中测试（谁被点到） | 标签状态 | `mouse_rules.h` |
+| `tab_strip_layout.cpp` | 标签宽度分配（含 rapid close 临时宽度）、溢出判定、滚动量、tooltip 热区与增量移动 | 绘制 | `theme.h` |
+| `tab_strip_paint.cpp` | 底色/图标/标题/关闭钮/锁定字形/溢出箭头/新建 +/键盘焦点框 | 任何状态写入 | `ui_draw.h` |
+| `tab_strip_actions.cpp` | 标签右键菜单、溢出 » 菜单（只描述动作与禁用态，只回传 action） | 执行业务、手写行 | `menu.h` |
 | `nav_path.h` | **路径语义唯一实现**（纯字符串）：`IsNamespace`/`IsDriveRoot`/`Normalize`/`ParentOf`/`Leaf`/`UpTarget`/`CanNavigateUp`/`kThisPc` | 任何 I/O、Shell、窗口 | 无（只有 `<string>`） |
 | `nav_history.h/.cpp` | **历史栈组件**（每标签一份）：`Request`/`Goto`/`Complete`/`Fail`/`ClearKeepingHere`/`Restore`；压栈只有 `Push` 一处 | Shell、窗口 | `nav_path.h`（仅语义） |
 | `nav_model.h/.cpp` | 路径 → 面包屑分段、子目录枚举、地址文本、ghost 段（**路径语义转发到 `nav_path.h`**） | 绘制、菜单 | `nav_path.h`、`common.h` |
 | `nav_bar.h/.cpp` | 5 个按钮 + 地址框内的面包屑：窗口、布局、命中；地址编辑框宿主；主题重建 | 绘制、导航语义 | `theme.h`、`nav_model.h`、`nav_metrics.h` |
 | `nav_bar_draw.cpp` | 导航栏绘制：`Paint` / `DrawButton` / `DrawBreadcrumb` / `DrawGlyph` / `DrawChevron` | 布局与命中 | `nav_bar.h` |
 | `nav_metrics.h` | 导航栏 96 DPI 基准尺寸常量（`kBtn96` 等） | 任何逻辑 | 无 |
-| `nav_bar_actions.cpp` | 编辑提交/取消、`Tab` 补全、分段子目录/折叠/历史/视图菜单（组装 `PopupRow` / `TreeNode`） | 绘制、状态变更 | `nav_bar.h`、`popup_list.h` |
-| `popup_list.h/.cpp` | 自绘下拉弹层：`WS_POPUP` + owner-draw `LISTBOX`，模态循环，返回选中行 | 业务语义（行内容由调用方给） | `theme.h` |
+| `nav_bar_actions.cpp` | 编辑提交/取消、`Tab` 补全、分段子目录/折叠/历史/视图菜单（菜单走 `ui::Menu`，树走 `folder_tree`） | 绘制、状态变更、手写行 | `nav_bar.h`、`menu.h`、`folder_tree.h` |
+| `menu.h/.cpp` | **自绘菜单内容的唯一构建层**：`Add` / `AddChecked` / `AddPath` / `AddPathChecked` / `Separator` / `AppendLabel` / `Show`，统一勾选前缀、禁用态、初态行、路径图标与 action 返回 | 渲染与模态（归 `PopupList`）、业务执行 | `icon_glyph.h`、`icon_resolve.h`、`popup_list.h` |
+| `popup_list.h/.cpp` | 自绘下拉弹层唯一渲染器：`WS_POPUP` + owner-draw `LISTBOX`，模态循环，返回选中行；平铺内容由 `Menu` 提供，树内容由 `folder_tree` 提供 | 菜单内容组装（归 `Menu`）、业务语义 | `theme.h`、`icon_glyph.h` |
+| `popup_toggle.h/.cpp` | **「再点即收」的唯一状态**：只回答"某锚点的弹层是否开着"（单槽，无时间戳），供 `Show*` 兜底与面包屑箭头形态（› / ⌄）使用 | 消息捕获（在 `popup_list`）、业务 | `common.h` |
+| `folder_tree.h/.cpp` | **子目录树弹层的唯一入口**：`Children` 建树 + `Show` 弹层，懒加载回调就是 `Children` 自己。图标走 `ico::Cached`，弹层只借不销毁。面包屑 chevron 与书签栏图标格共用 | shell 枚举（`NavModel::ChildFolders` 是唯一实现）、图标生命周期 | `nav_model.h`、`popup_list.h`、`icon_resolve.h` |
 | `status_bar.h/.cpp` | 9 段状态栏：排版、绘制、命中、tooltip、段显隐 | 取数（由 `view_stats` + `App` 给） | `theme.h` |
 | `view_stats.h/.cpp` | `IFolderView2` / `IShellItem2` 取数：计数、选中、容量、日期、排序方向、磁盘 | 绘制 | `common.h` |
-| `bookmark_bar.h/.cpp` | 书签栏：图标/分类下拉/溢出/右键/拖入文件夹 | 书签读写（`bookmarks`） | `bookmarks.h`、`theme.h`、`popup_list.h` |
+| `bookmark_bar.h/.cpp` | 书签栏：图标/分类下拉/溢出/右键/拖入文件夹（菜单走 `ui::Menu`，树走 `folder_tree`） | 书签读写（`bookmarks`）、手写行 | `bookmarks.h`、`theme.h`、`menu.h`、`folder_tree.h` |
 | `bookmarks.h/.cpp` | 书签树 + Netscape HTML 读写（`EXBAR_*`） | UI | `text_file.h` |
+| `bookmark_io.h/.cpp` | 导入导出 `IFileOpenDialog`/`IFileSaveDialog`（Netscape HTML，与存储文件同格式互通） | 书签树模型（`bookmarks`）、手写行 | `bookmarks.h`、`menu.h` |
+| `bookmark_drop.h/.cpp` | OLE `IDropTarget`：接 shell 项（含虚拟/命名空间项，走 `CFSTR_SHELLIDLIST`；`WM_DROPFILES` 只带 `CF_HDROP` 不够用）拖入添加 | 书签树模型 | `bookmarks.h` |
 | `tab_set.h/.cpp` | 标签顺序 / 锁定 / MRU / 关闭历史（零 Win32） | 视图、消息 | 标准库 |
 | `shell_ops.h/.cpp` | 文件操作：复制/剪切/粘贴/删除/重命名/属性/新建/选择/排序/分组/隐藏开关 | 自绘 UI | `view_stats.h` |
 | `commands.h/.cpp` | 命令目录（id/name/group/scope/implemented）+ `CommandBus`（派发 + 审计） | 业务实现 | `config.h` |
@@ -160,7 +169,7 @@ ExBarBrowser_Popup                   WS_POPUP | WS_EX_TOOLWINDOW | CS_DROPSHADOW
 | `app_nav.cpp` | 导航编排：`NavigateActive`/`GotoHistory`/`OnTabNav(Failed)`。**只做编排** —— 路径语义在 `nav_path.h`、历史事务在 `nav::History`，本文件不手写 `push_back`/`resize` | 标签生命周期 | `app.h` |
 | `app_layout.cpp` | 布局与主题：四条栏高度/显隐、视图区回收、DPI/深浅色 | 栏内部绘制 | `app.h` |
 | `app_stats.cpp` | 状态栏取数：枚举统计 + 节流 + `StatusModel` 填充 | 布局、标签 | `app.h` |
-| `app_commands.cpp` | 命令注册调度 + 通用动作（`ActiveView`/`WithView`/`CopyText`）+ 四个菜单 | 各组命令的细节 | `app.h`、`popup_list.h` |
+| `app_commands.cpp` | 命令注册调度 + 通用动作（`ActiveView`/`WithView`/`CopyText`）+ 四个菜单（走 `ui::Menu`） | 各组命令的细节、手写行 | `app.h`、`menu.h` |
 | `app_commands.h` | 分片共享的 `cmd_reg::Register`（各片写 `auto reg = ...`） | 业务 | `commands.h` |
 | `app_commands_tabs.cpp` | 标签 / 跳转 / 导航 / 路径 四组命令 | 视图内文件操作 | 同上 |
 | `app_commands_files.cpp` | 文件操作 / 视图 两组命令（都经 `App::WithView` 判成败） | 标签与历史 | 同上、`shell_ops.h` |
@@ -173,22 +182,27 @@ ExBarBrowser_Popup                   WS_POPUP | WS_EX_TOOLWINDOW | CS_DROPSHADOW
 同日继续：`tab_strip` 按 输入/几何/绘制/菜单 拆成五片；`app_commands` 按命令域拆成
 四片（核心/标签/文件/杂项），`tools/check_commands.py` 改为审计 `app_commands*.cpp` 全片。
 
-**当前 57 个 `.cpp` 里 38 个 ≤300 行，19 个超限**，前十：
+目前有 **10 个文件超 500 行**（名单见下表）。分布与具体行数以现查为准，本表**只记名单与拆分方向**，不记数字。
 
-| 文件 | 行数 | 拆分方向 |
-|---|---:|---|
-| `shell_view.cpp` | 991 | IExplorerBrowser 托管 / 主题下传 / 窗格可见性 / 拖放接收 |
-| `shell_ops.cpp` | 934 | 选择族 / 文件操作 / 属性查询 |
-| `popup_list.cpp` | 692 | 布局命中 / 绘制 / 二级展开 |
-| `bookmark_bar.cpp` | 681 | 绘制 / 命中 / 菜单 |
-| `app_commands_files.cpp` | 557 | 文件操作 / 视图开关 |
-| `commands.cpp` | 545 | 目录表（纯数据）可以独立成 `.inc` |
-| `bookmarks.cpp` | 524 | Netscape 解析 / 树模型 / 持久化 |
-| `shell_input.cpp` | 500 | UIA 探测 / ListView 探测 / 子类生命周期 |
-| `input_router.cpp` | 493 | 键 / 序列 / 鼠标三条入口 |
-| `ai_server.cpp` | 481 | 管道生命周期 / JSON-RPC 分派 |
+| 文件 | 拆分方向 |
+|---|---|
+| `shell_ops.cpp` | 选择族 / 文件操作 / 属性查询 |
+| `shell_view.cpp` | IExplorerBrowser 托管 / 主题下传 / 窗格可见性 / 拖放接收 |
+| `popup_list.cpp` | 布局命中 / 绘制 / 二级展开 / 键盘导航 |
+| `bookmark_bar.cpp` | 绘制 / 命中 / 菜单 |
+| `bookmarks.cpp` | Netscape 解析 / 树模型 / 持久化 |
+| `commands.cpp` | 目录表（纯数据）可以独立成 `.inc` |
+| `app_commands_files.cpp` | 文件操作 / 视图开关 |
+| `shell_input.cpp` | UIA 探测 / ListView 探测 / 子类生命周期 |
+| `input_router.cpp` | 键 / 序列 / 鼠标三条入口 |
+| `nav_bar.cpp` | 绘制已在 `nav_bar_draw`；剩 命中/布局/回调 |
 
-超限不是罪，**继续往上加才是**：下次动这些文件先拆，别在 900 行的文件里再塞一个分支。
+> **这张表故意不写行数**：本仓库处于活跃并行开发，行数每天都在涨，写进来第二天就是错的。
+> 要当前值跑 `wc -l src/*.cpp | sort -rn | head -12`；要看分布跑
+> `wc -l src/*.cpp | awk '$2!="total"{if($1<=300)a++; else if($1<=500)b++; else c++} END{print a,b,c}'`。
+
+超限不是罪，**继续往上加才是**：下次动这些文件先拆，别在 1000 行的文件里再塞一个分支。
+当前 10 个超 500 的文件都在"下次要动就先拆"的名单里（`CONTRIBUTING.md` §3.1 有同一份清单）。
 
 ---
 
@@ -239,19 +253,23 @@ EDIT WM_KEYDOWN(VK_RETURN)
 
 ### 4.1 下拉弹层（`popup_list`）
 
-所有下拉（分段子文件夹、折叠层级、方向历史、地址框合并历史、视图模式）都走同一个
-`ShowPopupList` / `ShowFolderTree`，**不用 `TrackPopupMenu`**。原因：系统菜单带不了图标、配色跟不了主题、
-行高不可控；而 mod 的 `ebpopup::ShowPopupList` 已经是"图标 + 24 px 行 + 悬停/选中底色"的形态，
-两边要视觉一致。
+所有自绘菜单的**内容**统一由 `ui::Menu` 构建，**渲染/模态**统一由 `PopupList` 承担：
+平铺列表走 `Menu::Show → ShowPopupList`，文件夹树走 `folder_tree::Show → ShowFolderTree`，
+**不用 `TrackPopupMenu`**。原因：系统菜单带不了图标、配色跟不了主题、行高不可控；
+而 mod 的 `ebpopup::ShowPopupList` 已经是"图标 + 24 px 行 + 悬停/选中底色"的形态，两边要视觉一致。
 
-调用形状：
+调用形状（业务代码只描述动作，不接触 `PopupRow` 八字段）：
 
 ```cpp
-std::vector<PopupRow> rows;           // label/path/icon/folder/separator/disabled/data
-rows.push_back({name, path, icon, /*folder=*/true, false, false, 0});
-int pick = ShowPopupList(hwnd_, *theme_, screenPt, rows, 180 /* minWidth96 */);
-if (pick >= 0) onNavigate_(rows[pick].path);
-FreeRows(rows);                       // 图标由调用方拥有，弹层不销毁
+ui::Menu menu;
+menu.AddPath(LabelFor(path), path, action)   // 路径图标走 ico::Cached
+    .Separator()
+    .Add(L"清除历史记录", 3000, ico::IconId::Close);
+
+ui::MenuOptions opt;
+opt.toggleKey = L"nav.drop";
+opt.initialRow = currentRow;
+const int action = menu.Show(hwnd_, *theme_, screenPt, opt);  // 返回 action，不是行号
 ```
 
 内部机制：
@@ -271,13 +289,43 @@ FreeRows(rows);                       // 图标由调用方拥有，弹层不销
 1. **它是模态的**：内部跑 `while (!done && GetMessage(...))` 嵌套消息循环。调用期间主窗口仍会收到消息
    （重绘、`WM_ACTIVATE`、定时器），所以**不要在 `WM_PAINT` 里调它**，也不要在调用点持有"只允许重入一次"
    的状态。
-2. **`rows` 必须活到函数返回**：弹层只存指针。传栈上的 `std::vector` 是安全的，传临时对象不行。
-3. **图标所有权在调用方**：`PopupRow::icon` 由调用方创建与销毁（`IconFor` / `FreeRows`），
-   弹层只画不释放——否则同一个 `HICON` 被多处引用时会二次 `DestroyIcon`。
+2. **内容归 `Menu` 所有**：业务侧构造的 `ui::Menu` 必须活到 `Show()` 返回。组件内部持有
+   `PopupRow` 向量并交给渲染器；新增菜单不要再建 `std::vector<PopupRow>`。
+3. **图标只有两条入口**：动作行写 `ico::IconId`，由 `ui::DrawGlyph` 复用字形表；
+   路径行/树节点由 `ico::Cached` 给 `HICON`，进程内共享、弹层只借不销毁。
+   旧写法里调用方 `Resolve` + `FreeRows`、弹层 `DestroyIcon` 混用，漏一处就是 GDI 泄漏或悬空句柄 ——
+   现在这两条生命周期都收口在 `icon_resolve.cpp`。
+
+**再点即收（`toggleKey`）**：所有弹层同一契约 —— **弹层开着时点它的锚点，收起；不重开**。
+
+真因不是"连点判据"而是**关闭时机**。系统在点击派发前**同步**给弹层发
+`WM_ACTIVATE(WA_INACTIVE)`；若在此就 `PostMessage(WM_CLOSE)`，消息会排在
+`LBUTTONDOWN/UP` 之前被模态循环取走 → 弹层先销毁、捕获释放 → 剩下的 `LBUTTONUP`
+落到锚点控件，而本工程各栏都在 **UP** 里执行动作 → 又调一次 `Show*` → 菜单"关了又开"。
+
+**关键事实：鼠标捕获不阻止激活切换。** 弹层是 `WS_POPUP` 顶层窗口，点主窗任一子控件
+都会让主窗激活、弹层失活，哪怕捕获仍在弹层手里 —— 所以"持捕获就安全"不成立。
+
+修法（对齐 `TrackPopupMenu` / 组合框下拉）：失活时按 `popup::ShouldCloseOnDeactivate` 分流 ——
+
+| 条件 | 处置 |
+|---|---|
+| 持捕获 + 前景窗同线程（点的是本程序另一个窗口） | **不关**。这组 DOWN/UP 由列表吞着，等 UP 判到"点在列表外"再关。锚点收不到点击，重开在消息层不可能发生 |
+| 其余（点别的程序 / Alt+Tab / 捕获已被抢走） | 关。这类失活不会再有 UP 回到手上，留着就是关不掉的菜单 |
+
+配套：`ListSubclass::WM_CAPTURECHANGED` 区分"LISTBOX 自己 SetCapture"（忽略）与
+"被抢走"（关）；外点的 DOWN 只记 `downOutside`，等 UP 才关并释放捕获，于是
+"点别处只关菜单、不触发被点的控件"（资源管理器同语义）。
+
+`popup_toggle` 现在只回答"某锚点的弹层是否开着"，供 `Show*` 兜底（键盘/命令重入）与
+面包屑箭头形态（› / ⌄）使用。锚点键带索引（`nav.crumb.3` / `nav.drop` /
+`bmk-icon:<id>` / `tab.menu.1`），不同锚点互不干扰。详见 `docs/DEVELOPMENT.md` §3.4。
 
 **文件夹树（`ShowFolderTree`）**：面包屑分隔符下拉用的是树形态——顶层是**该分段自己的**
 直接子文件夹（`NavModel::ChildFolders(parts[partIndex].path)`，与 mod 的
 `EnumChildFoldersAt(crumbPidls[partIndex])` 同口径），点行右端 chevron 就地展开下一级。
+它是另一个弹层**形状**，但共用同一套渲染、捕获、定位与"再点即收"逻辑；节点图标同样来自
+`ico::Cached`，解析失败时用 `TreeNode::glyph`（`ico::IconId`）兜底，弹层不销毁任何 `HICON`。
 `PopupRow::folder` 的平铺形态没有二级弹出，只用于不需要展开的简单列表。
 
 ---
@@ -473,15 +521,15 @@ mingw 头只声明 1 个。多出的参数走寄存器、被忽略即可，**不
   `shell_view.cpp` 里还留着一份功能重复的 `LogLine`（导航五步用它），P1.1 应合并到 `LogDbg`。
 - **切标签**：O(N) 次 `ShowWindow` + 一次 `SyncChrome`。N 是标签数，目前没有上限，P2 要加溢出处理。
 - **弹层是嵌套消息循环**：打开期间主窗口的消息仍会被派发，等于在"菜单打开"这个时间窗口里重入了主循环。
-  所以弹层打开前要把需要的状态拷进 `PopupRow`（不要持有指向 `model_` 的引用再在循环里读），
+  所以弹层打开前要把需要的状态拷进 `ui::Menu` 的行数据（不要持有指向 `model_` 的引用再在循环里读），
   也不要在循环期间销毁 `NavBar` 或 `Theme`。
 
 ---
 
 ## 12. 不变量（改动前逐条确认）
 
-> 前 10 条是"改代码不能破的语义"；11–13 是 2026-11-20 新增的**纯机械约束**
-> （已由 `tools/check_components.py` 强制，违反即 CI 红）。
+> 前 10 条是"改代码不能破的语义"；11–14 是**机械约束**（11–13 自 2026-11-20 起，
+> 14 自 2026-11-21 起，均已由 `tools/check_components.py` 强制，违反即 CI 红）。
 
 1. **状态只有一份**：标签历史/索引/标题/项目数只在 `App::Tab`；chrome 是纯投影，不缓存副本。
    历史栈的**唯一实现**是 `nav::History`（`App::Tab::nav`），路径语义的唯一实现是
@@ -500,14 +548,27 @@ mingw 头只声明 1 个。多出的参数走寄存器、被忽略即可，**不
    定义只在 `identity.h`，改一个名字要同步 `scripts/shot.py` 与文档（规则 R10）。
 8. **路径内部一律反斜杠**，命名空间保持原样；跨模块传递路径不做二次规范化。
 9. **`Theme` 的生命周期覆盖所有 `ShellView`**：析构顺序必须是"先视图后主题"。
-10. **下拉一律走 `ShowPopupList`**：不再新增 `TrackPopupMenu`；行图标由调用方创建与销毁，
-    `rows` 必须活到函数返回。
+10. **自绘菜单只有一条内容链**：平铺菜单一律 `ui::Menu::Add*` → `ShowPopupList`，树菜单一律
+    `folder_tree` → `ShowFolderTree`，不再新增 `TrackPopupMenu`，业务侧不再直接建 `PopupRow`。
+    动作行图标走 `ico::IconId`，路径行/树节点图标走 `ico::Cached`；弹层只借不销毁，
+    `Menu` 必须活到 `Show()` 返回。`tools/check_components.py` 已把这两条写成机械判据。
 11. **品牌串只出现在 `identity.h`**：其他文件写 `L"ExBar…"` 会被 `tools/check_components.py` 判失败
     （规则 B1，见 [NAMING.md](NAMING.md)）。
 12. **绘制原语只有一份**：量字 `ui::MeasureText`、填充/描边/分隔线 `ui::FillRectColor` 等、
     双缓冲 `ui::PaintBuffered`、控件主题 `win::ThemeControl` —— 自写一份即失败。
 13. **命令名两个方向都要认**：读命令名一律经 `FindCommand`（旧名 ↔ 点分名），
     不得直接字符串比较（规则 C3）。检查脚本也必须同口径，否则改名后整行被跳过。
+14. **不模拟输入、不抢焦点、不循环点击**：产品代码与自动化脚本都不得出现 `SendInput` /
+    `mouse_event` / `keybd_event` / `SetCursorPos` / `BlockInput` / `AttachThreadInput`；
+    也不得用 `PostMessage`/`SendMessage` 投 `WM_LBUTTON*` / `WM_RBUTTON*` / `WM_KEY*` /
+    `WM_CHAR` 等**输入类**消息 —— 合成点击在本程序里必然命中控件并走到 `ShowPopupList`，
+    而弹层内部会 `SetForegroundWindow`，结果与 `SendInput` 相同。脚本也不得用
+    `SetForegroundWindow` / `SetActiveWindow` / `BringWindowToTop` 改用户的前台窗口。
+    一切操作走结构化命令：进程内 `CommandBus::Invoke`，进程外 AI 命名管道；
+    需要验证必须真点才成立的流程时，**人工点、脚本只观察**（`tools/probe_toggle.py`）。
+    `src/` 里的 `SetForegroundWindow`（单实例转发、弹层取键盘输入）是**用户触发**的产品行为，
+    不在此列。规则 R21，判据在 `tools/check_components.py` 的 `INPUT_GUARD` 段（4 条），
+    理由与替代方案见 [ARCHITECTURE-RULES.md §3.1](ARCHITECTURE-RULES.md)。
 
 ---
 
@@ -524,12 +585,13 @@ mingw 头只声明 1 个。多出的参数走寄存器、被忽略即可，**不
 | `004-ebbmk.cpp` | `ebbmk` | `bookmark_bar.cpp` / `bookmarks.cpp` | 共用 `bookmarks.html`；不可变快照/跨线程发布不需要（单 UI 线程） |
 | `011-ebsr.cpp` + `evipc` | `ebsr` / `evipc` | `disk_scan.cpp`（部分） | 搜索未实现（P3，复用 Everything IPC）；目录体积统计已落地 |
 | `010-ebms.cpp` | `ebms` | `mouse_rules.cpp` / `shell_input.cpp` / `input_router.cpp` | 规则模型与触发时序对齐；低级鼠标钩子换成本进程子类 + UIA |
-| `006-ebch.cpp` | `ebch` | `keymap.cpp` / `chord.cpp` / `sequence.cpp` / `input_router.cpp` / `hotkey_manager.cpp` | 70 热键 + 38 序列 + 管理器；低级键盘钩子与注入抑制不迁移 |
+| `006-ebch.cpp` | `ebch` | `keymap.cpp` / `chord.cpp` / `sequence.cpp` / `input_router.cpp` / `hotkey_manager.cpp` | 热键 + 序列 + 管理器（当前 83 热键 / 38 序列，含 13 条指向未实现命令的占位）；低级键盘钩子与注入抑制不迁移 |
 | `002-ebda.cpp` / `003-olns.cpp` | `ebda` / `olns` | — | 命名空间扩展：本工程直接用 shell 原生，不需要 |
 | `012-ebai.cpp` / `014-ebaiui.cpp` | `ebai` | `ai_api.cpp` / `ai_server.cpp` | 接口层已实现（JSON-RPC over 管道，与 mod 的 `ebai` 同源设计）；窗口内 AI 面板未做（P4） |
 | `ebop` 操作层 | `ebop` | `commands.cpp` + `cmd_naming.cpp` | 参数对象化、效果四维、前置条件、结构化结果、点分命名 —— 即 0.2.1 的"操作契约 10 步" |
 
-完整能力对照（137 条命令逐组，含 29 条未实现的差异根因）见 [PARITY.md](PARITY.md)。
+完整能力对照（按命令逐组，含未实现项的差异根因）见 [PARITY.md](PARITY.md)；
+当前条数以 `python tools/check_commands.py` 首行为准（它打印"命令表 N 条，已实现 M"）。
 
 ---
 
@@ -539,7 +601,7 @@ mingw 头只声明 1 个。多出的参数走寄存器、被忽略即可，**不
 |---|---|---|---|
 | 一个新快捷键 | 改 `data/keymap.json`，再跑 `python tools/gen_keymap.py`（更新兜底默认表） | 无代码 | 与 mod 默认键冲突要在 PARITY 记一笔；命令必须已在 `commands.cpp` 注册 |
 | 一个新命令 | `commands.cpp` 目录加一行 + `App::RegisterCommands()` 注册处理器 | `commands.*`、`app_commands.cpp` | 未实现时 `implemented=false`，管理器会标灰 |
-| 一个新下拉菜单 | 在 `nav_bar_actions.cpp` 组装 `PopupRow` 调 `ShowPopupList` | 无新文件 | 图标由调用方 `FreeRows`；`rows` 不能是临时对象 |
+| 一个新下拉菜单 | 在业务文件里写 `ui::Menu menu; menu.Add...; menu.Show(...)` | 无新文件 | 动作图标写 `ico::IconId`，路径行交给 `AddPath` 走 `ico::Cached`；只在调用点描述动作，不手写 `PopupRow` |
 | 状态栏多一段信息 | `StatusBar` 的 `SegId` + `StatusModel` 加字段，`RefreshStats` 填值 | `status_bar.h/.cpp`、`app.cpp` | 逻辑段号只用于数组/位掩码，绘制顺序单独维护 |
 | 一个新的鼠标手势 | 改 `data/mouse.json`（target 见 `mouse_rules.h`） | 无代码 | 组件需把 `(target,button,mods)` 交给 `MouseSink` |
 | 搜索框 | `NavBar` 里加控件 + `evipc` 客户端 | `nav_bar*`、新 `search_*.cpp` | Everything IPC 是 mod 的既有资产，先读 `src/parts/` 的 `evipc` |

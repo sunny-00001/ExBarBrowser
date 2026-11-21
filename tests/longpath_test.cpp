@@ -82,17 +82,9 @@ int main() {
         const std::wstring file = deep + L"\\deep_file.txt";
         printf("     路径长度 = %zu\n", file.size());
 
-        // 逐层创建（CreateDirectoryW 也需要扩展前缀）
-        std::wstring cur = base;
-        CreateDirectoryW(tf::ToExtended(cur).c_str(), nullptr);
-        size_t pos = base.size();
-        while (pos < deep.size()) {
-            const size_t next = deep.find(L'\\', pos + 1);
-            cur = (next == std::wstring::npos) ? deep : deep.substr(0, next);
-            CreateDirectoryW(tf::ToExtended(cur).c_str(), nullptr);
-            if (next == std::wstring::npos) break;
-            pos = next;
-        }
+        // EnsureDir 内部必须自己加扩展前缀；调用方不该再手写一遍。
+        // 旧实现 CreateDirectoryW(path.c_str()) 在这里静默失败，后续读写全落空。
+        CHECK(tf::EnsureDir(deep), "EnsureDir 创建超长路径");
 
         // 用统一的 WriteText/ReadText 读写 —— 它们内部走 ToExtended
         const bool wrote = tf::WriteText(file, L"深路径内容 OK");
@@ -102,6 +94,10 @@ int main() {
             CHECK(tf::ReadText(file, &got), "ReadText 读回超长路径成功");
             CHECK(got == L"深路径内容 OK", "内容正确");
             CHECK(tf::Exists(file), "Exists 认得超长路径");
+            const std::wstring copy = deep + L"\\deep_copy.txt";
+            CHECK(tf::CopyFileIfMissing(file, copy), "CopyFileIfMissing 复制超长路径");
+            CHECK(tf::Exists(copy), "复制目标认得超长路径");
+            DeleteFileW(tf::ToExtended(copy).c_str());
         } else {
             printf("     注意：写入失败可能是本机未启用长路径支持（见文件头说明）\n");
         }

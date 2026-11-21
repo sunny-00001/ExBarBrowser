@@ -26,9 +26,15 @@ enum class IconId {
     // 方向
     ChevronDown, ChevronUp, ChevronLeft, ChevronRight,
     // 状态
-    Check, Close, Lock, Search, Settings,
+    Check, Add, Close, Lock, Search, Settings,
     // 状态栏段
     Folder, Page, Calendar, HardDrive, Eye, Tag,
+    // 菜单动作
+    Edit, Copy, Delete, Undo,
+    // 右键菜单动作
+    NewWindow, Terminal, Sort, Import, Export,
+    // 视图档位
+    GridView, ListView, DetailsView,
 };
 
 // id -> 字形（码位）。未登记的 id 返回兜底字形（放大镜，必然存在）。

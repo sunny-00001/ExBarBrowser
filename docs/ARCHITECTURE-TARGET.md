@@ -12,7 +12,7 @@ baseline: 2026-11-19 20:58
 > **③ 鼠标 / 键盘 / 序列键 / IME / 命令行 / AI 工具调用是"手脚架"（输入端）**——
 >    它们只做一件事：把输入变成**命令**；**命令是唯一基础管线**，人与 AI 都从这条管线走。
 >
-> 可机械校验的约束见 [ARCHITECTURE-RULES.md](ARCHITECTURE-RULES.md)（R1–R20）。
+> 可机械校验的约束见 [ARCHITECTURE-RULES.md](ARCHITECTURE-RULES.md)（R1–R21）。
 > 现状见 [ARCHITECTURE.md](ARCHITECTURE.md)，选型与批次见 [ARCHITECTURE-PROPOSAL.md](ARCHITECTURE-PROPOSAL.md)。
 
 ---
@@ -234,12 +234,11 @@ UI 只是管线的一个输入端，AI 只是另一个输入端。任何绕过�
 | 痕迹 | 审计（actor=Human） | 审计（actor=Agent）+ UI 上"AI 操作中"标记 |
 
 **等价性验收**：任何 `aiExposed` 命令，必须能用鼠标/键盘完整做到同样的事；
-
-> **覆盖到"所有操作"的完整模型**（四原语、三条可证伪判据、
-> 控制/观测/开发三平面、AI 自我改进的闭环）见 
-> [FULL-COVERAGE.md](FULL-COVERAGE.md)。本节只定义"人机等价"这一条约束；
-> 那份文档回答"是否真的覆盖了全部操作、以及怎么证明"。
 否则说明该命令依赖了 AI 专属通道，违规。
+
+> **覆盖到"所有操作"的完整模型**（四原语、三条可证伪判据、控制/观测/开发三平面、
+> 以及 AI 自我改进的闭环）见 [FULL-COVERAGE.md](FULL-COVERAGE.md)。
+> 本节只定义"人机等价"这一条约束；那份文档回答"是否真的覆盖了全部操作、以及怎么证明"。
 
 ---
 

@@ -54,6 +54,15 @@ const Alias kAliases[] = {
     {L"GoTab8",          L"tab.goto.8"},
     {L"GoTab9",          L"tab.goto.9"},
 
+    // --- Tab 个性化：改名/颜色/去重 ---
+    // 这三条不是"标签开关"，但仍属标签域，别名表里写明以免走推导规则
+    // （推导出的是 tab.rename —— 恰好一致，但仍显式登记：名字是契约，不靠巧合）。
+    {L"TabRename",          L"tab.rename"},
+    {L"TabSetColor",        L"tab.color"},
+    {L"TabCloseDuplicates", L"tab.close.duplicates"},
+    {L"TabLock",           L"tab.lock"},
+    {L"TabCopyTitle",      L"tab.copy.title"},
+
     // --- Go（group=Go）：跳转到已知位置 ---
     {L"GoHome",          L"go.home"},
     {L"GoDesktop",       L"go.desktop"},
@@ -156,10 +165,22 @@ const Alias kAliases[] = {
     {L"SendKeys",          L"ext.sendkeys"},
 
     // --- Bookmark（group=Bookmark）---
-    {L"BmkAddCurrent",     L"bmk.add"},
+    {L"BmkAddCurrent",     L"bmk.add.current"},   // 加**当前目录**（无参）
+    {L"BmkAdd",            L"bmk.add.path"},     // 加**指定路径**（带参）
     {L"BmkShowBar",        L"bmk.show"},
     {L"BmkHideBar",        L"bmk.hide"},
     {L"BmkToggleBar",      L"bmk.toggle"},
+    // 书签编辑族：右键菜单动作补成命令（R20 反向要求：人工可达就必须有结构化入口）。
+    {L"BmkEdit",           L"bmk.edit"},
+    {L"BmkRemove",         L"bmk.remove"},
+    {L"BmkNewFolder",      L"bmk.newfolder"},
+    {L"BmkUndo",           L"bmk.undo"},
+    {L"BmkClearAll",       L"bmk.clear"},
+    {L"BmkSort",           L"bmk.sort"},
+    {L"BmkDedupe",         L"bmk.dedupe"},
+    {L"BmkMove",           L"bmk.move"},
+    {L"BmkList",           L"bmk.list"},
+    {L"BmkFocus",          L"bmk.focus"},
 
     // --- Session（group=Session）---
     {L"SessionSave",       L"session.save"},

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <functional>   // std::function：Merge 的递归 lambda
 #include <cwctype>
+#include <unordered_set>
 
 namespace {
 
@@ -165,55 +166,18 @@ void AssignIds(BookmarkList& list, int& seq) {
 
 }  // namespace
 
-std::wstring BookmarkPathToUrl(const std::wstring& path) {
-    if (path.empty()) return path;
-    if (path.rfind(L"::", 0) == 0 || path.rfind(L"shell:", 0) == 0) return path;
-    std::wstring s = path;
-    for (auto& c : s)
-        if (c == L'\\') c = L'/';
-    std::wstring out = L"file:///";
-    // 最小编码：只转义会破坏往返的字符。中文等非 ASCII **原样保留**（文件本身是
-    // UTF-8，mod 与浏览器都这么处理；按 UTF-16 码元做 %02X 会把中文永久损坏）。
-    // 需要转义的：空格(HTML 属性分隔歧义)、% 与解码器自身冲突的保留字、# ? (fragment/
-    // query 歧义)、ASCII 控制符。字母数字和 / : . _ - ~ 原样。
-    auto needsEscape = [](wchar_t c) {
-        if (c < 0x21 || c == 0x7F) return true;               // 控制符 + 空格
-        return c == L'%' || c == L'#' || c == L'?' || c == L'"' || c == L'<' ||
-               c == L'>';
-    };
-    for (wchar_t c : s) {
-        if (!needsEscape(c)) {
-            out.push_back(c);
-        } else {
-            wchar_t buf[8];
-            swprintf(buf, 8, L"%%%02X", static_cast<unsigned>(c) & 0xFF);
-            out += buf;
-        }
-    }
-    return out;
-}
+std::wstring BookmarkPathToUrl(const std::wstring& path) { return bmkhtml::PathToUrl(path); }
 
-std::wstring BookmarkUrlToPath(const std::wstring& url) {
-    if (url.empty()) return url;
-    std::wstring s = url;
-    if (s.rfind(L"file:///", 0) == 0) {
-        s = s.substr(8);
-        for (auto& c : s)
-            if (c == L'/') c = L'\\';
-        // %XX 解码
-        std::wstring out;
-        for (size_t i = 0; i < s.size(); ++i) {
-            if (s[i] == L'%' && i + 2 < s.size() && iswxdigit(s[i + 1]) && iswxdigit(s[i + 2])) {
-                wchar_t hex[3] = {s[i + 1], s[i + 2], 0};
-                out.push_back(static_cast<wchar_t>(wcstol(hex, nullptr, 16)));
-                i += 2;
-            } else {
-                out.push_back(s[i]);
-            }
-        }
-        return out;
-    }
-    return url;
+std::wstring BookmarkUrlToPath(const std::wstring& url) { return bmkhtml::UrlToPath(url); }
+
+std::wstring BookmarkStore::SerializeDocument() const {
+    std::wstring html =
+        L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n"
+        L"<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\r\n"
+        L"<TITLE>Bookmarks</TITLE>\r\n<H1>Bookmarks</H1>\r\n<DL><p>\r\n";
+    html += Serialize(roots_, 1);
+    html += L"</DL><p>\r\n";
+    return html;
 }
 
 BookmarkStore& BookmarkStore::Get() {
@@ -236,6 +200,12 @@ bool BookmarkStore::Load(const std::wstring& path) {
         // 我们无法区分这两者，但**都不能清空内存树** —— 若文件其实存在只是读失败，
         // 清空就等于替用户删了书签。文件不存在时内存树本来就是空的，不清也无损。
         loadFailed_ = tf::Exists(path);
+        // 【基线必须一起清掉】否则会留下上一次成功 Load 的时间戳：
+        // 文件被删（首次运行/用户清掉）后再 Save，FileChanged() 看到"文件不见了"
+        // 会保守判为"有变化"，于是**永远无法写出第一份书签**。
+        // 实测就是这个失败：guard: first run can still save。
+        fileStamp_ = FILETIME{};
+        fileStampSize_ = 0;
         LogDbg(L"[bmk] 读取失败（%s）：%s", loadFailed_ ? L"文件存在但读不出" : L"文件不存在",
                path.c_str());
         return false;
@@ -274,8 +244,15 @@ bool BookmarkStore::Load(const std::wstring& path) {
     return true;
 }
 
-bool BookmarkStore::Save() {
+bool BookmarkStore::Save(bool overwriteExternal) {
     if (file_.empty()) file_ = Config::Get().BookmarksPath();
+
+    // 每条返回路径都要给回执；调用方拿不到失败原因就只能静默丢数据。
+    bool ok = false;
+    auto notify = [&] {
+        if (saveNotify_) saveNotify_(ok);
+        return ok;
+    };
 
     // 【护栏】加载失败过就别写盘。
     //
@@ -286,22 +263,39 @@ bool BookmarkStore::Save() {
     // 用户可以恢复：改好那个文件（或删掉它）后重启，Load 成功即自动解除。
     if (loadFailed_) {
         LogDbg(L"[bmk] 拒绝写盘：上次加载失败，覆盖会销毁用户书签（%s）", file_.c_str());
-        return false;
+        return notify();
     }
 
-    std::wstring html =
-        L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n"
-        L"<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\r\n"
-        L"<TITLE>Bookmarks</TITLE>\r\n<H1>Bookmarks</H1>\r\n<DL><p>\r\n";
-    html += Serialize(roots_, 1);
-    html += L"</DL><p>\r\n";
-    bool ok = tf::WriteText(file_, html);
+    // 【护栏二】文件被外部改过了就别整棵覆盖。
+    //
+    // 与 loadFailed_ 是两条不同的数据丢失链：
+    //   · loadFailed_  = 我们没读懂那个文件（内存树不可信）；
+    //   · 这一条        = 我们读懂了，但**之后**别人改了它（内存树过期了）。
+    // 第二种以前完全没有守卫：本程序开着，用户在编辑器里改了 bookmarks.html
+    // （或另一个实例/mod 写了它），此后本程序加一个书签就把外部修改整份冲掉。
+    //
+    // 默认不覆盖，但**不等于拒绝到底**：把内存树另存 `<file>.conflict.html`，
+    // 两边数据都保住，再由 UI 询问用户想保留哪一份（覆盖走 Save(true)）。
+    const bool haveBaseline = fileStamp_.dwHighDateTime || fileStamp_.dwLowDateTime;
+    if (!overwriteExternal && haveBaseline && FileChanged()) {
+        const std::wstring conflict = file_ + L".conflict.html";
+        if (tf::WriteText(conflict, SerializeDocument())) {
+            conflictSaved_ = true;
+            LogDbg(L"[bmk] 文件已被外部修改，拒绝覆盖；内存书签已另存 %s", conflict.c_str());
+        } else {
+            LogDbg(L"[bmk] 文件已被外部修改，且另存失败（%s）", conflict.c_str());
+        }
+        return notify();
+    }
+
+    std::wstring html = SerializeDocument();
+    ok = tf::WriteText(file_, html);
     if (ok) {
         dirty_ = false;
         fileStamp_ = LastWriteOf(file_);  // 原子替换后取新时间戳，别把自家写入当外部变更
         fileStampSize_ = SizeOf(file_);
     }
-    return ok;
+    return notify();
 }
 
 const BookmarkNode* BookmarkStore::Find(const std::wstring& id) const {
@@ -314,6 +308,23 @@ bool BookmarkStore::ContainsPath(const std::wstring& path) const {
     return ContainsIn(roots_, path);
 }
 
+const BookmarkNode* BookmarkStore::FindByPath(const std::wstring& path) const {
+    if (path.empty()) return nullptr;
+    const BookmarkNode* found = nullptr;
+    std::function<void(const BookmarkList&)> walk = [&](const BookmarkList& list) {
+        for (const auto& n : list) {
+            if (found) return;
+            if (!n.isFolder && str::IEquals(n.path, path)) {
+                found = &n;
+                return;
+            }
+            walk(n.children);
+        }
+    };
+    walk(roots_);
+    return found;
+}
+
 BookmarkList* BookmarkStore::ParentList(const std::wstring& parentId) {
     if (parentId.empty()) return &roots_;
     BookmarkNode* n = Find(parentId);
@@ -322,12 +333,21 @@ BookmarkList* BookmarkStore::ParentList(const std::wstring& parentId) {
 }
 
 std::wstring BookmarkStore::NewId(bool folder) {
+    // 冲突检测不能只看"形态"：用户手工编辑 bookmarks.html、或从 mod 导入的
+    // 文件里可能已经有 f-3 / b-9，而 seq_ 是从 1 重新数起的。撞 id 的后果不是
+    // "多一条重复"，而是 Find() 命中前一条、删除/改名作用到别人身上。
     for (int guard = 0; guard < 10000; ++guard) {
         wchar_t buf[32];
         swprintf(buf, 32, folder ? L"f-%d" : L"b-%d", seq_++);
         if (!Find(buf)) return buf;
     }
-    return std::wstring();
+    // 兜底：给一个几乎不可能撞的 id，而不是返回空串。
+    // 返回空串会让 AddPath/AddFolder 交回空 id，调用方（拖放、导入）把它当成
+    // "添加失败"却没有任何提示 —— 静默丢一条用户操作。
+    wchar_t buf[64];
+    swprintf(buf, 64, folder ? L"f-x%llx" : L"b-x%llx",
+             static_cast<unsigned long long>(GetTickCount64()));
+    return buf;
 }
 
 std::wstring BookmarkStore::AddPath(const std::wstring& name, const std::wstring& path,
@@ -385,6 +405,16 @@ bool BookmarkStore::Update(const std::wstring& id, const std::wstring& name,
     return true;
 }
 
+bool BookmarkStore::SetNameAndPath(const std::wstring& id, const std::wstring& name,
+                                   const std::wstring& path) {
+    BookmarkNode* n = Find(id);
+    if (!n) return false;
+    if (!name.empty()) n->name = name;
+    n->path = path;   // 空串 = 用户清空了路径，真的清
+    Touch();
+    return true;
+}
+
 void BookmarkStore::ReplaceAll(BookmarkList&& replacement) {
     PushUndo();  // 清空/覆盖导入也走撤销栈，与删除/移动同口径
     roots_ = std::move(replacement);
@@ -402,21 +432,70 @@ size_t BookmarkStore::Merge(BookmarkList&& incoming) {
     // 只能逐条手删。
     //
     // 现在的语义：文件夹按**名字**对齐（同名视为同一个分类），对齐后递归合并
-    // 其子项；叶子仍按**路径**去重（与 mod 追加导入同口径）。
-    // 返回"实际新增的条目数"，供导入提示使用。
+    // 其子项；叶子按**路径**去重（与 mod 追加导入同口径），去重集合覆盖整棵树
+    // 而不只是新分类的直接子项。返回"实际新增的条目数"。
     size_t added = 0;
 
-    // std::function 递归：lambda 不能直接自引用。
+    std::unordered_set<std::wstring> seenPaths;
+    std::unordered_set<std::wstring> usedIds;
+    std::function<void(const BookmarkList&)> collect = [&](const BookmarkList& list) {
+        for (const auto& n : list) {
+            usedIds.insert(n.id);
+            if (!n.isFolder && !n.path.empty()) seenPaths.insert(str::Lower(n.path));
+            collect(n.children);
+        }
+    };
+    collect(roots_);
+
+    // Import 不读 EXBAR_ID，但调用方仍可能给带 id 的节点；撞 id 必须换新，
+    // 否则 Find() 命中旧节点，改名/删除会作用到别人身上。
+    auto freshId = [&](bool folder) {
+        wchar_t buf[64];
+        do {
+            swprintf(buf, _countof(buf), folder ? L"f-%d" : L"b-%d", seq_++);
+        } while (usedIds.count(buf));
+        usedIds.insert(buf);
+        return std::wstring(buf);
+    };
+    auto normalizeIds = [&](auto&& self, BookmarkList& list) -> void {
+        for (auto& n : list) {
+            if (n.id.empty() || usedIds.count(n.id)) n.id = freshId(n.isFolder);
+            else usedIds.insert(n.id);
+            self(self, n.children);
+        }
+    };
+    auto claimPath = [&](const std::wstring& path) {
+        if (path.empty()) return true;  // 空路径是"未定位"的书签，不去重
+        return seenPaths.insert(str::Lower(path)).second;
+    };
+    auto pruneDuplicates = [&](auto&& self, BookmarkList& list) -> void {
+        BookmarkList kept;
+        for (auto& n : list) {
+            if (n.isFolder) {
+                self(self, n.children);
+                kept.push_back(std::move(n));
+            } else if (claimPath(n.path)) {
+                kept.push_back(std::move(n));
+            }
+        }
+        list = std::move(kept);
+    };
+    auto countNodes = [](auto&& self, const BookmarkList& list) -> size_t {
+        size_t n = 0;
+        for (const auto& x : list) {
+            ++n;
+            n += self(self, x.children);
+        }
+        return n;
+    };
+
     std::function<void(BookmarkList&, BookmarkList&)> mergeInto =
         [&](BookmarkList& dest, BookmarkList& src) {
             for (auto& node : src) {
                 if (!node.isFolder) {
-                    if (!node.path.empty() && ContainsIn(roots_, node.path)) continue;
-                    if (node.id.empty()) {
-                        wchar_t buf[32];
-                        swprintf(buf, 32, L"b-%d", seq_++);
-                        node.id = buf;
-                    }
+                    if (!claimPath(node.path)) continue;
+                    node.id = (node.id.empty() || usedIds.count(node.id)) ? freshId(false) : node.id;
+                    usedIds.insert(node.id);
                     dest.push_back(std::move(node));
                     ++added;
                     continue;
@@ -431,22 +510,14 @@ size_t BookmarkStore::Merge(BookmarkList&& incoming) {
                     continue;
                 }
 
-                // 新分类：整棵子树进来，但要先剔掉与现有树重复的叶子 ——
-                // 否则"新分类 + 里面已存在的书签"会再翻一份。
-                BookmarkList kept;
-                for (auto& c : node.children) {
-                    if (!c.isFolder && !c.path.empty() && ContainsIn(roots_, c.path)) continue;
-                    kept.push_back(std::move(c));
-                }
-                node.children = std::move(kept);
-                AssignIds(node.children, seq_);
-                if (node.id.empty()) {
-                    wchar_t buf[32];
-                    swprintf(buf, 32, L"f-%d", seq_++);
-                    node.id = buf;
-                }
+                // 新分类：整棵子树进来，但要先剔掉全树中已存在的叶子（任意深度）。
+                pruneDuplicates(pruneDuplicates, node.children);
+                node.id = (node.id.empty() || usedIds.count(node.id)) ? freshId(true) : node.id;
+                usedIds.insert(node.id);
+                normalizeIds(normalizeIds, node.children);
+                const size_t subtreeCount = 1 + countNodes(countNodes, node.children);
                 dest.push_back(std::move(node));
-                ++added;
+                added += subtreeCount;
             }
         };
 
@@ -472,6 +543,160 @@ bool BookmarkStore::Move(const std::wstring& id, int toIndex) {
         return true;
     }
     return false;
+}
+
+namespace {
+
+// id 是否落在以 root 为根的子树里（含自身）。
+bool InSubtree(const BookmarkNode& root, const std::wstring& id) {
+    if (root.id == id) return true;
+    for (const auto& c : root.children)
+        if (InSubtree(c, id)) return true;
+    return false;
+}
+
+}  // namespace
+
+bool BookmarkStore::MoveTo(const std::wstring& id, const std::wstring& targetFolderId,
+                           int index) {
+    if (id.empty()) return false;
+    if (id == targetFolderId) return false;   // 拖到自己身上
+
+    BookmarkList* dest = ParentList(targetFolderId);
+    if (!dest) return false;                  // 目标不存在 / 不是文件夹
+
+    // 目标是自己子孙 -> 拒绝。不拦的话 erase 会把整棵子树摘下，再插回自己的
+    // 子节点列表 —— 结果那棵子树从顶层消失，且用户没有明显线索能把它找回。
+    if (!targetFolderId.empty()) {
+        const BookmarkNode* target = Find(targetFolderId);
+        const BookmarkNode* self = Find(id);
+        if (!target || !self) return false;
+        if (InSubtree(*self, targetFolderId)) return false;
+    }
+
+    // 找到源容器与位置。顶层与任意子层都要支持，所以递归找。
+    BookmarkList* src = nullptr;
+    size_t pos = 0;
+    std::function<bool(BookmarkList&)> locate = [&](BookmarkList& list) -> bool {
+        for (size_t i = 0; i < list.size(); ++i) {
+            if (list[i].id == id) {
+                src = &list;
+                pos = i;
+                return true;
+            }
+            if (locate(list[i].children)) return true;
+        }
+        return false;
+    };
+    if (!locate(roots_)) return false;
+    if (src == dest) {
+        // 同容器内移动：交给 Move（只在顶层有意义），否则按插入线手算。
+        if (src == &roots_) return Move(id, index < 0 ? static_cast<int>(roots_.size()) : index);
+        const int from = static_cast<int>(pos);
+        int to = (index < 0) ? static_cast<int>(dest->size()) : index;
+        if (to > from) --to;
+        if (to == from) return false;
+        PushUndo();
+        BookmarkNode n = std::move((*src)[pos]);
+        src->erase(src->begin() + static_cast<long long>(pos));
+        dest->insert(dest->begin() + to, std::move(n));
+        Touch();
+        return true;
+    }
+
+    PushUndo();
+    BookmarkNode n = std::move((*src)[pos]);
+    src->erase(src->begin() + static_cast<long long>(pos));
+
+    // 【必须重新取 dest】上面这次 erase 来自 roots_ 或某节点的 children；
+    // 若来自 roots_（vector<BookmarkNode>），后面的元素整体前移，`dest` 这个
+    // 指向"某个 BookmarkNode 的 children 成员"的指针会随之失效 ——
+    // 往失效的 vector 里 push_back 就是访问违例（实测崩溃）。
+    // 两次 ParentList 之间没有任何其它修改，所以重新取是安全且必要的。
+    dest = ParentList(targetFolderId);
+    if (!dest) {   // 理论上不可能（上面刚校验过）—— 但绝不能拿空指针 push_back
+        Touch();
+        return false;
+    }
+    if (index < 0 || index > static_cast<int>(dest->size()))
+        dest->push_back(std::move(n));
+    else
+        dest->insert(dest->begin() + index, std::move(n));
+    Touch();
+    return true;
+}
+
+namespace {
+
+void SortLevel(BookmarkList& list, bool foldersFirst, bool ascending, bool recursive) {
+    std::sort(list.begin(), list.end(), [&](const BookmarkNode& a, const BookmarkNode& b) {
+        if (foldersFirst && a.isFolder != b.isFolder) return a.isFolder;
+        const int c = str::ICmp(a.name, b.name);
+        return ascending ? c < 0 : c > 0;
+    });
+    if (!recursive) return;
+    for (auto& n : list) SortLevel(n.children, foldersFirst, ascending, true);
+}
+
+// 跨层级去重（先序保留第一个）。返回删除条数。
+size_t DedupLevel(BookmarkList& list, std::vector<std::wstring>& seen) {
+    size_t removed = 0;
+    for (auto it = list.begin(); it != list.end();) {
+        if (!it->isFolder && !it->path.empty()) {
+            bool dup = false;
+            for (const auto& s : seen)
+                if (str::IEquals(s, it->path)) {
+                    dup = true;
+                    break;
+                }
+            if (dup) {
+                it = list.erase(it);
+                ++removed;
+                continue;
+            }
+            seen.push_back(it->path);
+        }
+        ++it;
+    }
+    for (auto& n : list) removed += DedupLevel(n.children, seen);
+    return removed;
+}
+
+bool HasDuplicatePaths(const BookmarkList& list, std::vector<std::wstring>& seen) {
+    for (const auto& n : list) {
+        if (!n.isFolder && !n.path.empty()) {
+            for (const auto& s : seen)
+                if (str::IEquals(s, n.path)) return true;
+            seen.push_back(n.path);
+        }
+        if (HasDuplicatePaths(n.children, seen)) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+void BookmarkStore::SortRecursive(bool foldersFirst, bool ascending, bool recursive) {
+    PushUndo();   // 排序改变用户手工顺序，必须可撤销
+    SortLevel(roots_, foldersFirst, ascending, recursive);
+    Touch();
+}
+
+size_t BookmarkStore::RemoveDuplicatePaths() {
+    // 去重键：路径大小写不敏感（Windows 语义），且**跨层级**去重 ——
+    // 同一个目录既在顶层又在分类里，本质仍是重复（XYplorer 的 "Remove duplicates"
+    // 也是这个口径）。保留先序遍历里第一个出现的。
+    //
+    // 先探一遍再动手：没有重复时不该留下一条空的撤销记录（用户点"清理重复"
+    // 却看到"撤销删除"亮了，会以为删掉了东西）。
+    std::vector<std::wstring> probe;
+    if (!HasDuplicatePaths(roots_, probe)) return 0;
+
+    PushUndo();   // 必须在修改之前拍快照
+    std::vector<std::wstring> seen;
+    const size_t removed = DedupLevel(roots_, seen);
+    if (removed) Touch();
+    return removed;
 }
 
 void BookmarkStore::PushUndo() {

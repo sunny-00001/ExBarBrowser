@@ -77,6 +77,8 @@ int main() {
             std::printf("        实际: %llu\n", r.totalBytes);
 
         Check(!r.timedOut, "未超时");
+        Check(r.deniedDirs == 0, "没有无法访问的目录");
+        Check(r.complete, "整次统计完整");
         Check(!r.truncated, "未截断（3 个子项 < limit 10）");
         Check(r.entries.size() == 3, "3 个直接子项");
     }
@@ -172,6 +174,7 @@ int main() {
         const bool ok = diskscan::Scan(root, opt, &r, &err);
         Check(ok, "仍返回成功（数据部分可用）");
         Check(r.timedOut, "标记了 timedOut");
+        Check(!r.complete, "标记了不完整（不能把部分结果当真实值）");
         // 关键：不能什么都不给。至少路径和目录结构该有
         Check(!r.path.empty(), "仍给出路径");
         std::printf("        timedOut=%d entries=%zu elapsed=%llums\n", (int)r.timedOut,

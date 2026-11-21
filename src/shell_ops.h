@@ -33,6 +33,7 @@ bool TransferToFolder(IShellView* view, HWND owner, const std::wstring& target, 
 bool SelectAll(IShellView* view);
 bool SelectIndex(IShellView* view, int index);
 
+
 // ---- 显式目标（业界 P2/P5：不依赖"用户碰巧选中了什么"）----
 //
 // 为什么需要这组：现有的 Copy/Delete/Rename 全部是 "Selection" 语义 —— 它们作用于
@@ -91,6 +92,54 @@ struct DirListing {
 };
 // limit <= 0 表示不限制。返回 false = 没有视图。
 bool ListView(IShellView* view, int limit, DirListing* out);
+
+// ---- 按谓词选择（Ctrl+I 反选 / "只选文件" / "只选文件夹" / "按模式选"）----
+//
+// 【为什么在这里而不是散在命令处理器里】这四条命令的共同点是"读当前视图的全部
+// 条目 → 用条件筛 → 一次选中"。若每条各写一遍，枚举/命中/刷新会分叉成四份：
+// 反选忘了排除隐藏项、只选文件把文件夹也算上、按模式用错误的匹配语义……
+// 而且 SelectByPaths 的"一次选中"是为了少触发刷新，四份实现很难都想到这一点。
+//
+// 谓词由调用方给（`const DirEntry&` -> bool），枚举与选中只有一份。
+enum class SelectMode {
+    Replace,   // 用命中集合替换当前选中（反选 / 只选文件 / 按模式）
+    Add,       // 追加到当前选中（用户想"再加一批"）
+};
+//
+// 返回命中并选中的条目数。0 = 没有条目满足条件（调用方应据此报 false，
+// 而不是假装成功 —— 用户按 Ctrl+Shift+F 却什么都没被选中时必须能看出来）。
+int SelectWhere(IShellView* view, const std::function<bool(const DirEntry&)>& pred,
+                SelectMode mode = SelectMode::Replace);
+
+// 按模式匹配名字（Ctrl+Shift+K）。用系统通配语义（`*` / `?`，大小写不敏感），
+// 因为这是资源管理器/Total Commander 用户已经形成的肌肉记忆 —— 不要自创语法。
+// 支持分号分隔多个模式（"*.txt;*.md"）；以 `.` 开头的模式按扩展名匹配（"*.txt" 等价）。
+struct PatternOptions {
+    bool matchFolders = false;   // 默认只匹配文件（"选图片"通常不想带上文件夹）
+    bool caseSensitive = false;
+};
+int SelectByPattern(IShellView* view, const std::wstring& patterns,
+                    const PatternOptions& opt = {});
+
+// 当前选中项的路径列表（与视图顺序一致）。命令/UI 都需要"我选了什么"。
+std::vector<std::wstring> SelectedPaths(IShellView* view);
+
+// 撤销上一次文件操作（Ctrl+Z）。
+//
+// 【为什么不是自己维护一条撤销栈】
+// 本工程所有落盘操作都走 IFileOperation 且带 FOF_ALLOWUNDO —— 它们**已经**进了
+// 系统撤销栈（就是资源管理器里 Ctrl+Z 撤的那一条）。自己再记一份"做过什么"有两
+// 个致命问题：
+//   · 用户可能在资源管理器里也操作了同一批文件，两个栈的顺序会互相错位；
+//   · 系统的撤销能处理"回收站还原 / 冲突改名回滚"这些细节，自建栈只能删/移回去。
+// 正确做法是把 Ctrl+Z 转发给 shell 视图自己（它知道该撤什么）。
+//
+// 转发通道：给 shell 视图的宿主窗口发 WM_COMMAND，wParam 的高位是 EDCMD 通知码，
+// 低位是 FCIDM 命令 id。DFM_INVOKECOMMAND + FCIDM_SHVIEWUNDO 就是"撤销"。
+// 这是 shell 视图的标准协议（与 IExplorerBrowser 一致），不依赖内部窗口类名。
+//
+// 返回 false = 没有可撤销的操作，或视图没有响应（调用方应响一声而不是假装成功）。
+bool Undo(IShellView* view, HWND owner);
 
 // 单项目属性（按完整路径，必须在当前视图内）。
 struct ItemInfo {

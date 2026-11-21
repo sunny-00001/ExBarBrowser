@@ -219,8 +219,8 @@ void StopServer() {
 
     // 令牌只对"本次运行的管道"有效，停服后必须删掉发现文件：
     // 否则 aiEnabled 关掉后旧令牌仍躺在磁盘上，看起来像通道还开着。
-    DeleteFileW(TokenPath().c_str());
-    DeleteFileW(tf::Join(Config::Get().Dir(), L"ai-pipe.txt").c_str());
+    DeleteFileW(tf::ToExtended(TokenPath()).c_str());
+    DeleteFileW(tf::ToExtended(tf::Join(Config::Get().Dir(), L"ai-pipe.txt")).c_str());
 }
 
 // UI 线程调用：处理挂起的请求。返回处理了几个（0 = 没活干）。

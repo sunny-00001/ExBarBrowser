@@ -4,7 +4,11 @@
 //   · 每个窗口是本进程自己的顶层窗口，explorer 完全不参与；
 //   · 视图用 IExplorerBrowser 在本进程内托管真实 Shell 视图；
 //   · 再次"打开文件夹"时不新起进程，而是把路径转发给已存在的窗口开新标签。
+#include <cstddef>   // offsetof
+#include <cstring>   // memcpy
+
 #include "app.h"
+#include "icon_resolve.h"
 #include "str.h"
 
 namespace {
@@ -81,14 +85,23 @@ bool ForwardToExisting(const std::wstring& path) {
     }
     if (!target) return false;
 
-    CopyDataPayload payload{};
-    payload.magic = kCopyDataMagic;
-    lstrcpynW(payload.path, path.c_str(), _countof(payload.path));
+    // 【按实际长度发送，不用固定 1024 截断】
+    //
+    // 固定数组 + lstrcpynW 会把深路径（>1024 字符）与前缀较长的命名空间路径
+    // 静默截断，被截断的路径在接收端解析失败 —— 表现为"从命令行/资源管理器
+    // 打开深目录，主窗口没反应"，且没有任何报错。
+    // 接收端（app_wnd.cpp 的 WM_COPYDATA）本来就是按 cbData 与 NUL 长度读的，
+    // 所以这里只需把 payload 扩成"头 + 实际字符数"的连续缓冲。
+    const size_t pathChars = path.size() + 1;   // 含 NUL
+    std::vector<BYTE> buf(offsetof(CopyDataPayload, path) + pathChars * sizeof(wchar_t));
+    auto* payload = reinterpret_cast<CopyDataPayload*>(buf.data());
+    payload->magic = kCopyDataMagic;
+    memcpy(payload->path, path.c_str(), pathChars * sizeof(wchar_t));
 
     COPYDATASTRUCT cd{};
     cd.dwData = kCopyDataMagic;
-    cd.cbData = sizeof(payload);
-    cd.lpData = &payload;
+    cd.cbData = static_cast<DWORD>(buf.size());
+    cd.lpData = payload;
 
     DWORD_PTR result = 0;
     LRESULT sent = SendMessageTimeoutW(target, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cd),
@@ -126,6 +139,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     if (alreadyRunning) {
         if (ForwardToExisting(path)) {
             CloseHandle(mutex);
+            ico::ClearCache();
             OleUninitialize();
             return 0;
         }
@@ -135,12 +149,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
                     L"已有一个 ExBar 窗口未响应，无法转发打开请求。\n请关闭它后重试。",
                     id::kBrandShort, MB_ICONWARNING | MB_SETFOREGROUND);
         CloseHandle(mutex);
+        ico::ClearCache();
         OleUninitialize();
         return 1;
     }
 
     int rc = App::Get().Run(hInst, path);
     if (mutex) CloseHandle(mutex);
+    ico::ClearCache();
     OleUninitialize();
     return rc;
 }

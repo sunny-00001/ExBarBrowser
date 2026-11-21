@@ -18,7 +18,9 @@ std::wstring KnownFolder(REFKNOWNFOLDERID id) {
 }
 
 std::wstring ToUnc(const std::wstring& p) {
-    if (p.size() >= 2 && p[1] == L':') {
+    // 命名空间的解析串 "::{GUID}\..." 第二个字符也是 ':'，不能当盘符转成 UNC，
+    // 否则「复制为 UNC 路径」得到 \\localhost\:$... 这种垃圾。用统一口径排除。
+    if (p.size() >= 2 && p[1] == L':' && !nav::IsNamespace(p)) {
         std::wstring drive(1, p[0]);
         return L"\\\\localhost\\" + drive + L"$" + p.substr(2);
     }
@@ -30,6 +32,12 @@ std::wstring ToUnc(const std::wstring& p) {
 
 void App::RegisterTabCommands() {
     auto reg = cmd_reg::Register;
+    // 少数带 index 的命令按序号取标签；省略时仍作用于当前标签。
+    auto tabIdFromArgs = [this](const Args& args) {
+        if (!args.Has(L"index")) return activeId_;
+        const int index = args.Int(L"index", -1);
+        return (index >= 0 && index < tabSet_.Count()) ? tabSet_.IdAt(index) : 0;
+    };
 
     // ---------------- 标签 ----------------
     reg(CmdId::TabNew, [this](const Args& args) {
@@ -81,6 +89,42 @@ void App::RegisterTabCommands() {
         // 返回"是否真的关掉了至少一个"：一个重复都没有时应当是 false（ok=0），
         // 否则审计里会记成成功，AI 也以为自己清理过了。
         return CloseDuplicates(activeId_) > 0;
+    });
+
+    // ---- 标签锁定 / 复制标签名 ----
+    // 这两条原先只存在于右键菜单的 switch 里（App::ShowTabMenu），
+    // 于是键盘、命令面板、脚本、AI 都做不到 —— 只有鼠标能做。
+    //
+    // 目标标签：给了 index 就用它，省略则用当前标签。**不新增 activeId_ 之外的
+    // 隐式状态**：index 越界如实报 false，不"就近取一个"（那会让调用方以为
+    // 操作了自己指定的那个标签）。
+    //
+    // 为什么每条 handler 自己写 `args.Has(L"index")` 而不抽公共 lambda：
+    // 静态检查靠"handler 里出现了 args.X(L"键")"来核对 schema 与实现一致
+    // （check_ai_meta 第 3 项）。把取值藏进辅助函数会让那条检查失效 ——
+    // 而它挡的正是"schema 声明了参数、handler 却没收，参数被静默丢弃"。
+    // 宁可重复一行，也不让判据看不见。
+    reg(CmdId::TabLock, [this](const Args& args) {
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        const int id = tabSet_.IdAt(idx);
+        if (!id) return false;
+        const core::TabRef* ref = tabSet_.Find(id);
+        if (!ref) return false;
+        // 省略 locked = 切换（与右键菜单同义）；给了值就按值设定（幂等）。
+        const bool want = args.Has(L"locked") ? args.Bool(L"locked", true) : !ref->locked;
+        SetTabLocked(id, want);
+        return true;
+    });
+    reg(CmdId::TabCopyTitle, [this](const Args& args) {
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        const int id = tabSet_.IdAt(idx);
+        if (!id) return false;
+        const core::TabRef* ref = tabSet_.Find(id);
+        if (!ref) return false;
+        CopyText(core::DisplayTitle(*ref));
+        return true;
     });
     reg(CmdId::TabReopenClosed, [this](const Args&) {
         std::wstring path;

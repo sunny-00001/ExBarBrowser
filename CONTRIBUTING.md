@@ -2,7 +2,19 @@
 
 本文面向要给 ExBarBrowser 加功能、修 bug 的人（包括 AI Agent）。
 先读 [README.md](README.md) 的"定位与边界"和 [docs/ARCHITECTURE-RULES.md](docs/ARCHITECTURE-RULES.md)
-的硬规则（R1–R20），再动手。
+的硬规则（R1–R21），再动手。
+
+> **R21 输入纪律（最容易在写验收脚本时踩）**：**禁止模拟鼠标/键盘，禁止抢焦点，禁止循环点击**。
+> `SendInput` / `mouse_event` / `keybd_event` / `SetCursorPos` / `BlockInput` /
+> `AttachThreadInput` 全仓零容忍；**用 `PostMessage`/`SendMessage` 投 `WM_LBUTTON*` /
+> `WM_KEY*` / `WM_CHAR` 同样禁止**（合成点击必然走到 `ShowPopupList` → `SetForegroundWindow`，
+> 与 `SendInput` 结果相同）；自动化脚本也不得 `SetForegroundWindow` 去动用户的前台窗口。
+> 所有操作走**结构化命令**：进程内 `CommandBus::Invoke(id, args, actor)`，
+> 进程外走 AI 命名管道 `tools/call`；只需读状态用 `exbar/state`；只需看界面用
+> `python scripts\shot.py`（`PrintWindow` 只读）；必须真点才成立的流程用
+> **人工点、脚本只观察**（`python tools/probe_toggle.py`）。细节见
+> [docs/ARCHITECTURE-RULES.md §3.1](docs/ARCHITECTURE-RULES.md)，由
+> `python tools/check_components.py` 强制（4 条规则）。
 
 ---
 
@@ -39,7 +51,7 @@ bash build.sh
 bash build.sh --out /tmp/ebb_check.exe
 ```
 
-**不要手写 `clang++ src/a.cpp src/b.cpp ...` 长命令**：源文件已 57 个，手抄清单必然与
+**不要手写 `clang++ src/a.cpp src/b.cpp ...` 长命令**：源文件已 60 个，手抄清单必然与
 `build_fast.py` 的自动扫描脱节（早期文档里的示例只列了 9 个 TU，照抄会链接失败）。
 需要绕过构建脚本时请用 `python build_fast.py --out <path>`。
 
@@ -52,13 +64,15 @@ bash build.sh --out /tmp/ebb_check.exe
 - [ ] 编译零警告（`bash build.sh` 成功）
 - [ ] 启动正常：默认路径能打开，标签可新建/切换/关闭
 - [ ] 改动涉及的交互路径手点一遍（导航、面包屑、地址编辑、右键菜单…）
+- [ ] **没有为了让测试跑通而加模拟输入**：交互验证要么手点，要么走 `CommandBus` / AI 管道 / 单测；
+      新增脚本头注释写明"不发合成输入，只读；不动光标、不抢焦点"（R21）
 - [ ] 深色 / 浅色两种模式都看一遍（切换系统主题或改 `SystemUsesLightTheme` 后触发 `WM_SETTINGCHANGE`）
 - [ ] 125% / 150% DPI 下不重叠、不裁切（拖到不同 DPI 的显示器上验证 `WM_DPICHANGED`）
 - [ ] `%TEMP%\ExBarBrowser.log` 无新增 `hr=0x8...` 失败行
 - [ ] 多标签连续开 10 个后切标签不闪、不残留
 - [ ] 截图留档：`python scripts\shot.py out.png`（视觉改动必做）
 - [ ] 三个静态检查全绿：`python tools/check_commands.py`、`tools/check_ai_meta.py`、`tools/check_components.py`
-- [ ] 动到命令表/输入端/AI 元数据时，对应单测跑过（`tests/` 下每个 `.cpp` 自带 `main`）
+- [ ] 动到命令表/输入端/AI 元数据时，**跑过全量单测**：`bash tests/run_all.sh`（32 个，应 32/32）
 - [ ] `CHANGELOG.md` 的 `[Unreleased]` 补了对应条目
 
 ### 2.3 提交
@@ -85,7 +99,7 @@ refactor(app): 把历史栈操作收敛到 Tab 的成员函数
 
 | 规则 | 判据 |
 |---|---|
-| 单文件 ≤500 行 | `wc -l src/*.cpp`；超了就按职责拆（`nav_bar.cpp` → `nav_bar_draw.cpp` / `nav_bar_actions.cpp` 就是这么来的）。当前超 500 的有 7 个：`shell_view.cpp` 992、`shell_ops.cpp` 934、`popup_list.cpp` 692、`bookmark_bar.cpp` 681、`app_commands_files.cpp` 557、`commands.cpp` 545、`bookmarks.cpp` 524 —— 下次动它们先拆，别再往上加 |
+| 单文件 ≤500 行 | `wc -l src/*.cpp`；超了就按职责拆（`nav_bar.cpp` → `nav_bar_draw.cpp` / `nav_bar_actions.cpp` 就是这么来的）。当前超 500 的有 **10 个**：`shell_ops` / `shell_view` / `popup_list` / `bookmark_bar` / `bookmarks` / `commands` / `app_commands_files` / `shell_input` / `input_router` / `nav_bar`。**不要在这里记具体行数** —— 它们每天都在涨（记下的值第二天就错）。要看当前值就跑 `wc -l src/*.cpp | sort -rn | head -12`。下次动它们先拆，别再往上加 |
 | 一文件一职责 | 文件名能一句话说清它干什么；说不清就是两个文件 |
 | 一个共享头 | 只有 `common.h` 被所有 TU 包含，且它只放类型/常量/纯内联工具，**不放业务** |
 | 依赖单向 | `app` → `nav_bar`/`tab_strip`/`status_bar`/`shell_view` → `nav_model`/`theme` → `common`。下层不许反向包含上层头 |
@@ -160,6 +174,10 @@ refactor(app): 把历史栈操作收敛到 Tab 的成员函数
 | 禁止 | 原因 |
 |---|---|
 | 注入 explorer / 装全局钩子 / `SetWindowsHookEx` | 本工程的全部价值就是"不碰 explorer" |
+| **模拟鼠标键盘 / 抢焦点**（`SendInput`、`mouse_event`、`keybd_event`、`SetCursorPos`、`BlockInput`、`AttachThreadInput`） | 本程序是本机正在用的窗口：抢走光标会把用户下一次点击挪到别处，抢焦点会打断用户手上的操作。规则 R21，由 `check_components.py` 强制；替代方案是命令总线 / AI 管道 / 单测 / 截图 |
+| **`PostMessage`/`SendMessage` 投 `WM_LBUTTON*` / `WM_KEY*` / `WM_CHAR`**（含"扫一行坐标、每隔几像素投一次点击"的循环） | 合成点击会真的命中控件 → `ShowPopupList` → 弹层内部 `SetForegroundWindow`，结果与 `SendInput` 一样是抢前台；循环投更会连续建模态弹层。真的必须点 → 人工点、脚本只观察（`tools/probe_toggle.py`） |
+| 自动化脚本里 `SetForegroundWindow` 改用户前台窗口 | 同上（R21），脚本零例外：需要前台才能测的场景改成"没前台就 SKIP"，不要自己抢过来 |
+| 引入 `pyautogui` / `pynput` / `AutoIt` 一类自动化库 | 它们底层就是 `SendInput`/钩子，一行就绕过 R21 全部判据 |
 | 未经确认修改系统默认打开方式 | `install.ps1 -Takeover` 已做备份与标记，其他脚本一律不许写 `HKCR`/`HKLM` |
 | 引入第三方库或包管理器 | 破坏"单 exe 零依赖" |
 | 在 `WM_PAINT` 里 `CreateSolidBrush` 之外的资源泄漏 | 双缓冲路径高频调用，任何 GDI 泄漏都会被放大 |

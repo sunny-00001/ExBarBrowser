@@ -356,7 +356,10 @@ void Num(double d, std::wstring& out) {
         return;
     }
     // 只有确认在 long long 范围内才能转 —— `1e300` 同样越界。
-    if (d >= -9.2233720368547758e18 && d <= 9.2233720368547758e18 &&
+    // 上界必须写 2^63 而**不是** `static_cast<double>(LLONG_MAX)`：后者在 double
+    // 里也舍入成 2^63，仍会把 d==2^63 放进 static_cast<long long> 触发 UB。
+    // 负侧 -2^63 正好可表示，保留闭区间。
+    if (d >= -9223372036854775808.0 && d < 9223372036854775808.0 &&
         d == static_cast<double>(static_cast<long long>(d))) {
         swprintf(buf, 64, L"%lld", static_cast<long long>(d));
     } else {

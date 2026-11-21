@@ -4,13 +4,17 @@
 // 分隔线也占满 24px（120 DPI 下 30px），一个分组界线吃掉一整行，视觉上像多了个空条目。
 //
 // 编译（在 ExBarBrowser/ 下）：
-//   clang++ -std=c++20 -O1 -Isrc tests/popup_layout_test.cpp -o /tmp/popup_layout_test.exe \
-//     -static-libstdc++ -static-libgcc -lole32 -luuid -lshell32 -ladvapi32
-// 首次编译要带 PCH 或让 common.h 自行引入 windows.h（见其他测试的说明）。
+//   clang++ -std=c++20 -O1 -DUNICODE -D_UNICODE -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 \
+//     -D_WIN32_IE=0x0A00 -Isrc tests/popup_layout_test.cpp src/icon_glyph.cpp \
+//     -o /tmp/popup_layout_test.exe -static -static-libstdc++ -static-libgcc \
+//     -lole32 -luuid -lshell32 -lshlwapi -ladvapi32 -luxtheme -ldwmapi
+//   （要 icon_glyph：行高常量依赖 ico::Glyph 的字形度量。原文只写测试文件本身，
+//     照抄会报 ico::Glyph / ico::IconIdFromName 未定义。）
 #include <cstdio>
 #include <vector>
 
 #include "popup_list.h"
+#include "view_modes.h"
 
 namespace {
 
@@ -76,6 +80,146 @@ int main() {
     std::vector<PopupRow> rows3{Item(L"a"), Sep(), Item(L"b")};
     Check(PopupTotalHeight(rows3, 3, dpiItem, dpiSep) == 2 * dpiItem + dpiSep,
           "120 DPI 下总高 = 2*30 + 3");
+
+    // 7. 字形图标槽：老调用方的 7 字段初始化仍合法，新字段默认 None。
+    std::printf("\n图标槽（复用 ico::IconId）\n");
+    PopupRow legacy{L"老调用方", L"", nullptr, false, false, false, 42};
+    Check(legacy.glyph == ico::IconId::None, "7 字段初始化：glyph 默认 None");
+    PopupRow action{L"重命名", L"", nullptr, false, false, false, 7, ico::IconId::Edit};
+    Check(action.glyph == ico::IconId::Edit, "8 字段初始化：glyph 走登记表");
+    Check(PopupRowHeight(action, itemH, sepPx) == itemH, "带图标的行高不变");
+
+    // 树节点与平铺行共用同一套字形登记表；9 字段老初始化仍合法。
+    TreeNode treeLegacy{L"子目录", L"C:\\a", nullptr, 0, -1, {}, true, false, false};
+    Check(treeLegacy.glyph == ico::IconId::None, "树节点 9 字段初始化：glyph 默认 None");
+    TreeNode treeAction{L"子目录", L"C:\\a", nullptr, 0, -1, {}, true, false, false,
+                        ico::IconId::Folder};
+    Check(treeAction.glyph == ico::IconId::Folder, "树节点图标兜底也走 IconId");
+
+    // 8. 「开菜单那次点击的松开」——"菜单一闪而过"的根因。
+    //
+    // 导航栏下拉在**按下**时弹出，紧跟着的松开（光标还在锚点上 = 列表外）
+    // 必须被忽略；否则菜单在松手瞬间自己关掉。
+    std::printf("\n开菜单那次点击的松开\n");
+    {
+        // 开菜单后没再按过、松开在列表外 = 收尾 → 忽略（不关）
+        Check(PopupUpIsOpeningRelease(/*downInList=*/false, /*downOutside=*/false,
+                                      /*upInside=*/false),
+              "没再按过 + 松开在外 → 是收尾，忽略（菜单不关）");
+
+        // 开菜单后按在列表内再松开 = 正常选行，不能被当成收尾
+        Check(!PopupUpIsOpeningRelease(true, false, true), "按下在列表内 → 不是收尾");
+        Check(!PopupUpIsOpeningRelease(true, false, false),
+              "按下在列表内、拖到外面松开 → 不是收尾（正常取消）");
+
+        // 按在列表外（用户真的点了别处）→ 必须能关
+        Check(!PopupUpIsOpeningRelease(false, true, false),
+              "按下在列表外 → 不是收尾（这就是'点别处收起'）");
+
+        // 松开正好落在列表内：不是收尾（无需忽略，会走正常选行）
+        Check(!PopupUpIsOpeningRelease(false, false, true),
+              "松开在列表内 → 不是收尾");
+    }
+
+    // 9. 完整消息序列：用状态机走一遍真实交互，逐拍断言弹层是否还活着。
+    //
+    // 单点判据容易"每条都对、组合起来错"。这里把 downInList / downOutside
+    // 当成真实状态，按消息顺序推演三组典型交互。
+    std::printf("\n消息序列推演\n");
+    {
+        // 一个小状态机，语义与 ListSubclass 完全一致。
+        struct Sim {
+            bool downInList = false;
+            bool downOutside = false;
+            bool closed = false;
+
+            // 返回 true = 这一拍把弹层关掉了
+            bool OnDown(bool inside) {
+                if (inside) {
+                    downOutside = false;
+                    downInList = true;   // 列表内：等待 UP 选行
+                } else {
+                    downOutside = true;  // 列表外：等 UP 再关
+                }
+                return false;
+            }
+            bool OnUp(bool inside) {
+                // 开菜单那次点击的收尾 → 忽略
+                if (PopupUpIsOpeningRelease(downInList, downOutside, inside)) return false;
+                const bool outside = downOutside || !inside;
+                downInList = false;
+                downOutside = false;
+                if (outside) {
+                    closed = true;
+                    return true;   // 关
+                }
+                return false;      // 选行（不在这里模拟）
+            }
+        };
+
+        // 场景 A：按下开菜单（弹层已建）→ 同一次点击松开，光标还在锚点上（列表外）。
+        // 这是"一闪而过"的原现场景，必须**不关**。
+        {
+            Sim s;
+            s.OnUp(/*inside=*/false);          // 只有 UP 到达（DOWN 发生在建窗之前）
+            Check(!s.closed, "A 开菜单那下松开（列表外）→ 菜单不关");
+        }
+
+        // 场景 B：菜单开着，用户点菜单里的一行。
+        {
+            Sim s;
+            s.OnDown(/*inside=*/true);
+            s.OnUp(/*inside=*/true);
+            Check(!s.closed, "B 点菜单内一行 → 不关（走选行）");
+        }
+
+        // 场景 C：菜单开着，用户点外面的别处 → 必须关（"再点即收"/点外收起）。
+        {
+            Sim s;
+            s.OnDown(/*inside=*/false);
+            s.OnUp(/*inside=*/false);
+            Check(s.closed, "C 按下+松开都在列表外 → 关（点别处收起）");
+        }
+
+        // 场景 D：按住菜单里一行拖到外面松开 → 取消，不选行但要关。
+        {
+            Sim s;
+            s.OnDown(/*inside=*/true);
+            s.OnUp(/*inside=*/false);
+            Check(s.closed, "D 内部按下、拖到外面松开 → 关（取消）");
+        }
+
+        // 场景 E：右键菜单开着，用户右键点别处 → 关（不漏给 ListBox 默认处理）。
+        {
+            Sim s;
+            s.OnDown(/*inside=*/false);
+            s.OnUp(/*inside=*/false);
+            Check(s.closed, "E 右键点外面 → 关");
+        }
+    }
+
+    // 10. 右键菜单新增动作必须走同一张字形登记表（不写裸码位、不落回兜底字形）。
+    std::printf("\n右键菜单图标登记\n");
+    {
+        const wchar_t fallback = ico::Glyph(ico::IconId::None);
+        Check(ico::Glyph(ico::IconId::Delete) != fallback, "删除有登记字形");
+        Check(ico::Glyph(ico::IconId::Undo) != fallback, "撤销有登记字形");
+        Check(ico::Glyph(ico::IconId::NewWindow) != fallback, "新窗口有登记字形");
+        Check(ico::Glyph(ico::IconId::Terminal) != fallback, "终端有登记字形");
+        Check(ico::Glyph(ico::IconId::Sort) != fallback, "排序有登记字形");
+        Check(ico::Glyph(ico::IconId::Import) != fallback, "导入有登记字形");
+        Check(ico::Glyph(ico::IconId::Export) != fallback, "导出有登记字形");
+        Check(ico::IconIdFromName(L"new_window") == ico::IconId::NewWindow,
+              "按名查表能找到新窗口图标");
+        Check(ico::Glyph(ico::IconId::GridView) != fallback, "网格视图有登记字形");
+        Check(ico::Glyph(ico::IconId::ListView) != fallback, "列表视图有登记字形");
+        Check(ico::Glyph(ico::IconId::DetailsView) != fallback, "详细信息视图有登记字形");
+
+        bool allViewGlyphs = true;
+        for (const auto& v : viewmode::kModes)
+            if (v.glyph == ico::IconId::None) allViewGlyphs = false;
+        Check(allViewGlyphs, "8 档视图模式都在唯一表里带图标");
+    }
 
     std::printf("\n%s（失败 %d 项）\n", g_fail == 0 ? "全部通过" : "有失败", g_fail);
     return g_fail == 0 ? 0 : 1;

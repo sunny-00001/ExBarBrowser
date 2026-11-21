@@ -1,7 +1,17 @@
+---
+status: current
+baseline: 2026-11-21 11:00
+---
+
 # AI 操作接口
 
 > 目标：本程序由人与 AI 共同操作。人能通过鼠标/键盘做的事，AI 通过接口也能做；
 > 反过来，接口能做的事人也能做（不存在只有 AI 能触发的动作）。
+>
+> **AI 客户端不要试图"模拟点击"**：本接口就是为此存在的。命名管道 `tools/call`
+> 走的是同一条 `CommandBus`，比合成输入更可靠（不受布局/DPI/焦点影响）且可审计。
+> 合成鼠标键盘（含向窗口投 `WM_LBUTTON*`/`WM_KEY*`）在架构规则 R21 里全仓禁止
+> —— 见 [ARCHITECTURE-RULES.md §3.1](ARCHITECTURE-RULES.md)。
 
 代码位置：
 
@@ -46,9 +56,11 @@
 ——阻塞且语义不可控）、改进程形态的（`win.quit`（原名 `QuitExplorer`） / `NewWindow`）、写剪贴板的
 （`PathCopy*` ——修改外部状态却不产生可回退的记录）。
 
-当前暴露 **86 条**（137 条目录中已实现 108 条，扣除 22 条依赖选中或纯人机 UI 的命令），
+**暴露条数以 `python tools/check_ai_meta.py` 的第二行为准**（它会打印"其中 aiExposed：N 条"），
+本文不写死数字 —— 加一条命令就变，写进来的值第二天就是错的。
 覆盖导航、标签、视图、书签、文件夹操作（确定式 `Fs*`）、目录统计（`Op*`）与会话。
-完整清单以 `tools/list` 为准，静态判据见 `tools/check_ai_meta.py` 第 14 项。
+完整清单以 `tools/list` 为准，静态判据见 `tools/check_ai_meta.py` 第 14 项（暴露决策）
+与第 15 项（R20 人机等价）。
 
 ---
 
@@ -203,7 +215,7 @@ CC="/c/Program Files/Windhawk/Compiler/bin/clang++.exe"
   src/json.cpp src/config.cpp src/text_file.cpp -o /tmp/t.exe \
   -lole32 -luuid -lshell32 -ladvapi32 && /tmp/t.exe
 
-# 协议层：非法输入 / 令牌 fail-closed / 不泄露能力面（8 项）
+# 协议层：非法输入 / 令牌 fail-closed / 不泄露能力面（9 项）
 "$CC" -std=c++20 -O1 -DUNICODE -D_UNICODE -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 \
   -D_WIN32_IE=0x0A00 -Isrc tests/ai_server_test.cpp src/ai_server.cpp src/ai_api.cpp \
   src/commands.cpp src/json.cpp src/config.cpp src/text_file.cpp -o /tmp/s.exe \

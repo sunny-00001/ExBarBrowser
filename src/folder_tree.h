@@ -14,7 +14,7 @@
 namespace folder_tree {
 
 // 枚举 folder 的直接子文件夹并构造树节点。
-// 返回节点的 icon 所有权随节点移交弹层（ShowFolderTree 结束统一销毁）。
+// 节点 icon 走 ico::Cached（进程内共享，弹层只借不销毁）；解析失败时用 Folder 字形兜底。
 // 不是文件夹 / 无权限 / 空目录 → 返回空（调用方按"没有子目录"处理）。
 std::vector<TreeNode> Children(const std::wstring& folder);
 

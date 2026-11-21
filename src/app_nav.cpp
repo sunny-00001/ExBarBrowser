@@ -11,6 +11,9 @@
 // 拼 hist/push_back，那是历史上导致"后退要按两次"的直接原因。
 #include "app.h"
 
+#include "text_file.h"   // tf::Exists / tf::IsDirectory（区分"导航到目录"与"打开文件"）
+#include "icon_resolve.h"
+
 // ---------------------------------------------------------------- 执行
 //
 // 唯一的一次"导航 + 记录"路径：
@@ -20,6 +23,23 @@
 bool App::NavigateActive(const std::wstring& path, bool push) {
     Tab* t = Active();
     if (!t || path.empty()) return false;
+
+    // 目标是**文件**时不该走"导航"：IExplorerBrowser::BrowseToObject 对文件项
+    // 返回失败，于是地址栏里敲 `C:\Windows\notepad.exe` 回车得到的是一句
+    // "无法打开" —— 而资源管理器 / Opus / TC 在同一处的语义都是"打开这个文件"。
+    //
+    // 放在 nav.Request 之前：文件不是历史条目，不该压栈（否则后退会退到
+    // "刚才打开的那个 exe"，而那从来不是一个目录）。
+    // 命名空间（::{GUID} / shell:）不是文件系统路径，Exists 自然为 false，不受影响。
+    if (tf::Exists(path) && !tf::IsDirectory(path)) {
+        const HINSTANCE r = ShellExecuteW(hwnd_, L"open", path.c_str(), nullptr, nullptr,
+                                          SW_SHOWNORMAL);
+        const bool ok = reinterpret_cast<INT_PTR>(r) > 32;
+        LogDbg(L"[nav] 目标是文件，交给 shell 打开：%s ok=%d", path.c_str(), ok ? 1 : 0);
+        if (!ok)
+            MessageBoxW(hwnd_, (L"无法打开：\n" + path).c_str(), id::kBrandShort, MB_ICONWARNING);
+        return ok;
+    }
 
     const bool shouldGo = t->nav.Request(path, push);
     if (!shouldGo) {
@@ -114,8 +134,28 @@ void App::OnTabNav(ShellView* view, const std::wstring& path, const std::wstring
 
     if (!path.empty()) {
         const std::wstring settled = t->nav.Complete(path);
-        tabSet_.SetPath(id, settled.empty() ? path : settled);
-        Config::Get().AddRecent(settled.empty() ? path : settled);
+
+        // 改名/颜色是"按路径的标记"，不是"跟着这个标签走"的：
+        // 标签导航到另一个目录后仍顶着旧名字（甚至旧颜色）会误导 —— 名字说的是
+        // 那个目录，颜色标的是那组目录。所以路径变了就换成新路径的标记。
+        // 比较用大小写不敏感：同一个目录的规范化可能只差大小写，那不是"换了目录"。
+        const std::wstring before = tabSet_.Find(id) ? tabSet_.Find(id)->path : std::wstring();
+        const std::wstring after = settled.empty() ? path : settled;
+        // 命名空间解析串没有可靠的 post-hoc 显示名推导入口：Shell 回调此刻给到的
+        // display 是权威值（第三方 NSE 尤其如此），登记给 ico::DisplayName 供
+        // 历史/最近访问下拉复用；普通路径会被 RememberDisplay 自己过滤掉。
+        if (!display.empty()) ico::RememberDisplay(after, display);
+        const bool same = str::IEquals(before, after);
+
+        tabSet_.SetPath(id, after);
+        if (!same) {
+            std::wstring alias;
+            int color = 0;
+            Config::Get().GetTabMeta(after, &alias, &color);
+            tabSet_.SetAlias(id, alias);
+            tabSet_.SetColor(id, color);
+        }
+        Config::Get().AddRecent(after);
     } else {
         t->nav.Complete(path);  // 无路径：只清 pending
     }
@@ -124,7 +164,12 @@ void App::OnTabNav(ShellView* view, const std::wstring& path, const std::wstring
     if (items) t->items = items;  // 回调里 ItemCount 恒 0，别把已取到的计数抹掉
     if (!display.empty()) t->display = display;
     const std::wstring cur = t->path();
-    tabSet_.SetTitle(id, t->display.empty() ? LeafOf(cur) : t->display);
+    // 标题仍写 Shell 名：用户改名在 alias 里，DisplayTitle 会优先读它。
+    // 千万不要在这里写 alias —— 那是"改名只在下次导航前有效"的成因。
+    // Shell 回调对 "::{GUID}" 的 display 可能为空甚至就是解析串，回退到统一
+    // 显示名入口，避免标签页也出现裸 CLSID。
+    const std::wstring title = ico::DisplayName(cur, t->display);
+    tabSet_.SetTitle(id, title);
 
     // 前台/后台标签都走同一条刷新路径：曾经这里有一份"后台标签只重建标签栏"的
     // 复制粘贴版本，图标只从缓存取，新出现的路径永远没有图标。

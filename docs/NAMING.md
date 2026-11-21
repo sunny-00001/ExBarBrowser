@@ -1,6 +1,6 @@
 ---
 status: current
-baseline: 2026-11-20 19:15
+baseline: 2026-11-21 11:00
 ---
 
 # 命名与标识规范
@@ -24,7 +24,7 @@ baseline: 2026-11-20 19:15
 |---|---|
 | 归属错误 | `namespace eb`（= Ex**B**ar）是**上一个项目**的前缀，却写在独立工程的每个 UI 文件里（已于 2026-11-20 拆解，见 §3.2） |
 | 一物多名 | 品牌串三套：`ExBar`（标题）/ `ExBarBrowser`（类名/管道/日志）/ `EXBAR`（书签属性） |
-| 一义多名 | 点分名（`tab.close`）已在别名表里覆盖 137 条，但**驼峰名（`TabClose`）才是主名**，点分只是别名（首条迁移 `win.quit` 已完成） |
+| 一义多名 | 点分名（`tab.close`）已在别名表里覆盖**全部命令**。2026-11-20 起**点分名已升为主名**（全量迁移完成），驼峰名降为 legacy 别名 |
 
 ---
 
@@ -138,9 +138,12 @@ struct CommandDef {
 
 ### 4.2 为什么点分是主名（而不是别名）
 
-现状方向是反的：`name = "TabCloseOther"`，`cmd_naming.cpp` 的 137 条别名表把
+迁移前的方向是反的：`name = "TabCloseOther"`，`cmd_naming.cpp` 的别名表把
 `tab.close.others` 存成**别名**。于是 `keymap.json`、`tools/list`、`audit.jsonl`
 里出现的全是驼峰名，点分名只在 `FindCommand` 查表那一瞬间存在。
+
+2026-11-20 已完成全量翻转（当时 140 条主名全部为点分名，`legacyName` 由
+`cmdnaming::LegacyOf` 反查），上面这段保留为「为什么当初要改」的依据。
 
 业界没有"驼峰主名 + 点分别名"的先例（见 §5.1）：
 
@@ -212,7 +215,7 @@ CmdId::QuitExplorer   // commands.h:63
 
 > 不设 mode 参数是刻意的...带 mode 会让 schema 变成枚举，调用方要先查"有哪些 mode"。
 
-本工程 86 条命令要对 AI 暴露（`aiExposed`），**必须**一条命令一个 schema。
+本工程的对 AI 暴露命令（`aiExposed`）**必须**一条命令一个 schema（条数以 `check_ai_meta.py` 为准）。
 
 ### 5.2 命名空间：Qt 的警句直接命中 `eb`
 
@@ -354,6 +357,21 @@ Emacs Lisp 没有包系统，所有全局符号共享一个命名空间，于是
 | `UiPalette` 有 6 个令牌零消费 | `editFocus` / `editPlaceholder` / `listText` / `listInertText` / `chevronHot` / `panelBorder` 定义了但 `Theme` 从不取用 —— 改它们毫无效果，下一个改主题的人会以为在改 | 删掉 6 个；新增校验规则"令牌未被消费"防复发；位置式初始化改**指定初始化器**（23 个字段逐位核对，值零变化） |
 | `CreateChild` 与 `CreatePopup` 约定不一致 | 前者传 `nullptr` 再事后设置，后者走 `lpCreateParams`。栏目前不用 `WM_NCCREATE` 所以侥幸无事，但下一个给栏加该处理的人会拿到空指针 | 统一走 `lpCreateParams` |
 | R12（窗口类 ≤3）被错列为独立待办 | R12 原文写的是"**B5 之后**：窗口类 ≤3" —— 它依赖载体合并，不是命名清理能达成的 | 标注前置条件；当前 11 个类暂不启用该规则 |
+
+### 7.3 第三轮审查（2026-11-20 22:00）：生产路径上的诊断代码
+
+前两轮盯的是"名字"和"规则"，这一轮换了个角度查**性能**，发现的问题比命名问题严重：
+
+| 问题 | 实测影响 | 处置 |
+|---|---|---|
+| **`ReapplyPreviewPane` 里塞着 ~160 行诊断** | 该函数由 **120ms 定时器**反复调用。诊断内容包括：在最多 40 列里逐个 `GetDetailsOf`+`StrRetToBufW` 找 Size 列、对前 4 项取 `PKEY_Size`（网络路径/大文件夹 = 真实 I/O）、用 `IColumnManager` 把 Size 列**移除再加回**（视图会闪）、以及一段 **UIA 全后代遍历**（`TreeScope_Descendants` + 逐元素取名字，跨进程调用）。用户每次把鼠标移过文件列表都要付一遍 | 抽出 `DiagnosePreviewPaneState()`，`-DEXBAR_DIAG_PREVIEW` 控制；`ReapplyPreviewPane` 从 168 行回到 13 行 |
+| `SetViewMode` 里也有 93 行同类诊断 | 每次切换视图都执行一遍上述列枚举 + 逐项 I/O | 同上，`-DEXBAR_DIAG_COLUMNS` 控制 |
+| 诊断代码虽在 `#if` 内，但**没有任何开关**（等于永久开启） | `strings ExBarBrowser.exe` 能查到 `[cols]`/`[uia]`/`[late]` 三个特征串 | 加开关后实测：产物中三个特征串**均 0 次**；运行 5 次视图切换，**新增日志 0 行** |
+| `LogLine` 与 `LogDbg` 两个名字、实现逐字相同 | `shell_view.cpp` 用 `LogLine`（31 处），其余全用 `LogDbg`（54 处）。`log.h` 注释称 LogLine 是"兼容名"，但实际已是并列主名，新代码不知道用哪个 | 统一到 `LogDbg`，删除 `LogLine`；新增校验规则"日志入口唯一"（判据在**头文件**——入口的唯一性就是"对外声明了几个"，`log.cpp` 内的 `LogV` 是私有辅助不算） |
+| `shell_view.cpp` 有一行注释掉的 `SetPropertyBag` 诊断 | 注释掉的代码会腐烂，且它带着已收编到 `identity.h` 的字符串 | 删除，改为说明"为什么不设持久 bag" |
+| `common.h` 的日志注释说"两份轮转策略还不一致" | 该问题早已修复，注释是过时信息 | 更新为实际状态 |
+
+**方法上的收获**：前两轮只查"是否违反规则"，规则之外的问题（性能、过时注释、注释掉的代码）全部漏掉。这类问题**静态检查抓不到**，只能靠"读生产路径上的每一行在运行时到底做了什么"。
 
 ---
 

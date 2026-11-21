@@ -131,7 +131,7 @@ src/
 │     └─ shell_view.{h,cpp}               ~330  一个标签 = 一个 IExplorerBrowser
 ├─ ui/
 │  ├─ kit/
-│  │  ├─ draw.{h,cpp}                     ~140  Fill/FillRound/DrawChevron/DrawCross/DrawGlyph
+│  │  ├─ draw.{h,cpp}                     ~140  Fill/FillRound/DrawChevron/DrawGlyph
 │  │  └─ popup_list.{h,cpp}               ~300  WS_POPUP + owner-draw LISTBOX
 │  └─ chrome/
 │     ├─ tab_strip.{h,cpp}                ~290
@@ -295,7 +295,7 @@ Runtime → Lister → Tab → View        +  CommandRegistry（唯一动作入�
 [MIGRATION-PLAN.md](MIGRATION-PLAN.md)（M0–M7，约 20 人日）。
 
 **规则已先行**：[ARCHITECTURE-RULES.md](ARCHITECTURE-RULES.md) 从即日起对**新增代码**生效，
-存量按上表批次迁移；规则里 R1–R20 每条都有可机械校验的判据，B1 开工前先把
+存量按上表批次迁移；规则里 R1–R21 每条都有可机械校验的判据，B1 开工前先把
 `tools/check_arch.py` 写出来，用它验收每一批。
 
 **v3 增补（20:58）**：目标形态收敛为"一切皆组件 + 载体 + 输入端 + 命令管线"——

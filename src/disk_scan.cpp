@@ -56,8 +56,7 @@ bool SumSubtree(const std::wstring& dir, const Options& opt, Clock::time_point d
         // ToExtended：>260 字符的目录以前 FindFirstFileW 直接失败，被下面那行
         // 当成"权限不足"跳过 —— 于是它的体积计成 0，而 complete 仍是 true。
         // 用户看到的是一个"空"的大目录，与"真的就这么大"无法区分。
-        const std::wstring pattern = tf::ToExtended(cur) + L"\\*";
-        HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+        HANDLE h = FindFirstFileW(tf::ToExtended(cur + L"\\*").c_str(), &fd);
         if (h == INVALID_HANDLE_VALUE) {
             // 真的枚举不了（权限/被占用）：计数并上报，不要静默跳过。
             ++denied;
@@ -104,7 +103,7 @@ bool Scan(const std::wstring& path, const Options& opt, Result* out, std::wstrin
     *out = Result{};
     out->path = path;
 
-    const DWORD attr = GetFileAttributesW(path.c_str());
+    const DWORD attr = GetFileAttributesW(tf::ToExtended(path).c_str());
     if (attr == INVALID_FILE_ATTRIBUTES) {
         if (err) *err = L"路径不存在或无法访问";
         return false;
@@ -121,21 +120,31 @@ bool Scan(const std::wstring& path, const Options& opt, Result* out, std::wstrin
     std::vector<Entry> found;
     {
         WIN32_FIND_DATAW fd{};
-        const std::wstring pattern = tf::ToExtended(path) + L"\\*";
-        HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+        HANDLE h = FindFirstFileW(tf::ToExtended(path + L"\\*").c_str(), &fd);
         if (h == INVALID_HANDLE_VALUE) {
             if (err) *err = L"无法枚举目录内容";
             return false;
         }
+        unsigned outerCount = 0;
         do {
+            // 第一层也可能有几十万项；只在子目录里查 deadline 仍然会卡住 UI。
+            if ((++outerCount & 0x3FF) == 0 && Clock::now() > deadline) {
+                // 带着已经枚举到的部分继续走第二层；直接 return false 会让调用方
+                // 连 timedOut/complete 标记都拿不到，和"扫描成功"无法区分。
+                FindClose(h);
+                h = INVALID_HANDLE_VALUE;
+                out->timedOut = true;
+                out->complete = false;
+                break;
+            }
             if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
             Entry e;
             e.name = fd.cFileName;
             e.path = path + L"\\" + fd.cFileName;
             e.isFolder = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
             found.push_back(std::move(e));
-        } while (FindNextFileW(h, &fd));
-        FindClose(h);
+        } while (h != INVALID_HANDLE_VALUE && FindNextFileW(h, &fd));
+        if (h != INVALID_HANDLE_VALUE) FindClose(h);
     }
 
     // 第二层：逐个算大小。
@@ -158,7 +167,8 @@ bool Scan(const std::wstring& path, const Options& opt, Result* out, std::wstrin
             out->deniedDirs += denied;
             e.bytes = b;
             e.items = f + d;
-            e.complete = ok;
+            // 子树里有打不开的目录时，数字偏小；不能只靠顶层 Result 表达。
+            e.complete = ok && denied == 0;
             out->scannedFiles += f;
             out->scannedDirs += d;
             if (!ok) out->timedOut = true;
@@ -182,7 +192,11 @@ bool Scan(const std::wstring& path, const Options& opt, Result* out, std::wstrin
     });
 
     // 总量要含全部子项（截断前的），否则"总量 < 各子项之和"会让人困惑
-    for (const auto& e : found) out->totalBytes += e.bytes;
+    out->complete = !out->timedOut && out->deniedDirs == 0;
+    for (const auto& e : found) {
+        out->totalBytes += e.bytes;
+        if (!e.complete) out->complete = false;
+    }
 
     if (opt.limit > 0 && static_cast<int>(found.size()) > opt.limit) {
         found.resize(static_cast<size_t>(opt.limit));

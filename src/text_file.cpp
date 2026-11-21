@@ -210,13 +210,15 @@ bool EnsureDir(const std::wstring& path) {
     std::wstring parent = path;
     size_t slash = parent.find_last_of(L"\\/");
     if (slash != std::wstring::npos && slash > 2) EnsureDir(parent.substr(0, slash));
-    return CreateDirectoryW(path.c_str(), nullptr) != FALSE;
+    // 每个文件 API 都要过 ToExtended；以前这里漏了，深目录下 EnsureDir 成功
+    // 但 CopyFileIfMissing 静默失败（>260 字符路径直接被系统拒绝）。
+    return CreateDirectoryW(ToExtended(path).c_str(), nullptr) != FALSE;
 }
 
 bool CopyFileIfMissing(const std::wstring& from, const std::wstring& to) {
     if (Exists(to)) return true;
     if (!Exists(from)) return false;
-    return CopyFileW(from.c_str(), to.c_str(), TRUE) != FALSE;
+    return CopyFileW(ToExtended(from).c_str(), ToExtended(to).c_str(), TRUE) != FALSE;
 }
 
 

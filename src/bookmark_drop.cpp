@@ -2,6 +2,8 @@
 
 #include "bookmark_bar.h"
 #include "bookmarks.h"
+#include "icon_resolve.h"
+#include "log.h"
 
 #include <shlobj.h>
 
@@ -115,6 +117,7 @@ private:
                     reinterpret_cast<LPCITEMIDLIST>(reinterpret_cast<BYTE*>(cida) +
                                                     cida->aoffset[0]);
                 int added = 0;
+                int moved = 0;
                 for (UINT i = 1; i <= cida->cidl; ++i) {
                     LPCITEMIDLIST child =
                         reinterpret_cast<LPCITEMIDLIST>(reinterpret_cast<BYTE*>(cida) +
@@ -122,15 +125,27 @@ private:
                     PIDLIST_ABSOLUTE full = ILCombine(parent, child);
                     if (!full) continue;
                     std::wstring p = PidlToPathOrNamespace(full);
-                    if (!p.empty() && !store.ContainsPath(p)) {
-                        store.AddPath(NameFor(p), p, folderId);
-                        ++added;
-                    }
                     CoTaskMemFree(full);
+                    if (p.empty()) continue;
+
+                    // 已经在书签里：**移到目标分类**，而不是静默忽略。
+                    //
+                    // 原实现 `if (!ContainsPath(p)) Add` 对已存在的路径直接跳过，
+                    // 于是"把栏上的书签拖到另一个分类"完全没有反应 —— 用户会以为
+                    // 拖放坏了。既然这次拖放明确指了目标容器，正确语义就是移动。
+                    // MoveTo 自己拒绝"拖进自己的子孙"。
+                    if (const BookmarkNode* existing = store.FindByPath(p)) {
+                        if (!folderId.empty() && store.MoveTo(existing->id, folderId))
+                            ++moved;
+                        continue;
+                    }
+                    store.AddPath(NameFor(p), p, folderId);
+                    ++added;
                 }
-                if (added) {
+                if (added || moved) {
                     store.Save();
                     owner_->ReloadExternal();
+                    LogDbg(L"[bmk] 拖放：新增 %d，移入分类 %d", added, moved);
                 }
             }
             if (cida) GlobalUnlock(sm.hGlobal);
@@ -142,19 +157,27 @@ private:
         PIDLIST_ABSOLUTE pidlObj = nullptr;
         if (SUCCEEDED(SHGetIDListFromObject(pdo, &pidlObj)) && pidlObj) {
             std::wstring p = PidlToPathOrNamespace(pidlObj);
-            if (!p.empty() && !store.ContainsPath(p)) {
-                store.AddPath(NameFor(p), p, folderId);
-                store.Save();
-                owner_->ReloadExternal();
-            }
             CoTaskMemFree(pidlObj);
+            if (!p.empty()) {
+                if (const BookmarkNode* existing = store.FindByPath(p)) {
+                    // 同上：已存在就被拖到哪个分类就移进哪个分类。
+                    if (!folderId.empty() && store.MoveTo(existing->id, folderId)) {
+                        store.Save();
+                        owner_->ReloadExternal();
+                    }
+                } else {
+                    store.AddPath(NameFor(p), p, folderId);
+                    store.Save();
+                    owner_->ReloadExternal();
+                }
+            }
         }
     }
 
     static std::wstring NameFor(const std::wstring& path) {
-        // 命名空间项用 GUID 前截断没有意义，显示名交给图标解析失败时的 fallback；
-        // 文件系统路径取末段。
-        if (path.rfind(L"::{", 0) == 0) return path;
+        // 命名空间项的显示名统一由 ico::DisplayName 推导（此电脑/回收站/第三方 NSE）；
+        // 文件系统路径仍取末段，避免把完整路径塞进书签栏按钮。
+        if (nav::IsNamespace(path)) return ico::DisplayName(path);
         size_t slash = path.find_last_of(L"\\/");
         return slash == std::wstring::npos ? path : path.substr(slash + 1);
     }

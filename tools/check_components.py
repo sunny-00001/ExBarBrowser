@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""组件唯一性静态校验（架构规则 R6/R7/R11/R12/R13）。
+"""组件唯一性静态校验（架构规则 R6/R7/R11/R12/R13/R21）。
 
 ## 解决什么问题
 
@@ -11,10 +11,12 @@
 这比"文本相似度查重"有效：成熟副本往往已被改名、加参数、换了循环写法，
 查重看不见；但"CreatePen 出现在 eb_ui.cpp 之外"是确定的。
 
-## 两类检查
+## 三类检查
 
-  UNIQUE   某符号/调用点**全仓只允许 N 处**（N 通常为 1），并声明正确宿主。
-  FORBID   某些 API 只允许出现在指定文件（白名单式）。
+  UNIQUE       某符号/调用点**全仓只允许 N 处**（N 通常为 1），并声明正确宿主。
+  FORBID       某些 API 只允许出现在指定文件（白名单式）。
+  INPUT_GUARD  输入纪律（R21）：**全仓**（含 tools/scripts/tests）禁止模拟输入与自动化抢焦点。
+               与上面两类的区别是扫描范围 —— 出事的多半是验收脚本，而它在 src/ 之外。
 
 ## 用法
 
@@ -225,9 +227,19 @@ UNIQUE = [
     #
     # ai_server.cpp 的 CreateFileW 开的是命名管道（\\.\pipe\...），
     # 不是文件系统路径，加扩展前缀会彻底打不开 —— 白名单放行。
+    # 除命名管道外，所有文件系统 API 都必须过 tf::ToExtended。
+    # ai_server.cpp 的 CreateFileW 开的是 \\.\pipe\...，加扩展前缀会彻底打不开，
+    # 只对这一处放行；同文件的 DeleteFileW（令牌/发现文件）已走 ToExtended。
     dict(name="长路径前缀", pat=r"\bCreateFileW\s*\(\s*(?!tf::ToExtended|ToExtended)",
-         allow={"text_file.cpp", "ai_server.cpp"},
-         why="文件 API 一律传 tf::ToExtended(path)；否则 >260 字符路径静默失败"),
+         allow={"ai_server.cpp"},
+         why="文件 API 一律传 tf::ToExtended(path)；命名管道是唯一例外（它不是文件系统路径）"),
+    dict(name="长路径前缀（其余文件 API）",
+         pat=r"\b(CreateDirectoryW|CopyFileW|DeleteFileW|MoveFileExW|FindFirstFileW|"
+             r"GetFileAttributesW|GetFileAttributesExW|SetFileAttributesW)\s*\(\s*"
+             r"(?!tf::ToExtended|ToExtended)",
+         allow=set(),
+         why="CreateDirectoryW / CopyFileW / GetFileAttributesW 等同样受 MAX_PATH 限制；"
+             "只守 CreateFileW 会漏掉 EnsureDir、复制、存在性判断和体积扫描"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -255,7 +267,124 @@ FORBID = [
          allow=set(),
          why="图标尺寸一律用 Theme::iconChevron/iconGlyph/iconCompact/iconSmall，"
              "不要在栏里写 S(裸数字) —— 同一行三个图标各写一个数就是'大小不协调'的成因"),
+
+    # 显示名收口（2026-11-21）：历史/最近访问只存 "::{GUID}" 这类解析串，
+    # 菜单行若把同一个变量同时当 label 和 path，用户就会看到裸 CLSID。
+    # 统一入口是 ico::DisplayName(path)，path 仍原样作为导航目标。
+    dict(name="路径行 label 直接复用 path",
+         pat=r"\bAddPath\s*\(\s*([A-Za-z_]\w*)\s*,\s*\1\s*,",
+         allow=set(),
+         why="统一用 ico::DisplayName(path) 生成 label；path 只能作为导航目标，"
+             "不能同时当给人看的文字"),
+
+    # 菜单/弹层组件化（本轮新增）：业务代码只描述"有什么动作"，
+    # PopupRow 八字段与 ShowPopupList 只剩 menu.cpp 这一层组件实现。
+    # 旧写法每加一个菜单都要重新记一遍图标槽、分隔行 data、初态行号，
+    # 这正是"同一个菜单在两处表现不同"的来源；机械守住宿主，新增菜单只能走 Menu。
+    dict(name="业务侧直接建菜单行",
+         pat=r"\bShowPopupList\s*\(|\bPopupRow\s*\{",
+         allow={"menu.cpp", "popup_list.cpp", "popup_list.h"},
+         why="自绘平铺菜单统一用 ui::Menu 的 Add/AddChecked/AddPath/Separator/Show；"
+             "只有 menu.cpp 可以组装 PopupRow 并调用唯一渲染器 ShowPopupList"),
+
+    # 路径图标同样收口：菜单与文件夹树用 ico::Cached（进程内共享，弹层不销毁）。
+    # 仍直接 Resolve 的只有长生命周期 chrome 图标：标签栏/书签栏/导航栏各管自己的缓存，
+    # DPI 变化时要整批重取，生命周期语义与菜单不同，不能混成 Cached。
+    dict(name="菜单/树路径图标绕过缓存",
+         pat=r"\bico::Resolve\s*\(",
+         allow={"icon_resolve.cpp", "tab_strip.cpp", "bookmark_bar.cpp", "nav_bar.cpp"},
+         why="菜单和文件夹树统一走 ui::Menu::AddPath / ico::Cached（或 TreeNode + Cached）；"
+             "弹层只借 HICON、不 Destroy，避免重复创建与二次释放"),
 ]
+
+# ---------------------------------------------------------------------------
+# INPUT_GUARD：输入纪律（R21）—— 全仓禁止模拟输入 / 抢焦点
+#
+#   这条和上面几类的区别是**扫描范围**：不只是 src/，还包括 tools/ scripts/ tests/
+#   —— 出事的多半是"验收脚本"，而它们在 src/ 之外。
+#
+#   为什么必须机械守：模拟输入的代价不出现在编译期，也不出现在脚本自己的日志里，
+#   它出现在**用户的下一次点击**上（光标被挪走、焦点被抢到别的窗口）。
+#   一旦有人为了"跑一遍快捷键冒烟"写下 SendInput，这段代码会长期留在 tools/ 里，
+#   下一个人跑它就再抢一次焦点 —— 而且它每次都"验证通过"，看不出问题。
+#
+#   两类：
+#     injection  注入系统输入流或移动物理光标 —— 零容忍，allow 为空。
+#     focus      改变前台/焦点。只在**被测窗口不是用户正在用的那个**时才可能成立，
+#                因此 allow 里必须写清是哪个脚本、为什么它自己起的实例可以。
+# ---------------------------------------------------------------------------
+INPUT_GUARD = [
+    dict(name="模拟输入注入（R21）",
+         # 作用域 all：产品代码与脚本都不许。src/ 当前 0 处，将来也不该出现。
+         scope="all",
+         pat=r"\b(SendInput|SendInputEx|mouse_event|keybd_event|SetCursorPos|BlockInput|"
+             r"AttachThreadInput)\s*\(",
+         allow=set(),
+         why="禁止模拟鼠标/键盘（会抢走用户光标与焦点）。"
+             "要触发动作走 CommandBus::Invoke；进程外走 AI 命名管道 tools/call；"
+             "只是要看界面用 scripts/shot.py（PrintWindow 只读）"),
+
+    # 【2026-11-21 收紧】合成输入消息：这是 R21 最容易漏的口子。
+    #
+    #   它看起来"只是 PostMessage、不动光标"，但本程序的点击分支必然走到
+    #   ShowPopupList，而那里对弹层调 SetForegroundWindow（弹层要拿键盘输入）——
+    #   于是"投一条 WM_LBUTTONDOWN"和"SendInput 一下"的结果完全相同：前台被拿走。
+    #   配合"扫描坐标"的用法，它还会向正在被使用的窗口连续投几十次点击、反复建模态弹层。
+    #
+    #   正则要同时抓两种写法：
+    #     PostMessageW(h, 0x0201, ...)            消息号直接写字面量
+    #     PostMessageW(h, WM_LBUTTONDOWN, ...)    消息号用宏
+    #   WM_CLOSE / WM_THEMECHANGED / WM_APP_* 属于非输入消息，不在本规则管辖内
+    #   （所以字面量只认 0x0100–0x0109 键盘区与 0x0200–0x020E 鼠标区，
+    #    不能写成"0x0 开头全部" —— 那会把 WM_CLOSE=0x0010 一起判红）。
+    dict(name="合成输入消息（R21）",
+         scope="all",
+         pat=r"\b(?:PostMessageW?|SendMessageW?|SendMessageTimeoutW?)\s*\(\s*[^,]+,\s*"
+             r"(WM_MOUSEMOVE|WM_LBUTTONDOWN|WM_LBUTTONUP|WM_LBUTTONDBLCLK|"
+             r"WM_RBUTTONDOWN|WM_RBUTTONUP|WM_RBUTTONDBLCLK|WM_MBUTTONDOWN|WM_MBUTTONUP|"
+             r"WM_MOUSEWHEEL|WM_MOUSEHWHEEL|WM_KEYDOWN|WM_KEYUP|WM_CHAR|WM_SYSKEYDOWN|"
+             r"WM_SYSKEYUP|WM_SYSCHAR|WM_XBUTTONDOWN|WM_XBUTTONUP|"
+             r"0x010[0-9A-Fa-f]|0x020[0-9A-Ea-e])\b",
+         allow=set(),
+         why="不得向窗口投合成鼠标/键盘消息：它会真的走一遍'用户点了它'的路径，"
+             "而点击分支在本程序里必然走到 ShowPopupList → SetForegroundWindow，等于抢前台。"
+             "要验证点击流程 → 人工点、脚本只观察窗口数量；要验证命中判定 → 抽纯函数跑单测"),
+
+    # 第三方自动化库：一旦引入，一行就绕过上面所有判据（它们内部就是 SendInput）。
+    #
+    #   `SendKeys` 要带括号才算 —— `CmdId::SendKeys` 是命令枚举（ext.sendkeys，
+    #   未实现），不是调用；把它判红会挡住正当的命令名。
+    dict(name="第三方自动化库（R21）",
+         scope="all",
+         pat=r"\b(?:import|from)\s+(pyautogui|pynput|pywinauto|keyboard|mouse|AutoIt)\b"
+             r"|\b(pyautogui|AutoItX)\.\w+\s*\("
+             r"|\b(mouse|keyboard)\.(click|press|type|move|send|release)\s*\("
+             r"|\bSendKeys\s*\(",
+         allow=set(),
+         why="不引入会模拟输入的自动化库（它们底层就是 SendInput/钩子）；"
+             "机器入口是命令总线与 AI 管道，不是'帮用户按一下'"),
+
+    dict(name="自动化抢前台（R21）",
+         # 作用域 automation：只管脚本。src/ 里的 SetForegroundWindow 是**产品行为**
+         # （单实例转发激活已有窗口、弹层取得键盘输入），触发源是用户不是脚本，
+         # 不在 R21 管辖范围内 —— 删掉它反而让"第二次启动"看起来没反应。
+         scope="automation",
+         pat=r"\b(SetForegroundWindow|SetActiveWindow|BringWindowToTop|"
+             r"SwitchToThisWindow)\s*\(",
+         # 不放行任何脚本。曾经为此开过 probe_reopen.py 的口子（它要让自己起的
+         # 实例变前台才能测弹层），后来脚本改成"前台不是它就 SKIP" —— 脚本不该
+         # 为了让测试成立而改变系统状态，那测到的是脚本造出来的场景。
+         allow=set(),
+         why="自动化脚本不得改变用户的前台窗口。需要前台才能测的场景，"
+             "改成'没前台就跳过'（probe_toggle.py 的做法），而不是自己抢过来"),
+]
+
+# 扫描 R21 时覆盖的目录与后缀（相对仓库根）
+INPUT_GUARD_DIRS = ["src", "tools", "scripts", "tests"]
+INPUT_GUARD_EXTS = {".cpp", ".h", ".hpp", ".py", ".ps1"}
+# automation 作用域只看这些目录（脚本/测试），不看产品代码
+INPUT_GUARD_AUTOMATION_DIRS = ["tools", "scripts", "tests"]
+
 
 # ---------------------------------------------------------------------------
 # STALE：声明了公开入口，但没有任何调用点
@@ -327,8 +456,17 @@ SKIP = {"common.h.gch", "keymap.gen.h"}
 stale_warn: list[str] = []
 
 
-def strip_comments(text: str) -> str:
-    """去掉 // 与 /* */ 注释，避免注释里的 API 名误判。
+def strip_comments(text: str, hash_comments: bool = False) -> str:
+    """去掉注释，避免注释里的 API 名误判。
+
+    · C/C++ 风格 `//` 与 `/* */` 始终剥（src/ 用）。
+    · `hash_comments=True` 时同时剥 `#` 到行尾（Python/PowerShell 用）。
+
+    **为什么必须区分**：R21 的扫描集包含 `tools/*.py`。如果不剥 `#`，
+    检查器自己那段"正则要同时抓 `PostMessageW(h, 0x0201)` 这种写法"的注释
+    就会被自己判成违规 —— **文档里写"不要这样做"反而触发失败**，规则立刻变成
+    不可维护的东西（下一个人只会选择删掉这条规则，而不是删掉注释）。
+    这类"规则把说明文字当真"的假阳性，比漏报危险得多。
 
     字符串字面量里的 // 会被误删，但本项目里没有"字符串含 // 且后面是 API 名"
     的情形，接受这个近似。
@@ -354,6 +492,9 @@ def strip_comments(text: str) -> str:
             elif c == "/" and line[i + 1] == "/":
                 cut = i
                 break
+            elif hash_comments and c == "#":
+                cut = i
+                break
             i += 1
         out.append(line[:cut])
     return "\n".join(out)
@@ -364,6 +505,26 @@ def sources():
         if p.name in SKIP:
             continue
         yield p
+
+
+def guarded_sources(scope: str):
+    """R21 的扫描集：跨目录（src/tools/scripts/tests），文件名用相对仓库根的 posix 路径。
+
+    scope="all"        → INPUT_GUARD_DIRS 全部
+    scope="automation" → 只 tools/scripts/tests（产品代码里的前台调用是用户行为）
+    """
+    dirs = INPUT_GUARD_DIRS if scope == "all" else INPUT_GUARD_AUTOMATION_DIRS
+    for d in dirs:
+        base = ROOT / d
+        if not base.is_dir():
+            continue
+        for p in sorted(base.rglob("*")):
+            if not p.is_file() or p.suffix.lower() not in INPUT_GUARD_EXTS:
+                continue
+            # 备份/生成物与依赖目录不进（obj/ 在根下，不在这些 dirs 里）
+            if any(part in {"obj", "backup", ".git", "node_modules"} for part in p.parts):
+                continue
+            yield p.relative_to(ROOT).as_posix(), p
 
 
 def scan():
@@ -383,6 +544,29 @@ def scan():
             if n:
                 hits.append((name, n))
         stray = [(n, c) for n, c in hits if n not in rule["allow"]]
+        if stray:
+            fails.append((rule, stray))
+
+    # R21：输入纪律。扫描集与上面不同（跨目录），因此单独一趟。
+    # 注释先剥掉 —— 文档里写"禁止 SendInput"不能自己触发失败。
+    # py/ps1 还要剥 `#`：检查器自己会写"PostMessageW(h, 0x0201)"当反例，
+    # 不剥就会自己把自己判红（见 strip_comments 的说明）。
+    guarded: dict[str, str] = {}
+    for rel, path in guarded_sources("all"):
+        hash_style = path.suffix.lower() in {".py", ".ps1"}
+        guarded[rel] = strip_comments(
+            path.read_text(encoding="utf-8", errors="replace"), hash_comments=hash_style)
+    automation_only = {rel for rel, _ in guarded_sources("automation")}
+
+    for rule in INPUT_GUARD:
+        rx = re.compile(rule["pat"], re.M)
+        allow = rule["allow"]
+        pool = automation_only if rule["scope"] == "automation" else set(guarded)
+        stray = []
+        for rel in sorted(pool):
+            n = len(rx.findall(guarded.get(rel, "")))
+            if n and rel not in allow:
+                stray.append((rel, n))
         if stray:
             fails.append((rule, stray))
 
@@ -454,6 +638,25 @@ def main():
             rx = re.compile(rule["pat"], re.M)
             row = [(n, len(rx.findall(t))) for n, t in files.items() if rx.search(t)]
             print(f"[{rule['name']}] " + (", ".join(f"{n}×{c}" for n, c in row) or "（无）"))
+        # R21 的扫描集跨目录，单独列一遍（含被放行的例外，便于核对口径）。
+        # 【口径必须与 scan() 完全一致】同一个 strip_comments（py/ps1 剥 #），
+        # 否则 --list 会把检查器自己注释里的反例算成命中 —— 列表与结论互相矛盾。
+        guarded = dict(guarded_sources("all"))
+        auto = {rel for rel, _ in guarded_sources("automation")}
+        for rule in INPUT_GUARD:
+            rx = re.compile(rule["pat"], re.M)
+            pool = auto if rule["scope"] == "automation" else set(guarded)
+            row = []
+            for rel in sorted(pool):
+                path = guarded[rel]
+                hash_style = path.suffix.lower() in {".py", ".ps1"}
+                body = strip_comments(path.read_text(encoding="utf-8", errors="replace"),
+                                      hash_comments=hash_style)
+                n = len(rx.findall(body))
+                if n:
+                    row.append((rel, n))
+            tag = "放行" if row and all(n in rule["allow"] for n, _ in row) else rule["scope"]
+            print(f"[{rule['name']}/{tag}] " + (", ".join(f"{n}×{c}" for n, c in row) or "（无）"))
         # 非正则类的规则：单独列，让 --list 覆盖全部检查
         for rule in STALE:
             rx = re.compile(rule["symbol"], re.M)
@@ -468,7 +671,8 @@ def main():
         # 令牌检查是单条规则（TOKEN_TABLE 有定义就启用），一并报出来
         token_n = 1 if TOKEN_TABLE.get("file") else 0
         print(f"OK：{len(UNIQUE)} 条唯一性规则、{len(FORBID)} 条禁令、"
-              f"{len(STALE)} 条接线检查、{token_n} 条令牌消费，全部通过。")
+              f"{len(STALE)} 条接线检查、{token_n} 条令牌消费、"
+              f"{len(INPUT_GUARD)} 条输入纪律，全部通过。")
         for w in stale_warn:
             print(f"  提示  {w}")
         return 0

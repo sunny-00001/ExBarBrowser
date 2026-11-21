@@ -46,13 +46,19 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         self.CloseTab(self.tabSet_.IdAt(static_cast<int>(w)));
         return 0;
     case WM_APP_TAB_NEW:
-        self.NewTab(self.ActivePath(), self.NewTabIndex());
+        // "+" 按钮固定打开此电脑（namespace 根），与 tab.new 无参语义一致：
+        // 用户点 + 的预期是"开一个全新的起点"，而不是复制当前目录（那是"复制标签"）。
+        // 需要复制当前目录时走 kTabMenuClone / tab.clone，两条路径各有明确用途。
+        self.NewTab(nav::kThisPc, self.NewTabIndex());
         return 0;
     case WM_APP_TAB_MOVED:
         self.MoveTab(self.tabSet_.IdAt(static_cast<int>(w)), static_cast<int>(l));
         return 0;
     case WM_APP_TAB_MENU:
         self.ShowTabMenu(static_cast<int>(w), static_cast<int>(l));
+        return 0;
+    case WM_APP_TAB_COLOR:
+        self.ShowTabColor(static_cast<int>(w), static_cast<int>(l));
         return 0;
     case WM_APP_STATUS_MENU:
         self.ShowStatusMenu(*reinterpret_cast<POINT*>(l));

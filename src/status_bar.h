@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "common.h"
+#include "icon_glyph.h"
 #include "tooltip_host.h"
 #include "theme.h"
 
@@ -29,6 +30,10 @@ struct StatusModel {
     std::wstring tip[Seg_Count];
     int hiddenState = 0;  // 0 全显 / 1 隐系统 / 2 隐全部
 };
+
+// 段 -> 图标。状态栏绘制与"状态栏右键菜单"共用这一份映射，
+// 否则菜单里会出现与栏上完全不同的图标（同一段两个语义）。
+ico::IconId StatusSegmentIcon(int seg);
 
 class StatusBar {
 public:

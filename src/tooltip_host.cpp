@@ -3,12 +3,43 @@
 
 #include <commctrl.h>
 
+#include <utility>
+
 namespace ui {
 
-TooltipHost::~TooltipHost() {
+TooltipHost::TooltipHost(TooltipHost&& other) noexcept
+    : tip_(other.tip_), owner_(other.owner_), maxWidth_(other.maxWidth_),
+      texts_(std::move(other.texts_)), ids_(std::move(other.ids_)) {
+    other.tip_ = nullptr;
+    other.owner_ = nullptr;
+    other.maxWidth_ = 0;
+}
+
+TooltipHost& TooltipHost::operator=(TooltipHost&& other) noexcept {
+    if (this != &other) {
+        Reset();
+        tip_ = other.tip_;
+        owner_ = other.owner_;
+        maxWidth_ = other.maxWidth_;
+        texts_ = std::move(other.texts_);
+        ids_ = std::move(other.ids_);
+        other.tip_ = nullptr;
+        other.owner_ = nullptr;
+        other.maxWidth_ = 0;
+    }
+    return *this;
+}
+
+void TooltipHost::Reset() {
     if (tip_ && IsWindow(tip_)) DestroyWindow(tip_);
     tip_ = nullptr;
+    owner_ = nullptr;
+    maxWidth_ = 0;
+    texts_.clear();
+    ids_.clear();
 }
+
+TooltipHost::~TooltipHost() { Reset(); }
 
 void TooltipHost::Attach(HWND owner, int maxWidthPx) {
     owner_ = owner;
@@ -20,6 +51,18 @@ void TooltipHost::Attach(HWND owner, int maxWidthPx) {
                                GetModuleHandleW(nullptr), nullptr);
     }
     if (tip_ && maxWidthPx > 0) SendMessageW(tip_, TTM_SETMAXTIPWIDTH, 0, maxWidthPx);
+}
+
+void TooltipHost::MoveTools(const std::vector<RECT>& rects) {
+    if (!tip_) return;
+    for (size_t i = 0; i < ids_.size() && i < rects.size(); ++i) {
+        TTTOOLINFOW ti{};
+        ti.cbSize = sizeof(ti);
+        ti.hwnd = owner_;
+        ti.uId = ids_[i];
+        ti.rect = rects[i];
+        SendMessageW(tip_, TTM_NEWTOOLRECT, 0, reinterpret_cast<LPARAM>(&ti));
+    }
 }
 
 void TooltipHost::Clear() {

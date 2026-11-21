@@ -43,38 +43,22 @@ void NavModel::Rebuild() {
     parts_.clear();
     if (path_.empty()) return;
 
-    if (nav::IsNamespace(path_)) {
-        parts_.push_back({display_.empty() ? path_ : display_, path_, false});
-    } else {
-        // "C:\A\B" -> ["C:\", "C:\A", "C:\A\B"]
-        std::vector<std::wstring> paths;
-        if (path_.size() >= 3 && path_[1] == L':' && path_[2] == L'\\') {
-            paths.push_back(path_.substr(0, 3));
-            size_t i = 3;
-            while (i < path_.size()) {
-                size_t j = path_.find(L'\\', i);
-                size_t end = (j == std::wstring::npos) ? path_.size() : j;
-                // 必须是**完整前缀**（C://Windows），不是裸段名（Windows）——
-                // 否则分段点击/同级枚举会拿到相对路径，解析失败。
-                paths.push_back(path_.substr(0, end));
-                if (j == std::wstring::npos) break;
-                i = j + 1;
-            }
-        } else {
-            paths.push_back(path_);
-        }
-
-        for (size_t k = 0; k < paths.size(); ++k) {
-            std::wstring label;
-            if (k == 0 && paths[0].size() >= 2 && paths[0][1] == L':')
-                label = paths[0].substr(0, 2);  // "C:"
-            else
-                label = LeafOfPath(paths[k]);
-            parts_.push_back({label, paths[k], false});
-        }
+    // 分段规则唯一实现在 nav::Prefixes（纯字符串、可单测）。
+    // 以前这里只认 "X:\" 一种形状：UNC 路径与命名空间子项都塌成单段，
+    // 面包屑只剩一格 —— 而同一路径的"上一级"按钮是好的，于是"能上不能点"。
+    const std::vector<std::wstring> paths = nav::Prefixes(path_);
+    for (size_t k = 0; k < paths.size(); ++k) {
+        // 命名空间（此电脑/回收站/shell:…）只有一段，且没有文件系统路径语义：
+        // 显示文本必须用 shell 给的友好名（与 AddressText 同一口径），
+        // 不能拿裸 "::{GUID}" 当路径切、更不能被 CrumbLabel 误判成盘根截成 "::"。
+        // display_ 为空（Shell 回调未到）时退回 CrumbLabel，至少不会是空标签。
+        const bool nsRoot = (paths.size() == 1 && nav::IsNamespace(path_));
+        const std::wstring label =
+            (nsRoot && !display_.empty()) ? display_ : nav::CrumbLabel(paths[k], k);
+        parts_.push_back({label, paths[k], false});
     }
 
-    if (!ghostPath_.empty()) parts_.push_back({LeafOfPath(ghostPath_), ghostPath_, true});
+    if (!ghostPath_.empty()) parts_.push_back({LeafOf(ghostPath_), ghostPath_, true});
 }
 
 bool NavModel::ChildFolders(const std::wstring& folder,

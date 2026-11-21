@@ -44,6 +44,25 @@ bool RunOp(IFileOperation* op) {
     return aborted ? false : true;
 }
 
+// FOF_RENAMEONCOLLISION 只会把名字改成 "<base> (2).txt" 这类形式。
+// 回扫目录时必须只认这些名字，否则目录里任意较新的 .txt 都会被当成"刚建的"。
+bool IsGeneratedTextName(const std::wstring& name, const std::wstring& base) {
+    const std::wstring ext = L".txt";
+    if (name.size() <= ext.size()) return false;
+    if (name.compare(name.size() - ext.size(), ext.size(), ext) != 0) return false;
+    const std::wstring stem = name.substr(0, name.size() - ext.size());
+    if (stem == base) return true;
+    if (stem.size() <= base.size() + 2) return false;          // 至少 " (n)"
+    if (stem.compare(0, base.size(), base) != 0) return false; // 必须同源
+    const size_t i = base.size();
+    if (stem[i] != L' ' || stem[i + 1] != L'(') return false;
+    const size_t close = stem.size() - 1;
+    if (stem[close] != L')' || close <= i + 2) return false;   // 至少 1 位数字
+    for (size_t k = i + 2; k < close; ++k)
+        if (stem[k] < L'0' || stem[k] > L'9') return false;
+    return true;
+}
+
 bool Invoke(IContextMenu* cm, HWND owner, const char* verb) {
     if (!cm) return false;
     CMINVOKECOMMANDINFOEX info{};
@@ -434,16 +453,21 @@ bool NewTextFile(IShellView* view, HWND owner, std::wstring* created) {
                 // 【不能手拼 created】上面带了 FOF_RENAMEONCOLLISION，同目录已有同名
                 // 文件时实际创建的是"新建文本文档 (2).txt"，而手拼回的是不带后缀的
                 // 那份 —— 这个出参的契约是"告诉我建了哪个文件"，回错路径比不回更糟。
-                // 改成创建后按目录实际扫描：选最新、且以 baseName 开头的那一个。
+                // 改成创建后按目录实际扫描：只认 baseName 与 shell 的冲突后缀
+                // "<base> (n).txt"；目录里别的新 .txt 不能被认成刚建的。
                 if (created) {
-                    *created = tf::Join(dir, baseName + L".txt");
+                    // 先清空：回扫没命中时宁可交回空串，也不能把手拼的 baseName
+                    // 当成实际创建结果（那正是这条修复要消灭的错误）。
+                    created->clear();
                     WIN32_FIND_DATAW fd{};
+                    FILETIME newest{};
                     HANDLE hf = FindFirstFileW(tf::ToExtended(tf::Join(dir, L"*.txt")).c_str(), &fd);
                     if (hf != INVALID_HANDLE_VALUE) {
-                        FILETIME newest{};
                         do {
                             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-                            const std::wstring cand = tf::Join(dir, fd.cFileName);
+                            const std::wstring candName = fd.cFileName;
+                            if (!IsGeneratedTextName(candName, baseName)) continue;
+                            const std::wstring cand = tf::Join(dir, candName);
                             if (CompareFileTime(&fd.ftLastWriteTime, &newest) > 0) {
                                 newest = fd.ftLastWriteTime;
                                 *created = cand;
@@ -830,6 +854,184 @@ int SelectByPaths(IShellView* view, const std::vector<std::wstring>& paths) {
         CoTaskMemFree(pidl);
     }
     return hits;
+}
+
+int SelectWhere(IShellView* view, const std::function<bool(const DirEntry&)>& pred,
+                SelectMode mode) {
+    if (!view || !pred) return 0;
+    DirListing list;
+    if (!ListView(view, 0, &list)) return 0;   // 没有视图
+    if (list.entries.empty()) return 0;
+
+    // 先筛出命中路径，再交给 SelectByPaths —— 枚举/选中各只有一份实现。
+    //
+    // 不在这里逐个 SelectItem 的原因：那会绕开 SelectByPaths 已经处理过的
+    // "第一项带 DESELECTOTHERS" 语义，Replace 模式下反选的结果会变成
+    // "旧选中 + 新选中"的并集（用户看到的是"反选后什么都在选中的状态里"）。
+    std::vector<std::wstring> hits;
+    hits.reserve(list.entries.size());
+    for (const auto& e : list.entries) {
+        if (e.path.empty()) continue;   // 命名空间项无完整路径，SelectByPaths 也匹配不到
+        if (pred(e)) hits.push_back(e.path);
+    }
+    if (hits.empty()) {
+        // "一个都不满足"时清空选中：反选的语义是"反过来选"，结果为空是合法答案，
+        // 保留旧选中会让用户以为命令没执行。Add 模式则什么都不做（不该破坏现状）。
+        if (mode == SelectMode::Replace) SelectNone(view);
+        return 0;
+    }
+    if (mode == SelectMode::Add) {
+        // 追加：先不清空。SelectByPaths 的 first 分支会 DESELECTOTHERS，
+        // 所以追加要单独处理 —— 直接逐项 SVSI_SELECT（不清别人）。
+        ComPtr<IFolderView2> fv2 = GetFv2(view);
+        if (!fv2) return 0;
+        ComPtr<IShellFolder> folder = GetFolder(fv2.get());
+        if (!folder) return 0;
+        int count = 0;
+        if (FAILED(fv2->ItemCount(SVGIO_ALLVIEW, &count)) || count <= 0) return 0;
+        int hitsN = 0;
+        for (int i = 0; i < count; ++i) {
+            PITEMID_CHILD pidl = nullptr;
+            if (FAILED(fv2->Item(i, &pidl)) || !pidl) continue;
+            std::wstring p;
+            const bool got = ItemFullPath(folder.get(), pidl, &p);
+            if (got) {
+                for (const auto& h : hits) {
+                    if (!SamePath(h, p)) continue;
+                    if (SUCCEEDED(view->SelectItem(pidl, SVSI_SELECT))) ++hitsN;
+                    break;
+                }
+            }
+            CoTaskMemFree(pidl);
+        }
+        return hitsN;
+    }
+    return SelectByPaths(view, hits);
+}
+
+int SelectByPattern(IShellView* view, const std::wstring& patterns, const PatternOptions& opt) {
+    if (patterns.empty()) return 0;
+
+    // 拆成多个模式（分号分隔）。顺手去掉两端空白 ——
+    // 用户从别处粘 "*.txt; *.md" 时带空格很常见，不 Trim 就会有一个模式永远匹配不上。
+    std::vector<std::wstring> pats;
+    size_t start = 0;
+    while (start <= patterns.size()) {
+        const size_t semi = patterns.find(L';', start);
+        const std::wstring one =
+            str::Trim(patterns.substr(start, semi == std::wstring::npos ? std::wstring::npos
+                                                                      : semi - start));
+        if (!one.empty()) pats.push_back(one);
+        if (semi == std::wstring::npos) break;
+        start = semi + 1;
+    }
+    if (pats.empty()) return 0;
+
+    // 匹配语义交给 Shlwapi 的 PathMatchSpecExW：它就是资源管理器里"*.txt"那套
+    // 通配（`*` / `?`，分号天然支持多模式）。**不自创语法** —— 用户对此已有肌肉记忆。
+    // 大小写：默认不敏感（与资源管理器一致）。mingw 的 shlwapi.h 只声明了
+    // PMSF_NORMAL/MULTIPLE/DONT_STRIP_SPACES，没有 PMSF_CASESENSITIVE ——
+    // 那个值（0x80000000）在 Win32 文档里是公开的，这里按文档写常量，
+    // 而不是"为了能编过就悄悄丢掉大小写选项"（那会让 caseSensitive 参数变成装饰）。
+    constexpr DWORD kPmsfCaseSensitive = 0x80000000;
+    const DWORD kFlags = opt.caseSensitive ? kPmsfCaseSensitive : PMSF_NORMAL;
+    return SelectWhere(
+        view,
+        [&](const DirEntry& e) {
+            if (!opt.matchFolders && e.isFolder) return false;
+            if (e.name.empty()) return false;
+            for (const auto& p : pats) {
+                if (SUCCEEDED(PathMatchSpecExW(e.name.c_str(), p.c_str(), kFlags))) return true;
+            }
+            return false;
+        },
+        SelectMode::Replace);
+}
+
+std::vector<std::wstring> SelectedPaths(IShellView* view) {
+    std::vector<std::wstring> out;
+    if (!view) return out;
+    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    if (!fv2) return out;
+
+    // 用 Items(SVGIO_SELECTION) 拿选中项，而不是拿"选中个数"当索引去 Item()。
+    // 后者在"选中项不连续"时会取到错误项（与 SelectNone / SelectedSinglePath 同一条坑）。
+    ComPtr<IShellItemArray> sel;
+    if (FAILED(fv2->Items(SVGIO_SELECTION, IID_IShellItemArray, reinterpret_cast<void**>(&sel))) ||
+        !sel)
+        return out;
+    DWORD n = 0;
+    sel->GetCount(&n);
+    out.reserve(n);
+    for (DWORD i = 0; i < n; ++i) {
+        ComPtr<IShellItem> item;
+        if (FAILED(sel->GetItemAt(i, &item)) || !item) continue;
+        PWSTR p = nullptr;
+        if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &p)) && p) {
+            out.emplace_back(p);
+            CoTaskMemFree(p);
+        }
+    }
+    return out;
+}
+
+bool Undo(IShellView* view, HWND owner) {
+    if (!view) return false;
+
+    // 【怎么撤】向视图的背景上下文菜单要 "undo" 谓词并调用它。
+    //
+    // 为什么不用 FCIDM_SHVIEW_UNDO(0x701B) + WM_COMMAND：
+    //   · 那个常量在 Windows 头文件里根本不存在（只有 Wine 收录了）；
+    //   · 它紧邻 FCIDM_SHVIEW_DELETE(0x7011)，猜错一位就是**删文件** ——
+    //     一个"撤销"键变成删除，没有任何比这更糟的失败方式。
+    //
+    // 为什么不是自建撤销栈：所有落盘操作都带 FOF_ALLOWUNDO，已经进了系统
+    // 撤销栈（资源管理器 Ctrl+Z 撤的就是它）。自建一份会和系统栈错位。
+    //
+    // 走 IContextMenu 是全部文档化的一步：
+    //   1. GetItemObject(SVGIO_BACKGROUND, IID_IContextMenu) 拿背景菜单；
+    //   2. 用 QueryContextMenu 填充（shell 只在"确实有可撤销项"时才加 Undo 行）；
+    //   3. 逐项 GetCommandString(GCS_VERBW) 找出规范动词名；
+    //   4. 用该动词 InvokeCommand —— 不自己构造 idCmd。
+    // 找不到 undo 行 = 没有可撤销的操作，如实返回 false（调用方响一声）。
+    ComPtr<IContextMenu> cm;
+    if (FAILED(view->GetItemObject(SVGIO_BACKGROUND, IID_IContextMenu,
+                                   reinterpret_cast<void**>(&cm))) ||
+        !cm)
+        return false;
+
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return false;
+
+    // 命令 id 段用 1..0x6FFF（在 FCIDM_SHVIEWFIRST..LAST 之内，避免与全局菜单冲突）。
+    const int n = cm->QueryContextMenu(menu, 0, 1, 0x6FFF, CMF_NORMAL | CMF_NODEFAULT);
+    bool done = false;
+    if (n > 0) {
+        const int count = GetMenuItemCount(menu);
+        for (int i = 0; i < count && !done; ++i) {
+            const UINT id = GetMenuItemID(menu, i);
+            if (id == static_cast<UINT>(-1)) continue;   // 分隔线/子菜单
+            wchar_t verb[64] = L"";
+            if (FAILED(cm->GetCommandString(id - 1, GCS_VERBW, nullptr,
+                                            reinterpret_cast<char*>(verb),
+                                            static_cast<UINT>(_countof(verb)))))
+                continue;
+            // 规范动词名（大小写不敏感）。shell 的英文动词表里是 "undo"。
+            if (!str::IEquals(verb, L"undo")) continue;
+            CMINVOKECOMMANDINFOEX ici{};
+            ici.cbSize = sizeof(ici);
+            ici.fMask = CMIC_MASK_UNICODE | CMIC_MASK_FLAG_NO_UI;
+            ici.hwnd = owner;   // 撤销可能弹确认框（如"永久删除"提示），必须有宿主窗口
+            ici.lpVerb = MAKEINTRESOURCEA(id - 1);
+            ici.lpVerbW = MAKEINTRESOURCEW(id - 1);
+            ici.nShow = SW_SHOWNORMAL;
+            done = SUCCEEDED(cm->InvokeCommand(reinterpret_cast<LPCMINVOKECOMMANDINFO>(&ici)));
+            break;
+        }
+    }
+    DestroyMenu(menu);
+    if (!done) LogDbg(L"[undo] 没有可撤销的操作（背景菜单里没有 undo 谓词）");
+    return done;
 }
 
 bool RenameTo(IShellView* view, HWND owner, const std::wstring& fullPath,

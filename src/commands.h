@@ -76,6 +76,31 @@ enum class CmdId : int {
     DupFinder, FileHash, FolderCompare, SearchEverything, OpListDir, OpStat,
     OpTopN, OpDiskUsage, OpSearch, OpReadText, OpNavigate, OpReveal, OpSelect,
     OpOpen, OpListCurrentView, AiTogglePanel, AiStop,
+    // ---- 标签个性化（只允许追加在末尾，见 C1 与 commands-baseline.json）----
+    // 这三条原本只是右键菜单项；登记成命令是为了满足 R20（人机等价）：
+    // 右键弹出来的每个动作都必须有键盘/面板可达路径，否则只有鼠标能做。
+    TabRename,         // {name}     改名（空 = 取消改名）
+    TabSetColor,       // {color}    0..7（0 = 无颜色）
+    TabCloseDuplicates,// 关掉当前标签同路径的其他标签
+    TabLock,           // {locked}   锁定/解锁（锁定后关标签族会跳过它）
+    TabCopyTitle,      // 复制当前显示名（含改名后的别名）到剪贴板
+
+    // ---- 书签编辑族（只有右键菜单能做 → 补成命令，满足 R20 反向要求）----
+    // 这几条原先是书签栏右键菜单里的动作，但是**没有对应命令**：
+    //   · 检查器把它们报成"人工可达但无结构化入口"；
+    //   · 也就意味着只有鼠标能做 —— 键盘用户、命令面板、AI 都没有等价路径。
+    // 语义与菜单项一一对应，参数用书签 id（不是下标：重排后下标会变）。
+    BmkEdit,           // {id, name, path}  改名称/路径（path 空 = 变成纯分类）
+    BmkRemove,         // {id}              删除一条（可撤销）
+    BmkNewFolder,      // {name, parentId?} 新建分类
+    BmkUndo,           // 撤销上一次删除/移动/排序
+    BmkClearAll,       // 清除全部（可撤销）
+    BmkSort,           // {recursive?}   按名称排序
+    BmkDedupe,         // 清理重复路径书签
+    BmkAdd,            // {path, name?, parentId?} 添加一条（拖放/脚本/AI 的共同入口）
+    BmkMove,           // {id, toId} 或 {id, toIndex}  移动（拖拽重排的结构化版本）
+    BmkList,           // {parentId?}  返回书签树（**读**：其余 bmk.* 要的 id 从这里来）
+    BmkFocus,          // 焦点进入书签栏（->/<- 选，Enter 开，Shift+F10 菜单，Esc 退回视图）
 };
 
 // 命令的风险等级（与 mod 的 risk / 架构规则 R18 对齐）。

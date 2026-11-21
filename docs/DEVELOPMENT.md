@@ -1,12 +1,20 @@
 ---
 status: current
-baseline: 2026-11-20 19:40
+baseline: 2026-11-21 11:00
 ---
 
 # 开发与调试
 
 > 本文只讲"怎么把它编出来、跑起来、看进去"。代码结构与不变量见 [ARCHITECTURE.md](ARCHITECTURE.md)，
 > 提交与规范见 [../CONTRIBUTING.md](../CONTRIBUTING.md)。
+>
+> **动手前先记住 R21（输入纪律）**：禁止模拟鼠标/键盘（`SendInput` / `mouse_event` /
+> `keybd_event` / `SetCursorPos` / `BlockInput` / `AttachThreadInput`），也禁止用
+> `PostMessage`/`SendMessage` 投 `WM_LBUTTON*` / `WM_KEY*` / `WM_CHAR` —— 合成点击在本程序里
+> 必然走到 `ShowPopupList` → `SetForegroundWindow`，与 `SendInput` 结果相同（详见 §2.4）。
+> 自动化脚本也不得改用户的前台窗口。所有操作走结构化命令（`CommandBus` 或 AI 管道），
+> 验证走单测 / 截图 / 人工点+脚本观察。
+> 详见 [ARCHITECTURE-RULES.md §3.1](ARCHITECTURE-RULES.md)，机器校验在 §2.4。
 
 ---
 
@@ -23,11 +31,11 @@ baseline: 2026-11-20 19:40
 | 构建系统 | `build_fast.py` | Python 驱动的增量构建（PCH + 分 TU 缓存 + 并行）；`build.sh`/`build.bat` 是薄包装 |
 | Python | 3.x | 仅构建期依赖，运行产物是零依赖单 exe |
 
-**没有 CMake / Makefile 是刻意的**：保持无第三方构建系统的简洁，但用约 410 行 Python 实现增量，
+**没有 CMake / Makefile 是刻意的**：保持无第三方构建系统的简洁，但用约 420 行 Python 实现增量，
 解决"改一行全量重编"的痛点（实测单命令全量 88s → PCH 增量：全量 10.5s、改一行 ~1s、无改动 0.3s）。
 清单只有**一份**（`build_fast.py` 顶部的 `EXCLUDE_PATTERNS`/`COMPILE_FLAGS`/`LIBS`），
 `build.sh`/`build.bat` 只做参数透传，不存在多套清单漂移（见 §3.1）。源文件由 `src/*.cpp` **自动扫描**
-（当前 57 个 TU），头文件依赖用 clang `-MMD` 精确追踪。
+（当前 60 个 TU），头文件依赖用 clang `-MMD` 精确追踪。
 
 > **PCH 记绝对路径**：`obj/common.h.gch` 是 clang AST 二进制，内含生成时的源文件绝对路径。
 > 仓库换目录/换机器后必须 `bash build.sh --clean`，否则每个 TU 都报
@@ -110,44 +118,129 @@ bash build.sh --out /tmp/ebb_check.exe
 
 ### 2.4 自测（不需要 GUI）
 
-> **不要用模拟鼠标点击来测试。** 应用是本机正在使用的窗口：`SetCursorPos` + `mouse_event`
-> 会抢走光标、把焦点从用户手上夺走，`ShowPopupList` 这类模态循环还会把整个程序卡住等输入。
-> 要验证就抽出纯函数跑单测（下面的 `popup_layout_test` / `clear_history_test` 就是为此补的），
-> 或者用命令 / 配置读写等不碰 UI 的入口。确实需要看界面时，截图（`scripts/shot.py`，只读
-> `PrintWindow`）比模拟输入安全得多。
+> **规则 R21：禁止模拟鼠标点击、禁止抢焦点、禁止循环点击 —— 一条不让。**
+> 应用是本机正在使用的窗口：`SetCursorPos` + `mouse_event` / `SendInput` 会抢走光标、
+> 把焦点从用户手上夺走，`ShowPopupList` 这类模态循环还会把整个程序卡住等输入。
+>
+> **`PostMessage` 投鼠标/键盘消息同样禁止**（`WM_LBUTTONDOWN` / `WM_KEYDOWN` / `WM_CHAR` 等）。
+> 它看起来"只是发消息"，但合成点击在本程序里必然命中控件、走到 `ShowPopupList`，
+> 而弹层内部会 `SetForegroundWindow` —— 结果与 `SendInput` 完全相同。
+> "扫描一行坐标、每隔几像素投一次点击"这种循环最容易造成"用户正在打字，字却进了别人家的窗口"。
+>
+> 这类代码不报错、不崩溃，只是**悄悄改变用户下一次点击的含义**，所以在
+> `tools/` `scripts/` `tests/` 里也一并禁止（`tools/check_components.py` 的
+> `INPUT_GUARD` 段，4 条规则、跨目录扫描）。完整清单与替代方案见
+> [ARCHITECTURE-RULES.md §3.1](ARCHITECTURE-RULES.md)。
+>
+> 合规的验证方式，按优先级：
+>
+> | 要验证什么 | 用什么 |
+> |---|---|
+> | 逻辑/几何/状态机 | 抽出纯函数跑单测（下面的 `popup_layout_test` / `popup_toggle_test` 就是为此补的） |
+> | 一条动作能不能跑通 | 进程内 `CommandBus::Invoke`，或进程外连 AI 命名管道发 `tools/call`（见 [AI-INTERFACE.md](AI-INTERFACE.md)） |
+> | 界面长什么样 | `python scripts\shot.py out.png`（`PrintWindow` 只读，被遮挡也能抓，不动光标） |
+> | **必须真点一下才知道的流程**（弹层开合、拖拽） | **人工点，脚本只观察**：`python tools/probe_toggle.py` 只数弹层窗口数，点击由人做 |
+>
+> 确实需要给某个窗口喂消息时，只投**非输入**消息（`WM_CLOSE` / `WM_THEMECHANGED` / `WM_APP_*`），
+> 且只用于验证 `WndProc` 分支本身，不要拿它伪造本该由命令总线产生的业务动作。
+
+**一条命令跑全部单测（推荐）**：
+
+```bash
+bash tests/run_all.sh            # 当前 32 个单测，32/32 通过约 40 秒
+bash tests/run_all.sh keymap     # 只跑名字含 keymap 的
+```
+
+它先跑一次 `bash build.sh` 刷新 `obj/`，然后**复用这批 obj** 链接每个测试
+（排除 `main.obj` / `*_test.obj` / `*.check.obj`），所以：
+- 不需要维护"每个测试要链哪些 `.cpp`"的依赖表（那种表必然过期，这正是下面那些长命令的由来）；
+- 每条测试的链接只要 ~3 秒，而不是把 60 个 `.cpp` 重编一遍的 3 分钟；
+- 依赖关系由主构建保证，改 `src/` 后不会出现"文档里的命令突然链接失败"。
+
+> 为什么以前没人跑全量：每个测试都得手抄一串 `.cpp`，抄错就链接失败，于是只跑记得住的那几条。
+> `tests/keymap_test.cpp` 因此**红着很久没人发现**（硬编码 70 条，实际早已 84），
+> 见 [CHANGELOG](../CHANGELOG.md) 的"文档全量对账"条目。
+
+下面是最常用的几条**手工**命令（想单独调一个测试时用）。每一条都实测过；
+如果你只想知道"现在全绿吗"，用上面的 `run_all.sh` 就够了。
 
 ```bash
 CC="/c/Program Files/Windhawk/Compiler/bin/clang++.exe"
 
-# 键位表：必须输出 hotkeys=70 sequences=38
-"$CC" -std=c++20 -O1 -Isrc tests/keymap_test.cpp src/keymap.cpp src/json.cpp src/text_file.cpp \
-  -o /tmp/keymap_test.exe -static-libstdc++ -static-libgcc -lshell32 -lole32
-/tmp/keymap_test.exe
+# 通用编译开关。以前这段文档只给 -Isrc，照抄会撞上宽字符 API 与 GDI 常量缺失。
+FLAGS="-std=c++20 -O1 -DUNICODE -D_UNICODE -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 -D_WIN32_IE=0x0A00 -Isrc"
+# 常见库集合。单测用不到的库多链不会报错，缺了才会 —— 所以给一份"够用"的清单。
+LIBS="-static -static-libstdc++ -static-libgcc -lole32 -luuid -lshell32 -lshlwapi -ladvapi32 -luxtheme -ldwmapi"
+
+# 键位表：必须输出 hotkeys=84 sequences=38
+#   依赖链：LoadKeymap → tf::ReadText → str::FromUtf8Strict → LogDbg → win::ThemeControl
+#   少链任何一个都链接失败。早期版本漏了 str/log/platform_win，照抄必挂。
+"$CC" $FLAGS tests/keymap_test.cpp src/keymap.cpp src/json.cpp src/text_file.cpp \
+  src/str.cpp src/log.cpp src/platform_win.cpp $LIBS -o /tmp/keymap_test.exe
+(cd tests && /tmp/keymap_test.exe)
 
 # 序列状态机：前缀 / 超时 / 取消 / 候选
-"$CC" -std=c++20 -O1 -Isrc tests/sequence_test.cpp src/sequence.cpp src/keymap.cpp src/json.cpp \
-  src/text_file.cpp -o /tmp/sequence_test.exe -static-libstdc++ -static-libgcc -lshell32 -lole32
-/tmp/sequence_test.exe
+"$CC" $FLAGS tests/sequence_test.cpp src/sequence.cpp src/keymap.cpp src/json.cpp \
+  src/text_file.cpp src/str.cpp src/log.cpp src/platform_win.cpp $LIBS -o /tmp/sequence_test.exe
+(cd tests && /tmp/sequence_test.exe)
 
 # 命令目录：keymap 引用的每条命令必须存在于目录（missingFromKeymap=0）
-"$CC" -std=c++20 -O1 -Isrc tests/commands_test.cpp src/commands.cpp src/keymap.cpp src/json.cpp \
-  src/text_file.cpp src/config.cpp -o /tmp/commands_test.exe \
-  -static-libstdc++ -static-libgcc -lole32 -luuid -lshell32 -ladvapi32
+#   额外要 cmd_naming（FindCommand 双向解析），漏了报 AliasOf/LegacyOf 未定义。
+#   注意：本测试读的是 "data/keymap.json"（相对仓库根），**必须从仓库根跑**，
+#   不能像 keymap_test 那样 cd tests（那个读 "../data/keymap.json"）。
+"$CC" $FLAGS tests/commands_test.cpp src/commands.cpp src/keymap.cpp src/json.cpp \
+  src/text_file.cpp src/config.cpp src/str.cpp src/log.cpp src/platform_win.cpp \
+  src/cmd_naming.cpp $LIBS -o /tmp/commands_test.exe
 /tmp/commands_test.exe
 
 # 弹层行高：分隔线 2px、普通行 itemH、总高累加（不需要窗口）
-"$CC" -std=c++20 -O1 -DUNICODE -D_UNICODE -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 \
-  -D_WIN32_IE=0x0A00 -Isrc tests/popup_layout_test.cpp -o /tmp/popup_layout_test.exe
+#   要 icon_glyph（行高常量依赖 ico::Glyph 的字形度量）
+"$CC" $FLAGS tests/popup_layout_test.cpp src/icon_glyph.cpp $LIBS -o /tmp/popup_layout_test.exe
 /tmp/popup_layout_test.exe
 
+# 再点即收：开关/异键/嵌套/空键/失活判据（不需要窗口，纯逻辑）
+"$CC" $FLAGS tests/popup_toggle_test.cpp src/popup_toggle.cpp $LIBS -o /tmp/popup_toggle_test.exe
+/tmp/popup_toggle_test.exe
+
 # 清除历史：清完只剩当前目录一条、idx 收敛、前后退不可用（不需要窗口）
-"$CC" -std=c++20 -O1 -DUNICODE -D_UNICODE -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 \
-  -D_WIN32_IE=0x0A00 -Isrc tests/clear_history_test.cpp -o /tmp/clear_history_test.exe
+#   要 nav_history（History::Goto/ClearKeepingHere/Request 的实现）
+"$CC" $FLAGS tests/clear_history_test.cpp src/nav_history.cpp $LIBS -o /tmp/clear_history_test.exe
 /tmp/clear_history_test.exe
+
+# 导航栏输入语义：UNC/命名空间分段、粘贴路径剥引号、盘根与 UNC 的 Tab 补全切分
+"$CC" $FLAGS tests/nav_input_test.cpp $LIBS -o /tmp/nav_input_test.exe
+/tmp/nav_input_test.exe
+
+# 导航模型显示：此电脑/回收站的地址文本与面包屑显示友好名（不是 ">::>"）
+"$CC" $FLAGS tests/nav_model_test.cpp src/nav_model.cpp $LIBS -o /tmp/nav_model_test.exe
+/tmp/nav_model_test.exe
+
+# 统一显示名：历史/最近访问不显示裸 "::{GUID}"
+#   依赖链：ico::DisplayName → SHLoadIndirectString / SHParseDisplayName → ui::StockIcon
+"$CC" $FLAGS tests/display_name_test.cpp src/icon_resolve.cpp src/ui_draw.cpp \
+  src/icon_glyph.cpp src/text_file.cpp src/str.cpp src/log.cpp src/platform_win.cpp \
+  $LIBS -luser32 -lgdi32 -o /tmp/display_name_test.exe
+/tmp/display_name_test.exe
 
 # 静态对账：表 / keymap / 处理器三方一致 + keymap.gen.h 是否过期（不需要编译）
 python tools/check_commands.py
 ```
+
+> 以上每一条都在 2026-11-21 09:05 实测跑过（退出码 0）。**改动 `src/` 的依赖关系后要重测一遍**
+> —— 单测是直接链 `.cpp` 的，抽走一个符号就断，而主构建未必能暴露（PCH 会把缺失的
+> `#include` 补齐）。
+>
+> **工作目录不统一，是这里最容易踩的一脚**：
+> | 测试 | 从哪跑 | 为什么 |
+> |---|---|---|
+> | `keymap_test` / `sequence_test` | **`tests/`** | 默认路径写的是 `L"../data/keymap.json"` |
+> | `commands_test` | **仓库根** | 写的是 `L"data/keymap.json"` |
+> | 其余 | 哪都行 | 不读数据文件 |
+>
+> 写错目录的表现是"`load=0` + 退出码 2"，不是崩溃 —— 容易误判成"配置坏了"。
+> `run_all.sh` 会自动判：源码里出现 `L"../data/` 就去 `tests/` 跑，否则留在仓库根。
+> （判据必须看**字符串字面量**而不是注释 —— `commands_test` 的头注释里写着一句
+> "不是 `../data/...`"，按注释判会把目录判反，这一点在写脚本时真的踩过。）
 
 `commands_test` 与 `check_commands.py` 是"静默丢键"的守门员：keymap 里绑了目录里不存在的
 命令时，绑定阶段会被静默跳过（按了没反应、管理器里也看不到）。改命令目录或 keymap 后必跑。
@@ -163,7 +256,9 @@ python tools/gen_keymap.py --check    # 只校验是否过期（CI 用，过期�
 
 GUI 冒烟：先关掉正在运行的 ExBarBrowser（否则链接报 `Permission denied`），
 `EXBARBROWSER_MULTI=1 ./ExBarBrowser.exe C://Windows` 可与已有实例并存；
-检查 `%TEMP%\ExBarBrowser.log` 的 `[status]`（状态栏取数）与 `[seq]`/`[key]`（输入端）。
+**动作由人做**（不注入键鼠，见 §2.4），证据只读：
+检查 `%TEMP%\ExBarBrowser.log` 的 `[status]`（状态栏取数）与 `[seq]`/`[key]`（输入端），
+必要时 `python scripts\shot.py out.png` 留一张图。
 
 ---
 
@@ -184,7 +279,7 @@ EXCLUDE_PATTERNS = [
 ]
 ```
 
-> 早期版本这里是手写 `SOURCES` 列表，57 个文件后已成必冲突改动，且冲突解决不当时会
+> 早期版本这里是手写 `SOURCES` 列表，文件数过 50 后已成必冲突改动，且冲突解决不当时会
 > 静默漏文件（直到链接期才报未定义符号）。改成自动扫描后，多会话并行新增文件零冲突。
 
 3. 若引入新系统库，在 `build_fast.py` 的 `LIBS` 加 `-lxxx`。
@@ -253,7 +348,8 @@ Get-Content "$env:TEMP\ExBarBrowser.log" -Encoding Unicode -Tail 20
 std::vector<PopupRow> rows;
 rows.push_back({L"Windows", L"C:\\Windows", IconFor(L"C:\\Windows"),
                 /*folder=*/true, /*separator=*/false, /*disabled=*/false, /*data=*/0});
-int pick = ShowPopupList(hwnd_, *theme_, screenPt, rows, 180);   // 180 = 最小宽度(96dpi)
+// 末尾 "nav.drop" 是锚点键（见下"再点即收"）
+int pick = ShowPopupList(hwnd_, *theme_, screenPt, rows, 180, false, 20, L"nav.drop");
 if (pick >= 0) onNavigate_(rows[pick].path);
 FreeRows(rows);                                                  // 图标必须由调用方销毁
 ```
@@ -266,14 +362,89 @@ FreeRows(rows);                                                  // 图标必须
 | `rows` 是临时对象 | 崩溃或乱码（弹层只存指针） | 用局部 `std::vector`，活到函数返回 |
 | 忘了 `FreeRows` | HICON 泄漏（任务管理器 GDI 对象数持续涨） | 每个 `IconFor` 都要有对应 `DestroyIcon` |
 | 在 `WM_PAINT` 里弹 | 界面卡死/重绘风暴 | 只在鼠标/键盘事件里弹 |
-| 弹层"一闪就没" | `WM_ACTIVATE(WA_INACTIVE)` 立即关闭 | 检查 `SetForegroundWindow(owner)` 是否被前台锁定策略拒绝；调试时可临时屏蔽该分支 |
+| 弹层"一闪就没" | 松手瞬间自己关了 | 见下"开菜单那次点击的松开"；这是导航栏下拉最常见的症状 |
 | 行高不对 | 文字被裁/行过高 | `LB_SETITEMHEIGHT` 在 `LB_ADDSTRING` 之前设置；`PopupState::itemH` 用 `theme.S(24)` |
+| **再点一次又弹出来** | 箭头变回 ›，列表却还是弹出来 | 见下"再点即收"；**不要在调用点自己记 `lastOpenTick_`** |
+
+#### 开菜单那次点击的松开（"一闪而过"）
+
+**症状**：点导航栏任一下拉，弹层出现后立刻消失，肉眼就是"闪一下"。
+
+**真因**：导航栏各下拉在 **`WM_LBUTTONDOWN`** 里弹出（与资源管理器一致：按下即出，
+可以一路按住拖到想要的项上再松手）。弹层一创建就 `SetCapture(list)`，于是
+**同一次点击的松开**（`WM_LBUTTONUP`）会送到列表，而光标还停在锚点上 ——
+锚点在列表**之外**。旧逻辑把"UP 落在客户区外"一律当成"点了外面该收起"，
+菜单就在松手瞬间自己关掉了。
+
+关键认识：**这一次 UP 不是新点击，它是开菜单那次点击的后半截。**
+`TrackPopupMenu` 也是先等这一下松开，之后才把点击当作"关闭"。
+
+**判据**（`popup_list.h` 的 `PopupUpIsOpeningRelease`，纯函数可单测）：
+只有在**开菜单之后再没有按下过**（`downInList` / `downOutside` 都是 false）、
+且这笔 UP 落在客户区外时，才认定它是收尾并忽略。一旦用户重新按过（无论内外），
+后续 UP 都是真实点击，照常判定。
+
+右键一并接管（`WM_RBUTTON(DOWN|UP)`）：右键菜单开着时用户的下一手可能是右键点别处，
+不接管这条消息会漏给 ListBox 默认处理，行为不可控。右键落在菜单内**只关菜单不选行**
+（与 `TrackPopupMenu` 同语义 —— 右键是"另起一次操作"，不该顺手执行当前项）。
+
+#### 再点即收（`toggleKey`）
+
+契约：**弹层开着时点它的锚点，收起；不重开。**
+
+**真因是关闭时机，不是"连点判据"。** 系统在派发点击之前**同步**给弹层发
+`WM_ACTIVATE(WA_INACTIVE)`。若在此刻 `PostMessage(WM_CLOSE)`，这条消息会排在
+`LBUTTONDOWN/LBUTTONUP` 之前被模态循环取走：
+
+```
+① 点书签栏/面包屑 → 系统同步发 WM_ACTIVATE(WA_INACTIVE)
+② 弹层在此 PostMessage(WM_CLOSE) → 入队
+③ 这次点击的 LBUTTONDOWN / LBUTTONUP 才入队
+④ 模态循环先吃 WM_CLOSE → DestroyWindow → 捕获释放
+⑤ 剩下的 LBUTTONUP 落到锚点控件
+⑥ 各栏都在 UP 里执行动作 → 又调一次 Show* → 菜单"关了又开"
+```
+
+**关键事实：鼠标捕获不阻止激活切换。** 弹层是 `WS_POPUP` 顶层窗口，点主窗任一子控件
+都会让主窗激活、弹层失活，哪怕捕获仍在弹层手里。前几轮修法假定"持捕获就安全"，
+那个前提不成立 —— 所以基于它的时间窗（`400ms`）方案必然失效：用户是"看一眼再点"，
+间隔 1~2 秒，窗口早已过期。
+
+正确做法（对齐 `TrackPopupMenu` / 组合框下拉）：**失活时按判据分流**
+（`popup::ShouldCloseOnDeactivate`，见 `popup_toggle.h`）：
+
+| 条件 | 处置 |
+|---|---|
+| 持捕获 + 前景窗同线程（点的是本程序另一个窗口） | **不关**。这组 DOWN/UP 由 `ListSubclass` 吞着，等 UP 判到"点在列表外"再关。锚点收不到点击，重开在消息层不可能发生 —— 与隔多久点无关 |
+| 其余（点别的程序 / Alt+Tab / 捕获已被抢走） | 关。这类失活不会再有 UP 回到手上，留着就是关不掉的菜单 |
+
+配套两条：
+
+- `ListSubclass::WM_CAPTURECHANGED` 区分"LISTBOX 自己 SetCapture"（忽略）与
+  "被别人抢走"（关）—— 后者收不到 UP，不关就是僵尸菜单。
+- 外点的 DOWN 只记 `downOutside`，等 **UP** 才关并释放捕获。少吞 UP 的话，
+  各栏会在 UP 里执行动作，于是"收起菜单"会顺带打开那个书签、切走那个标签。
+
+`popup_toggle` 只回答"某锚点的弹层是否开着"，用于 `Show*` 兜底（键盘/命令重入）
+与面包屑箭头形态（› / ⌄）。
+
+规则：
+
+- **每个弹层调用点都要传锚点键**，同一个控件的同一下拉传同一个串。
+- 带索引的位置把索引编进去（`nav.crumb.3`、`tab.menu.1`）——
+  `nav.crumb.3` 与 `nav.crumb.5` 是两个不同锚点。
+- 有稳定 id 的（书签）**用 id 不用下标**：重排后下标会漂。
+- 传 `nullptr` = 不参与判定。只在"根本不存在同一个锚点"时用。
+
+有**可见状态**要置位的调用方（地址栏箭头 › → ⌄）先判 `popup::IsOpen(key)` 再置位，
+`nav_bar_actions.cpp` 的 `ShowChildMenu` 是范例。
 
 调试提示：`ShowPopupList` 内部是**嵌套消息循环**，断点停在里面时主窗口仍在处理消息（可能重绘、
 可能切标签）。单步时不要假设"程序暂停了世界"。`Esc`/`Enter` 在 `ListSubclass` 里处理，
 方向键由 `LISTBOX` 默认处理——要加 `Home`/`End`/`PageUp` 就在这里加。
 
 目前**不支持二级弹出**：`PopupRow::folder` 只画 chevron，点击等于直接选中该行。
+（"再点即收"不是二级弹出 —— 它管的是同一个锚点的开关，不是往右再开一层。）
 
 ---
 

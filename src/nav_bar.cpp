@@ -10,6 +10,7 @@
 namespace {
 
 WNDPROC g_oldEditProc = nullptr;
+WNDPROC g_oldSearchProc = nullptr;
 
 }  // namespace
 
@@ -40,7 +41,11 @@ void NavBar::Create(HWND parent, const Theme& theme) {
     }
 
     BuildButtons();
+    SearchCreate();
     Layout();
+    // Layout 在"路径为空/正处于编辑态"时会提前返回，那时按钮提示还没建起来。
+    // 这里显式补一次：冷启动第一帧就应当有提示，而不是等第一次导航。
+    RebuildTooltip();
 }
 
 void NavBar::BuildButtons() {
@@ -57,12 +62,44 @@ void NavBar::BuildButtons() {
 void NavBar::SetPath(const std::wstring& path, const std::wstring& display) {
     model_.SetPath(path, display);
     UpdateLeadIcon();
-    // 可用态与命令前置检查（Req::CanGoUp）读同一个函数：
-    // 按钮灰显 == "点不动"，绝不允许"亮着但没反应"。
-    for (auto& b : buttons_)
-        if (b.id == kUp) b.enabled = nav::CanNavigateUp(model_.path());
+    // "向上"由路径唯一推导（nav::CanNavigateUp，盘根 -> 此电脑）。
+    // 后退/前进不在这里碰：它们由 SetNavState 提供，详见该函数注释。
+    state_.canUp = nav::CanNavigateUp(model_.path());
+    for (auto& b : buttons_) {
+        if (b.id == kUp) b.enabled = state_.canUp;
+    }
     Layout();
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void NavBar::SetNavState(const NavState& st) {
+    // canUp 以路径推导为准：外部传错不会让按钮与实际去向分叉
+    // （"能不能上"只有一个判据，见 nav::UpTarget）。
+    state_.canBack = st.canBack;
+    state_.canForward = st.canForward;
+    state_.canUp = nav::CanNavigateUp(model_.path());
+    bool changed = false;
+    for (auto& b : buttons_) {
+        bool want = b.enabled;
+        if (b.id == kBack) want = state_.canBack;
+        else if (b.id == kForward) want = state_.canForward;
+        else if (b.id == kUp) want = state_.canUp;
+        if (want != b.enabled) {
+            b.enabled = want;
+            changed = true;
+        }
+    }
+    // 按下态如果对应按钮刚好被禁用（例如后退后历史用尽），保留会让它一直画成
+    // pressed —— 抬起事件可能已经落在别的地方了。
+    if (changed && downBtn_) {
+        for (const auto& b : buttons_)
+            if (b.id == downBtn_ && !b.enabled) { downBtn_ = 0; break; }
+    }
+    if (changed && hwnd_) {
+        // 提示文案带可用态（"（当前不可用）"），状态一变就要重建。
+        RebuildTooltip();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
 }
 
 void NavBar::UpdateLeadIcon() {
@@ -83,8 +120,40 @@ void NavBar::ReloadTheme() {
         SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(theme_->font), TRUE);
         win::ThemeControl(edit_, theme_->dark, L"CFD");
     }
+    // 提示窗宽度按 DPI 缩放 → 重建（TooltipHost 析构会销毁旧窗）
+    tooltip_ = ui::TooltipHost();
     Layout();
     InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
+void NavBar::RebuildTooltip() {
+    if (!hwnd_) return;
+    // 走唯一实现（TooltipHost）；宽度按 DPI 缩放，翻页/换盘符的长提示才不会被截断。
+    tooltip_.Attach(hwnd_, theme_->S(420));
+    struct Tip {
+        int id;
+        const wchar_t* label;
+    };
+    static const Tip kTips[] = {
+        {kBack, L"后退 (Alt+←)"},
+        {kForward, L"前进 (Alt+→)"},
+        {kUp, L"向上一级 (Alt+↑)"},
+        {kRefresh, L"刷新 (F5)"},
+        {kView, L"视图与排序"},
+    };
+    std::vector<ui::TooltipHost::Item> items;
+    for (const auto& t : kTips) {
+        for (const auto& b : buttons_) {
+            if (b.id != t.id) continue;
+            // 灰掉的按钮也要提示 —— 但要说清"为什么点不动"。
+            // 只提示动作名会让用户以为程序卡了（按钮画着禁用色却写着"后退"）。
+            std::wstring text = t.label;
+            if (!b.enabled) text += L"（当前不可用）";
+            items.push_back({b.rc, text});
+            break;
+        }
+    }
+    tooltip_.SetTools(items);
 }
 
 void NavBar::FocusAddress() { BeginEdit(); }
@@ -116,6 +185,105 @@ LRESULT CALLBACK NavBar::EditProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_CHAR && (w == L'\r' || w == L'\t')) return 0;
     if (m == WM_KILLFOCUS && self && self->editing_) self->EndEdit();
     return CallWindowProcW(g_oldEditProc, h, m, w, l);
+}
+
+LRESULT CALLBACK NavBar::SearchProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    auto* self = GetThis<NavBar>(GetParent(h));
+    if (m == WM_KEYDOWN && self) {
+        if (w == VK_RETURN) {
+            self->CommitSearch();
+            return 0;
+        }
+        if (w == VK_ESCAPE) {
+            // Esc：清掉搜索词并收起搜索框，把目录还原。
+            // 不这么做的话"搜过一次"就再也没有回到原目录的路径了
+            // （地址框显示的还是原路径，但列表是筛选后的结果）。
+            self->ShowSearch(false);
+            return 0;
+        }
+        if (w == VK_TAB) {
+            self->ShowSearch(false);   // Tab 离开搜索，别把它变成死键
+            return 0;
+        }
+    }
+    if (m == WM_CHAR && (w == L'\r' || w == L'\t')) return 0;
+    return CallWindowProcW(g_oldSearchProc, h, m, w, l);
+}
+
+void NavBar::SearchCreate() {
+    search_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL | ES_LEFT, 0, 0, 10,
+                              10, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!search_) return;
+    SendMessageW(search_, WM_SETFONT, reinterpret_cast<WPARAM>(theme_->font), TRUE);
+    win::ThemeControl(search_, theme_->dark, L"CFD");
+    // 提示文本用 EM_SETCUEBANNER：不占内容，用户一打字就消失（不是真值）。
+    SendMessageW(search_, EM_SETCUEBANNER, TRUE,
+                 reinterpret_cast<LPARAM>(L"搜索当前目录（回车执行，Esc 取消）"));
+    // 子类化以接 Enter/Esc —— 与地址框同一套做法（原生 EDIT 不会替我们处理）。
+    g_oldSearchProc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(search_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(SearchProc)));
+    ShowWindow(search_, SW_HIDE);   // 默认不占位，Ctrl+F 才出现
+}
+
+void NavBar::LayoutSearch(int fieldRight, int fy, int fieldH) {
+    if (!search_ || !searchVisible_) {
+        if (search_) ShowWindow(search_, SW_HIDE);
+        return;
+    }
+    // 搜索框占地址框右侧约 1/3（不低于 160dp）。地址框让出这段宽度：
+    // 两者互斥摆放比"搜索浮在地址框上"更好 —— 浮着会遮住路径尾部，
+    // 而尾部恰恰是用户判断"我在哪一层"的地方。
+    const int minW = theme_->S(160);
+    const int w = std::max(minW, (fieldRight - fieldRc_.left) / 3);
+    searchRc_ = {fieldRight - w, fy, fieldRight, fy + fieldH};
+    ShowWindow(search_, SW_SHOW);
+    int eW = searchRc_.right - searchRc_.left - theme_->S(8);
+    int lineH = searchRc_.bottom - searchRc_.top - theme_->S(kFieldVPad96) * 2;
+    MoveWindow(search_, searchRc_.left + theme_->S(4), searchRc_.top + theme_->S(kFieldVPad96),
+               eW > 0 ? eW : 0, lineH > 0 ? lineH : 0, TRUE);
+}
+
+void NavBar::ShowSearch(bool show) {
+    if (!search_) return;
+    if (!show) {
+        SetWindowTextW(search_, L"");
+        searchText_.clear();
+        // 收起时清空搜索 → 目录还原。这是 Esc 的语义，也是"右上角没框了
+        // 但列表还是筛选结果"这种鬼状态的唯一出路。
+        if (onSearch_) onSearch_(std::wstring());
+    }
+    searchVisible_ = show;
+    Layout();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    if (show && search_) {
+        SetFocus(search_);
+        SendMessageW(search_, EM_SETSEL, 0, -1);
+    }
+}
+
+void NavBar::FocusSearch() {
+    if (!hwnd_) return;
+    // 已有搜索词时保留它（用户按 Ctrl+F 多半是想改一下条件，不是从头来）。
+    ShowSearch(true);
+    if (search_ && !searchText_.empty()) {
+        SetWindowTextW(search_, searchText_.c_str());
+        SendMessageW(search_, EM_SETSEL, 0, -1);
+    }
+}
+
+bool NavBar::IsSearching() const { return searchVisible_ && !searchText_.empty(); }
+
+void NavBar::CommitSearch() {
+    if (!search_) return;
+    const int n = GetWindowTextLengthW(search_);
+    std::wstring q(static_cast<size_t>(n) + 1, L'\0');
+    if (n > 0) GetWindowTextW(search_, q.data(), n + 1);
+    q.resize(static_cast<size_t>(n));
+    searchText_ = str::Trim(q);
+    if (onSearch_) onSearch_(searchText_);
+    // 回车后焦点还给视图：搜索结果是文件列表，下一步操作（方向键/Delete）
+    // 应该在列表上，而不是继续留在输入框里。
+    if (parent_) PostMessageW(GetAncestor(hwnd_, GA_ROOT), WM_APP_REFOCUS, 0, 0);
 }
 
 LRESULT NavBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -160,22 +328,50 @@ LRESULT NavBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
     }
-    case WM_LBUTTONUP:
-        if (downBtn_) {
-            downBtn_ = 0;
-            InvalidateRect(h, nullptr, FALSE);
-        }
+    case WM_LBUTTONUP: {
+        // 动作在这里执行（DOWN 只画按下态）。抬起点必须仍落在同一颗按钮上 ——
+        // 按下后拖出去再松手 = 取消，这是所有按钮控件的标准语义。
+        const int btn = downBtn_;
+        downBtn_ = 0;
+        // 先清状态再释放捕获：ReleaseCapture 会**同步**派发 WM_CAPTURECHANGED，
+        // 那里的复位逻辑看到 downBtn_ 已为 0 就不会再动一次。
+        if (GetCapture() == h) ReleaseCapture();
+        if (!btn) return 0;
+        InvalidateRect(h, nullptr, FALSE);
+
+        int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
+        if (HitButton(x, y) != btn) return 0;   // 拖出去了：取消
+
+        const Btn* b = nullptr;
+        for (const auto& it : buttons_)
+            if (it.id == btn) b = &it;
+        if (!b || !b->enabled) return 0;
+
+        POINT pt{x, y};
+        ClientToScreen(h, &pt);
+        if (btn == kBack && onBack_) onBack_();
+        else if (btn == kForward && onForward_) onForward_();
+        else if (btn == kUp && onUp_) onUp_();
+        else if (btn == kRefresh && onRefresh_) onRefresh_();
+        else if (btn == kView) ShowViewMenu(pt);
         return 0;
+    }
     case WM_MOUSELEAVE:
         tracking_ = false;
         hoverBtn_ = 0;
+        // 按住按钮把光标拖出栏外时**不清 downBtn_**：抬起点是否还在按钮上由
+        // WM_LBUTTONUP 判定（不在就是取消）。这里清掉会让"拖出去再拖回来"丢状态。
+        hotMore_ = hotDrop_ = false;
+        hotSeg_ = hotChev_ = -1;
+        InvalidateRect(h, nullptr, FALSE);
+        return 0;
+    case WM_CAPTURECHANGED:
+        // 捕获被抢走（弹层/切窗口）：按下态必须复位，否则残留的 downBtn_
+        // 会让下一次无关的抬起触发一次导航。
         if (downBtn_) {
             downBtn_ = 0;
             InvalidateRect(h, nullptr, FALSE);
         }
-        hotMore_ = hotDrop_ = false;
-        hotSeg_ = hotChev_ = -1;
-        InvalidateRect(h, nullptr, FALSE);
         return 0;
     case WM_LBUTTONDOWN: {
         int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
@@ -192,18 +388,19 @@ LRESULT NavBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         int btn = HitButton(x, y);
         if (btn) {
-            downBtn_ = btn;  // 按下反馈；动作仍在 down 触发（与 mod 的即时响应一致）
+            // 只记"按下了哪一颗"，动作留到 WM_LBUTTONUP 再执行。
+            //
+            // 【为什么必须改成 UP 触发】本工程其余所有控件（标签、书签、状态栏段）
+            // 都在 UP 里执行动作，弹层的"点别处只关菜单、不触发那个控件"也是
+            // 靠这一点成立的。导航按钮原来是 DOWN 触发 —— 于是菜单开着时点它，
+            // 会"关菜单 + 立刻导航"两件事一起发生，而用户的本意通常只是关菜单。
+            // UP 触发还顺手拿到"按下后拖出去 = 取消"这个标准行为。
+            downBtn_ = btn;
+            // 捕获：按下后把光标拖出栏外再拖回来，抬起时仍能正确判定
+            // （不捕获的话 WM_MOUSELEAVE 会清掉 downBtn_，拖回来时按钮已经"松开"了，
+            // 而光标下看起来还是按着的 —— 典型的手感 bug）。
+            SetCapture(h);
             InvalidateRect(h, nullptr, FALSE);
-            const Btn* b = nullptr;
-            for (const auto& it : buttons_)
-                if (it.id == btn) b = &it;
-            if (b && b->enabled) {
-                if (btn == kBack && onBack_) onBack_();
-                else if (btn == kForward && onForward_) onForward_();
-                else if (btn == kUp && onUp_) onUp_();
-                else if (btn == kRefresh && onRefresh_) onRefresh_();
-                else if (btn == kView) ShowViewMenu(pt);
-            }
             return 0;
         }
         if (HitMore(x, y)) {
@@ -234,7 +431,18 @@ LRESULT NavBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (sink_ && sink_(NavTargetAt(x, y), m, MBTN_RIGHT, CurrentMods(), pt)) return 0;
 
         int btn = HitButton(x, y);
-        if (btn == kBack || btn == kForward) ShowHistoryMenu(btn == kBack, pt);
+        if (btn == kBack || btn == kForward) {
+            ShowHistoryMenu(btn == kBack, pt);
+            return 0;
+        }
+        // 面包屑段右键：作用于"右键的那一段"，不是当前目录。
+        // 以前这里什么都不做 —— 用户想「复制 D:\ 的路径」只能先导航过去。
+        // Opus / TC / XYplorer 的面包屑右键都是段级菜单。
+        const int seg = HitSeg(x, y);
+        if (seg >= 0) {
+            ShowSegmentMenu(seg, pt);
+            return 0;
+        }
         return 0;
     }
     case WM_MBUTTONDOWN: {
@@ -337,6 +545,9 @@ void NavBar::Layout() {
     }
 
     ReleaseDC(hwnd_, dc);
+    // 按钮矩形刚刚重算：提示热区必须跟着走，否则窗口缩放后气泡落在旧位置
+    // （表现是"鼠标停在按钮上没提示，停在旁边的空白处却提示"）。
+    RebuildTooltip();
 }
 
 int NavBar::HitButton(int x, int y) const {

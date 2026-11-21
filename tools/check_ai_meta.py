@@ -11,8 +11,26 @@
   4. needsSelection 的命令不应暴露（AI 无法用参数指定目标）
   5. 无参数命令的 schema 应显式写 additionalProperties:false
      （MCP 规范：空 schema 的语义是"接受任意参数"，是不安全的默认值）
+   ...
+ 15. 人机等价（R20）：每个 aiExposed 命令都必须有人工可达路径，
+     且**带必填参数的命令必须有一条路径真能把参数递进去**
 
 不需要编译，纯文本对账。用法：python tools/check_ai_meta.py
+
+## 为什么解析要按结构切、不按正则匹配整行
+
+早先的写法是一条正则匹配"整行条目"，其中 argsSchema 位置被钉死成
+`"..."` 字符串字面量。2026-11-20 把 119 条无参 schema 提取成 `kNoArgs`
+常量后，整行正则一条也匹配不上（140 条只命中 21 条），而脚本仍然打印
+"全部通过" —— 检查面静默缩水 85%，分母从 140 掉到 21，没有任何报错。
+
+所以现在改成：
+  · 定位 `kTable` 初始化列表，按顶层花括号切条目、按顶层逗号切字段；
+  · 字段值可以是字符串字面量，也可以是常量名（`kNoArgs`），常量再去
+    `constexpr const char* NAME = ...` 的定义处取值；
+  · 额外硬断言"解析出的条目数 == CmdId:: 出现次数"，任何解析退化当场报错。
+
+这样以后表里换任何常量名、加任何新字段，都不会再让检查静默失效。
 """
 import json
 import re
@@ -22,6 +40,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 COMMANDS = ROOT / 'src/commands.cpp'
 HANDLERS_GLOB = 'app_commands*.cpp'
+KEYMAP_JSON = ROOT / 'data/keymap.json'
+INPUT_ROUTER = ROOT / 'src/input_router.cpp'
+KEYMAP_CPP = ROOT / 'src/keymap.cpp'
 
 g_fail = 0
 
@@ -49,6 +70,122 @@ KNOWN_NO_TARGET = {
     'path.copy.link',
 }
 
+# R20 的判定分两条路，因为"可达"有两种不同含义：
+#
+#   A. **无必填参数**的命令 → 命令面板（Ctrl+Shift+P）列出全部已实现命令并
+#      以 Args::Empty() 调用，人点得到、点了能成。这条是**机制保证**，不需要
+#      逐条登记：只要 implemented=true 就自动满足。palette_covers() 负责判定。
+#
+#   B. **有必填参数**的命令 → 命令面板那条路点了必然失败（拿不到参数），
+#      所以必须另有一条真能把参数递进去的路：热键内联参数（"view.mode:3"）、
+#      带参的源码调用，或者本表登记的界面路径。
+#
+# 本表只为 B 里"参数来自界面而不是来自命令规格"的那些准备。写清三件事：
+# 界面位置、触发动作、参数从哪儿来。只写"菜单里有"不算 —— 那只证明菜单存在，
+# 不证明能力等价。
+HUMAN_PATH = {
+    'tab.rename': '标签右键菜单「重命名标签页...」→ App::ShowTabMenu(kTabMenuRename) '
+                  '→ PromptText（参数 name 来自输入框）→ App::RenameTab',
+    'tab.color': '标签右键菜单「设置标签页颜色」→ 二级色板（参数 color 来自选中的那一行）'
+                 '→ WM_APP_TAB_COLOR → App::ShowTabColor → App::SetTabColor',
+    'tab.activate': '鼠标点标签栏任意标签（TabStrip 命中测试 → NotifySelect），'
+                    '参数 index 就是被点中的那一格',
+    'fs.open': '文件视图双击条目 / 回车（参数 path 即被双击的项）',
+    'fs.open.tab': '文件视图 Ctrl+回车 / 中键（参数 path 即被点的项）',
+    'fs.open.window': '文件视图 中键 / 右键「在新窗口中打开」（参数 path 即被点的项）',
+
+    # 书签的结构化参数由拖放/右键给出 —— 与 fs.open 那批同理：
+    # 人用"拖进去"，机器用"点名 path"，同一份实现（App 的 BmkAdd handler）。
+    'bmk.add.path': '从资源管理器把目录拖到书签栏（参数 path 即被拖入的目录），'
+                    '或右键「添加当前目录为书签」；两者最终都调 BmkAdd',
+    'bmk.move': '在书签栏上拖拽重排 / 拖进分类（参数 id 是被拖的那条，'
+                'toId/toIndex 是落点），DropTargetAt 算出落点后调 BmkMove',
+
+    # 下面这些是"确定式双胞胎"：机器用参数点名目标，人用"先选中、再执行"。
+    # 同一个能力两条入口，参数来源不同但结果等价 —— 这正是第 4 步
+    # （交互与确定分离）的设计，不是缺口。
+    'fs.rename': 'F2 → CmdRename（参数 target 取当前选中项，newName 来自系统改名框）；'
+                 '确定式版由 shell_ops::RenameTo 实现同一件事',
+    'fs.delete': 'Delete 键 → CmdDelete（参数 targets 取当前选中集合）；'
+                 '确定式版由 shellops::SelectByPaths + DeleteSelection 实现同一件事',
+    'fs.copy': 'Ctrl+Shift+A → CopyToFolder（参数 targets 取选中集合，to 来自文件夹选择框）；'
+               '确定式版由 App::TransferTargets 实现同一件事',
+    'fs.move': 'Ctrl+Shift+X → MoveToFolder（同上，move=true）',
+    'fs.copy.toclip': 'Ctrl+C → CmdCopy（参数 targets 取选中集合，写同一份剪贴板）',
+    'fs.cut.toclip': 'Ctrl+X → CmdCut（同上，带 DROPEFFECT_MOVE）',
+    # 属性没有独立热键（Alt+Enter 未绑定，核实过 keymap.json 与 kExtra 都没有）。
+    # 真实入口是状态栏"选中容量"段：点它 = 对选中项看属性（app.cpp 的 SetClickFn）。
+    # 前提是该段启用（statusSegs 默认含 Seg_Size=5）。
+    'fs.properties': '状态栏「选中容量」段点击 → CmdProps（参数 target 取选中项）；'
+                     '默认配置 statusSegs={0..6} 含该段。注意没有 Alt+Enter 绑定',
+    'tool.stat': '状态栏「选中容量」段 + 详细信息视图列展示同一组字段'
+                 '（名称/大小/类型/隐藏/只读）',
+}
+
+# 机器专用查询：人能通过命令面板触发，但拿到的是 JSON（写进审计日志），
+# 界面上没有可见结果。它们**不是**违规 —— 这类命令存在的意义就是把结构化
+# 数据交给 agent（第 5 步的 OpListDir/OpStat 就是为此而加）。登记在这里
+# 是为了让"人点了看不到东西"这件事是已知的，而不是被当成 bug 反复排查。
+AI_ONLY_QUERIES = {
+    'tool.list': '返回当前目录的条目数组；人的等价物是直接看文件列表',
+    'tool.topn': '返回最大的 N 项；界面上没有"按体积排序"的视图',
+    'tool.diskusage': '返回目录总占用；界面上没有这个读数',
+}
+
+# 界面上存在的动作 → 覆盖它的命令别名（None = 已知缺口，待补命令）。
+#
+# 【为什么需要这张表】前 15 项检查的是 **AI → 人**：暴露出去的每条命令
+# 人都得能调（R20）。反方向 **人 → 结构化** 从来没查过 —— 于是"右键菜单里
+# 写了就完事"的动作会变成 UI 私有代码：快捷键绑不上、命令面板搜不到、
+# 外部脚本与 AI 都够不着，而且**没有任何检查会报**。
+#
+# 补一条命令时把这里的 None 换成别名；改命令名时这里会立刻红（别名找不到），
+# 不会出现"登记过 = 问题解决了"的假象。
+#
+# 实测依据：这 5 条 Bookmark 动作的 store 调用（Remove / AddFolder /
+# ReplaceAll / Undo）在 bookmark_bar.cpp 之外**零调用点**，命令层根本够不到。
+# 可写的界面状态 → 必须能从 exbar/state 回读（第 17 项的判据表）。
+# 左边是 StateSnapshot 字段名（同时也是 StateToJson 的 JSON 键），右边写清
+# "哪条命令会改它" —— 这样报错时能直接指出该补哪条链路。
+WRITABLE_STATE = [
+    ('sortMode', 'view.sort'),
+    ('groupBy', 'view.group'),
+    ('bookmarkBarVisible', 'bmk.show / bmk.hide / bmk.toggle'),
+    ('navPaneVisible', 'view.toggle.nav'),
+    ('previewPaneVisible', 'view.toggle.preview'),
+]
+
+MENU_ACTIONS = {
+    # ---- 标签右键菜单（tab_strip_actions.cpp 的 ui::Menu 链）----
+    '标签·新建标签页': 'tab.new',
+    '标签·关闭': 'tab.close',
+    '标签·关闭其他': 'tab.close.others',
+    '标签·关闭左侧': 'tab.close.left',
+    '标签·关闭右侧': 'tab.close.right',
+    '标签·关闭重复标签页': 'tab.close.duplicates',
+    '标签·重命名标签页': 'tab.rename',
+    '标签·设置标签页颜色': 'tab.color',
+    '标签·复制标签': 'tab.clone',
+    '标签·复制路径': 'path.copy',
+    '标签·锁定': 'tab.lock',
+    '标签·复制标签名': 'tab.copy.title',
+    '标签·向左移动': 'tab.move.left',
+    '标签·向右移动': 'tab.move.right',
+    '标签·移动到开头': 'tab.move.first',
+    '标签·移动到末尾': 'tab.move.last',
+    '标签·重新打开关闭的标签': 'tab.reopen',
+    # ---- 书签右键菜单（bookmark_bar.cpp 的 ShowItemMenu）----
+    '书签·添加当前目录为书签': 'bmk.add.current',
+    '书签·新建分类': 'bmk.newfolder',
+    '书签·撤销删除': 'bmk.undo',
+    '书签·按名称排序（含分类内）': 'bmk.sort',
+    '书签·清理重复书签': 'bmk.dedupe',
+    '书签·清除全部书签': 'bmk.clear',
+    '书签·隐藏书签栏': 'bmk.hide',
+    '书签·编辑': 'bmk.edit',
+    '书签·删除': 'bmk.remove',
+}
+
 
 def fail(msg):
     global g_fail
@@ -60,38 +197,237 @@ def ok(msg):
     print(f'  ok     {msg}')
 
 
-# 形如： {CmdId::X, L"X", L"Group", L"标签栏", L"Title", true,
-#         Effects{0, 0, 0, 0, 0, Scope::App}, "{...}", true, false[, Requirements{...}]},
-# 末尾的 Requirements 是可选的，所以不锚定 '}'，只锚定到 needsSelection 字段。
-ENTRY = re.compile(
-    r'\{CmdId::(\w+),\s*L"([^"]*)",\s*L"([^"]*)",\s*L"([^"]*)",\s*L"([^"]*)",\s*'
-    r'(true|false),\s*Effects\{(\d), (\d), (\d), (\d), (\d), Scope::(\w+)\},\s*'
-    r'"((?:[^"\\]|\\.)*)",\s*(true|false),\s*(true|false)'
-)
+# ---------------------------------------------------------------- 结构解析
+#
+# kTable 是一串 `{...},` 条目，每个条目的字段按 CommandDef 的声明顺序排列：
+#   id, name, group, scopeUi, title, implemented, effects,
+#   argsSchema, aiExposed, needsSelection [, Requirements{...}] [, outputSchema]
+#
+# 字段值可能含逗号（Effects{0, 0, ...}）与花括号（Requirements{...}），
+# 所以必须深度感知地切，不能用 split(',')。
+
+def _strip_comments(text):
+    """去掉 // 行注释与 /* */ 块注释，但不动字符串里的内容。
+
+    必须做：表里有多行注释块，注释里出现的 `{`/`}` 会把深度算错。
+    """
+    out = []
+    i, n = 0, len(text)
+    in_str = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == '\\' and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == '/' and i + 1 < n and text[i + 1] == '/':
+            while i < n and text[i] != '\n':
+                i += 1
+            continue
+        if c == '/' and i + 1 < n and text[i + 1] == '*':
+            j = text.find('*/', i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
+
+def _split_top_level(text, sep=','):
+    """按顶层分隔符切分，跳过 {} () [] 内部与字符串内部。"""
+    parts, cur = [], []
+    depth = 0
+    in_str = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if in_str:
+            cur.append(c)
+            if c == '\\' and i + 1 < len(text):
+                cur.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+            cur.append(c)
+        elif c in '{([':
+            depth += 1
+            cur.append(c)
+        elif c in '})]':
+            depth -= 1
+            cur.append(c)
+        elif c == sep and depth == 0:
+            parts.append(''.join(cur).strip())
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    tail = ''.join(cur).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _html_block(text, start):
+    """从 start（指向 '{'）取出配平的一段，返回 (内容, 结束位置)。"""
+    depth = 0
+    in_str = False
+    i = start
+    while i < len(text):
+        c = text[i]
+        if in_str:
+            if c == '\\':
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:i], i + 1
+        i += 1
+    return None, i
+
+
+def _string_constants(text):
+    """收集 `constexpr const char* NAME = R"(..)"` / `= ".."` 这类常量定义。
+
+    这是让 argsSchema 位置可以写常量名的前提（kNoArgs 就是这么来的）。
+    """
+    consts = {}
+    for m in re.finditer(
+            r'constexpr\s+const\s+char\*\s*(\w+)\s*=\s*(R"\((.*?)\)"|"((?:[^"\\]|\\.)*)")',
+            text, re.S):
+        name, raw, lit = m.group(1), m.group(2), m.group(3)
+        if raw is not None:
+            consts[name] = m.group(3)
+        else:
+            consts[name] = lit.replace('\\"', '"').replace('\\\\', '\\')
+    return consts
+
+
+def _string_literal(field, consts):
+    """把字段值解成字符串：字面量直接解，常量名查表。解析不到返回 None。"""
+    field = field.strip()
+    if field.startswith('"'):
+        m = re.fullmatch(r'"((?:[^"\\]|\\.)*)"', field)
+        if not m:
+            return None
+        return m.group(1).replace('\\"', '"').replace('\\\\', '\\')
+    if field.startswith('R"('):
+        m = re.fullmatch(r'R"\((.*)\)"', field, re.S)
+        return m.group(1) if m else None
+    return consts.get(field)
+
+
+def _wstring(field):
+    """解 L"..." 形式的宽字符串字面量。"""
+    m = re.fullmatch(r'L"((?:[^"\\]|\\.)*)"', field.strip())
+    return m.group(1) if m else None
+
+
+def _body_of(text, name, kind='struct'):
+    """取 `kind name { ... }` 的函数体/结构体体（用于读 Requirements 之类）。"""
+    idx = text.find(name)
+    if idx < 0:
+        return ''
+    brace = text.find('{', idx)
+    if brace < 0:
+        return ''
+    body, _ = _html_block(text, brace)
+    return body or ''
 
 
 def parse_commands():
-    text = COMMANDS.read_text(encoding='utf-8')
+    raw = COMMANDS.read_text(encoding='utf-8')
+    text = _strip_comments(raw)
+    consts = _string_constants(text)
+
+    m = re.search(r'std::vector<CommandDef>\s+kTable\s*=\s*\{', text)
+    if not m:
+        return [], text, consts
+    start = m.end() - 1
+    inner, _ = _html_block(text, start)
+    if inner is None:
+        return [], text, consts
+
     out = []
-    for m in ENTRY.finditer(text):
-        (cid, name, group, scopeui, title, impl,
-         ro, de, idem, ow, undo, sc, schema, exposed, sel) = m.groups()
+    i = 0
+    while i < len(inner):
+        c = inner[i]
+        if c != '{':
+            i += 1
+            continue
+        entry, end = _html_block(inner, i)
+        if entry is None:
+            break
+        i = end
+        fields = _split_top_level(entry)
+
+        # 至少要有 id..needsSelection 十个字段，否则不是命令条目
+        mm = re.match(r'CmdId::(\w+)', fields[0]) if fields else None
+        if not mm:
+            continue
+        cid = mm.group(1)
+        name = _wstring(fields[1]) if len(fields) > 1 else None
+        group = _wstring(fields[2]) if len(fields) > 2 else None
+        scopeui = _wstring(fields[3]) if len(fields) > 3 else None
+        title = _wstring(fields[4]) if len(fields) > 4 else None
+        impl = fields[5].strip() == 'true' if len(fields) > 5 else False
+        eff = fields[6] if len(fields) > 6 else ''
+        em = re.search(r'Effects\{(.*)\}', eff, re.S)
+        nums = [x.strip() for x in em.group(1).split(',')] if em else []
+        ro = de = idem = ow = undo = '0'
+        scope = 'App'
+        if len(nums) >= 6:
+            ro, de, idem, ow, undo = nums[:5]
+            sm = re.search(r'Scope::(\w+)', nums[5])
+            scope = sm.group(1) if sm else 'App'
+        schema = _string_literal(fields[7], consts) if len(fields) > 7 else None
+        exposed = fields[8].strip() == 'true' if len(fields) > 8 else False
+        sel = fields[9].strip() == 'true' if len(fields) > 9 else False
+
+        # 尾部可选：Requirements{...} / outputSchema（顺序由 struct 声明决定）
+        reqs, outschema = [], None
+        for f in fields[10:]:
+            f = f.strip()
+            if f.startswith('Requirements'):
+                rm = re.search(r'Requirements\{(.*)\}', f, re.S)
+                if rm:
+                    reqs = [x.strip() for x in rm.group(1).split(',') if x.strip()]
+            elif f:
+                v = _string_literal(f, consts)
+                if v is not None:
+                    outschema = v
+
         out.append({
             'id': cid, 'name': name, 'group': group, 'title': title,
-            'implemented': impl == 'true',
+            'scopeUi': scopeui, 'implemented': impl,
             'readOnly': ro == '1', 'destructive': de == '1',
             'idempotent': idem == '1', 'openWorld': ow == '1',
-            'undoable': undo == '1', 'scope': sc,
-            'schema': schema.replace('\\"', '"').replace('\\\\', '\\'),
-            'exposed': exposed == 'true', 'needsSelection': sel == 'true',
-            'requires': [],
+            'undoable': undo == '1', 'scope': scope,
+            'schema': schema, 'exposed': exposed, 'needsSelection': sel,
+            'requires': reqs, 'outputSchema': outschema,
+            'nfields': len(fields),
         })
-    # 第二遍：取 Requirements{...}（可选字段，可能不存在）
-    for c in out:
-        m = re.search(r'CmdId::' + c['id'] + r'\b[^\n]*?Requirements\{([^}]*)\}', text)
-        if m:
-            c['requires'] = [x.strip() for x in m.group(1).split(',') if x.strip()]
-    return out
+    return out, text, consts
 
 
 def collect_arg_key_usage():
@@ -102,27 +438,150 @@ def collect_arg_key_usage():
     """
     usage = {}
     for path in sorted((ROOT / 'src').glob(HANDLERS_GLOB)):
-        text = path.read_text(encoding='utf-8')
+        text = _strip_comments(path.read_text(encoding='utf-8'))
         # reg( 与 regR( 都要扫：后者是"带返回值"的注册（第 5 步引入）。
         parts = re.split(r'\breg(?:R)?\(CmdId::(\w+)', text)
         # parts[0] 是前置内容，之后是 (id, body, id, body, ...)
         for i in range(1, len(parts) - 1, 2):
             cid = parts[i]
             body = parts[i + 1]
+            # Has 不能单独算"取用"：只判断存在却不读值仍会静默丢弃参数。
+            # 正常写法 Has(k) ? Int(k, default) : fallback 里的 Int 已能被下面抓到。
             keys = set(re.findall(r'args\.(?:Int|Str|Bool|StrArray)\(L"([^"]+)"', body))
             usage.setdefault(cid, set()).update(keys)
     return usage
 
 
+def collect_indirect_arg_keys():
+    """按 INDIRECT_ARGS 登记的公共实现逐个取函数体，收集它真正读过的参数键。
+
+    这里刻意不取"所有 app_commands*.cpp 的并集"：那样任何一个命令读过 `targets`
+    都会让另一个命令的 `targets` 被判为已使用，漏报"参数被丢弃"。
+    """
+    key_re = r'args\.(?:Int|Str|Bool|StrArray|Has)\(L"([^"]+)"'
+    out = {}
+    for name, helper in INDIRECT_ARGS.items():
+        short = helper.rsplit('::', 1)[-1]
+        keys = set()
+        for path in sorted((ROOT / 'src').glob(HANDLERS_GLOB)):
+            text = _strip_comments(path.read_text(encoding='utf-8'))
+            pos = 0
+            while True:
+                idx = text.find(short, pos)
+                if idx < 0:
+                    break
+                brace = text.find('{', idx)
+                # 函数/lambda 定义：名字到左括号之间只有签名/捕获（<300 字符）。
+                if 0 <= brace - idx < 300:
+                    body, _ = _html_block(text, brace)
+                    if body:
+                        keys.update(re.findall(key_re, body))
+                        break
+                pos = idx + len(short)
+        out[name] = keys
+    return out
+
+
+# ---------------------------------------------------------------- R20 支撑
+
+def human_paths():
+    """收集人类侧的命令入口：(命令名 -> [路径说明])。
+
+    四条来源，都必须扫 —— 只扫一条会漏掉真实入口：
+      · data/keymap.json 的热键（key 非空）与序列
+      · src/keymap.cpp 的 kSysKeys（key 为空时回落到系统原生键）
+      · src/input_router.cpp 的 kExtra（带内联参数的应用内补全）
+      · src/*.cpp 里对 CommandBus 的直接调用（菜单/按钮/状态栏）
+    """
+    paths = {}
+
+    def add(name, why):
+        if not name:
+            return
+        paths.setdefault(name, [])
+        if why not in paths[name]:
+            paths[name].append(why)
+
+    # 1) keymap.json
+    if KEYMAP_JSON.exists():
+        km = json.loads(KEYMAP_JSON.read_text(encoding='utf-8'))
+        for h in km.get('hotkeys', []):
+            spec = h.get('command', '')
+            name, _, arg = spec.partition(':')
+            if h.get('key'):
+                add(name, f"热键 {h['key']}" + (f"（内联参数 {arg}）" if arg else ''))
+        for s in km.get('sequences', []):
+            spec = s.get('command', '')
+            name, _, arg = spec.partition(':')
+            add(name, f"序列 {s.get('seq')}" + (f"（内联参数 {arg}）" if arg else ''))
+
+    # 2) kSysKeys：key 为空时回落到系统原生键（Ctrl+C / Delete …）
+    if KEYMAP_CPP.exists():
+        for m in re.finditer(r'\{L"(hotkey\w+)",\s*L"([^"]+)"\}',
+                             KEYMAP_CPP.read_text(encoding='utf-8')):
+            setting, combo = m.group(1), m.group(2)
+            add(setting, f'系统原生键 {combo}')
+
+    # 3) kExtra（input_router）：带内联参数
+    if INPUT_ROUTER.exists():
+        for m in re.finditer(r'\{L"([^"]+)",\s*L"(\w+)(?::([^"]*))?"\}',
+                             INPUT_ROUTER.read_text(encoding='utf-8')):
+            key, name, arg = m.group(1), m.group(2), m.group(3)
+            add(name, f'应用内键 {key}' + (f'（内联参数 {arg}）' if arg else ''))
+
+    # 4) 源码里的直接 Invoke（菜单 / 按钮 / 状态栏 / 双击）
+    for p in sorted((ROOT / 'src').glob('*.cpp')):
+        if p.name == 'commands.cpp' or p.name.startswith('ai_'):
+            continue
+        txt = _strip_comments(p.read_text(encoding='utf-8'))
+        for m in re.finditer(r'Invoke\w*\(\s*CmdId::(\w+)\s*(?:,\s*([^;]*))?', txt):
+            cid, argtext = m.group(1), (m.group(2) or '').strip()
+            # 只判"有没有把参数递进去"：Args::Empty() 与空字面量都算没参数
+            has_arg = bool(argtext) and not re.match(
+                r'^(Args::Empty\(\)|Args\(\)|L""\s*$)', argtext)
+            add(cid, f'{p.name} 直接调用' + ('（带参数）' if has_arg else '（无参数）'))
+    return paths
+
+
+def resolve_keymap_names():
+    """把 hotkey 的 setting 名（hotkeyCmdCopy）映射回命令名。
+
+    kSysKeys 的键是 setting，不是 command，所以要经 keymap.json 反查。
+    """
+    mapping = {}
+    if KEYMAP_JSON.exists():
+        km = json.loads(KEYMAP_JSON.read_text(encoding='utf-8'))
+        for h in km.get('hotkeys', []):
+            name, _, _ = h.get('command', '').partition(':')
+            mapping[h.get('setting', '')] = name
+    return mapping
+
+
 def main():
-    cmds = parse_commands()
+    cmds, table_text, consts = parse_commands()
     if not cmds:
-        fail('命令表解析为空 —— 文件格式变了？先修本脚本的正则')
+        fail('命令表解析为空 —— kTable 的形状变了？先修本脚本的结构解析')
         return 1
-    print(f'命令表：{len(cmds)} 条')
+
+    # 硬断言：解析结果必须覆盖表里所有条目。
+    # 这一条是防"检查面静默缩水"的最后一道闸 —— 早先正则只命中 21/140
+    # 却照样打印"全部通过"，就是因为没有这道对账。
+    declared = len(re.findall(r'\{CmdId::', table_text))
+    print(f'命令表：{len(cmds)} 条（源码中 CmdId:: 条目 {declared} 个）')
+    if len(cmds) != declared:
+        fail(f'解析条目数 {len(cmds)} != 源码条目数 {declared} —— '
+             f'有条目没被解析到，检查面不完整，后续结论都不可信')
+        return 1
+
+    # schema 缺失 = 解析不到常量或字面量，属于解析层失败，单独报清楚
+    noschema = [c['name'] for c in cmds if c['schema'] is None]
+    if noschema:
+        fail(f'{len(noschema)} 条的 argsSchema 解析不到（常量名写错？）：{noschema}')
+        return 1
 
     exposed = [c for c in cmds if c['exposed']]
-    print(f'其中 aiExposed：{len(exposed)} 条\n')
+    implemented = [c for c in cmds if c['implemented']]
+    print(f'其中 aiExposed：{len(exposed)} 条；已实现：{len(implemented)} 条\n')
 
     print('1. aiExposed 必须已实现')
     bad = 0
@@ -136,38 +595,39 @@ def main():
     print('\n2. argsSchema 必须是合法 JSON 对象')
     bad = 0
     schemas = {}
-    for c in exposed:
+    for c in cmds:
         try:
             v = json.loads(c['schema'])
-            if not isinstance(v, dict):
-                fail(f'{c["name"]} 的 argsSchema 不是 JSON 对象：{c["schema"][:60]}')
-                bad += 1
-            else:
-                schemas[c['name']] = v
         except json.JSONDecodeError as e:
             fail(f'{c["name"]} 的 argsSchema 非法 JSON：{e}')
             bad += 1
+            continue
+        if not isinstance(v, dict):
+            fail(f'{c["name"]} 的 argsSchema 不是 JSON 对象：{c["schema"][:60]}')
+            bad += 1
+            continue
+        schemas[c['name']] = v
     if not bad:
-        ok(f'{len(exposed)} 条全部合法')
+        ok(f'{len(cmds)} 条全部合法（不只是暴露的那些）')
 
     print('\n3. schema 声明的参数必须被 handler 真正取用')
     usage = collect_arg_key_usage()
+    indirect_usage = collect_indirect_arg_keys()
     by_name = {c['name']: c for c in exposed}
-    # 公共实现里读的参数（INDIRECT_ARGS 登记的）
-    # 公共实现可能在任一 app_commands*.cpp 分片里（RegisterFileCommands 在
-    # app_commands_files.cpp，TransferTargets 在 app_commands.cpp）。
-    shared_src = ''
-    for path in sorted((ROOT / 'src').glob('app_commands*.cpp')):
-        shared_src += path.read_text(encoding='utf-8')
-    shared_keys = set(re.findall(r'args\.(?:Int|Str|Bool|StrArray|Has)\(L"([^"]+)"', shared_src))
     bad = 0
     for name, schema in schemas.items():
-        declared = set((schema.get('properties') or {}).keys())
+        if name not in by_name:
+            continue
+        declared_keys = set((schema.get('properties') or {}).keys())
+        if not declared_keys:
+            continue
         if name in INDIRECT_ARGS:
-            used = shared_keys
+            # 只读登记的那个公共实现的函数体，不再取所有 handler 的键并集 ——
+            # 并集会让"A 命令读过 targets"替"B 命令背书，参数其实被 B 丢掉。
+            used = indirect_usage.get(name, set())
         else:
             used = usage.get(by_name[name]['id'], set())
-        unused = declared - used
+        unused = declared_keys - used
         if unused:
             fail(f'{name} 声明了参数 {sorted(unused)} 但 handler 没取用（参数会被丢弃）')
             bad += 1
@@ -193,7 +653,7 @@ def main():
                  f'（空 schema 语义是"接受任意参数"）')
             bad += 1
     if not bad:
-        ok('全部显式')
+        ok(f'全部显式（{sum(1 for s in schemas.values() if not s.get("properties"))} 条无参）')
 
     print('\n6. 效果四维自洽（第 2 步判据）')
     bad = 0
@@ -208,8 +668,8 @@ def main():
         #     机器无法指定要破坏哪个对象 —— 这是设计债务，不是可以忽略的小问题。
         #     已登记在 KNOWN_NO_TARGET 的条目先放行，但必须显式登记（见下方说明）。
         if c['destructive'] and c['scope'] == 'CurrentTab':
-            declared = set((json.loads(c['schema']).get('properties') or {}).keys())
-            if not declared:
+            declared_keys = set((schemas[c['name']].get('properties') or {}).keys())
+            if not declared_keys:
                 if c['name'] in KNOWN_NO_TARGET:
                     continue
                 fail(f'{c["name"]} 是 destructive + scope=CurrentTab 但没有目标参数'
@@ -265,10 +725,10 @@ def main():
     #   a. 必须有目标参数（否则和旧命令没区别）
     #   b. 不能标 needsSelection（确定式不该依赖用户选中）
     #   c. 每条旧命令都应有对应的确定式版本（债务要被消化，不是永远挂着）
-    fs = [c for c in cmds if c['name'].startswith('Fs')]
+    fs = [c for c in cmds if c['name'].startswith('fs.')]
     bad = 0
     for c in fs:
-        props = set((json.loads(c['schema']).get('properties') or {}).keys())
+        props = set((schemas[c['name']].get('properties') or {}).keys())
         # 本意是"目标由参数点名"。target/targets/path 都满足；
         # 只认前两个会误伤 FsOpen（打开一个路径，叫 path 比叫 target 更准）。
         if not (props & {'target', 'targets', 'path'}):
@@ -294,12 +754,12 @@ def main():
         'file.properties': 'fs.properties',
     }
     names = {c['name'] for c in cmds}
-    impl = {c['name'] for c in cmds if c['implemented']}
+    impl_names = {c['name'] for c in cmds if c['implemented']}
     # 注意：这里遍历 COVERS 全体，不筛 KNOWN_NO_TARGET。
     # 早先多加了 `if old in KNOWN_NO_TARGET` 这一层，结果 CmdRename/CmdDelete
     # 明明在 COVERS 里却从不被打印 —— 覆盖情况看起来比实际更差。
     for old, new in COVERS.items():
-        if new in names and new in impl:
+        if new in names and new in impl_names:
             ok(f'{old} -> {new}（已覆盖）')
         else:
             fail(f'{old} 的确定式版本 {new} 缺失或未实现')
@@ -313,31 +773,35 @@ def main():
     # outputSchema 声明了"我会返回这个形状"，就必须由 RegisterWithResult 注册 ——
     # 否则调用方按 schema 去取字段会全落空，且没有任何报错。
     #
-    # 判定方式：每个条目在 commands.cpp 里固定一行，字符串字面量依次是
-    #   name / group / scopeUi / title / argsSchema [/ outputSchema]
-    # 所以"6 个字面量"等价于"声明了 outputSchema"。这比正则去数 schema 内容可靠。
+    # 判据有两条，缺一不可：
+    #   a. 有 outputSchema 的必须用 regR/RegisterWithResult 注册；
+    #   b. outputSchema 本身必须是合法 JSON 对象（否则客户端校验必失败）。
     src_text = ''
     for path in sorted((ROOT / 'src').glob(HANDLERS_GLOB)):
-        src_text += path.read_text(encoding='utf-8')
+        src_text += _strip_comments(path.read_text(encoding='utf-8'))
     result_regs = set(re.findall(r'(?:regR|RegisterWithResult)\(CmdId::(\w+)', src_text))
 
-    cmd_text = COMMANDS.read_text(encoding='utf-8')
     bad = 0
     with_output = []
-    for line in cmd_text.splitlines():
-        m = re.match(r'\s*\{CmdId::(\w+)', line)
-        if not m:
+    for c in cmds:
+        if not c['outputSchema']:
             continue
-        cid = m.group(1)
-        lits = re.findall(r'"(?:[^"\\]|\\.)*"', line)
-        if len(lits) >= 6:
-            with_output.append(cid)
-            if cid not in result_regs:
-                fail(f'{cid} 声明了 outputSchema 但没有用 RegisterWithResult 注册'
-                     f'（结果永远是空的）')
+        with_output.append(c['name'])
+        if c['id'] not in result_regs:
+            fail(f'{c["name"]} 声明了 outputSchema 但没有用 RegisterWithResult 注册'
+                 f'（结果永远是空的）')
+            bad += 1
+        try:
+            ov = json.loads(c['outputSchema'])
+            if not isinstance(ov, dict):
+                fail(f'{c["name"]} 的 outputSchema 不是 JSON 对象')
                 bad += 1
+        except json.JSONDecodeError as e:
+            fail(f'{c["name"]} 的 outputSchema 非法 JSON：{e}')
+            bad += 1
     if not bad and with_output:
-        ok(f'{len(with_output)} 条带 outputSchema 的命令都已正确注册：{with_output}')
+        ok(f'{len(with_output)} 条带 outputSchema 的命令都已正确注册且 schema 合法：'
+           f'{with_output}')
     elif not with_output:
         print('  注意  尚无命令声明 outputSchema')
 
@@ -351,17 +815,10 @@ def main():
     if not aliases:
         fail('cmd_naming.cpp 里没有解析到别名')
     else:
-        # 命令名从"条目行前两个字段"取，不依赖尾部结构 ——
+        # 命令名从解析结果取，不依赖行内位置 ——
         # 否则尾部一坏，别名检查会连带误报"源命令不存在"，把真正的
         # 问题（字段漏写）埋在假错误里。
-        #
-        # 名字允许点分（win.quit 这类已在迁移中的条目）：用 \S+? 而非 \w+，
-        # 否则改名后的条目会被整行跳过，别名检查误报"源命令不存在"。
-        legacy_names = set()
-        for ln in COMMANDS.read_text(encoding='utf-8').splitlines():
-            mm = re.match(r'\s*\{CmdId::\w+,\s*L"([^"]+)"', ln)
-            if mm:
-                legacy_names.add(mm.group(1))
+        legacy_names = {c['name'] for c in cmds}
         dotted = {}
         bad = 0
         # 11a. 每个别名都要指向真实命令
@@ -407,9 +864,9 @@ def main():
     ai_cpp = (ROOT / 'src/ai_api.cpp').read_text(encoding='utf-8')
     required_fields = ['name', 'legacyName', 'title', 'description',
                        'annotations', 'inputSchema']
-    missing = [f for f in required_fields if f'o.Set(L"{f}"' not in ai_cpp]
-    if missing:
-        fail(f'ToolsToJson 缺少字段：{missing}')
+    missing_fields = [f for f in required_fields if f'o.Set(L"{f}"' not in ai_cpp]
+    if missing_fields:
+        fail(f'ToolsToJson 缺少字段：{missing_fields}')
     else:
         ok(f'ToolsToJson 输出 {len(required_fields)} 个必需字段')
 
@@ -433,27 +890,13 @@ def main():
     # 结果 OpListDir/OpStat 声明了 outputSchema 却永远进不了 tools/list ——
     # 编译通过、测试也没覆盖到，只有手工数才知道。
     #
-    # 判据：每个条目的尾部必须显式写出 <aiExposed>, <needsSelection>，
-    # 不能靠默认值。这是纯文本检查，但对这类静默失效最有效。
-    cmd_lines = COMMANDS.read_text(encoding='utf-8').splitlines()
-    bad = []
-    total = 0
-    for line in cmd_lines:
-        if not re.match(r'\s*\{CmdId::\w+,', line):
-            continue
-        total += 1
-        # 尾部形状：<aiExposed>, <needsSelection>
-        #            [, Requirements{...}]
-        #            [, "outputSchema"]        <- 声明了返回值时
-        # 三种尾部都合法；关键是**不能什么都不写**（靠默认值静默填）。
-        if not re.search(r'(?:true|false),\s*(?:true|false)\s*'
-                         r'(?:,\s*Requirements\{[^}]*\})?\s*'
-                         r'(?:,\s*"(?:[^"\\]|\\.)*")?\s*\},?\s*$', line):
-            bad.append(re.search(r'CmdId::(\w+)', line).group(1))
+    # 判据：每个条目必须显式写出 id..needsSelection 这 10 个字段，
+    # 不能靠默认值。现在有结构解析，按字段个数判，比正则可靠。
+    bad = [c['name'] for c in cmds if c['nfields'] < 10]
     if bad:
-        fail(f'{len(bad)} 条缺少显式的 aiExposed/needsSelection：{bad}')
+        fail(f'{len(bad)} 条字段不足 10 个（尾部靠默认值静默填）：{bad}')
     else:
-        ok(f'{total} 条全部显式声明 aiExposed/needsSelection')
+        ok(f'{len(cmds)} 条全部显式声明 aiExposed/needsSelection')
 
     print('\n14. 暴露决策的合理性')
     # aiExposed=true 意味着机器能直接驱动这条命令。判据：
@@ -486,7 +929,6 @@ def main():
             fail(f'{c["name"]} 是纯人机 UI，不该暴露')
             bad += 1
     if not bad:
-        exposed = [c for c in cmds if c['exposed']]
         ok(f'{len(exposed)} 条暴露的命令都合理（已实现、不依赖选中、非纯 UI）')
 
     unexp_impl = [c for c in cmds if c['implemented'] and not c['exposed']]
@@ -495,6 +937,187 @@ def main():
         for c in unexp_impl:
             why = '依赖选中' if c['needsSelection'] else ('纯人机 UI' if c['name'] in UI_ONLY else '待决')
             print(f'        [{why}] {c["name"]}')
+
+    print('\n15. 人机等价（R20：每个 aiExposed 命令都必须有人工可达路径）')
+    # R20 约束的是**人能不能做到同一件事**，不是"命令 id 在人类侧有没有调用点"。
+    # 判定分两条路（见文件头 HUMAN_PATH 的注释）：
+    #
+    #   A. 无必填参数 → 命令面板（Ctrl+Shift+P）列出全部已实现命令并以
+    #      Args::Empty() 调用。这是机制保证，只要 implemented=true 就成立。
+    #      所以这一类的"可达"不需要逐条找调用点 —— 早先我按调用点扫，
+    #      结果把 nav.home / session.save / tab.close.duplicates 这类全报成
+    #      不可达，其实人在面板里点得到、点了也能成。那是扫描器的错，不是代码的错。
+    #
+    #   B. 有必填参数 → 面板那条路点了必然失败（拿不到参数）。必须另有一条
+    #      能把参数递进去的路：热键内联参数、带参的源码调用，或 HUMAN_PATH 登记。
+    #
+    # 另有 AI_ONLY_QUERIES：人能触发、但结果只在审计日志里（结构化数据给 agent 用）。
+    # 它们不算违规，但要显式登记，让"人点了看不到东西"是已知事实。
+    paths = human_paths()
+    setting_to_cmd = resolve_keymap_names()
+
+    # kSysKeys 登记的是 setting 名，转成命令名才有用
+    for setting, cmd in setting_to_cmd.items():
+        if setting in paths:
+            for why in list(paths[setting]):
+                paths.setdefault(cmd, []).append(why)
+            del paths[setting]
+
+    # 命令面板覆盖哪些命令：读 ShowCommandPalette 的实现，
+    # 确认它遍历 CommandTable()、筛掉未实现与"有必填参数"的命令，并用空参调用。
+    # 只筛 !implemented 会让 tab.rename/tab.color 这类带参命令被空参调用，
+    # 后果不是"没反应"而是静默清空别名/颜色 —— 必须在这里钉住。
+    app_commands = (ROOT / 'src/app_commands.cpp').read_text(encoding='utf-8')
+    palette_body = _body_of(app_commands, 'void App::ShowCommandPalette()')
+    palette_all = ('CommandTable()' in palette_body
+                   and '!d.implemented' in palette_body
+                   and '\\"required\\"' in palette_body
+                   and 'Args::Empty()' in palette_body)
+    if not palette_all:
+        fail('命令面板必须"列出已实现且无必填参数的命令，并以空参调用" —— '
+             '带参命令走自己的 UI；否则会静默清空标签别名/颜色')
+        return 1
+
+    def required_of(c):
+        return sorted((schemas[c['name']].get('required') or []))
+
+    def param_source(c):
+        """B 路：返回一条能把必填参数递进去的人类路径说明，找不到返回 None。"""
+        own = (paths.get(c['name']) or []) + (paths.get(c['id']) or [])
+        for w in own:
+            if '带参数' in w or '内联参数' in w:
+                return w
+        return HUMAN_PATH.get(c['name'])
+
+    missing_path, ai_only = [], []
+    for c in exposed:
+        req = required_of(c)
+        if c['name'] in AI_ONLY_QUERIES:
+            ai_only.append(c['name'])
+            continue
+        if not req:
+            continue          # A 路：面板覆盖，机制保证
+        if not param_source(c):
+            missing_path.append((c['name'], req))
+
+    if missing_path:
+        for name, req in missing_path:
+            fail(f'{name} 有必填参数 {req} 但人类侧没有任何路径能把参数递进去'
+                 f'—— 违反 R20：不得存在只有 AI 能触发的命令')
+    else:
+        ok(f'{len(exposed)} 条暴露命令全部有人工可达路径'
+           f'（无参 {sum(1 for c in exposed if not required_of(c) and c["name"] not in AI_ONLY_QUERIES)} 条走命令面板，'
+           f'有参 {sum(1 for c in exposed if required_of(c) and c["name"] not in AI_ONLY_QUERIES)} 条有参数来源）')
+
+    if ai_only:
+        # 藏起来的例外等于没有规则：逐条打印，让人能复核。
+        print(f'  说明  {len(ai_only)} 条人能触发但结果只在审计日志里（结构化数据给 agent）：')
+        for name in sorted(ai_only):
+            print(f'        {name}：{AI_ONLY_QUERIES[name]}')
+
+    if HUMAN_PATH:
+        # 登记项要能对得上真实命令 —— 名字写错时它不会报错，只会静默失效，
+        # 让"已经登记过了"变成一句空话。同理，登记一条早已不暴露的命令
+        # 会让人以为问题解决了。
+        exposed_names = {c['name'] for c in exposed}
+        stale = [n for n in HUMAN_PATH if n not in exposed_names]
+        if stale:
+            fail(f'HUMAN_PATH 里 {len(stale)} 条不在 aiExposed 集合内（登记失效）：{sorted(stale)}')
+        stale_ai = [n for n in AI_ONLY_QUERIES if n not in exposed_names]
+        if stale_ai:
+            fail(f'AI_ONLY_QUERIES 里 {len(stale_ai)} 条不在 aiExposed 集合内：{sorted(stale_ai)}')
+
+        shown = [n for n in sorted(HUMAN_PATH) if n in exposed_names]
+        if shown:
+            print(f'  说明  {len(shown)} 条有参命令的参数来自界面（逐条可复核）：')
+            for name in shown:
+                print(f'        {name}：{HUMAN_PATH[name]}')
+
+    # ---------------------------------------------------------------- 16
+    print('\n16. UI 菜单动作是否有结构化入口（反向覆盖）')
+    # 前 15 项查的都是 **AI → 人**（暴露的命令必须人能调）。这一项查反方向：
+    # **人 → 结构化**。用户右键菜单里点得到的动作，如果命令表里没有对应项，
+    # 那它就只能是"UI 里的一段私有代码" —— 快捷键绑不上、命令面板搜不到、
+    # 外部脚本与 AI 都够不着，且没有任何检查会报出来。
+    #
+    # 这条缺口真实存在过：书签的删除/编辑/新建分类/撤销/清空五项只写在
+    # bookmark_bar.cpp 的右键菜单 switch 里，BookmarkStore 的 Remove/AddFolder/
+    # ReplaceAll/Undo 除了 UI 之外零调用点。
+    #
+    # 登记表 MENU_ACTIONS：'人工入口' → 覆盖它的命令别名（None = 已知缺口）。
+    # 覆盖后必须真的存在于命令表，否则登记失效（防"改个名就当覆盖了"）。
+    # 用**全部**命令的别名（不只是 aiExposed）：菜单动作的对应命令不必暴露给
+    # AI（例如 path.copy 依赖选中），但必须存在，否则快捷键/面板也够不到。
+    alias_all = {c['name'] for c in cmds}
+    covered = 0
+    missing = []
+    for human, alias in MENU_ACTIONS.items():
+        if alias is None:
+            missing.append(human)
+        elif alias not in alias_all:
+            fail(f'MENU_ACTIONS 登记 {human} → {alias}，但命令表里没有这个别名')
+        else:
+            covered += 1
+    if missing:
+        print(f'  待做  {len(missing)} 项人工可达但无结构化入口（已登记，尚未补命令）：')
+        for h in missing:
+            print(f'        {h}')
+    ok(f'{covered} 项菜单动作已有结构化入口')
+
+    # 16b. 覆盖率：扫菜单源码里**实际存在**的文案，凡是没登记的都必须报出来。
+    #
+    # 只靠上面那张手工表时，新增一个菜单项却忘了登记，检查会静默通过 ——
+    # 那正是「菜单里写了就完事」再次长出来的方式。这里反查源码：
+    # 菜单文案是字符串字面量，抽得出来；抽得到就必须在表里有交代。
+    scan_sources = [
+        ('标签', 'src/tab_strip_actions.cpp'),
+        ('书签', 'src/bookmark_bar.cpp'),
+    ]
+    registered = set(MENU_ACTIONS.keys())
+    unregistered = []
+    for area, rel in scan_sources:
+        src = (ROOT / rel).read_text(encoding='utf-8', errors='replace')
+        # 只认「.Add(L"文案", kXxxMenuYyy)」这种「菜单项 + action」的写法。
+        for m in re.finditer(r'\.Add\(\s*L"([^"]+)"\s*,\s*(k\w+Menu\w+)', src):
+            label = m.group(1).replace('...', '').strip()
+            # 锁定项文案随状态变（锁定/解锁），归一到同一登记名。
+            if '锁定标签' in label or '解锁标签' in label:
+                label = '锁定'
+            full = area + '·' + label
+            if full in registered:
+                continue
+            unregistered.append((full, m.group(2)))
+    if unregistered:
+        for lab, act in unregistered:
+            fail('菜单项「%s」(%s) 没在 MENU_ACTIONS 登记：要么它有结构化入口（登记别名），'
+                 '要么是已知缺口（登记 None）' % (lab, act))
+    else:
+        print('  ok     源码里的菜单项全部已在 MENU_ACTIONS 有交代')
+
+
+    # ---------------------------------------------------------------- 17
+    print('\n17. 可写状态必须有回读（写完能验证）')
+    # AI 能**改**的界面状态，必须能从 exbar/state 读回来。只有写没有读时，
+    # `isError=false` 就成了"我改成功了"的唯一证据 —— 而它其实可能表示
+    # "前置条件跳过""参数取了默认值""被用户刚做的操作覆盖"。
+    # 这类缺陷不会当场报错，只会让调用方基于错误认知继续下一步。
+    #
+    # 判据是机械的：命令表里凡是改这几个维度（排序/分组/书签栏/窗格）的命令，
+    # StateSnapshot 就必须有对应字段、且 StateToJson 真的输出它。
+    ai_h = (ROOT / 'src' / 'ai_api.h').read_text(encoding='utf-8', errors='replace')
+    ai_cpp = (ROOT / 'src' / 'ai_api.cpp').read_text(encoding='utf-8', errors='replace')
+    readback_missing = []
+    for field, cmds_writing in WRITABLE_STATE:
+        in_struct = re.search(rf'\b{field}\b', ai_h) is not None
+        in_json = re.search(rf'L"{field}"', ai_cpp) is not None
+        if not (in_struct and in_json):
+            readback_missing.append((field, cmds_writing,
+                                     '结构体缺字段' if not in_struct else 'StateToJson 未输出'))
+    if readback_missing:
+        for field, cmds_writing, why in readback_missing:
+            fail(f'{cmds_writing} 可改该状态，但 exbar/state 无法回读 {field}（{why}）')
+    else:
+        ok(f'{len(WRITABLE_STATE)} 个可写状态字段都能回读')
 
     print()
     if g_fail:

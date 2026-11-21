@@ -9,8 +9,10 @@
 #include "clipboard.h"
 #include "shell_ops.h"
 #include "hotkey_manager.h"
-#include "popup_list.h"
+#include "menu.h"
 #include "prompt.h"
+
+#include <string>
 
 namespace {
 
@@ -35,6 +37,22 @@ IShellView* App::ActiveView() {
 void App::CopyText(const std::wstring& text) {
     // 剪贴板写入唯一实现（clipboard.cpp）—— 以前这里和 BookmarkBar 各写一遍。
     if (!SetClipboardText(hwnd_, text)) LogDbg(L"[clip] 写入失败（剪贴板被占用？）");
+}
+
+void App::ShowPathProperties(const std::wstring& path) {
+    if (path.empty()) return;
+    // 走 shell 的"属性"动词：目录/文件/命名空间统一处理，自己不要去拼
+    // SHObjectProperties 的参数形式（文件系统与虚拟项的参数不同）。
+    // SEE_MASK_INVOKEIDLIST 让动词由 shell 解析 —— 与右键菜单里的"属性"完全同一份实现。
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_INVOKEIDLIST;
+    sei.hwnd = hwnd_;
+    sei.lpVerb = L"properties";
+    sei.lpFile = path.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&sei))
+        LogDbg(L"[props] 属性框打开失败：%s err=%lu", path.c_str(), GetLastError());
 }
 
 std::vector<std::wstring> App::SelectedOrFolder() {
@@ -150,7 +168,10 @@ void App::ShowTabMenu(int index, int action) {
     const core::TabRef* ref = tabSet_.Find(id);
     if (!ref) return;
     switch (action) {
-    case kTabMenuNew: NewTab(ref->path, NewTabIndex()); break;
+    // "新建标签页"与"+"按钮、tab.new 同义：开一个此电脑作为全新起点。
+    // 以前它和 kTabMenuClone 一模一样（都复制当前路径），两个菜单项名不副实 ——
+    // 现在"新建"= 新起点、"复制标签"= 同路径副本，语义分开。
+    case kTabMenuNew: NewTab(nav::kThisPc, NewTabIndex()); break;
     case kTabMenuClose: CloseTab(id); break;
     case kTabMenuCloseOther: CloseOthers(id); break;
     case kTabMenuCloseLeft: CloseSide(id, true); break;
@@ -198,20 +219,21 @@ void App::ShowStatusMenu(POINT screen) {
         L"文件夹计数", L"文件计数", L"已选/总数", L"修改日期", L"路径",
         L"选中容量",   L"容器/磁盘", L"隐藏文件三态", L"类型",
     };
-    std::vector<PopupRow> rows;
+    ui::Menu menu;
     const auto& enabled = Config::Get().s().statusSegs;
     for (int i = 0; i < Seg_Count; ++i) {
-        bool on = std::find(enabled.begin(), enabled.end(), i) != enabled.end();
-        std::wstring label = std::wstring(on ? L"✓ " : L"   ") + kSegNames[i];
-        rows.push_back({label, L"", nullptr, false, false, false, i});
+        const bool on = std::find(enabled.begin(), enabled.end(), i) != enabled.end();
+        // 勾选前缀由组件统一拼；段图标与状态栏本体共用同一份映射。
+        menu.AddChecked(kSegNames[i], on, i, StatusSegmentIcon(i));
     }
-    rows.push_back({L"", L"", nullptr, false, true, false, -1});
-    rows.push_back({L"复制当前路径", L"", nullptr, false, false, false, 100});
-    rows.push_back({L"隐藏状态栏", L"", nullptr, false, false, false, 101});
+    menu.Separator()
+        .Add(L"复制当前路径", 100, ico::IconId::Copy)
+        .Add(L"隐藏状态栏", 101, ico::IconId::Eye);
 
-    int pick = ShowPopupList(hwnd_, theme_, screen, rows, 0);
-    if (pick < 0) return;
-    int data = rows[static_cast<size_t>(pick)].data;
+    ui::MenuOptions opt;
+    opt.toggleKey = L"status.menu";
+    const int data = menu.Show(hwnd_, theme_, screen, opt);
+    if (data < 0) return;
     if (data == 100) {
         CommandBus::Get().Invoke(CmdId::PathCopyDir, Args::Empty(), L"ui");
         return;
@@ -240,22 +262,30 @@ void App::ShowStatusMenu(POINT screen) {
 
 void App::ShowCommandPalette() {
     std::vector<const CommandDef*> defs;
-    std::vector<PopupRow> rows;
+    ui::Menu menu;
     for (const auto& d : CommandTable()) {
         if (!d.implemented) continue;
+        // 面板只能给空参。带必填参数的命令若混进来，handler 会收到空值：
+        // tab.rename 会被当成"清空别名"、tab.color 会被当成"设成无颜色"，
+        // 都是静默丢用户数据。参数命令走各自 UI（右键菜单/热键参数/AI）。
+        if (d.argsSchema && std::string(d.argsSchema).find("\"required\"") != std::string::npos)
+            continue;
         std::wstring label = std::wstring(d.title) + L"    [" + d.group + L"]";
-        rows.push_back({label, L"", nullptr, false, false, false,
-                        static_cast<int>(defs.size())});
+        // 命令面板统一用搜索字形：它表示“在这里找命令”，不假装每条命令各有图标。
+        menu.Add(label, static_cast<int>(defs.size()), ico::IconId::Search);
         defs.push_back(&d);
     }
     RECT rc;
     GetWindowRect(hwnd_, &rc);
     POINT at{rc.left + theme_.S(80), rc.top + theme_.S(120)};
-    int pick = ShowPopupList(hwnd_, theme_, at, rows, theme_.S(360));
-    if (pick < 0 || pick >= static_cast<int>(rows.size())) return;
-    int idx = rows[static_cast<size_t>(pick)].data;
-    if (idx >= 0 && idx < static_cast<int>(defs.size()))
-        CommandBus::Get().Invoke(defs[static_cast<size_t>(idx)]->id, Args::Empty(), L"palette");
+    // 命令面板是键盘触发的固定入口（不是某一项的右键），键固定即可：
+    // 连按两次快捷键 → 第一次开、第二次收起，与所有下拉同一契约。
+    ui::MenuOptions opt;
+    opt.minWidthPx = theme_.S(360);
+    opt.toggleKey = L"cmd.palette";
+    const int idx = menu.Show(hwnd_, theme_, at, opt);
+    if (idx < 0 || idx >= static_cast<int>(defs.size())) return;
+    CommandBus::Get().Invoke(defs[static_cast<size_t>(idx)]->id, Args::Empty(), L"palette");
 }
 
 void App::ShowViewMenuAt() { navBar_.ShowViewMenuNow(); }

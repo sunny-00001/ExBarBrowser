@@ -32,6 +32,7 @@ constexpr Entry kEntries[] = {
     {IconId::ChevronRight, L"chevron_right", 0xE76B},
 
     {IconId::Check, L"check", 0xE73E},
+    {IconId::Add, L"add", 0xE710},        // 新建标签的 ＋（曾由 tab_strip 折线自绘）
     {IconId::Close, L"close", 0xE711},
     {IconId::Lock, L"lock", 0xE72E},
     {IconId::Search, L"search", 0xE721},
@@ -43,6 +44,25 @@ constexpr Entry kEntries[] = {
     {IconId::HardDrive, L"hard_drive", 0xEDA2},
     {IconId::Eye, L"eye", 0xE7B3},
     {IconId::Tag, L"tag", 0xE8EC},
+
+    // 菜单动作（MDL2 / Segoe Fluent Icons 共用码位）
+    {IconId::Edit, L"edit", 0xE70F},
+    {IconId::Copy, L"copy", 0xE8C8},
+    {IconId::Delete, L"delete", 0xE74D},
+    {IconId::Undo, L"undo", 0xE7A7},
+
+    // 右键菜单动作：码位取自 Segoe MDL2 Assets 图标表，
+    // 仍只在这一张表里落数字，业务代码只认 IconId。
+    {IconId::NewWindow, L"new_window", 0xE78B},
+    {IconId::Terminal, L"terminal", 0xE756},
+    {IconId::Sort, L"sort", 0xE8CB},
+    {IconId::Import, L"import", 0xE8B5},
+    {IconId::Export, L"export", 0xE898},   // Upload：导出到外部
+
+    // 视图菜单：网格 / 列表 / 详情（MDL2 的 ViewAll / BulletedList / CheckList）
+    {IconId::GridView, L"grid_view", 0xE8A9},
+    {IconId::ListView, L"list_view", 0xE8FD},
+    {IconId::DetailsView, L"details_view", 0xE9D5},
 };
 
 constexpr wchar_t kFallback = 0xE721;   // 放大镜：必然存在的字形

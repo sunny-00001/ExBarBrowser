@@ -15,6 +15,7 @@
 
 #include "ai_api.h"
 #include "commands.h"
+#include "str.h"
 
 namespace {
 
@@ -31,11 +32,22 @@ bool HasTool(const std::vector<ai::ToolSpec>& tools, const wchar_t* name) {
     return false;
 }
 
-bool EncodeOk(const wchar_t* cmd, const wchar_t* jsonText, std::wstring* out) {
-    json::Value v;
+// 参数校验的唯一入口是 ai::ValidateAgainstSchema（不是早已删除的 EncodeArgs）。
+//
+// 历史：第 1 步把 handler 的入参从"单个字符串"改成 Args 对象后，编码层
+// （ai::EncodeArgs）整个删掉了 —— 参数不再需要压成一个字符串。这个测试却一直
+// 还在调它，于是**从未编译通过**（文档里"34 项断言"其实是 0 项实际执行）。
+// 现在改成直接校验 schema，断言的含义不变：合法参数通过、缺必填/多余/类型错都拒绝。
+bool ArgsOk(const wchar_t* cmd, const wchar_t* jsonText) {
+    const CommandDef* d = FindCommand(cmd);
+    if (!d) return false;
+    json::Value schema, args;
     std::wstring err;
-    if (!json::Parse(jsonText, v, &err)) return false;
-    return ai::EncodeArgs(cmd, v, out, &err);
+    // 命令表里的 schema 是 UTF-8 的 const char*；用与生产同一份转换实现
+    // （str::FromUtf8），不要在测试里另写一个 MultiByteToWideChar 样板。
+    if (!json::Parse(str::FromUtf8(d->argsSchema), schema, &err)) return false;
+    if (!json::Parse(jsonText, args, &err)) return false;
+    return ai::ValidateAgainstSchema(schema, args, &err);
 }
 
 }  // namespace
@@ -69,10 +81,19 @@ int main() {
     Check(!HasTool(tools, L"FolderOptions"), "FolderOptions 不暴露给 AI");
     Check(!HasTool(tools, L"Preferences"), "Preferences 不暴露给 AI");
 
-    // 纯导航/视图类应暴露
-    Check(HasTool(tools, L"NavBack"), "NavBack 暴露");
-    Check(HasTool(tools, L"ViewMode"), "ViewMode 暴露");
-    Check(HasTool(tools, L"TabActivate"), "TabActivate 暴露");
+    // 纯导航/视图类应暴露。
+    // 用点分名查：ToolSpec::name 现已是规范名（点分），驼峰名降为 legacyName。
+    // HasTool 只比 name —— 早先这里用驼峰名查，结果 3 项一直失败，
+    // 而整个文件又编译不过，所以没人发现。
+    Check(HasTool(tools, L"nav.back"), "nav.back 暴露");
+    Check(HasTool(tools, L"view.mode"), "view.mode 暴露");
+    Check(HasTool(tools, L"tab.activate"), "tab.activate 暴露");
+
+    // 顺带守住 legacyName：旧名必须仍能从工具里查到（既有脚本靠它对照）
+    bool legacyKept = false;
+    for (const auto& t : tools)
+        if (t.legacyName == L"NavBack") legacyKept = true;
+    Check(legacyKept, "nav.back 的 legacyName 仍是 NavBack");
 
     // ---- 2. 人机等价（R20）：每个暴露的命令都必须有 title（= 人能看懂、能找到）----
     std::printf("\n人机等价（R20）\n");
@@ -81,27 +102,22 @@ int main() {
         if (t.title.empty()) allTitled = false;
     Check(allTitled, "每个工具都有中文 title（人工可达路径的入口名）");
 
-    // ---- 3. 参数编码 ----
-    std::printf("\n参数编码\n");
-    std::wstring out;
-    Check(EncodeOk(L"ViewMode", L"{\"preset\":3}", &out) && out == L"3",
-          "ViewMode preset=3 -> \"3\"");
-    Check(EncodeOk(L"ViewSort", L"{\"by\":1}", &out) && out == L"1",
-          "ViewSort by=1 -> \"1\"");
-    Check(EncodeOk(L"TabActivate", L"{\"index\":2}", &out) && out == L"2",
-          "TabActivate index=2 -> \"2\"");
-    Check(EncodeOk(L"NavBack", L"{}", &out) && out.empty(),
-          "无参数命令 + 空对象 -> 空串");
+    // ---- 3. 参数校验 ----
+    std::printf("\n参数校验\n");
+    Check(ArgsOk(L"ViewMode", L"{\"preset\":3}"), "ViewMode preset=3 通过");
+    Check(ArgsOk(L"ViewSort", L"{\"by\":1}"), "ViewSort by=1 通过");
+    Check(ArgsOk(L"TabActivate", L"{\"index\":2}"), "TabActivate index=2 通过");
+    Check(ArgsOk(L"nav.back", L"{}"), "无参数命令 + 空对象 通过（点分名同样认）");
 
     // 必填参数缺失必须拒绝（不兜底）
-    Check(!EncodeOk(L"ViewMode", L"{}", &out), "ViewMode 缺 preset -> 拒绝");
-    Check(!EncodeOk(L"TabActivate", L"{}", &out), "TabActivate 缺 index -> 拒绝");
+    Check(!ArgsOk(L"ViewMode", L"{}"), "ViewMode 缺 preset -> 拒绝");
+    Check(!ArgsOk(L"TabActivate", L"{}"), "TabActivate 缺 index -> 拒绝");
 
     // 无参数命令传了参数：显式拒绝，不静默忽略
-    Check(!EncodeOk(L"NavBack", L"{\"oops\":1}", &out), "无参数命令传参数 -> 拒绝");
+    Check(!ArgsOk(L"nav.back", L"{\"oops\":1}"), "无参数命令传参数 -> 拒绝");
 
     // 类型不支持
-    Check(!EncodeOk(L"ViewMode", L"{\"preset\":[1,2]}", &out), "数组参数 -> 拒绝");
+    Check(!ArgsOk(L"ViewMode", L"{\"preset\":[1,2]}"), "数组参数 -> 拒绝");
 
     // ---- 4. 未暴露命令一律拒绝（fail-closed）----
     std::printf("\n未暴露命令\n");
@@ -121,9 +137,12 @@ int main() {
     Check(r3.error == L"danger_disabled", "错误码是 danger_disabled");
 
     // 关掉的门对 Write 类不影响（这里只验证不会被误判成 danger）
-    const CommandDef* navDef = FindCommand(L"NavBack");
-    Check(navDef && navDef->risk == Risk::Write, "NavBack 是 Write 级");
-    Check(navDef && navDef->aiExposed, "NavBack 已暴露");
+    // risk 字段在第 2 步被 Effects 四维取代（单轴表达不了"幂等的写" vs
+    // "不可逆的写"）。这里改判 Effects，顺带守住"导航不是破坏性操作"。
+    const CommandDef* navDef = FindCommand(L"nav.back");
+    Check(navDef && !navDef->effects.destructive, "nav.back 不是破坏性操作");
+    Check(navDef && !navDef->effects.readOnly, "nav.back 不是只读（它会改导航状态）");
+    Check(navDef && navDef->aiExposed, "nav.back 已暴露");
 
     // ---- 6. JSON 输出形状 ----
     std::printf("\nJSON 输出\n");

@@ -1,6 +1,6 @@
 ---
 status: proposed
-baseline: 2026-11-19 20:45
+baseline: 2026-11-21 11:00
 ---
 
 # 架构规则（约束文档，未施工）
@@ -8,6 +8,9 @@ baseline: 2026-11-19 20:45
 > **本文件只定规则，不含任何代码改动。** 规则先于重构生效：从现在起新增代码按此写，
 > 存量按批次迁移（见 [ARCHITECTURE-PROPOSAL.md](ARCHITECTURE-PROPOSAL.md) §10）。
 > **v3（2026-11-19 20:58）**：按"一切皆组件 / 载体 / 输入端 / 命令管线"重写第 1–2 节与 R11–R20；
+> **v4（2026-11-21 08:30）**：新增 **R21 输入纪律** —— 禁止模拟鼠标/键盘、禁止用
+> `PostMessage` 投输入类消息、禁止循环点击、禁止抢焦点；一切操作走结构化命令，
+> 必须真点才成立的流程改为"人工点、脚本只观察"。细则见 §3.1；
 > 设计依据与组件清单见 [ARCHITECTURE-TARGET.md](ARCHITECTURE-TARGET.md)。
 > 规则依据：[DOPUS-NOTES.md](DOPUS-NOTES.md)（Opus 的公开契约）、Blender operator 模型与 MCP tools 规范。
 > **命名已与并行会话对齐**：导航栏拆分使用 `nav_bar_draw.cpp`（不是 paint）+ `nav_metrics.h`，
@@ -139,6 +142,112 @@ contract  ←  core  ←  platform  ←  pipeline  ←  features  ←  app
 | **R18** | AI 安全三件套 | `aiExposed` 必须有 `argsSchema` 与 `risk`；`Write`/`Danger` 由 Agent 发起必须审批；每次调用写 `audit.jsonl`（不可关闭） |
 | **R19** | 状态同源 | 只有一份 `StateView`（事件驱动、只读）；UI 与 AI 读同一快照；`ui/` 不得缓存路径/选中项 |
 | **R20** | 人机等价 | 每个 `aiExposed` 命令必须有人工可达路径（鼠标/键盘/命令面板）；不得存在只有 AI 能触发的命令 |
+| **R21** | 输入纪律：禁止模拟输入、禁止抢焦点、禁止循环点击 | 全仓（`src/` `tools/` `scripts/` `tests/`）不得出现：① `SendInput` / `mouse_event` / `keybd_event` / `SetCursorPos` / `BlockInput` / `AttachThreadInput`；② `PostMessage`/`SendMessage` 投 `WM_LBUTTON*` / `WM_RBUTTON*` / `WM_MBUTTON*` / `WM_XBUTTON*` / `WM_MOUSEWHEEL` / `WM_KEY*` / `WM_CHAR`；③ `pyautogui` / `pynput` / `AutoIt` 一类库；④ 脚本里的 `SetForegroundWindow` / `SetActiveWindow` / `BringWindowToTop` / `SwitchToThisWindow`。自动化一律走 `CommandBus`（进程内）或 AI 命名管道（进程外）；必须真点才成立的流程 → **人工点、脚本只观察**。判据：`tools/check_components.py` 的 `INPUT_GUARD` 四条全仓零命中 |
+
+---
+
+### 3.1 R21：输入纪律（这条规则为什么存在）
+
+**一句话：本程序是本机正在使用的窗口，不是被自动化驱动的靶子。任何"替用户按一下"的做法
+都会把光标、焦点、前台状态从人手上夺走，代价远大于它验证到的东西。**
+
+#### 3.1.1 禁止清单（硬边界，无例外）
+
+| 禁止调用 | 它实际会做什么 | 典型误用 |
+|---|---|---|
+| `SendInput` | 注入到**系统输入流**，投递给当时的前台窗口 | "跑一遍快捷键冒烟" |
+| `mouse_event` / `keybd_event` | 同上（旧 API，仍走同一队列） | "点一下那个按钮" |
+| `SetCursorPos` | 移动**用户真实光标**；用户下一秒的点击会落在别处 | "先把鼠标放到菜单位置" |
+| `BlockInput` | 冻结用户键鼠，崩溃时不恢复就等于锁死机器 | "防止测试期间用户干扰" |
+| `AttachThreadInput` | 强行把本线程输入队列挂到别的线程 | "绕过前台锁定把焦点抢过来" |
+| `SetForegroundWindow` / `SetActiveWindow` 用于自动化 | 改变前台窗口；前台锁定策略被绕过后会 global 抢焦点 | "让被测窗口到最前面好点" |
+| **`PostMessageW` / `SendMessageW` 投合成鼠标或键盘消息** | 见下 §3.1.2"合成输入消息" | "扫码面包屑找一个能点开的 x" |
+| 全局钩子 `SetWindowsHookEx` | 见 §4 禁止事项，与本条叠加 | — |
+
+**为什么连 `SetCursorPos` 也不行**：它改的是**共享的物理光标位置**。脚本跑在用户的会话里，
+跑完光标停在脚本留下的位置；用户接下来的点击、拖选、拖放全部错位。这不是"轻微副作用"，
+是**改变了用户下一次输入的含义**。
+
+**为什么 `PostMessage` 投鼠标消息也算模拟输入**（2026-11-21 补）：
+
+这是本条规则最容易漏的口子，因为它看起来"只是发消息、不动光标"。**但结论相同**：
+
+1. 投一条 `WM_LBUTTONDOWN` 到锚点控件，锚点就真的走一遍点击分支 —— 会 `ShowPopupList`；
+2. `ShowPopupList` 内部对弹层调 `SetForegroundWindow`（弹层要拿键盘输入，见 `popup_list.cpp`）；
+3. 于是**前台从用户手上被拿走了**，与 `SendInput` 的结果一模一样。
+
+也就是说，"合成点击"与"抢焦点"在**本程序的真实代码路径上拆不开**。加上"扫描坐标"这个用法，
+它会向正在被使用的窗口连续投几十次点击、反复建模态弹层 —— 用户在打字，字进了别人家的窗口。
+
+**判据是"有没有让被测窗口走一遍用户点它的路径"，不是"有没有动光标"。**
+`PostMessage` 只允许投**非输入类**消息（`WM_CLOSE`、`WM_THEMECHANGED`、`WM_APP_*` 这类内部
+通知），并且只用于验证"某个 `WndProc` 分支本身"。
+
+#### 3.1.2 允许的做法（按优先级）
+
+| 场景 | 正确入口 | 说明 |
+|---|---|---|
+| 进程内触发一条动作 | `CommandBus::Invoke(id, args, actor)` | 唯一动作入口（R5/R16）；按钮、热键、菜单、AI 共用 |
+| 进程外驱动（脚本 / MCP 客户端） | AI 命名管道 `tools/call` | 见 [AI-INTERFACE.md](AI-INTERFACE.md)；令牌在 `data/ai-token.txt` |
+| 只需读状态 | 管道 `exbar/state` 或命令 `OpListDir` / `OpStat` | 只读，不改任何可见状态 |
+| 需要验证"某个控件的命中判定" | 抽成**纯函数**跑单测 | 例：`tab_strip_rules_test.cpp` 的 `TabNewButtonX`、`popup_layout_test.cpp` |
+| 需要看界面长什么样 | `python scripts\shot.py out.png` | `PrintWindow` 只读，被遮挡也能抓，不动光标 |
+| 需要验证一条**点击才有**的流程（弹层开合等） | **人工点，脚本只观察** | 脚本轮询窗口数量/状态快照做判据，自己一次也不投点击。范例见 §3.1.3 的两个探针 |
+| 需要往某个窗口发一条**非输入**消息 | `PostMessageW(hwnd, WM_CLOSE / WM_THEMECHANGED / WM_APP_*)` | 不改前台、不动光标；**不得投 `WM_LBUTTON*` / `WM_KEY*` / `WM_CHAR`**（见上） |
+| 需要在屏外起窗口做实验 | `WS_EX_TOOLWINDOW` + `SW_SHOWNOACTIVATE` + 屏幕外坐标 | `tools/probe_highlight.cpp` 的既有做法 |
+
+**`PostMessage` 的边界**（这条边界 2026-11-21 收紧过一次）：
+
+- **可以**投：`WM_CLOSE`（让弹层走正常关闭分支）、`WM_THEMECHANGED`（触发主题重算）、
+  `WM_APP_*`（本进程内部通知）。前提是它**不会让窗口走一遍"用户点它"的路径**。
+- **不可以**投：`WM_MOUSEMOVE` / `WM_LBUTTONDOWN` / `WM_LBUTTONUP` / `WM_LBUTTONDBLCLK` /
+  `WM_KEYDOWN` / `WM_KEYUP` / `WM_CHAR`。理由见上：它们会真的触发点击分支，
+  而点击分支在本程序里必然走到 `ShowPopupList` → `SetForegroundWindow`，等于抢前台。
+- **也不可以**用 `PostMessage` 伪造一条本应由 `CommandBus` 产生的业务动作 ——
+  那样测到的是"消息处理对不对"，而不是"用户操作对不对"，两者会分叉。
+
+#### 3.1.3 存量审计结论（2026-11-21 08:30 复查）
+
+| 检查项 | 结果 |
+|---|---|
+| `src/` 中的 `SendInput`/`mouse_event`/`keybd_event`/`SetCursorPos`/`BlockInput`/`AttachThreadInput` | **0 处** |
+| `src/` 中 `PostMessage` 投输入类消息（`WM_LBUTTON*` / `WM_KEY*` / `WM_CHAR`） | **0 处** |
+| `tools/probe_toggle.py` | **原为违反**：坐标从 150 到 700 每隔 6px 循环投 `WM_MOUSEMOVE/LBUTTONDOWN/LBUTTONUP`，命中就建模态弹层（弹层内部 `SetForegroundWindow`）。**已改为纯观察式**：只轮询弹层窗口数，点击由人做 |
+| `tools/probe_reopen.py` | **已不存在**（未入库的历史探针，同样在循环投合成点击）。其判据已并入 `probe_toggle.py` 的"收起后不得重弹"断言 |
+| `tools/probe_highlight.cpp` | 屏幕外窗口 + `SW_SHOWNOACTIVATE` + 只发 `WM_THEMECHANGED`（非输入消息）—— **符合** |
+| `scripts/shot.py` | `PrintWindow` 只读 —— **符合** |
+| `src/` 中的 `SetForegroundWindow`（`app_wnd.cpp` / `main.cpp` / `hotkey_manager.cpp` / `popup_list.cpp`） | **不受本禁令约束**：这些是**用户主动发起**的动作（单实例转发激活已有窗口、热键管理器唤出、弹层取得键盘输入），不是自动化脚本替用户操作。判据是"触发源是人还是脚本"，不是 API 名字 |
+
+> 判定口径写清楚，是为了避免后来人把 `app_wnd.cpp` 里那句 `SetForegroundWindow` 一起删掉 ——
+> 那句删了，"第二次启动打开新路径"就变成"窗口在后台默默多开一个标签"，用户以为没反应。
+
+#### 3.1.4 为什么不用 UIA（`IUIAutomation`）代替
+
+UIA 的 `InvokePattern` 本身不移动光标、不抢焦点，看起来是"更文明"的自动化入口。**暂不采用**：
+
+- 本工程 chrome 是**自绘**（`WM_PAINT` + 自算命中），没有 `BUTTON`/`MENU` 原生控件，
+  UIA 树需要自己实现 `IToggleProvider` 之类的 provider，成本高于收益；
+- 真正的价值在**无障碍**（屏幕阅读器），那是一项独立能力（P4 之后），不该为了测试顺手加半套；
+- 命令总线已经覆盖"机器要做什么"，UIA 只解决"机器怎么点到那个像素" —— 而 R21 正是说
+  **不需要点像素**。
+
+若将来真要做 UIA，只允许 `InvokePattern`/`TogglePattern`（不移动光标），
+`SetCursorPos` + `Click` 的组合仍然禁止。
+
+#### 3.1.5 自我检查（改完跑一遍）
+
+```bash
+python tools/check_components.py          # 4 条 INPUT_GUARD 必须零命中
+python tools/check_components.py --list   # 看每条的实际命中（含作用域），核对口径
+```
+
+新增自动化脚本时，脚本头注释必须写清一句话：**"不发合成输入，只读；不动光标、不抢焦点"** ——
+这不是格式要求，是让下一个人一眼看出它属于 R21 的哪一类。
+
+> **规则自伤防护**：`check_components.py` 的 `strip_comments` 对 `.py` / `.ps1` 会连 `#`
+> 一起剥。否则"在注释里写反例说明"（例如记录 `PostMessageW(h, 0x0201)` 是违规写法）
+> 会被自己判红 —— 结果是下一个人删规则而不是删注释。规则文本与检查器必须能共存。
+
 
 ---
 
@@ -257,7 +366,7 @@ struct Feature {                   // 一个功能一个实现
 | 行数与文件数 | R3 | `wc -l` / `ls` |
 | 契约符号位置 | R4 | grep `constexpr wchar_t k.*Class`、`WM_APP_`、`enum class CommandId` |
 | UI 直调状态 | R5/R16 | 白名单：`ui/` 只允许 include `contract/`、`core/`、`platform/`、`ui/*` |
-| 绘图原语重复 | R6 | 符号表：`DrawChevron`、`DrawCross`、`FillRound` 只允许 1 个定义 |
+| 绘图原语重复 | R6 | 符号表：`DrawChevron`、`DrawGlyph`、`FillRound` 只允许 1 个定义（`DrawCross` 已并入 `DrawGlyph`，见 CHANGELOG） |
 | 日志唯一 | R7 | grep `ExBarBrowser.log` |
 | Tab 状态泄漏 | R8 | grep `hist`、`std::vector<std::wstring>` 在 `ui/` |
 | 功能增长 | R9 | `app/lister.cpp` 行数基线（当前 438，目标 <200） |
@@ -272,6 +381,10 @@ struct Feature {                   // 一个功能一个实现
 | AI 安全 | R18 | 遍历 `CommandSpec`：`aiExposed` 必须有 `argsSchema` 与 `risk` |
 | 状态同源 | R19 | `ui/` 中禁止 `hist`/`selection` 容器；`StateView` 只有一份实现 |
 | 人机等价 | R20 | 每个 `aiExposed` 命令必须在绑定表或命令面板中有可达路径 |
+| 不模拟输入 | R21 | 四类正则跑在 `src/` `tools/` `scripts/` `tests/`：① 输入注入 API；② `PostMessage*/SendMessage*` 投输入类消息（宏与字面量两种写法）；③ 第三方自动化库；④ 脚本里的前台调用。已实现：`check_components.py` 的 `INPUT_GUARD` |
+
+> R21 已实现（不等本节的 `check_arch.py`）：`tools/check_components.py` 的 `INPUT_GUARD` 段。
+> 它必须在 `src/` 之外也生效 —— 这条规则最容易被违反的地方是验收脚本，不是产品代码。
 
 校验器本身遵守同一套规则：`tools/` 不进入构建，不依赖第三方库。
 
@@ -327,6 +440,23 @@ struct Feature {                   // 一个功能一个实现
 1. 只改数据（`binding_table` 的键位/序列/鼠标映射），不改代码。
 2. 序列键（`g g`）用 `timeoutMs` 声明；冲突检测由绑定表负责。
 3. 若发现"这个输入必须改状态"，说明它其实是命令——回到"新增一个命令"。
+
+**写一个验收脚本 / 自动化探针**
+
+1. 先问：这条要在**进程内**验证还是**进程外**？进程内 → 直接 `CommandBus::Invoke`；
+   进程外 → 连 AI 命名管道发 `tools/call`（[AI-INTERFACE.md](AI-INTERFACE.md)）。
+2. 只读状态用 `exbar/state`。要看界面用 `python scripts\shot.py`（`PrintWindow` 只读）。
+3. 必须**真点一下**才知道结果的流程（弹层开合、拖拽、双击）：**人工点、脚本只观察**。
+   脚本轮询窗口数量或状态快照做判据，自己一次也不投点击 —— `tools/probe_toggle.py` 是范例
+   （它原来也在扫描坐标投点击，2026-11-21 改成观察式）。
+4. `SendInput` / `mouse_event` / `keybd_event` / `SetCursorPos` / `BlockInput` /
+   `AttachThreadInput` 一律禁止；`PostMessage`/`SendMessage` 投 `WM_LBUTTON*` / `WM_KEY*` /
+   `WM_CHAR` 同样禁止（合成点击＝抢前台，见 §3.1.1）。
+   只在验证 `WndProc` 分支本身时投**非输入**消息（`WM_CLOSE` / `WM_THEMECHANGED` / `WM_APP_*`）。
+5. `SetForegroundWindow` 等前台调用在脚本里一律禁止 —— 需要前台才能成立，就打印 `SKIP`
+   退出 0，不要自己抢（`tools/probe_toggle.py` 的做法）。
+6. 脚本头注释写一句"不发合成输入，只读；不动光标、不抢焦点"，并跑
+   `python tools/check_components.py` 确认 `INPUT_GUARD` 四条全零命中（R21）。
 
 **新增一个功能**
 

@@ -2,11 +2,10 @@
 //
 // 菜单项只回传动作号（WM_APP_TAB_MENU）或颜色值（WM_APP_TAB_COLOR），
 // 真正的动作由 App 的命令管线执行 —— 本文件不改标签状态。
+// 行构建统一走 ui::Menu：这里只描述"有哪些动作、何时禁用"，不再手写 PopupRow。
 #include "tab_strip.h"
 
-#include "str.h"
-
-#include "popup_list.h"
+#include "menu.h"
 
 void TabStrip::ShowTabMenu(int index, POINT screen) {
     if (index < 0 || index >= static_cast<int>(items_.size())) return;
@@ -17,53 +16,53 @@ void TabStrip::ShowTabMenu(int index, POINT screen) {
     // 拖拽排序已经把左右移做出来了，但菜单路径的价值在键盘/触控板用户。
     const bool canLeft = index > 0;
     const bool canRight = index + 1 < n;
-
-    // 重复判定按路径（大小写不敏感），口径与 core::TabSet::DuplicatesOf 一致。
-    bool hasDup = false;
-    for (size_t k = 0; k < items_.size() && !hasDup; ++k) {
-        if (k == i || items_[k].path.empty()) continue;
-        if (str::IEquals(items_[k].path, items_[i].path)) hasDup = true;
+    // 重复判定已在 SetTabs 里算好（口径唯一，见 core::PathRepeated）。
+    const bool hasDup = items_[i].hasDuplicate;
+    // 锁定标签不可关；批量关闭还要看"目标集合里有没有非锁定的"。
+    bool hasClosableOther = false, hasClosableLeft = false, hasClosableRight = false;
+    for (int j = 0; j < n; ++j) {
+        if (items_[static_cast<size_t>(j)].locked) continue;
+        if (j != index) hasClosableOther = true;
+        if (j < index) hasClosableLeft = true;
+        if (j > index) hasClosableRight = true;
     }
 
-    std::vector<PopupRow> rows;
-    rows.push_back({L"新建标签页", L"", nullptr, false, false, false, kTabMenuNew});
-    rows.push_back({L"关闭", L"", nullptr, false, false, false, kTabMenuClose});
-    rows.push_back({L"关闭其他", L"", nullptr, false, false, false, kTabMenuCloseOther});
-    rows.push_back({L"关闭左侧", L"", nullptr, false, false, false, kTabMenuCloseLeft});
-    rows.push_back({L"关闭右侧", L"", nullptr, false, false, false, kTabMenuCloseRight});
-    // 没有重复项时灰掉：留着可点会让"关闭重复"看起来像生效了（其实一个也没关）。
-    rows.push_back({L"关闭重复标签页", L"", nullptr, false, false, !hasDup, kTabMenuDedup});
-    rows.push_back({L"", L"", nullptr, false, true, false, -1});
+    ui::Menu menu;
+    menu.Add(L"新建标签页", kTabMenuNew, ico::IconId::Add)
+        .Add(L"关闭", kTabMenuClose, ico::IconId::Close, items_[i].locked)
+        .Add(L"关闭其他", kTabMenuCloseOther, ico::IconId::Close, !hasClosableOther)
+        .Add(L"关闭左侧", kTabMenuCloseLeft, ico::IconId::ChevronLeft, !hasClosableLeft)
+        .Add(L"关闭右侧", kTabMenuCloseRight, ico::IconId::ChevronRight, !hasClosableRight)
+        .Add(L"关闭重复标签页", kTabMenuDedup, ico::IconId::Close, !hasDup)
+        .Separator()
+        .Add(L"重命名标签页...", kTabMenuRename, ico::IconId::Edit)
+        // 颜色走二级菜单：8 档色板需要"当前色打勾"，塞进主菜单会撑到 20 行之外。
+        .Add(L"设置标签页颜色", kTabMenuColor, ico::IconId::Tag)
+        .Separator()
+        .Add(L"复制标签", kTabMenuClone, ico::IconId::Copy)
+        .Add(items_[i].locked ? L"解锁标签" : L"锁定标签", kTabMenuToggleLock,
+             ico::IconId::Lock)
+        .Add(L"复制路径", kTabMenuCopyPath, ico::IconId::Copy)
+        // 改名之后"复制标签名"才有意义；单独一条而不是让"复制路径"二义。
+        .Add(L"复制标签名", kTabMenuCopyTitle, ico::IconId::Copy)
+        .Separator()
+        .Add(L"向左移动", kTabMenuMoveLeft, ico::IconId::ChevronLeft, !canLeft)
+        .Add(L"向右移动", kTabMenuMoveRight, ico::IconId::ChevronRight, !canRight)
+        .Add(L"移动到开头", kTabMenuMoveFirst, ico::IconId::Back, !canLeft)
+        .Add(L"移动到末尾", kTabMenuMoveLast, ico::IconId::Forward, !canRight)
+        .Separator()
+        .Add(L"重新打开关闭的标签", kTabMenuReopen, ico::IconId::Refresh, !canReopen_);
 
-    rows.push_back({L"重命名标签页...", L"", nullptr, false, false, false, kTabMenuRename});
-    // 颜色走二级菜单：8 档色板需要"当前色打勾"，塞进主菜单会撑到 20 行上限之外。
-    rows.push_back({L"设置标签页颜色", L"", nullptr, false, false, false, kTabMenuColor});
-    rows.push_back({L"", L"", nullptr, false, true, false, -1});
-
-    rows.push_back({L"复制标签", L"", nullptr, false, false, false, kTabMenuClone});
-    rows.push_back({items_[i].locked ? L"解锁标签" : L"锁定标签", L"", nullptr, false, false,
-                    false, kTabMenuToggleLock});
-    rows.push_back({L"复制路径", L"", nullptr, false, false, false, kTabMenuCopyPath});
-    // 改名之后"复制标签名"才有意义（复制路径已经被 Shell 名覆盖了）；
-    // 单独一条而不是让"复制路径"二义，调用方要哪个很清楚。
-    rows.push_back({L"复制标签名", L"", nullptr, false, false, false, kTabMenuCopyTitle});
-    rows.push_back({L"", L"", nullptr, false, true, false, -1});
-
-    rows.push_back({L"向左移动", L"", nullptr, false, false, !canLeft, kTabMenuMoveLeft});
-    rows.push_back({L"向右移动", L"", nullptr, false, false, !canRight, kTabMenuMoveRight});
-    rows.push_back({L"移动到开头", L"", nullptr, false, false, !canLeft, kTabMenuMoveFirst});
-    rows.push_back({L"移动到末尾", L"", nullptr, false, false, !canRight, kTabMenuMoveLast});
-    rows.push_back({L"", L"", nullptr, false, true, false, -1});
-    rows.push_back({L"重新打开关闭的标签", L"", nullptr, false, false, false, kTabMenuReopen});
-
-    int pick = ShowPopupList(hwnd_, *theme_, screen, rows, 0);
-    if (pick < 0) return;
-    int action = rows[static_cast<size_t>(pick)].data;
+    // 锚点键带标签下标：不同标签的右键菜单是不同锚点。
+    const std::wstring toggleKey = L"tab.menu." + std::to_wstring(index);
+    ui::MenuOptions opt;
+    opt.maxRows = 24;   // 21 行，默认 20 会平白多一条滚动条
+    opt.toggleKey = toggleKey.c_str();
+    const int action = menu.Show(hwnd_, *theme_, screen, opt);
+    if (action < 0) return;
 
     // 颜色是"选了一个值"而不是"选了一个动作"：再弹一层，选中值走独立消息。
     if (action == kTabMenuColor) {
-        // 二级菜单落在鼠标当前位置（= 用户刚点的那一行），而不是原始右键点 ——
-        // 在同一个锚点再弹一次会看起来像"菜单没关掉又刷了一遍"。
         POINT at = screen;
         GetCursorPos(&at);
         ShowTabColorMenu(index, at);
@@ -78,26 +77,49 @@ void TabStrip::ShowTabColorMenu(int index, POINT screen) {
     if (index < 0 || index >= static_cast<int>(items_.size())) return;
     const int cur = items_[static_cast<size_t>(index)].colorIdx;
 
-    std::vector<PopupRow> rows;
+    ui::Menu menu;
+    int initial = -1;
     for (int c = 0; c < Theme::kTabColorCount; ++c) {
-        // 打勾而不是高亮：高亮会被当成"光标所在行"，用户会以为已经选上了。
-        std::wstring label = std::wstring(c == cur ? L"✓ " : L"   ") + Theme::TabColorName(c);
-        rows.push_back({label, L"", nullptr, false, false, false, c});
+        // 勾选前缀与行号由组件负责，避免这里再拼 "✓ " 和数行数。
+        const int row = menu.AddChecked(Theme::TabColorName(c), c == cur, c, ico::IconId::Tag);
+        if (c == cur) initial = row;
     }
-    int pick = ShowPopupList(hwnd_, *theme_, screen, rows, 0);
-    if (pick < 0) return;
-    const int color = rows[static_cast<size_t>(pick)].data;
+    const std::wstring toggleKey = L"tab.color." + std::to_wstring(index);
+    ui::MenuOptions opt;
+    opt.toggleKey = toggleKey.c_str();
+    opt.initialRow = initial;
+    const int color = menu.Show(hwnd_, *theme_, screen, opt);
     if (color < 0) return;
     PostMessageW(parent_, WM_APP_TAB_COLOR, static_cast<WPARAM>(index),
                  static_cast<LPARAM>(color));
 }
 
 void TabStrip::ShowOverflowMenu(POINT screen) {
-    std::vector<PopupRow> rows;
-    for (size_t i = 0; i < items_.size(); ++i)
-        rows.push_back({items_[i].title, items_[i].path, items_[i].icon, false, false, false,
-                        static_cast<int>(i)});
-    int pick = ShowPopupList(hwnd_, *theme_, screen, rows, 0);
-    if (pick >= 0 && pick < static_cast<int>(rows.size()))
-        NotifySelect(rows[static_cast<size_t>(pick)].data);
+    // 只列出**当前看不见**的标签；滚到最右端时隐藏集合可能为空，退回全量列表。
+    const int viewLeft = 0;
+    const int viewRight = overflow_ ? tabViewRight_ : 32767;
+    std::vector<int> hidden;
+    hidden.reserve(items_.size());
+    for (size_t i = 0; i < items_.size() && i < tabRects_.size(); ++i) {
+        const RECT& r = tabRects_[i];
+        const bool fullyVisible = r.left >= viewLeft && r.right <= viewRight;
+        if (!fullyVisible) hidden.push_back(static_cast<int>(i));
+    }
+    if (hidden.empty()) {
+        hidden.clear();
+        for (size_t i = 0; i < items_.size(); ++i) hidden.push_back(static_cast<int>(i));
+    }
+
+    ui::Menu menu;
+    int initial = -1;
+    for (int idx : hidden) {
+        const TabStripItem& it = items_[static_cast<size_t>(idx)];
+        const int row = menu.AddPathChecked(it.title, idx == active_, it.path, idx);
+        if (idx == active_) initial = row;
+    }
+    ui::MenuOptions opt;
+    opt.toggleKey = L"tab.overflow";
+    opt.initialRow = initial;
+    const int picked = menu.Show(hwnd_, *theme_, screen, opt);
+    if (picked >= 0) NotifySelect(picked);
 }

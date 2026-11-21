@@ -17,6 +17,13 @@ namespace ui {
 
 class TooltipHost {
 public:
+    TooltipHost() = default;
+    // 曾因"只有析构、没有移动赋值"踩过坑：tooltip_ = TooltipHost() 走隐式拷贝赋值，
+    // 旧 tooltip 窗口句柄被覆盖却没销毁，每次 DPI/主题变化都漏一个 HWND。
+    TooltipHost(const TooltipHost&) = delete;
+    TooltipHost& operator=(const TooltipHost&) = delete;
+    TooltipHost(TooltipHost&& other) noexcept;
+    TooltipHost& operator=(TooltipHost&& other) noexcept;
     ~TooltipHost();
 
     // 建/改宿主提示窗口。owner 是承载区的窗口（子窗口），maxWidthPx 是换行宽度。
@@ -33,12 +40,19 @@ public:
     // 文本会被复制一份，调用方不必保证生命周期。
     void SetTools(const std::vector<Item>& items);
 
+    // 只更新已有工具的矩形（顺序与 SetTools 的 items 一致），不删不重建。
+    // 标签栏滚动时每次都走 SetTools 的话，N 个标签就是 2N 次跨进程消息，
+    // 而滚动改变的只是热区位置 —— 文本和 id 都没变。
+    void MoveTools(const std::vector<RECT>& rects);
+
     // 仅删除全部工具（窗口要销毁前调用；析构也会做）。
     void Clear();
 
     HWND hwnd() const { return tip_; }
 
 private:
+    void Reset();  // 销毁当前 tooltip 并清空所有状态（移动赋值/析构共用）
+
     HWND tip_ = nullptr;
     HWND owner_ = nullptr;
     int maxWidth_ = 0;

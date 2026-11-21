@@ -8,8 +8,10 @@
 //
 // 编译（在 ExBarBrowser/ 下）：
 //   clang++ -std=c++20 -O1 -DUNICODE -D_UNICODE -DWINVER=0x0A00 \
-//     -D_WIN32_WINNT=0x0A00 -D_WIN32_IE=0x0A00 -Isrc -static \
-//     tests/clear_history_test.cpp src/nav_history.cpp -o /tmp/clear_history_test.exe
+//     -D_WIN32_WINNT=0x0A00 -D_WIN32_IE=0x0A00 -Isrc \
+//     tests/clear_history_test.cpp src/nav_history.cpp -o /tmp/clear_history_test.exe \
+//     -static -static-libstdc++ -static-libgcc \
+//     -lole32 -luuid -lshell32 -lshlwapi -ladvapi32 -luxtheme -ldwmapi
 #include <cstdio>
 #include <string>
 

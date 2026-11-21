@@ -36,6 +36,7 @@ struct Result {
     // 上层必须能把它与"真的就这么大"区分开 —— 文件头硬约束第 2 条要求
     // "必须报告完整性"，静默跳过就无法报告。
     unsigned deniedDirs = 0;
+    bool complete = true;              // 整次统计是否完整（无超时、无无法访问项）
     bool timedOut = false;             // 到 deadline 提前结束
     bool truncated = false;            // 结果被 limit 截断
     unsigned long long elapsedMs = 0;

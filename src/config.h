@@ -19,10 +19,23 @@
 #include <vector>
 
 #include "json.h"
+#include "tab_set.h"   // core::kTabColorCount：TabMeta::color 的取值上界
 
 // 键位覆盖里表示"显式解绑"的哨兵值。空字符串做不到这件事：
 // BuildBindings 见到空键会退到系统默认键，用户点了"清除"却发现键又回来了。
 constexpr wchar_t kHotkeyDisabled[] = L"-";
+
+// 标签个性化（改名 / 颜色），**按路径**持久化。
+//
+// 为什么不按标签序号：序号每次启动都会重排（会话恢复顺序、关掉再开都会变），
+// 按序号存等于每次重启都错位到别的标签上。
+// 不按标签 id：id 是进程内自增，跨会话没有意义。
+// 路径是唯一稳定的键 —— 与 lockedPaths 同一取舍（锁定也是按路径持久化的）。
+struct TabMeta {
+    std::wstring path;
+    std::wstring alias;   // 空 = 未改名
+    int color = 0;        // 0 = 无颜色
+};
 
 struct Settings {
     // 栏显隐（对应 mod 的 tab / nav / bookmark / statusbar）
@@ -63,6 +76,7 @@ struct Settings {
     std::vector<std::wstring> sessionPaths;  // 上次关闭时的标签
     int sessionActive = 0;
     std::vector<std::wstring> lockedPaths;   // 锁定标签（按路径持久化）
+    std::vector<TabMeta> tabMeta;            // 标签改名/颜色（按路径持久化）
     std::vector<std::wstring> closedTabs;    // 关闭历史（可重开）
 
     // 状态栏段显隐（段号见 status_bar.h 的 SegId）
@@ -101,6 +115,11 @@ public:
 
     void AddRecent(const std::wstring& path);
     void RememberSession(const std::vector<std::wstring>& paths, int active);
+    // 标签个性化（改名/颜色）的写入口。path 是定位键，alias 空 + color 0 = 删除该项。
+    // 只改内存；落盘时机与其它会话状态一致（App 退出流程统一 Save）。
+    void SetTabMeta(const std::wstring& path, const std::wstring& alias, int color);
+    // 读：找不到返回默认（空 alias、color 0）。
+    void GetTabMeta(const std::wstring& path, std::wstring* alias, int* color) const;
     void SetHotkeyOverride(const std::wstring& setting, const std::wstring& key);
     void ClearHotkeyOverride(const std::wstring& setting);
     std::wstring HotkeyOverride(const std::wstring& setting) const;

@@ -1,9 +1,14 @@
-// 离线驱动 BookmarkStore 的 Move/Undo/ReplaceAll/FileChanged，验证 P3 逻辑正确性。
-// 独立编译运行（不走主构建），结束后把 store 恢复原状。
+// 离线驱动 BookmarkStore 的 Move/MoveTo/Undo/ReplaceAll/FileChanged/Sort/Dedup。
+//
+// 【绝不碰 user 的真实书签】本测试原先读写 Config::Get().BookmarksPath()，
+// 也就是 <exe>\data\bookmarks.html —— 跑一次测试就把用户的书签换成测试种子，
+// 跑两次还可能把"备份"也变成种子。测试必须用**自己的临时文件**。
+//
+// 做法：在 %TEMP% 下建一个专属目录，bookmarks.html 放那里。
+// 不改 Config（它没有 setter，也不该为测试开一个），直接构造路径传给 Load/Save。
 #include <windows.h>  // FILETIME（bookmarks.h 依赖主构建的 common.h 预包含，测试需自己带）
 
 #include "bookmarks.h"
-#include "config.h"
 #include "text_file.h"
 
 #include <cstdio>
@@ -30,13 +35,23 @@ static std::wstring Names() {
     return s;
 }
 
-int main() {
-    // 备份 → 用受控种子替换
-    BookmarkStore& store = BookmarkStore::Get();
-    std::wstring file = Config::Get().BookmarksPath();
-    std::wstring backup;
-    tf::ReadText(file, &backup);
+// 临时目录：<TEMP>\exbarbrowser_store_test_<pid>
+static std::wstring TempDir() {
+    wchar_t tmp[MAX_PATH] = L"";
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring dir = std::wstring(tmp) + L"exbarbrowser_store_test_" +
+                       std::to_wstring(GetCurrentProcessId());
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir;
+}
 
+int main() {
+    BookmarkStore& store = BookmarkStore::Get();
+    const std::wstring dir = TempDir();
+    const std::wstring file = dir + L"\\bookmarks.html";
+
+    // 用户的书签文件一个字节都不动。下面全部在 temp 里完成。
+    printf("测试数据目录：%ls\n\n", dir.c_str());
     tf::WriteText(file,
                   L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
                   L"<DT><A HREF=\"file:///D:/\" >D</A>\r\n"
@@ -105,9 +120,13 @@ int main() {
     }
     CHECK(store.FileChanged(), "FileChanged detects external touch");
 
-    // Save 后基线刷新，不再误报
-    store.Save();
+    // Save 后基线刷新，不再误报。
+    // 这里必须用 Save(true)：上一行是测试自己把 mtime 推后（模拟"外部改过"），
+    // 默认的 Save 会正确地拒绝覆盖并另存 conflict 副本 —— 那正是新加的护栏。
+    // 想让基线刷新就要显式声明"我知道有外部改动、仍然覆盖"。
+    CHECK(store.Save(true), "显式覆盖式 Save 成功");
     CHECK(!store.FileChanged(), "no false positive after Save");
+    CHECK(!store.TakeConflictFlag(), "显式覆盖不产生冲突副本");
 
     // ---- FileChanged 的两种漏判 ----
     printf("\n外部变更检测不得漏判（mtime 相同 / 文件打不开）\n");
@@ -139,7 +158,7 @@ int main() {
         //
         //    离线单测没法让另一个进程持续持句柄，但"文件消失"走的是同一条
         //    失败分支（LastWriteOf 返回零值），足以验证语义。
-        store.Save();   // 基线刷干净
+        CHECK(store.Save(true), "显式覆盖式 Save 成功（基线刷干净）");
         CHECK(!store.FileChanged(), "基线干净时不误报");
         DeleteFileW(file.c_str());
         CHECK(store.FileChanged(), "文件不可见（已删除）-> 保守判为有变化");
@@ -243,6 +262,25 @@ int main() {
         store.Merge(std::move(again));
         CHECK(store.Flatten().size() == 3, "第二次合并仍不翻倍（核心断言）");
 
+        // 新分类里的**嵌套**重复叶子也必须剔掉；只查直接子项会在这里漏掉。
+        BookmarkList nested;
+        {
+            BookmarkNode top;
+            top.isFolder = true;
+            top.name = L"新分类";
+            BookmarkNode sub;
+            sub.isFolder = true;
+            sub.name = L"子分类";
+            BookmarkNode dup;
+            dup.name = L"D-again";
+            dup.path = L"D:\\";   // 顶层已有，任意深度都不该再进
+            sub.children.push_back(dup);
+            top.children.push_back(sub);
+            nested.push_back(top);
+        }
+        CHECK(store.Merge(std::move(nested)) == 2, "嵌套重复只计两个新分类，叶子被剔除");
+        CHECK(store.Flatten().size() == 3, "嵌套重复路径没有翻倍");
+
         // 真新项应当加进来
         BookmarkList fresh;
         {
@@ -253,13 +291,125 @@ int main() {
         }
         CHECK(store.Merge(std::move(fresh)) == 1, "新路径被加入并计为 1");
         CHECK(store.Flatten().size() == 4, "叶子数 3 -> 4");
+
+        // 导入节点自带与现存书签相同的 id：必须换新，否则 Find() 会串位。
+        const std::wstring existingId = store.FindByPath(L"D:\\")->id;
+        BookmarkList colliding;
+        {
+            BookmarkNode bad;
+            bad.id = existingId;
+            bad.name = L"撞ID";
+            bad.path = L"C:\\collide";
+            colliding.push_back(bad);
+        }
+        CHECK(store.Merge(std::move(colliding)) == 1, "撞 id 的导入项仍被加入");
+        const BookmarkNode* collided = store.FindByPath(L"C:\\collide");
+        CHECK(collided && collided->id != existingId, "冲突 id 已换新");
+        const BookmarkNode* original = store.Find(existingId);
+        CHECK(original && original->path == L"D:\\", "Find(旧 id) 仍指向原书签，没有串位");
     }
 
-    // 恢复原文件
-    if (!backup.empty()) {
-        tf::WriteText(file, backup);
+    // ---- MoveTo：拖进分类 ----
+    //
+    // 原实现只有 Move（顶层插入线），分类里的书签根本没法用拖放组织 ——
+    // 分类事实上只能读。而"拖进自己的子孙"会把整棵子树从树上摘下，是一条
+    // 数据消失路径，必须在 store 里拦住。
+    printf("\nMoveTo：拖进分类 / 拒绝成环\n");
+    {
+        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/x\" >X</A>\r\n"
+                            L"<DT><H3>A</H3>\r\n<DL><p>\r\n"
+                            L"<DT><H3>B</H3>\r\n<DL><p>\r\n"
+                            L"</DL><p>\r\n"
+                            L"</DL><p>\r\n"
+                            L"<DT><H3>C</H3>\r\n<DL><p>\r\n"
+                            L"</DL><p>\r\n</DL><p>\r\n");
         store.Load(file);
+        const std::wstring idX = store.roots()[0].id;
+        const std::wstring idA = store.roots()[1].id;
+        const std::wstring idC = store.roots()[2].id;
+        std::wstring idB;
+        if (const BookmarkNode* a = store.Find(idA))
+            if (!a->children.empty()) idB = a->children[0].id;
+
+        CHECK(!idB.empty(), "B 存在（A 的子分类）");
+        CHECK(store.MoveTo(idX, idC), "X 拖进空分类 C");
+        CHECK(store.Find(idC) && store.Find(idC)->children.size() == 1,
+              "C 里有 1 项");
+        CHECK(store.roots().size() == 2, "顶层剩 A / C");
+
+        CHECK(!store.MoveTo(idA, idB), "拒绝把 A 拖进自己的子孙 B（会成环/丢子树）");
+        CHECK(!store.MoveTo(idA, idA), "拒绝拖到自己");
+        CHECK(!store.MoveTo(idX, idX), "拒绝：X 现在是 C 的子项，不能塞进自己");
+        CHECK(store.Find(idA) != nullptr, "拒绝之后 A 仍在树上");
+
+        // 子孙判定用真实的树结构，不是名字比较
+        CHECK(store.MoveTo(idX, idA), "C 里的 X 可以移到 A");
+        CHECK(store.Find(idA) && store.Find(idA)->children.size() == 2,
+              "A 里现在有 B 和 X");
+
+        // 移回顶层
+        CHECK(store.MoveTo(idX, L""), "X 移回顶层");
+        CHECK(!store.roots().empty() && store.roots().back().id == idX, "X 在顶层末尾");
+
+        CHECK(store.Undo(), "移动进撤销栈");
     }
+
+    // ---- SortRecursive：分类内部也要排 ----
+    printf("\nSortRecursive：递归排序（含分类内部）\n");
+    {
+        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+                            L"<DT><H3>Z分类</H3>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/b\" >bee</A>\r\n"
+                            L"<DT><A HREF=\"file:///D:/a\" >ant</A>\r\n"
+                            L"</DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/c\" >cat</A>\r\n"
+                            L"<DT><H3>A分类</H3>\r\n<DL><p>\r\n</DL><p>\r\n</DL><p>\r\n");
+        store.Load(file);
+        store.SortRecursive(true, true);
+        CHECK(store.roots().size() == 3, "3 个顶层项");
+        CHECK(store.roots()[0].isFolder && store.roots()[0].name == L"A分类",
+              "文件夹在前、按名称升序");
+        CHECK(store.roots()[1].name == L"Z分类", "第二个文件夹");
+        CHECK(store.roots()[2].name == L"cat", "文件在文件夹之后");
+        // 关键断言：分类内部也被排过（原实现只排顶层）
+        const BookmarkNode& z = store.roots()[1];
+        CHECK(z.children.size() == 2 && z.children[0].name == L"ant",
+              "分类内部按名称排序（ant 在 bee 前）");
+        CHECK(store.Undo(), "排序可撤销");
+    }
+
+    // ---- RemoveDuplicatePaths：跨层级去重 ----
+    printf("\nRemoveDuplicatePaths：同一路径不重复占位\n");
+    {
+        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/dup\" >dup-top</A>\r\n"
+                            L"<DT><H3>分类</H3>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/dup\" >dup-in-folder</A>\r\n"
+                            L"<DT><A HREF=\"file:///D:/DUP\" >dup-case</A>\r\n"
+                            L"</DL><p>\r\n</DL><p>\r\n");
+        store.Load(file);
+        const size_t leaves = store.Flatten().size();
+        CHECK(leaves == 3, "种子里 3 条（其中 2 条是重复路径，大小写不同也算）");
+        const size_t removed = store.RemoveDuplicatePaths();
+        CHECK(removed == 2, "删掉 2 条重复");
+        CHECK(store.Flatten().size() == 1, "只剩 1 条");
+        CHECK(store.Undo() && store.Flatten().size() == 3, "去重可撤销");
+
+        // 没有重复时不该产生撤销记录（"清理"不该无端点亮"撤销删除"）
+        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/a\" >a</A>\r\n"
+                            L"<DT><A HREF=\"file:///D:/b\" >b</A>\r\n</DL><p>\r\n");
+        store.Load(file);
+        while (store.Undo()) {}   // 清空撤销栈
+        CHECK(store.RemoveDuplicatePaths() == 0, "无重复 -> 删 0 条");
+        CHECK(!store.CanUndo(), "无重复时不产生撤销快照");
+    }
+
+    // 收尾：删掉临时目录（不碰用户书签）
+    DeleteFileW(file.c_str());
+    DeleteFileW((file + L".conflict.html").c_str());
+    RemoveDirectoryW(dir.c_str());
     printf(fails ? "\n%d CHECK(S) FAILED\n" : "\nALL PASSED\n", fails);
     return fails ? 1 : 0;
 }

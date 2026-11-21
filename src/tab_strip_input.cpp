@@ -12,6 +12,7 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 1;
     case WM_SIZE:
         Layout();
+        RebuildTooltip(h);   // 宿主宽度随窗口变，换行宽度跟着变
         InvalidateRect(h, nullptr, FALSE);
         return 0;
     case WM_PAINT:
@@ -26,20 +27,21 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
                 SetCapture(h);
             }
             if (dragging_) {
-                int target = HitTab(x, y);
-                if (target < 0) {
-                    // 落在标签之间：按 x 推断插入位置
-                    target = static_cast<int>(tabRects_.size()) - 1;
-                    for (size_t i = 0; i < tabRects_.size(); ++i) {
-                        if (x < (tabRects_[i].left + tabRects_[i].right) / 2) {
-                            target = static_cast<int>(i);
-                            break;
-                        }
-                    }
-                }
+                const int target = DropTargetAt(x, y);
                 if (target != dropIdx_) {
                     dropIdx_ = target;
                     InvalidateRect(h, nullptr, FALSE);
+                }
+                // 边缘自动滚动：仅在溢出时有意义（不溢出时没有可滚内容）。
+                // 进入左/右边缘带就按对应方向滚动，离开就停。带宽与步长都过 S()。
+                if (overflow_) {
+                    const int edge = theme_->S(28);
+                    const int leftEdge = theme_->S(6) + edge;
+                    const int rightEdge = tabViewRight_ - edge;
+                    UpdateAutoScroll(x, x < leftEdge ? -theme_->S(24)
+                                        : (x > rightEdge ? theme_->S(24) : 0));
+                } else {
+                    StopAutoScroll();
                 }
             }
         }
@@ -48,6 +50,8 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_MOUSELEAVE:
         tracking_ = false;
+        // 鼠标离开标签栏 → 快速关闭模式结束，恢复正常宽度分配。
+        CancelRapidClose();
         if (hoverKind_ != kNone) {
             hoverKind_ = kNone;
             hoverIndex_ = -1;
@@ -56,11 +60,17 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     case WM_LBUTTONDOWN: {
         int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
+        // 上一次双击的尾随 UP 可能落到了窗口外（点空白时没有 capture），
+        // 新的一次按下必须先清掉旧标记，否则会把新单击误吞。
+        suppressDblUp_ = false;
         POINT pt{x, y};
         ClientToScreen(h, &pt);
         int tab = HitTab(x, y);
         int close = HitClose(x, y);
-        int target = close >= 0 ? MT_TAB_CLOSE : (tab >= 0 ? MT_TAB : MT_EMPTY);
+        // DOWN/UP/DBLCLK 必须报同一个 target。以前这里漏了 new/overflow：
+        // 点在 + 上 DOWN 报 empty，命中"双击空白 -> 上一级"的规则并被 claim；
+        // UP 报 new_tab 却被 InputRouter 因为 claim 吞掉，于是单击毫无反应。
+        int target = MouseTargetAt(x, y);
         closeDownIdx_ = -1;  // 每次按下先复位，避免上次残留索引影响本次判定
         if (sink_ && sink_(target, m, MBTN_LEFT, CurrentMods(), pt)) return 0;
 
@@ -80,26 +90,67 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
     }
+    case WM_CAPTURECHANGED:
+        // 捕获被系统抢走（弹层弹出、切窗口、别的控件 SetCapture）：
+        // 拖拽状态必须在这里复位，否则残留下次点击。
+        //
+        // 真实的坑：按住标签拖到一半，右键弹菜单（或 Alt+Tab 切走），
+        // 捕获被夺 → 我们收不到 LBUTTONUP → dragIdx_/dragging_ 一直是"正在拖"。
+        // 下一次鼠标移进标签栏（哪怕没按键）就会走进拖拽分支，标签跟着光标乱跳。
+        // BookmarkBar 早就有这个分支，标签栏一直漏着。
+        // 捕获已失，不再 ReleaseCapture（GetCapture() 已不是本窗口）。
+        CancelDrag(h, false);
+        return 0;
+    case WM_TIMER:
+        if (w == kDragScrollTimer && dragging_ && dragScrollStep_ != 0 && overflow_) {
+            // 缓存鼠标 x 没有配对的 y：边缘滚动只改横向位置，y 用拖拽起点即可
+            // （DropTargetAt 的 y 只用于 HitTab 判断落在哪一行，标签栏是单行）。
+            ScrollBy(dragScrollStep_);
+            const int target = DropTargetAt(dragMouseX_, dragStart_.y);
+            if (target != dropIdx_) {
+                dropIdx_ = target;
+                InvalidateRect(h, nullptr, FALSE);
+            }
+        }
+        return 0;
+    case WM_KEYDOWN:
+        // Esc 取消拖拽：拖到一半改主意，松手就会真的移位 —— 给一条反悔路径。
+        // 只有真在拖（dragIdx_>=0）时才吞掉 Esc；否则让它继续传给对话框等。
+        if (w == VK_ESCAPE && (dragging_ || dragIdx_ >= 0)) {
+            CancelDrag(h, true);   // ReleaseCapture 会再派一次 CAPTURECHANGED，幂等
+            return 0;
+        }
+        break;
     case WM_LBUTTONUP: {
         int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
         POINT pt{x, y};
         ClientToScreen(h, &pt);
+        // 双击的第二次抬起只是尾巴，不是新的单击。必须先吞掉再分发给 sink_，
+        // 否则用户给标签配的鼠标规则会在尾巴 UP 上再触发一次动作。
+        if (suppressDblUp_) {
+            suppressDblUp_ = false;
+            return 0;
+        }
+        const bool claimed = sink_ && sink_(MouseTargetAt(x, y), m, MBTN_LEFT, CurrentMods(), pt);
+        if (claimed) return 0;
+
         int close = HitClose(x, y);
         int tab = HitTab(x, y);
-        int target = close >= 0 ? MT_TAB_CLOSE
-                                : (tab >= 0 ? MT_TAB : (HitNew(x, y) ? MT_NEW_TAB
-                                                                    : (HitOverflow(x, y) ? MT_OVERFLOW
-                                                                                         : MT_EMPTY)));
-        if (sink_ && sink_(target, m, MBTN_LEFT, CurrentMods(), pt)) return 0;
-
         if (dragIdx_ >= 0) {
-            ReleaseCapture();
-            if (dragging_ && dropIdx_ >= 0 && dropIdx_ != dragIdx_)
-                PostMessageW(parent_, WM_APP_TAB_MOVED, static_cast<WPARAM>(dragIdx_),
-                             static_cast<LPARAM>(dropIdx_));
+            // 顺序不能反：ReleaseCapture 会**同步**派发 WM_CAPTURECHANGED，
+            // 而那个分支（见上）会把 dragIdx_/dropIdx_ 清成 -1。先释放再读，
+            // 读到的永远是 -1 —— 拖拽排序从此静默失效，且没有任何报错。
+            // （BookmarkBar 早就踩过同一个坑，注释就写在那里。）
+            const int from = dragIdx_;
+            const int to = dropIdx_;
+            const bool moved = dragging_ && to >= 0 && to != from;
+            StopAutoScroll();   // 拖到边缘滚着松手：先停表，再提交移动
             dragIdx_ = -1;
             dragging_ = false;
             dropIdx_ = -1;
+            ReleaseCapture();
+            if (moved) PostMessageW(parent_, WM_APP_TAB_MOVED, static_cast<WPARAM>(from),
+                                    static_cast<LPARAM>(to));
             InvalidateRect(h, nullptr, FALSE);
             return 0;
         }
@@ -134,6 +185,27 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (tab >= 0 && !items_[static_cast<size_t>(tab)].locked) NotifyClose(tab);
         return 0;
     }
+    case WM_CONTEXTMENU: {
+        // Shift+F10 / VK_APPS 走这个消息（lParam = -1,-1），右键走 WM_RBUTTONUP。
+        // Mozilla 的无障碍验收要求：每个图标功能都要有键盘可达路径。
+        const int sx = GET_X_LPARAM(l), sy = GET_Y_LPARAM(l);
+        POINT at{sx, sy};
+        int tab = -1;
+        if (sx != -1 && sy != -1) {
+            POINT client = at;
+            ScreenToClient(h, &client);
+            tab = HitTab(client.x, client.y);
+        }
+        if (tab < 0) tab = active_;   // 键盘触发时落在激活标签上
+        if (tab < 0 || tab >= static_cast<int>(tabRects_.size())) return 0;
+        if (sx == -1 && sy == -1) {
+            const RECT& r = tabRects_[static_cast<size_t>(tab)];
+            at = POINT{(r.left + r.right) / 2, (r.top + r.bottom) / 2};
+            ClientToScreen(h, &at);
+        }
+        ShowTabMenu(tab, at);
+        return 0;
+    }
     case WM_RBUTTONUP: {
         int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
         POINT pt{x, y};
@@ -145,18 +217,42 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_LBUTTONDBLCLK: {
         int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
-        // 落在关闭钮上就是"关闭"，不能顺便再开一个新标签（原来 dblclk 只判 HitTab）。
-        int close = HitClose(x, y);
-        if (close >= 0) {
-            NotifyClose(close);
-            return 0;
-        }
-        if (HitTab(x, y) < 0 && !HitNew(x, y) && !HitOverflow(x, y)) {
+        // 双击必带一次尾随 UP（DOWN → UP → DBLCLK → UP）。那次 UP 不能当新单击：
+        // 它会在 CLOSE 消息之后发出 SELECT(旧下标)，把"顶上来"的标签误选中。
+        suppressDblUp_ = true;
+        // 落在关闭钮上：**什么都不做**。
+        //
+        // 这里曾写 NotifyClose(close)，是"双击关闭钮关掉两个标签"的成因：
+        // 一次双击的消息序列是 DOWN → UP → DBLCLK → UP。UP 那一下已经关掉了标签 A，
+        // 标签随之左移；DBLCLK 到达时 HitClose 按**新布局**命中 —— 而新标签的
+        // 关闭钮恰好落在鼠标下（快速关闭模式就是刻意保住这个位置的），
+        // 于是第二下又把标签 B 关掉。用户只双击了一次，却少了两个标签。
+        //
+        // Chrome / VS Code 对关闭钮的双击都是"就一次"：关闭钮不是可双击的控件。
+        if (HitClose(x, y) >= 0) return 0;
+        int tab = HitTab(x, y);
+        if (tab >= 0) {
+            // 双击标签正文 = 关闭该标签（Chrome / Edge / VS Code 的惯例）。
+            // 与关闭钮不同：正文是可双击的控件，这里才真正执行关闭。
+            //
+            // 顺序要点：
+            //   · sink 优先 —— 鼠标规则可以把某个标签的双击绑成别的动作，
+            //     吞掉了就不再走默认关闭（与其它输入的契约一致）。
+            //   · 锁定标签不关 —— 与中键关闭（见 WM_MBUTTONDOWN）同一口径。
+            //     双击是"好心"的快捷方式，不该绕开"锁定=关不掉"的硬约束。
+            //   · 不碰 dragIdx_ —— DBLCLK 后还有一次 UP，它由 suppressDblUp_
+            //     吞掉；在这里清反而会让误触发的默认行为漏过去。
             POINT pt{x, y};
             ClientToScreen(h, &pt);
-            if (sink_ && sink_(MT_EMPTY, m, MBTN_LEFT, CurrentMods(), pt)) return 0;
-            PostMessageW(parent_, WM_APP_TAB_NEW, 0, 0);
+            if (sink_ && sink_(MT_TAB, m, MBTN_LEFT, CurrentMods(), pt)) return 0;
+            if (!items_[static_cast<size_t>(tab)].locked) NotifyClose(tab);
+            return 0;
         }
+        // 空白/新增/溢出区：只把命中交给规则引擎，不再内置"双击空白 = 新建标签"。
+        // 该默认行为没有快捷键提示、与"+"按钮语义重复，还会让人误以为双击标签能开新页。
+        POINT pt{x, y};
+        ClientToScreen(h, &pt);
+        if (sink_ && sink_(MouseTargetAt(x, y), m, MBTN_LEFT, CurrentMods(), pt)) return 0;
         return 0;
     }
     case WM_MOUSEWHEEL: {
@@ -219,7 +315,10 @@ void TabStrip::UpdateHover(HWND h, int x, int y) {
 
 int TabStrip::HitTab(int x, int y) const {
     POINT pt{x, y};
-    int clipRight = overflow_ ? ovfRc_.left - theme_->S(2) : 32767;
+    // 裁切线用 tabViewRight_：+ 已移到标签右侧，»/+ 都在它右边，不属于任何标签。
+    const int clipRight = overflow_ ? tabViewRight_ : 32767;
+    // 横坐标落在裁切线右侧时一律不属于任何标签（判据与理由见 TabHitInView）。
+    if (!TabHitInView(x, clipRight)) return -1;
     for (size_t i = 0; i < tabRects_.size(); ++i) {
         if (tabRects_[i].right <= 0 || tabRects_[i].left >= clipRight) continue;
         if (PtInRect(&tabRects_[i], pt)) return static_cast<int>(i);
@@ -250,4 +349,12 @@ bool TabStrip::HitOverflow(int x, int y) const {
     if (!overflow_) return false;
     POINT pt{x, y};
     return PtInRect(&ovfRc_, pt) != FALSE;
+}
+
+int TabStrip::MouseTargetAt(int x, int y) const {
+    // 纯函数定优先级，这里只负责把四个命中结果喂进去。
+    // 三处消息共用同一口径，避免"按下报 empty、抬起报 new_tab"导致
+    // InputRouter 的 claim 吞掉默认行为。
+    return TabMouseTarget(HitClose(x, y) >= 0, HitTab(x, y) >= 0, HitNew(x, y),
+                          HitOverflow(x, y));
 }

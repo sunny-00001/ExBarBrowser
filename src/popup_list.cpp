@@ -36,6 +36,22 @@ struct PopupState {
 
     // 「再点即收」的锚点键（见 popup_toggle.h）。空 = 不参与判定。
     std::wstring toggleKey;
+
+    // 初态：预选第几行 / 是否滚到它（见 popup_list.h 的 PopupInitial）。
+    int selectRow = -1;
+    bool scrollTo = true;
+    int maxRows = 20;   // 可见行上限，预选居中滚动时要用
+
+    // 键入首字母跳转（type-ahead）的累积缓冲。
+    //
+    // 为什么必须自己做：本列表是 LBS_OWNERDRAWVARIABLE 且**插入的是空字符串**
+    // （文字在 WM_DRAWITEM 里按行号自绘），系统那套"键入字符 → LB_FINDSTRING"
+    // 的默认行为完全失效 —— 它没有任何字符串可比。菜单 20+ 行时用户只能靠方向键挪，
+    // 而 TC / Opus / 资源管理器的菜单都支持敲字母定位。
+    std::wstring typeBuf;
+    ULONGLONG typeTick = 0;
+    // 连续按键超过这个间隔就当作"重新开始一个字"，否则累积成前缀。
+    static constexpr ULONGLONG kTypeResetMs = 900;
 };
 
 // ---------- 树模式辅助（对齐 Exbar.cpp 18371-19312） ----------
@@ -213,7 +229,59 @@ static void ToggleExpand(PopupState* st, int vi) {
 
 LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR ref) {
     auto* st = reinterpret_cast<PopupState*>(ref);
+
+    // 键入首字母跳转：从当前行往下找第一个 label 以 buf 开头的可选行，找不到就绕回顶部。
+    // 口令与规则见 PopupState::typeBuf 的注释（本列表插的是空字符串，
+    // 系统默认的 LB_FINDSTRING 在这里完全失效）。
+    auto typeAhead = [st, h](const std::wstring& buf) {
+        if (buf.empty()) return false;
+        const int n = RowCount(st);
+        if (n <= 0) return false;
+        // 从当前行的下一行开始找（反复按同一个字母 = 在该字母的条目间轮换），
+        // 与资源管理器/TC 的行为一致；没有当前行时从 0 开始。
+        const int start = (st->curSel >= 0) ? st->curSel : -1;
+        for (int pass = 0; pass < 2; ++pass) {
+            const int from = (pass == 0) ? start + 1 : 0;
+            const int to = (pass == 0) ? n : start + 1;
+            for (int i = from; i < to; ++i) {
+                if (RowInert(st, i)) continue;
+                const std::wstring& label = st->treeMode
+                    ? st->tree[static_cast<size_t>(st->visible[static_cast<size_t>(i)])].label
+                    : (*st->rows)[static_cast<size_t>(i)].label;
+                if (str::IStartsWith(label, buf)) {
+                    st->curSel = i;
+                    SendMessageW(h, LB_SETCURSEL, static_cast<WPARAM>(i), 0);
+                    InvalidateRect(h, nullptr, FALSE);
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
     switch (m) {
+    case WM_CHAR: {
+        if (!st) break;
+        // 只吃可打印字符。控制字符（Ctrl 组合键产生的 1..26）交给下面，
+        // 它们属于快捷键而不是"定位文本"。
+        if (w < L' ' || w == 0x7F) break;
+        const ULONGLONG now = GetTickCount64();
+        // 【间隔判定用 GetTickCount64 而不是"字符相同就重置"】用户敲 "ss" 想在
+        // 两个 s 开头的条目间轮换，与"打一个两字前缀 ss..."是同一串按键 ——
+        // 只有时间能区分意图。900ms 与系统 type-ahead 的量级相当。
+        if (now - st->typeTick > PopupState::kTypeResetMs) st->typeBuf.clear();
+        st->typeTick = now;
+        st->typeBuf.push_back(static_cast<wchar_t>(w));
+        if (!typeAhead(st->typeBuf)) {
+            // 这个前缀没人匹配：退回单字符再试一次（否则打错一个字母后
+            // 后续所有输入都在拼一个永远匹配不上的串，越打越没反应）。
+            if (st->typeBuf.size() > 1) {
+                st->typeBuf.assign(1, static_cast<wchar_t>(w));
+                typeAhead(st->typeBuf);
+            }
+        }
+        return 0;
+    }
     case WM_MOUSEMOVE: {
         int idx = ItemFromPoint(h, GET_X_LPARAM(l), GET_Y_LPARAM(l));
         if (idx >= RowCount(st)) idx = -1;
@@ -266,18 +334,23 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
         InvalidateRect(h, nullptr, FALSE);
         return r;
     }
-    case WM_LBUTTONDOWN: {
+    case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN: {
         // 【再点即收的核心】列表持有鼠标捕获（见 RunModal 的 SetCapture），
         // 所以弹层开着期间**所有**鼠标按下都先送到这里 —— 不管光标在列表内
         // 还是跑到下面的锚点控件上（这正是捕获的语义，也是拖拽能跑出窗口的原因）。
         //
-        //   点在列表内 → 正常按下，等 UP 选行。
+        //   点在列表内 → 正常按下，等 UP 选行（右键不选行，见下面的 UP）。
         //   点在列表外 → 这就是"要收起"的那一下。
         //
         // 【为什么 DOWN 里不直接关】必须等到 UP 再关并释放捕获，否则 UP 会落到
         // 被点的控件上，而本工程各栏（书签/标签/状态栏/面包屑）都在 UP 里执行动作
         // —— 于是"点一下收起菜单"会顺带打开那个书签、切走那个标签。
         // 这就是资源管理器"菜单开着时点别处只关菜单、不触发别的"的语义。
+        //
+        // 右键一并接管：右键菜单（标签/书签/状态栏）开着时，用户的下一手可能是
+        // 右键点别处。不接管的话这条消息会漏给 ListBox 的默认处理，行为不可控
+        // （轻则无反应，重则弹层与下层控件同时响应）。
         POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
         RECT rc;
         GetClientRect(h, &rc);
@@ -290,11 +363,27 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
         st->downInList = true;
         break;
     }
-    case WM_LBUTTONUP: {
+    case WM_LBUTTONUP:
+    case WM_RBUTTONUP: {
         POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
         RECT rc;
         GetClientRect(h, &rc);
-        const bool outside = st->downOutside || !PtInRect(&rc, pt);
+        const bool upInside = PtInRect(&rc, pt) != FALSE;
+
+        // 【"菜单一闪而过"的真因就在这里】
+        //
+        // 导航栏各下拉是**按下**就弹出的（与资源管理器一致）。弹层一建好就
+        // SetCapture(list)，于是**开菜单那次点击的松开**也送到列表，而光标还
+        // 停在锚点上 —— 锚点在列表之外。若把这一下当成"点了外面"，菜单会在
+        // 松手瞬间自己关掉，用户看到的就是"一闪而过"。
+        //
+        // 这一次 UP 不是新点击，它是开菜单那次点击的后半截。
+        // TrackPopupMenu 也是先等这一下松开，之后才把点击当作"关闭"。
+        if (PopupUpIsOpeningRelease(st->downInList, st->downOutside, upInside)) {
+            return 0;
+        }
+
+        const bool outside = st->downOutside || !upInside;
         if (outside) {
             // 先置 done 再 ReleaseCapture：ReleaseCapture 会**同步**派发
             // WM_CAPTURECHANGED，那里的处理看到 done=true 就不会再 Post 一次。
@@ -307,6 +396,16 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
         }
         if (!st->downInList) return 0;
         st->downInList = false;
+
+        // 右键落在菜单内：只关菜单，不选行。
+        // 与 TrackPopupMenu 同语义 —— 右键是"另起一次操作"，不该顺手执行当前项。
+        if (m == WM_RBUTTONUP) {
+            st->done = true;
+            if (GetCapture() == h) ReleaseCapture();
+            PostMessageW(st->self, WM_CLOSE, 0, 0);
+            return 0;
+        }
+
         int idx = ItemFromPoint(h, GET_X_LPARAM(l), GET_Y_LPARAM(l));
         if (idx < 0 || idx >= RowCount(st) || RowInert(st, idx)) return 0;
 
@@ -338,15 +437,27 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
             PostMessageW(st->self, WM_CLOSE, 0, 0);
             return 0;
         }
-        if (w == VK_DOWN || w == VK_UP) {
-            int step = (w == VK_DOWN) ? 1 : -1;
-            // 无光标时：向下从首行前起算，向上从末行后起算
-            int cur = (st->curSel < 0) ? (step > 0 ? -1 : count) : st->curSel;
-            cur += step;
+        if (w == VK_DOWN || w == VK_UP || w == VK_HOME || w == VK_END || w == VK_PRIOR ||
+            w == VK_NEXT) {
+            const int step = (w == VK_DOWN) ? 1 : -1;
+            int cur = st->curSel;
+            if (w == VK_HOME) {
+                cur = 0;
+            } else if (w == VK_END) {
+                cur = count - 1;
+            } else {
+                // 翻页：按"一次能看见几行"跳，而不是固定 5 行 ——
+                // 菜单有 20+ 行时（命令面板/标签菜单）逐行挪一趟要按十几次。
+                const int page = std::max(1, st->maxRows - 1);
+                const int jump = (w == VK_PRIOR || w == VK_NEXT) ? page : 1;
+                // 无光标时：向下从首行前起算，向上从末行后起算
+                if (cur < 0) cur = step > 0 ? -jump : count + jump;
+                else cur += step * jump;
+            }
             if (cur < 0) cur = 0;
             if (cur >= count) cur = count - 1;
             // 跳过分隔线/禁用行：它们被 RowInert 挡着选不中，光标停上去只会
-            // 表现为"按回车没反应"。方向键要落到真正的可选行上。
+            // 表现为"按回车没反应"。按键要落到真正的可选行上。
             while (cur >= 0 && cur < count && RowInert(st, cur)) cur += step;
             if (cur < 0 || cur >= count) {
                 // 该方向到头了（末尾可能是分隔行）：退回原选中行，保持不动
@@ -480,6 +591,9 @@ LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (n.icon) {
                 RECT ir{indent, rc.top, indent + st->iconS, rc.bottom};
                 ui::DrawIconCentered(dc, n.icon, ir, st->iconS);
+            } else if (n.glyph != ico::IconId::None) {
+                RECT gr{indent, rc.top, indent + st->iconS, rc.bottom};
+                ui::DrawGlyph(dc, n.glyph, gr, st->iconS, st->theme->text);
             }
             const RECT tr{indent + st->iconS + st->theme->S(4), rc.top,
                           rc.right - st->theme->S(26), rc.bottom};
@@ -524,6 +638,12 @@ LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (row.icon) {
             RECT ir{x, rc.top, x + st->iconS, rc.bottom};
             ui::DrawIconCentered(dc, row.icon, ir, st->iconS);
+        } else if (row.glyph != ico::IconId::None) {
+            // 与 HICON 共用同一条图标槽：不新建字体、不建临时图标，
+            // 直接走 ui::DrawGlyph（内部选 GlyphFace 并还原字体）。
+            RECT gr{x, rc.top, x + st->iconS, rc.bottom};
+            ui::DrawGlyph(dc, row.glyph, gr, st->iconS,
+                          row.disabled ? st->theme->disabled : st->theme->text);
         }
         x += st->iconS + st->theme->S(8);
 
@@ -694,6 +814,30 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
     SetWindowSubclass(st.list, ListSubclass, 1, reinterpret_cast<DWORD_PTR>(&st));
     if (st.treeMode) ResizeToFit(&st);
 
+    // 初态：预选并滚到指定行。必须在**所有行都加完**之后做 ——
+    // LB_SETCURSEL 会把列表滚到"能看见该行"的位置，提前设会被后续 ADDSTRING 覆盖。
+    // LBS_OWNERDRAWVARIABLE + 跳过分隔行：分隔/禁用行不可选，落到它们身上时往下找。
+    if (!st.treeMode && st.selectRow >= 0) {
+        int row = st.selectRow;
+        const int n = RowCount(&st);
+        while (row < n && RowInert(&st, row)) ++row;
+        if (row >= n) {
+            row = st.selectRow;
+            while (row >= 0 && RowInert(&st, row)) --row;
+        }
+        if (row >= 0 && row < n && !RowInert(&st, row)) {
+            st.curSel = row;
+            SendMessageW(st.list, LB_SETCURSEL, static_cast<WPARAM>(row), 0);
+            if (st.scrollTo) {
+                // LB_SETCURSEL 只在"完全不可见"时才滚；部分可见时它不动。
+                // 这里再显式保证整行可见（下拉里半截行读不出是哪一项）。
+                SendMessageW(st.list, LB_SETTOPINDEX,
+                             static_cast<WPARAM>(std::max(0, row - st.maxRows / 2)), 0);
+            }
+            LogDbg(L"[popup] 预选第 %d 行", row);
+        }
+    }
+
     ShowWindow(st.self, SW_SHOW);
     SetForegroundWindow(st.self);
     SetFocus(st.list);
@@ -711,7 +855,6 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
     // "用户想收回时窗口早过期"的问题。
     SetCapture(st.list);
     popup::NoteOpened(st.toggleKey.c_str());
-    LogDbg(L"[popup] open key=%s cap=%p", st.toggleKey.c_str(), GetCapture());
 
     // 对齐 mod 19298-19301：GetMessage 返回 -1 是错误（不能继续循环），
     // 返回 0 是 WM_QUIT（必须原样 PostQuitMessage 交还宿主）。
@@ -728,13 +871,13 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
     // 注销要无条件做：不管这次是"选中/Esc"主动结束，还是"点外部/失活"被动结束，
     // 弹层没了的下一瞬间，同键的 Show* 都必须能正常打开。
     popup::NoteClosed(st.toggleKey.c_str());
-    LogDbg(L"[popup] close key=%s picked=%d", st.toggleKey.c_str(), st.picked);
     if (IsWindow(st.self)) DestroyWindow(st.self);
 }
 
-void FreeTree(std::vector<TreeNode>& tree) {
-    for (auto& n : tree)
-        if (n.icon) DestroyIcon(n.icon);
+// 树节点的 icon 来自 ico::Cached（进程内共享），这里只清结构、不 DestroyIcon。
+// 原来的 FreeTree 会销毁每个节点 HICON；改成缓存后若继续销毁，第二次展开同一
+// 目录就会拿到悬空句柄 —— 生命周期收口在 icon_resolve.cpp 一处。
+void ClearTree(std::vector<TreeNode>& tree) {
     tree.clear();
 }
 
@@ -742,7 +885,7 @@ void FreeTree(std::vector<TreeNode>& tree) {
 
 int ShowPopupList(HWND owner, const Theme& theme, POINT screen,
                   const std::vector<PopupRow>& rows, int minWidthPx, bool exactWidth,
-                  int maxRows, const wchar_t* toggleKey) {
+                  int maxRows, const wchar_t* toggleKey, PopupInitial init) {
     if (rows.empty()) return -1;
 
     // 「再点即收」的兜底：正常情况下捕获模型已经让第二次点击到不了这里
@@ -759,10 +902,13 @@ int ShowPopupList(HWND owner, const Theme& theme, POINT screen,
     st.itemH = theme.S(24);
     st.sepPx = std::max(1, theme.S(2));   // 分隔线行高：2px（DPI 缩放下不为 0）
     st.iconS = theme.iconSmall();
+    st.selectRow = init.selectRow;
+    st.scrollTo = init.scrollTo;
 
     int width = MeasureWidth(owner, theme, &rows, nullptr, st.iconS, exactWidth, minWidthPx);
     // 上限至少 1 行：调用方传 0/负数时不能算出 0 高窗口（那样一个弹层都看不见）。
     if (maxRows < 1) maxRows = 1;
+    st.maxRows = maxRows;
     int visible = std::min<int>(static_cast<int>(rows.size()), maxRows);
     int height = TotalHeight(&st, visible) + 2;
 
@@ -777,8 +923,8 @@ std::wstring ShowFolderTree(HWND owner, const Theme& theme, POINT screen,
     // 与 ShowPopupList 同一理由：捕获模型已让第二次点击到不了这里，这条只是
     // 键盘/命令重入时的兜底。
     if (popup::IsOpen(toggleKey)) {
-        // 收起路径也要释放调用方移交的 icon，否则每次"再点收起"漏一批 HICON。
-        FreeTree(topNodes);
+        // 收起路径也要清空节点（icon 归进程缓存，不在这里销毁）。
+        ClearTree(topNodes);
         return std::wstring();
     }
 
@@ -801,6 +947,6 @@ std::wstring ShowFolderTree(HWND owner, const Theme& theme, POINT screen,
 
     RunModal(st, owner, screen, width, height);
     std::wstring result = st.treePicked;
-    FreeTree(st.tree);   // 弹层统一销毁整棵树（含懒加载子节点）的 icon
+    ClearTree(st.tree);   // 节点 icon 归 ico::Cached，弹层只清结构
     return result;
 }

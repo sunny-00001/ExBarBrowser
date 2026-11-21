@@ -1,9 +1,18 @@
+---
+status: current
+baseline: 2026-11-21 11:00
+---
+
 # 输入端：键盘 / 序列 / 鼠标
 
 > 本文描述 ExBarBrowser 当前生效的输入系统（`src/input_router.*`、`src/chord.*`、
 > `src/keymap.*`、`src/sequence.*`、`src/mouse_rules.*`）与它读写的数据文件。
 > 目标形态见 [ARCHITECTURE-TARGET.md](ARCHITECTURE-TARGET.md) §4，迁移规格见
 > [MIGRATION-PLAN.md](MIGRATION-PLAN.md) §2.5–2.7。
+>
+> **本文讲"人怎么输入"，不讲"脚本怎么代输入"。** 自动化一律走 `CommandBus` / AI 管道，
+> 禁止模拟鼠标键盘（含 `PostMessage` 投 `WM_LBUTTON*`/`WM_KEY*`）—— 规则 R21，
+> 见 [ARCHITECTURE-RULES.md §3.1](ARCHITECTURE-RULES.md)。
 
 ---
 
@@ -31,10 +40,15 @@
 |---|---|
 | 默认资产 | `<仓库>/data/keymap.json`（与 ExBar mod 的 `data/defaults/keymap.json` 同格式）—— 注意 `data/` 不入库，此文件是本地真实配置；内置兜底表在 `src/keymap.gen.h`，由 `tools/gen_keymap.py` 从这里生成 |
 | 用户文件 | `data\keymap.json`（直接编辑；缺失时用内置默认键位） |
+| 规模 | **83 条热键 + 38 条序列**（2026-11-21 09:05 实测）。其中 13 条热键指向 `implemented=false` 的命令（占位，`check_commands.py` 会列出），按下无反应是**预期**，不是 bug |
 | 结构 | `hotkeys[] {setting, command, key}`；`sequences[] {seq, command}` |
 | 解析 | `Ctrl+Shift+T` / `Alt+←` / `F5` / `Shift+Left` / `Ctrl+Shift+1` |
 | 生效顺序 | 用户覆盖 → 文件默认键 → mod 的系统原生键参考表（`keymap.cpp` 的 `SystemKeyFor`） |
 | 冲突 | 先到先得（与 mod 的 `orderDispatch` 同口径）；管理器把重复项标"冲突" |
+
+> 规模数字有单测钉着：`tests/keymap_test.cpp` 的 `kExpectedHotkeys` / `kExpectedSequences`。
+> 加键位后必须同步改那两个常量，否则该单测以退出码 3 失败（这条以前是硬编码 70，
+> 实际早已 83，长期红着没人跑到）。
 
 **作用域**（`CommandDef::scope`）目前用于两件事：
 
@@ -76,6 +90,11 @@
 - 只有存在 `double` 规则时才延迟单击（`GetDoubleClickTime()`），否则单击立即派发。
 - 长按阈值 = `max(holdDelayMs, 双击时间 + 50)`；拖拽超过系统拖拽阈值即取消长按。
 - 同一物理点击只派发一次；双击命中后清空 pending。
+- **DOWN/UP 必须报同一个目标**。跨目标时不继承 DOWN 的 claim，否则组件 UP 的默认行为
+  会被吞掉（真实症状：点标签栏 `+` 没反应、双击才新建）。Shell 的 `MT_UNKNOWN` 是例外：
+  DirectUI 的 UP 不判目标，按"沿用 pending"处理。
+- 双击的尾随 UP（DOWN → UP → DBLCLK → UP）不是新的单击。标签栏用 `suppressDblUp_`
+  吞掉它的默认选择；否则关闭消息之后再选中旧下标，会误选"顶上来"的标签。
 - 组件（标签栏 / 书签栏 / 状态栏）在命中后把 `(target, button, mods, screen)` 交给
   `MouseSink`；返回 `true` 表示规则已接管，组件跳过默认行为。
 - **Shell 文件视图**由 `src/shell_input.{h,cpp}` 接同一条 `MouseSink`：

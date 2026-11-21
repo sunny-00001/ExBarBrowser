@@ -4,6 +4,8 @@
 
 #include "bookmarks.h"
 #include "config.h"
+#include "log.h"
+#include "menu.h"
 #include "prompt.h"
 #include "text_file.h"
 
@@ -60,6 +62,10 @@ void ParseLevel(const std::vector<Tok>& toks, size_t& pos, BookmarkList& out, in
             node.isFolder = true;
             if (pos + 1 < toks.size() && !toks[pos + 1].tag)
                 node.name = Unescape(TrimWs(toks[pos + 1].text));
+            // 没有内容的分类也要保留（名字兜底）—— 原实现让空分类名留空，
+            // Merge 按名字对齐时它们会全部塌成同一个"空名分类"。浏览器允许
+            // 建空文件夹，导出的文件里就会有一条只有 H3 没有 A 的分类。
+            if (node.name.empty()) node.name = L"分类";
             ++pos;
             while (pos < toks.size() && !(toks[pos].tag && TagName(toks[pos].text) == L"h3" &&
                                           IsClosing(toks[pos].text)))
@@ -81,7 +87,14 @@ void ParseLevel(const std::vector<Tok>& toks, size_t& pos, BookmarkList& out, in
             if (pos + 1 < toks.size() && !toks[pos + 1].tag)
                 node.name = Unescape(TrimWs(toks[pos + 1].text));
             if (node.name.empty()) node.name = node.path;
-            if (!node.path.empty()) out.push_back(std::move(node));
+            // 路径解不出来（坏百分号 / 非法 UTF-8）时**丢弃这一条**，而不是把
+            // 半截路径塞进书签 —— 导进去的坏路径只会在点击时失败，比不导入更难查。
+            // 但要在日志里留痕，否则用户会以为"我明明导入了几百条怎么少了几条"。
+            if (!node.path.empty()) {
+                out.push_back(std::move(node));
+            } else if (!href.empty()) {
+                LogDbg(L"[bmk] 导入跳过无法解析的链接：%s", href.c_str());
+            }
             ++pos;
             while (pos < toks.size() && !(toks[pos].tag && TagName(toks[pos].text) == L"a" &&
                                           IsClosing(toks[pos].text)))
@@ -205,31 +218,49 @@ int BmkImportHtml(HWND owner, const Theme& theme) {
                         ParseLevel(toks, pos, imported, 0);
                     }
                     if (!imported.empty()) {
-                        // 模式选择：0=追加 1=覆盖 -1=取消。复用 PromptText 风格，
-                        // 用 MessageBox 保持简单可靠（mod 也提供 MessageBox 回退）。
-                        int mode = -1;
-                        int r = MessageBoxW(owner, L"请选择导入模式（是=追加，否=覆盖）",
-                                            L"导入书签", MB_YESNOCANCEL | MB_ICONQUESTION);
-                        if (r == IDYES)
-                            mode = 0;
-                        else if (r == IDNO)
-                            mode = 1;
-                        if (mode >= 0) {
-                            BookmarkStore& store = BookmarkStore::Get();
-                            // 守卫：文件被外部改过就拒绝写入，防止覆盖外部修改（mod/编辑器）。
-                            if (store.FileChanged()) {
-                                MessageBoxW(owner,
-                                            L"书签文件已被其它程序修改，请先右键“重新载入书签文件”再导入。",
-                                            L"导入书签", MB_OK | MB_ICONWARNING);
-                            } else if (mode == 1) {
-                                store.ReplaceAll(std::move(imported));
-                                result = static_cast<int>(CountLeaves(store.roots()));
-                                store.Save();
-                            } else {
-                                size_t added = store.Merge(std::move(imported));
-                                result = static_cast<int>(added);
-                                if (added) store.Save();
-                            }
+                        // 【追加 / 覆盖的选择不能塞进 MessageBox 的是/否】
+                        //
+                        // 原来的写法：MessageBox("请选择导入模式（是=追加，否=覆盖）",
+                        // MB_YESNOCANCEL)。三个按钮里两个都带"破坏性歧义"：
+                        //   · 用户习惯性点是（"好的，导入吧"）→ 得到追加，符合预期；
+                        //   · 但"否"在直觉里是"不要覆盖"，而它恰恰**就是**覆盖 ——
+                        //     一把清空全部书签，且导入的文件可能是别的浏览器里的一小部分。
+                        // 覆盖是全模块唯一的"一键清空"入口（除了清除全部书签），
+                        // 不该藏在一个措辞反直觉的按钮后面。
+                        //
+                        // 现在用自绘弹层：两个动作用各自明确的文案，覆盖项标出来。
+                        ui::Menu menu;
+                        menu.Add(L"追加到现有书签（推荐）", 0, ico::IconId::Add)
+                            .Separator()
+                            .Add(L"覆盖全部书签（现有书签将被替换）", 1, ico::IconId::Delete);
+                        POINT at{};
+                        GetCursorPos(&at);
+                        ui::MenuOptions opt;
+                        opt.minWidthPx = theme.S(300);
+                        opt.maxRows = 8;
+                        opt.toggleKey = L"bmk.import.mode";
+                        const int pick = menu.Show(owner, theme, at, opt);
+                        // 取消（点空白/Esc）→ 什么都不做。
+                        if (pick < 0) return result;
+
+                        BookmarkStore& store = BookmarkStore::Get();
+                        // 守卫：文件被外部改过就拒绝写入，防止覆盖外部修改（mod/编辑器）。
+                        if (store.FileChanged()) {
+                            MessageBoxW(owner,
+                                        L"书签文件已被其它程序修改，请先右键“重新载入书签文件”再导入。",
+                                        L"导入书签", MB_OK | MB_ICONWARNING);
+                        } else if (pick == 1) {
+                            if (MessageBoxW(owner, L"确定用导入的文件替换全部现有书签？此操作可撤销。",
+                                            L"覆盖全部书签",
+                                            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+                                return result;
+                            store.ReplaceAll(std::move(imported));
+                            result = static_cast<int>(CountLeaves(store.roots()));
+                            store.Save();
+                        } else {
+                            size_t added = store.Merge(std::move(imported));
+                            result = static_cast<int>(added);
+                            if (added) store.Save();
                         }
                     }
                 }

@@ -59,6 +59,63 @@ int main() {
               "引号未闭合时取到串尾（不崩）");
     }
 
+    printf("\nPathToUrl / UrlToPath：往返一致 + UTF-8 百分号解码 + UNC\n");
+    {
+        using bmkhtml::PathToUrl;
+        using bmkhtml::UrlToPath;
+
+        // 基本往返
+        CHECK(UrlToPath(PathToUrl(L"D:\\a\\b")) == L"D:\\a\\b", "普通路径往返");
+        CHECK(PathToUrl(L"D:\\a\\b") == L"file:///D:/a/b", "反斜杠转正斜杠 + file:///");
+        // 中文：本工程自己写出的文件里中文是**原样**的，必须能读回来
+        CHECK(UrlToPath(L"file:///D:/中文/目录") == L"D:\\中文\\目录",
+              "未转义中文原样保留");
+        CHECK(UrlToPath(PathToUrl(L"D:\\中文")) == L"D:\\中文", "中文路径往返");
+
+        // 【核心】Chrome/Edge 导出的转义形式：%XX 必须按 UTF-8 字节解，不能按宽字符解。
+        // 旧实现把 %E4 %B8 %AD 解成三个拉丁字符（"ä¸"），"中"永久丢失。
+        CHECK(UrlToPath(L"file:///D:/%E4%B8%AD%E6%96%87") == L"D:\\中文",
+              "UTF-8 百分号解码出中文（旧实现此处必错）");
+        CHECK(UrlToPath(L"file:///C:/a%20b") == L"C:\\a b", "%20 -> 空格");
+        CHECK(UrlToPath(L"file:///C:/100%25") == L"C:\\100%", "%25 -> 字面百分号");
+
+        // 命名空间：不是文件系统路径，不能被包成 file:///
+        const std::wstring kThisPc = L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+        CHECK(PathToUrl(kThisPc) == kThisPc, "命名空间原样返回");
+        CHECK(PathToUrl(L"shell:AppsFolder") == L"shell:AppsFolder", "shell: 原样返回");
+
+        // UNC 双向
+        CHECK(PathToUrl(L"\\\\srv\\share\\x") == L"file://srv/share/x",
+              "UNC -> file://server/...（两个斜杠）");
+        CHECK(UrlToPath(L"file://srv/share/x") == L"\\\\srv\\share\\x",
+              "file://server/... -> UNC");
+        // 兼容旧版写出的 file://///srv/share
+        CHECK(UrlToPath(L"file://///srv/share/x") == L"\\\\srv\\share\\x",
+              "兼容旧版多斜杠 UNC 写法");
+        CHECK(UrlToPath(PathToUrl(L"\\\\srv\\share\\x")) == L"\\\\srv\\share\\x",
+              "UNC 往返");
+
+        // 非 file: 协议原样返回（网页书签不该被猜成本地路径）
+        CHECK(UrlToPath(L"https://example.com/a") == L"https://example.com/a",
+              "http(s) 原样返回");
+        // 坏字节：宁可失败（空串）也不要写回一串替换字符
+        CHECK(UrlToPath(L"file:///C:/%FF").empty(), "非法 UTF-8 序列 -> 空（拒绝写坏路径）");
+        // '#' '?' 会被转义，否则当成 fragment/query 截断路径
+        CHECK(UrlToPath(PathToUrl(L"D:\\a#b?c")) == L"D:\\a#b?c", "'#' '?' 往返不丢");
+    }
+
+    printf("\nUnescape：数字实体（Chrome 把 ' 写成 &#39;）\n");
+    {
+        CHECK(bmkhtml::Unescape(L"Bob&#39;s") == L"Bob's", "&#39; -> 单引号（Chrome 导出格式）");
+        CHECK(bmkhtml::Unescape(L"&#x27;") == L"'", "十六进制数字实体");
+        CHECK(bmkhtml::Unescape(L"&#20013;") == L"中", "十进制 BMP 码点");
+        CHECK(bmkhtml::Unescape(L"&#128512;") == L"😀" ||
+                  bmkhtml::Unescape(L"&#128512;").size() == 2, "超过 BMP 的码点写成代理对");
+        CHECK(bmkhtml::Unescape(L"&#;") == L"&#;", "空数字实体原样保留");
+        CHECK(bmkhtml::Unescape(L"&#xZZ;") == L"&#xZZ;", "非数字原样保留");
+        CHECK(bmkhtml::Unescape(L"&#0;") == L"&#0;", "码点 0 原样保留（不写 NUL 进字符串）");
+    }
+
     printf("\nTokenize：tag/文本切分、空白文本丢弃\n");
     {
         const auto t = bmkhtml::Tokenize(L"<DL><p>\r\n  <DT><A HREF=\"x\">名字</A>\r\n</DL>");

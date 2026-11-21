@@ -1,15 +1,16 @@
 ---
 status: current
-baseline: 2026-11-20 19:40
+baseline: 2026-11-21 11:00
 ---
 
 # 能力对照：ExBar mod vs ExBarBrowser
 
 > 回答一个问题：**独立进程路线现在能替代 explorer 到什么程度，缺口在哪，哪些缺口根本不该补。**
 >
-> 数据来源：`src/commands.cpp` 的命令目录（137 条，逐条对照 `implemented` 字段，不按 README 宣称），
-> mod 侧对照其 127 条命令目录（`data/capabilities.json`）。本工程在 mod 的 127 条之外自加 10 条
-> 确定式 `Fs*` 命令，因此总数是 137。
+> 数据来源：`src/commands.cpp` 的命令目录（逐条对照 `implemented` 字段，不按 README 宣称），
+> mod 侧对照其 127 条命令目录（`data/capabilities.json`）。本工程在 mod 的 127 条之外自加 13 条
+> 命令（10 条确定式 `Fs*` + 3 条标签个性化 `tab.rename` / `tab.color` / `tab.close.duplicates`），
+> 因此总数是 140。
 
 ---
 
@@ -24,11 +25,11 @@ baseline: 2026-11-20 19:40
 
 ---
 
-## 2. 总览（2026-11-20 实测，脚本对账）
+## 2. 总览（2026-11-21 实测，脚本对账）
 
 | 组 | 条数 | 已实现 | 未实现 | 不适用 |
 |---|---:|---:|---:|---:|
-| Tab | 28 | 27 | 1（`TabMergeAll`） | 0 |
+| Tab | 31 | 30 | 1（`TabMergeAll`） | 0 |
 | Go | 10 | 10 | 0 | 0 |
 | Path | 7 | 6 | 1（`PathCopyLink`） | 0 |
 | File | 35 | 28 | 7 | 0 |
@@ -40,12 +41,14 @@ baseline: 2026-11-20 19:40
 | Session | 4 | 2 | 2（删除 / 列表） | 0 |
 | Bookmark | 4 | 4 | 0 | 0 |
 | Search | 2 | 0 | 2 | 0 |
-| **合计** | **137** | **108** | **29** | **0** |
+| **合计** | **140** | **111** | **29** | **0** |
 
-> 总数 137 = mod 的 127 条 + 本工程自加的 10 条确定式命令
+> 总数 140 = mod 的 127 条 + 本工程自加的 13 条。其中 10 条确定式命令
 > （`FsOpen` / `FsOpenInNewTab` / `FsOpenInNewWindow` / `FsCopy` / `FsCut` / `FsProperties` /
-> `FsRename` / `FsDelete` / `FsCopyTo` / `FsMoveTo`）。它们不是"mod 有而我们没有"，
+> `FsRename` / `FsDelete` / `FsCopyTo` / `FsMoveTo`）不是"mod 有而我们没有"，
 > 而是"机器需要按路径点名操作"的补充 —— 详见 §3.5 与 `docs/OPERATION-MODEL.md` 第 4 步。
+> 另 3 条（`tab.rename` / `tab.color` / `tab.close.duplicates`）是标签右键菜单的补齐，
+> 每条都同时登记为命令（R20 人机等价：菜单动作必须有键盘/面板可达路径）。
 >
 > Tool 组的 4 条已实现是 `OpListDir` / `OpStat` / `OpTopN` / `OpDiskUsage`：
 > 后两条是 mod 里没有、为 AI 结构化查询新增的（mod 的 `ebop` 只到"导航/选中"层）。
@@ -222,7 +225,7 @@ mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
 ## 6. 结论
 
 - **日常浏览**（开标签、走路径、复制路径、开终端、切视图、收藏）已经不需要回到 explorer。
-- **机器可调**（AI/脚本）：86 条命令带 JSON Schema 与前置条件，走同一条 `CommandBus`，
+- **机器可调**（AI/脚本）：对 AI 暴露的命令都带 JSON Schema 与前置条件，走同一条 `CommandBus`，
   审计记 `actor=ai` —— 这一层 mod 没有，是本工程 0.2.1 的主要增量。
 - **文件工具与搜索**是下一阶段的主战场，且都要先有 helper 通道。
 - 不建议为了"127 条全绿"而硬造：`TabMergeAll`、`SendKeys`、`BatchRename`、

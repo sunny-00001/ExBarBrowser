@@ -5,9 +5,13 @@
 // 用户按 g1 没反应、快捷键管理器里也看不到，属于"静默丢键"。
 //
 // 编译（在 ExBarBrowser/ 下）：
-//   clang++ -std=c++20 -O1 -Isrc tests/commands_test.cpp src/commands.cpp src/keymap.cpp \
-//     src/json.cpp src/text_file.cpp -o /tmp/commands_test.exe \
-//     -static-libstdc++ -static-libgcc -lole32 -luuid -lshell32 -ladvapi32
+//   clang++ -std=c++20 -O1 -DUNICODE -D_UNICODE -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 \
+//     -D_WIN32_IE=0x0A00 -Isrc tests/commands_test.cpp src/commands.cpp src/keymap.cpp \
+//     src/json.cpp src/text_file.cpp src/config.cpp src/str.cpp src/log.cpp \
+//     src/platform_win.cpp src/cmd_naming.cpp -o /tmp/commands_test.exe \
+//     -static -static-libstdc++ -static-libgcc \
+//     -lole32 -luuid -lshell32 -lshlwapi -ladvapi32 -luxtheme -ldwmapi
+// 运行：**从仓库根跑**（本文件读 "data/keymap.json"，不是 "../data/..."）。
 #include <cstdio>
 #include <string>
 

@@ -18,8 +18,8 @@ std::vector<TreeNode> Children(const std::wstring& folder) {
     for (const auto& kv : kids) {
         // hasChildren 先给 true：真正有没有下一级由弹层首次展开时懒加载判定
         // （枚举一次目录在慢盘/网络共享上要几十毫秒，不能在建树时全量递归）。
-        out.push_back({kv.first, kv.second, ico::Resolve(kv.second, true), 0, -1, {}, true, false,
-                       false});
+        out.push_back({kv.first, kv.second, ico::Cached(kv.second, true), 0, -1, {}, true, false,
+                       false, ico::IconId::Folder});
     }
     return out;
 }

@@ -5,11 +5,10 @@
 #include "ui_draw.h"
 #include "mouse_rules.h"
 
-namespace {
-
 // 段图标：以前这里有一张**私有**字形表（7 个码位），与 ui_draw 的命名表重复。
 // 现在统一走 ico::IconId —— 改字形只动 icon_glyph.cpp。
-ico::IconId IconOf(int seg) {
+// 抽到头文件声明：状态栏右键菜单的每一行也要用同一份映射，不再复制 switch。
+ico::IconId StatusSegmentIcon(int seg) {
     switch (seg) {
     case Seg_Fld: return ico::IconId::Folder;
     case Seg_File: return ico::IconId::Page;
@@ -23,7 +22,9 @@ ico::IconId IconOf(int seg) {
     }
 }
 
-wchar_t GlyphOf(int seg) { return ico::Glyph(IconOf(seg)); }
+namespace {
+
+wchar_t GlyphOf(int seg) { return ico::Glyph(StatusSegmentIcon(seg)); }
 
 }  // namespace
 
