@@ -68,6 +68,8 @@ data/.write-probe
 data/ai-token.*.txt
 data/ai-pipe.*.txt
 data/profile-multi/
+# agentctl 记录的"自己启的实例"（用于只关自己的窗口，不入库）
+data/.agentctl.pid
 # 程序自动生成的书签备份（含用户数据，绝不入库）
 data/*.backup-*.html
 

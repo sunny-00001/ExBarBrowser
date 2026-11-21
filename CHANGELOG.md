@@ -19,6 +19,22 @@
 
 ## [Unreleased]
 
+### 新增（开发期进程生命周期：`tools/agentctl.py`）
+
+闭环的主路径是产品通道（`CommandBus` + 命名管道），**本工具只负责产品不该管的那一段**：
+换 exe 必须跨进程，所以需要有人把新实例拉起来并保活。
+
+- **`serve`**：构建（仅当源码比 exe 新）+ 以 `--ai` + `EXBARBROWSER_MULTI=1` 启动 + 等通道就绪，
+  然后常驻持有实例。本环境会回收命令的子进程，一次性启动的实例在命令结束时就被收走。
+- **`status`**：exe/源码新鲜度（`stale`）、pid 存活、通道可用、工具数、当前 profile。
+  `stale=true` 是"正在验证旧 exe"的唯一可靠信号。
+- **`gap`**：读产品的 `errorCode`（不解析中文、不 grep 源码）并翻成"改哪几处"；
+  依赖选中项的命令先读状态再决定调不调（诊断工具不得有副作用）。
+- **profile 感知**：`MULTI` 会把发现文件写到 `data\profile-multi\`，本工具在两个候选目录里
+  找"pid 还活着且连得上"的那一份，不写死 `data\ai-pipe.txt`。
+- **`down` 只关自己启的实例**（`data\.agentctl.pid` + 管道名里的 hwnd，走 `WM_CLOSE`），
+  用户手开的窗口一律不碰。
+
 ### 新增（`AGENTS.md`）
 
 给 AI Agent 的工程入口：三条不可协商（R21 / 无第三方库 / 视觉与品牌串单一来源）、命令速查、
