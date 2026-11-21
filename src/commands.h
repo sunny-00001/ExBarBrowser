@@ -7,6 +7,7 @@
 // （implemented=false），这样 mod 的 keymap.json 可以原样读取，未实现项在管理器里
 // 明确标灰，而不是"键位静默消失"。
 #pragma once
+#include <cwchar>
 #include <functional>
 #include <string>
 #include <vector>
@@ -444,6 +445,15 @@ public:
     // 返回 true 的 handler 不需要调用（残留会由下次 Dispatch 开头清空）。
     void NoteFailure(const std::wstring& reason) { pendingReason_ = reason; }
 
+    // 本次调用的来源是"机器"（AI / 脚本）还是"人"。
+    //
+    // 【为什么 handler 需要它】双入口命令（人有界面路径、机器有参数路径）原来只靠
+    // args.IsEmpty() 判：空参数 = 人。这对**无参数命令**是错的 —— agent 传来的也是
+    // {}，于是"人侧分支"被执行，弹出模态报告窗口，把管道调用卡到超时
+    // （实测：session.list 从 AI 调返回 {"ok":false,"error":"timeout"}）。
+    // 判据必须是"空参数 **且** 不是机器调用"，见 IsHumanCall()。
+    bool fromMachine() const { return actor_ != nullptr && std::wcscmp(actor_, L"ui") != 0; }
+
 private:
     CommandBus() = default;
     bool Dispatch(CmdId id, const Args& args, json::Value* result, const wchar_t* actor);
@@ -454,4 +464,13 @@ private:
     std::wstring last_;
     std::wstring lastBlockReason_;
     std::wstring pendingReason_;   // handler 报的原因，本次 Dispatch 内消费
+    const wchar_t* actor_ = L"ui"; // 本次 Dispatch 的调用来源（handler 经 fromMachine 读）
 };
+
+// 双入口命令的统一判据："这次是人点的吗"。
+//
+// 用空参数当唯一信号会误判无参数命令（见 CommandBus::fromMachine 的注释）。
+// 所有"人是这样、机器是那样"的分支都该用它。
+inline bool IsHumanCall(const Args& args) {
+    return args.IsEmpty() && !CommandBus::Get().fromMachine();
+}

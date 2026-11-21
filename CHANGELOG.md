@@ -43,6 +43,23 @@
 - 结果里必带 `scannedFiles` / `hashedFiles` / `deniedDirs` / `timedOut` / `complete`：
   只给"没有重复"而不说"扫没扫完"、"有没有目录打不开"，用户会据此删错东西。
 
+### 新增（`session.list` / `session.delete`）与修复（无参命令从 AI 调会卡死管道）
+
+- **`session.list` / `session.delete` 落地，语义按真实模型收窄**：本工程只有**一条**
+  已保存的标签组（`session.save` 覆盖它），所以 list = 读出那一条
+  （`{paths, count, active}`，人侧进只读报告窗口）、delete = 清空那一条
+  （`{cleared, count}`，破坏性 → agent 需 `approve`，人侧先弹确认）。
+  没有假装"多个命名标签组"——那需要名字、重名与覆盖策略，是另一件事。
+  至此 Session 组 4/4 全实现；顺带补上原来缺的回读：能存、能恢复，但看不到存了什么。
+- **修复：无参数命令从 AI 调用会弹模态窗口，把管道卡到超时。**
+  双入口命令一直用 `args.IsEmpty()` 判断"这次是人点的"，这对**无参数**命令是错的：
+  agent 传来的也是 `{}`，于是走"人侧"分支弹报告窗口，而 AI 侧在等一个永远不会来的
+  应答（实测 `session.list` → `{"ok":false,"error":"timeout"}`，`tool.dupfinder {}` 同理）。
+  命令总线本来就有 `actor`（`ui` / `ai`），只是 handler 看不到。现在 Dispatch 记录并
+  还原本次来源（`CommandBus::fromMachine()`），双入口统一用新判据
+  `IsHumanCall(args)` = 空参数 **且** 不是机器调用；9 处判定全部换掉。
+  返回值改成**"成功 / 失败"之外还要能说清"谁触发的"**，这类误判才不会再靠人肉发现。
+
 ### 新增（`search.find` 接上命令总线）
 
 - **搜索从"只有搜索框能用"变成命令**：导航栏搜索框早就存在，但命令目录里

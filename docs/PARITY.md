@@ -40,10 +40,10 @@ baseline: 2026-11-21 21:00
 | Bookmark | 15 | 15 | 0 |
 | Config | 3 | 3 | 0 |
 | Dev | 5 | 5 | 0 |
-| Session | 4 | 2 | 2（`session.delete` / `session.list`） |
+| Session | 4 | 4 | 0 |
 | Tool | 13 | 7 | 6 |
 | Search | 2 | 1 | 1（`search.everything`） |
-| **合计** | **161** | **145** | **16** |
+| **合计** | **161** | **147** | **14** |
 
 > 口径：脚本按 `src/commands.cpp` 里 `{CmdId::X, …}` 字面形式逐条统计分组与 `implemented`，
 > 不按 README 宣称。命令行：见 `tools/check_commands.py`（同时校验 keymap × 处理器三方一致）。
@@ -65,7 +65,7 @@ baseline: 2026-11-21 21:00
 > （旧版本手写的 90/36 与代码不一致：`GoTab1..9` 在 keymap 里绑了但目录里没有，
 > `CopyToFolder`/`MoveToFolder` 也一直缺，已补齐。）
 
-一句话结论：**File 组 35 条全部落地；剩下的 16 条是 Everything 搜索（1，要接它的 IPC）、
+一句话结论：**File / Bookmark / Config / Dev / Session 五组全部落地；剩下的 14 条是 Everything 搜索（1，要接它的 IPC）、
 AI 面板（2，缺窗口内对话 UI）、6 条与既有 `fs.*` 语义重叠的 `tool.*` 包装命令，
 以及少量"本工程模型下没有意义/没有把握"的项（合并窗口、复选框、RunCommand/SendKeys 等）。**
 
@@ -185,11 +185,18 @@ mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
   （打开/复制路径/重命名/删除/新建分类/添加当前目录）、拖入文件夹添加、双击空白切换显隐。
 - 显示/隐藏/切换：命令 + `Ctrl+Shift+B` + 鼠标规则。
 
-### 3.10 Session（4）—— 已实现 2
+### 3.10 Session（4）—— 全实现
 
 `SessionSave`（保存当前标签组到 `settings.json`）、`SessionRestore`（重新打开）。
 启动时若命令行没给路径，自动恢复上次会话（`sessionPaths` / `sessionActive`）。
-`SessionDelete` / `SessionList` 未实现（命名标签组需要额外 UI）。
+
+`SessionList` / `SessionDelete`（2026-11-21）：**语义按真实模型收窄** —— 本工程只有
+**一条**已保存的标签组（`save` 覆盖它，`restore` 整组重开），所以
+`session.list` = 读出那一条（`{paths, count, active}`，人侧进只读报告窗口）、
+`session.delete` = 清空那一条（`{cleared, count}`，破坏性 → agent 需 `approve`，
+人侧先弹确认）。名字里的复数来自 mod 期能力；真要做多命名会话是另一件事
+（要有名字、重名与覆盖策略），不该用这两条命令名去冒充 —— 否则"能列出 / 能删"
+会在只有一条会话时变成假能力。
 
 ### 3.11 Tool（13）—— 已实现 7
 

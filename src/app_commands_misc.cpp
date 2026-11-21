@@ -7,6 +7,7 @@
 #include "hotkey_manager.h"
 #include "bookmarks.h"
 #include "icon_resolve.h"
+#include "report.h"       // ShowReport：只读多行报告窗口（session.list 等）
 #include "settings_reg.h"
 
 // 打开终端：wt 优先，失败退回 PowerShell。
@@ -404,6 +405,70 @@ void App::RegisterMiscCommands() {
     reg(CmdId::SessionRestore, [this](const Args&) {
         std::vector<std::wstring> paths = Config::Get().s().sessionPaths;
         for (const auto& p : paths) NewTab(p);
+        return true;
+    });
+    // 会话在**本工程只有一条**：session.save 覆盖它，restore 整组重开。
+    //
+    // 所以这两条命令的语义按真实模型收窄，而不是假装有"多个命名标签组"：
+    //   session.list   = 读出那一条（包含哪些路径、哪一个是活动标签）
+    //   session.delete = 清空那一条（restore 从此没有可恢复的内容）
+    // 名字里的复数来自 mod 期能力。真要做多会话是另一件事（要有名字、要有覆盖/
+    // 重名策略），不该用这两条命令名去冒充。
+    regR(CmdId::SessionList, [this](const Args& args, json::Value* result) {
+        if (!result) return false;
+        const auto& paths = Config::Get().s().sessionPaths;
+        const int active = Config::Get().s().sessionActive;
+
+        json::Value arr = json::Value::MakeArray();
+        std::wstring report;
+        for (size_t i = 0; i < paths.size(); ++i) {
+            arr.arr.push_back(json::Value::MakeStr(paths[i]));
+            const bool isActive = (static_cast<int>(i) == active);
+            report += (isActive ? L"* " : L"  ") + paths[i] + L"\r\n";
+        }
+        result->Set(L"paths", arr);
+        result->Set(L"count", json::Value::MakeInt(static_cast<int>(paths.size())));
+        result->Set(L"active", json::Value::MakeInt(active));
+
+        if (IsHumanCall(args)) {
+            // 人侧：报告窗口。空的时候也要说清楚"空"和"怎么存"，否则像功能没生效。
+            const std::wstring text =
+                paths.empty()
+                    ? std::wstring(L"还没有保存过标签组。\r\n\r\n"
+                                   L"用菜单「保存标签组」或 session.save 把当前标签存下来。")
+                    : L"共 " + std::to_wstring(paths.size()) + L" 项（* 为活动标签）：\r\n\r\n" + report;
+            ShowReport(hwnd_, theme_, L"已保存的标签组", text);
+        }
+        return true;
+    });
+    regR(CmdId::SessionDelete, [this](const Args& args, json::Value* result) {
+        if (!result) return false;
+        const bool human = IsHumanCall(args);
+        const int n = static_cast<int>(Config::Get().s().sessionPaths.size());
+
+        if (human) {
+            if (n == 0) {
+                // 本来就没有：不弹确认，直接说清楚。报"成功删除 0 项"会让人以为
+                // 之前有过东西被删掉了。
+                MessageBoxW(hwnd_, L"没有保存过标签组，不需要清除。", L"清除标签组",
+                            MB_OK | MB_ICONINFORMATION);
+                result->Set(L"cleared", json::Value::MakeBool(false));
+                result->Set(L"count", json::Value::MakeInt(0));
+                return true;
+            }
+            const std::wstring msg = L"清除已保存的标签组？\r\n\r\n共 " + std::to_wstring(n) +
+                                     L" 项。清除后 session.restore 没有可恢复的内容；"
+                                     L"当前打开的标签不受影响。";
+            if (MessageBoxW(hwnd_, msg.c_str(), L"清除标签组",
+                            MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
+                return false;   // 用户取消：什么都没做
+            }
+        }
+
+        Config::Get().RememberSession({}, -1);
+        Config::Get().Save();
+        result->Set(L"cleared", json::Value::MakeBool(n > 0));
+        result->Set(L"count", json::Value::MakeInt(n));
         return true;
     });
 }

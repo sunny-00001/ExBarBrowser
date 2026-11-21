@@ -214,8 +214,10 @@ const std::vector<CommandDef> kTable = {
     // ---- Session ----
     {CmdId::SessionSave, L"session.save", L"Session", L"标签栏", L"保存标签组", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false},
     {CmdId::SessionRestore, L"session.restore", L"Session", L"标签栏", L"恢复标签组", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false},
-    {CmdId::SessionDelete, L"session.delete", L"Session", L"标签栏", L"删除标签组", false, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, false, false},
-    {CmdId::SessionList, L"session.list", L"Session", L"标签栏", L"列出标签组", false, Effects{1, 0, 1, 0, 0, Scope::App}, kNoArgs, false, false},
+    // 会话本工程只有**一条**（save 覆盖它），所以 delete = 清空那一条，不是多会话管理。
+    {CmdId::SessionDelete, L"session.delete", L"Session", L"标签栏", L"清除已保存的标签组", true, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"cleared\":{\"type\":\"boolean\",\"description\":\"这次是否真的清了东西（本来就空则为 false）\"},\"count\":{\"type\":\"integer\",\"description\":\"清掉了几项\"}},\"required\":[\"cleared\",\"count\"]}"},
+    // list 读出那一条：有哪些路径、哪一个是活动标签。人侧进只读报告窗口。
+    {CmdId::SessionList, L"session.list", L"Session", L"标签栏", L"查看已保存的标签组", true, Effects{1, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"count\":{\"type\":\"integer\"},\"active\":{\"type\":\"integer\",\"description\":\"活动标签下标；-1 表示无\"}},\"required\":[\"paths\",\"count\",\"active\"]}"},
     // ---- 占位（未实现）----
     // 文件集工具已实现（2026-11-21）：见 app_commands_files.cpp 末尾三条 regR。
     // 它们的"人工路径"是**不带参数**调用（目标取界面现状），agent 路径带参数返回 JSON。
@@ -513,6 +515,14 @@ bool CommandBus::InvokeResult(CmdId id, const Args& args, json::Value* result,
 }
 
 bool CommandBus::Dispatch(CmdId id, const Args& args, json::Value* result, const wchar_t* actor) {
+    // 记下本次来源（handler 经 fromMachine() 读），离开函数时还原 ——
+    // 命令可能嵌套调用（面板追问后调另一条），还原保证内层退出后外层仍看到自己的来源。
+    struct ActorScope {
+        const wchar_t** slot;
+        const wchar_t* prev;
+        ~ActorScope() { *slot = prev; }
+    } actorScope{&actor_, actor_};
+    actor_ = actor ? actor : L"ui";
     const CommandDef* def = FindCommand(id);
     if (!def) return false;
 

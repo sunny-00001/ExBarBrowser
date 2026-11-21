@@ -105,7 +105,7 @@ void App::RegisterFileCommands() {
     //   3. 每个改名都走 shellops::RenameTo（FOF_ALLOWUNDO），所以 Ctrl+Z 能整体退回。
     regR(CmdId::BatchRename, [this](const Args& args, json::Value* result) {
         if (!result) return false;
-        const bool human = args.IsEmpty();
+        const bool human = IsHumanCall(args);
 
         std::wstring pattern = args.Str(L"pattern");
         if (pattern.empty() && human) {
@@ -686,7 +686,7 @@ void App::RegisterFileCommands() {
     // 退出搜索 = 再搜一次空串（回到来源目录），导航栏搜索框留空即此语义。
     regR(CmdId::OpSearch, [this](const Args& args, json::Value* result) {
         if (!result) return false;
-        const bool human = args.IsEmpty();
+        const bool human = IsHumanCall(args);
 
         std::wstring query = args.Str(L"query");
         if (human) {
@@ -861,11 +861,13 @@ void App::RegisterFileCommands() {
     //               （哈希取选中项、查重取当前目录、比较弹两个路径框），
     //               结果用 ShowReport 弹只读文本报告；
     //   agent 路径 —— 带参数调用：返回结构化 JSON，**不弹窗**（没人看着屏幕）。
-    // 判据是 args.IsEmpty() 而不是"有没有某个键"：命令面板与热键走的正是空参数。
+    // 判据是 IsHumanCall(args)（空参数 **且** 不是机器调用），不是 args.IsEmpty()：
+    // 无参数命令从 AI 过来也是 {}，只看空参数会走"人侧"分支弹模态窗口，
+    // 把管道调用卡到超时。命令面板与热键走的正是空参数，所以人侧判定要成立。
     // 副作用一致（都只读），所以不需要两套命令 id。
     regR(CmdId::FileHash, [this](const Args& args, json::Value* result) {
         if (!result) return false;
-        const bool human = args.IsEmpty();
+        const bool human = IsHumanCall(args);
 
         filehash::Algo algo = filehash::Algo::Sha256;
         if (args.Has(L"algorithm") && !filehash::ParseAlgo(args.Str(L"algorithm"), &algo)) {
@@ -937,7 +939,7 @@ void App::RegisterFileCommands() {
 
     regR(CmdId::DupFinder, [this](const Args& args, json::Value* result) {
         if (!result) return false;
-        const bool human = args.IsEmpty();
+        const bool human = IsHumanCall(args);
 
         filetools::Options opt;
         if (args.Has(L"budgetMs")) {
@@ -1033,7 +1035,7 @@ void App::RegisterFileCommands() {
 
     regR(CmdId::FolderCompare, [this](const Args& args, json::Value* result) {
         if (!result) return false;
-        const bool human = args.IsEmpty();
+        const bool human = IsHumanCall(args);
 
         std::wstring left = args.Str(L"left");
         std::wstring right = args.Str(L"right");

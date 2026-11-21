@@ -287,6 +287,19 @@ FORBID = [
          why="自绘平铺菜单统一用 ui::Menu 的 Add/AddChecked/AddPath/Separator/Show；"
              "只有 menu.cpp 可以组装 PopupRow 并调用唯一渲染器 ShowPopupList"),
 
+    # 双入口判据（2026-11-21）：无参数命令从 AI 过来也是 `{}`，用 args.IsEmpty()
+    # 当"人侧信号"，handler 就会弹模态窗口，而 AI 那侧在等一个永远不会来的应答 ——
+    # 实测 session.list 从管道调用返回 {"ok":false,"error":"timeout"}，
+    # tool.dupfinder 传 {} 同理。统一用 IsHumanCall(args)（空参数 **且** 不是机器调用）。
+    # 判据只抓两种会变成"人机判定"的写法；DescribeArgs 里那种纯粹问"空不空"的
+    # `if (args.IsEmpty()) return ...` 不拦。
+    dict(name="双入口只看空参数判人机",
+         pat=r"human\s*=\s*args\.IsEmpty\s*\(\s*\)"
+             r"|if\s*\(\s*args\.IsEmpty\s*\(\s*\)\s*\)\s*\{",
+         allow=set(),
+         why="用 IsHumanCall(args)：只看空参数会把 AI 传来的 {} 当成人在操作，"
+             "走人侧分支弹模态窗口，管道调用卡到超时"),
+
     # 路径图标同样收口：菜单与文件夹树用 ico::Cached（进程内共享，弹层不销毁）。
     # 仍直接 Resolve 的只有长生命周期 chrome 图标：标签栏/书签栏/导航栏各管自己的缓存，
     # DPI 变化时要整批重取，生命周期语义与菜单不同，不能混成 Cached。
