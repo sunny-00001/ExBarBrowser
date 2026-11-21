@@ -34,11 +34,29 @@ struct Result {
     std::wstring hex;                 // 小写十六进制
     unsigned long long bytes = 0;     // 实际读到的字节数（用于校验没读半截）
     std::wstring error;               // ok=false 时的人可读原因（含 L"已取消"）
+    // 是不是**因为超出时间预算**而停的。
+    //
+    // 为什么单独一个字段：超时与"打不开文件/读失败"是两回事 ——
+    // 前者说明"这个文件没问题，只是没算完"，后者说明"有问题"。
+    // 混在一个 error 串里，调用方只能靠匹配文案来分派（文案一改就断）。
+    bool timedOut = false;
+    // 是不是**被调用方叫停**的（cancel 标志被置位）。
+    // 与 timedOut 分开：超时可以加大预算重试，取消是"我不要这个结果了"。
+    bool cancelled = false;
 };
 
 // 计算 path 的摘要。path 是目录、不存在、被独占、cancel 被置位 → 返回 false 并写 error。
+//
+// budgetMs：时间预算（毫秒）。0 = 不限。超了就停下并置 out->timedOut。
+//
+// 【为什么必须有预算】这条命令跑在**UI 线程**上（AI 请求由定时器泵派发，
+// 人按快捷键也是 UI 线程）。一个 4 GB 的文件哈希要十几秒 ——
+// 那段时间整个界面没有响应，用户连取消都按不了（UI 线程被占着，
+// 定时器都不转）。预算让"卡"有上界：宁可给出"没算完"的诚实结果，
+// 也不能让界面僵死。
 bool HashFile(const std::wstring& path, Algo algo, Result* out,
-              const std::atomic<bool>* cancel = nullptr);
+              const std::atomic<bool>* cancel = nullptr,
+              unsigned long long budgetMs = 0);
 
 // 计算一段内存的摘要（十六进制小写，进 out->hex）。
 //

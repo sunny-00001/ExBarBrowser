@@ -72,7 +72,7 @@ bool ParseAlgo(const std::wstring& s, Algo* out) {
 }
 
 bool HashFile(const std::wstring& path, Algo algo, Result* out,
-              const std::atomic<bool>* cancel) {
+              const std::atomic<bool>* cancel, unsigned long long budgetMs) {
     if (!out) return false;
     *out = Result{};
 
@@ -123,10 +123,24 @@ bool HashFile(const std::wstring& path, Algo algo, Result* out,
     }
 
     unsigned char buf[64 * 1024];
+    // 时间预算的截止时刻。budgetMs==0 → 不限（deadline 恒为 0，判据跳过）。
+    const ULONGLONG deadline = budgetMs > 0 ? GetTickCount64() + budgetMs : 0;
     for (;;) {
         if (cancel && cancel->load(std::memory_order_relaxed)) {
             CloseHandle(f);
             out->error = L"已取消";
+            // 与 timedOut 分开：取消是"不要了"，超时是"没时间"。
+            // 调用方要据此决定"重试"还是"放弃"。
+            out->cancelled = true;
+            return false;
+        }
+        // 时间预算：每 64 KB 检查一次，粒度足够细（几十毫秒）。
+        // 超了就把已读的字节数如实留在 out->bytes，并标 timedOut ——
+        // 调用方要能区分"没算完"和"算失败"。
+        if (deadline && GetTickCount64() > deadline) {
+            CloseHandle(f);
+            out->error = L"超出时间预算，未算完";
+            out->timedOut = true;
             return false;
         }
         DWORD n = 0;

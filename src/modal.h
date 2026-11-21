@@ -28,4 +28,27 @@ namespace modal {
 bool Run(const std::function<bool()>& done,
          const std::function<bool(MSG&)>& onKey = nullptr);
 
+// 当前嵌套的模态层数（0 = 没有模态框在跑）。
+//
+// 【为什么需要这个数】模态框自己的消息循环里**照样会收到 WM_TIMER**，
+// 于是"AI 通道的泵定时器"会在模态框开着的时候照常触发 ——
+// 命令 handler 就**重入**地跑在模态框的循环里。那不是"慢一点"，是能出事的：
+//   · handler 可能再开一个模态框（框套框，用户看到两个）；
+//   · handler 可能改选中集/视图，而那个模态框正在等的就是这份状态
+//     （比如"重命名"对话框正开着，AI 把它正在改的那一项换掉了）。
+// 于是调用方（app_wnd 的定时器分支）在 Depth() > 0 时**不派发** AI 请求：
+// 请求留在队列里等模态框关掉，客户端那边照旧按 10 秒时限拿超时。
+int Depth();
+
+// 模态层数守卫：构造时 +1，析构时 -1。
+// 自己写模态循环的地方（popup_list）用它包住循环，
+// 别自己维护计数 —— 维护两份计数必然会漏。
+class Scope {
+public:
+    Scope();
+    ~Scope();
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+};
+
 }  // namespace modal

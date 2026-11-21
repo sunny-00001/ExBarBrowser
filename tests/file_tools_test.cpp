@@ -141,6 +141,42 @@ int main() {
         Check(r.error == L"已取消", "错误里写明已取消");
     }
 
+    std::printf("\n时间预算：大文件必须能被打断（tool.hash 跑在 UI 线程上）\n");
+    {
+        // 为什么要有这条：tool.hash 跑在 UI 线程上（AI 请求由定时器泵派发，
+        // 人按快捷键也是 UI 线程）。没有预算的话，一个几十 MB 的文件就能把
+        // 界面按死十几秒，用户连取消都按不了（UI 线程被占着，定时器都不转）。
+        const std::wstring bigPath = root + L"\\big.bin";
+        const size_t kBigSize = 64u * 1024u * 1024u;
+        {
+            FILE* f = nullptr;
+            _wfopen_s(&f, bigPath.c_str(), L"wb");
+            if (f) {
+                const std::string chunk(1024 * 1024, 'x');
+                for (size_t i = 0; i < kBigSize / chunk.size(); ++i)
+                    fwrite(chunk.data(), 1, chunk.size(), f);
+                fclose(f);
+            }
+        }
+
+        // 1ms 预算：64 MB 无论从页缓存还是磁盘读都读不完 —— 必须被打断。
+        filehash::Result r;
+        const bool ok = filehash::HashFile(bigPath, filehash::Algo::Sha256, &r, nullptr, 1);
+        Check(!ok, "预算用完 → 失败（而不是硬算完）");
+        Check(r.timedOut, "标了 timedOut（调用方能区分「没算完」与「算失败」）");
+        Check(r.hex.empty(), "没算完就没有摘要（绝不给半截哈希当结果）");
+        Check(!r.error.empty(), "有可读原因");
+        Check(r.bytes < kBigSize, "只读了一部分就停了");
+
+        // 预算充足 → 必须算完，且是完整的 64 位十六进制。
+        filehash::Result r2;
+        Check(filehash::HashFile(bigPath, filehash::Algo::Sha256, &r2, nullptr, 120000),
+              "预算充足时算完");
+        Check(!r2.timedOut, "预算充足时没超时");
+        Check(r2.hex.size() == 64, "SHA-256 是 64 个十六进制字符");
+        Check(r2.bytes == kBigSize, "读满了整个文件");
+    }
+
     std::printf("\n查重：按内容不按名字\n");
     {
         filetools::Options opt;

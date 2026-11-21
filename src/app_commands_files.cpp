@@ -1098,9 +1098,36 @@ void App::RegisterFileCommands() {
         std::wstring report;
         unsigned okCount = 0, failCount = 0;
         std::wstring failures;
+        // 时间预算：**整次调用一份**，不是每个文件一份。
+        // 否则 N 个文件就是 N 倍预算 —— 界面照样能卡很久，
+        // 而"每个文件都算完"并不是调用方要的。
+        unsigned long long budgetMs = 1500;
+        if (args.Has(L"budgetMs")) {
+            const int ms = args.Int(L"budgetMs", 1500);
+            // 夹到合理区间（同 diskscan / filetools）：太小必然没结果，
+            // 太大等于让 UI 卡住（这条命令跑在 UI 线程上）。
+            budgetMs = static_cast<unsigned long long>(ms < 100 ? 100 : (ms > 30000 ? 30000 : ms));
+        }
+        const ULONGLONG deadline = GetTickCount64() + budgetMs;
+        bool timedOut = false;
         for (const auto& p : paths) {
+            const ULONGLONG now = GetTickCount64();
+            if (now >= deadline) {
+                // 预算已经用完：剩下的文件**如实说没算**，不假装算过。
+                timedOut = true;
+                json::Value o = json::Value::MakeObject();
+                o.Set(L"path", json::Value::MakeStr(p));
+                o.Set(L"algorithm", json::Value::MakeStr(filehash::AlgoName(algo)));
+                o.Set(L"ok", json::Value::MakeBool(false));
+                o.Set(L"error", json::Value::MakeStr(L"超出时间预算，未计算"));
+                arr.arr.push_back(std::move(o));
+                ++failCount;
+                failures += L"  " + p + L"  —  超出时间预算，未计算\r\n";
+                continue;
+            }
             filehash::Result hr;
-            const bool ok = filehash::HashFile(p, algo, &hr);
+            const bool ok = filehash::HashFile(p, algo, &hr, nullptr, deadline - now);
+            if (hr.timedOut) timedOut = true;
             if (ok) {
                 ++okCount;
                 report += hr.hex + L"  " + FormatSize(hr.bytes) + L"  " + p + L"\r\n";
@@ -1123,11 +1150,16 @@ void App::RegisterFileCommands() {
 
         result->Set(L"algorithm", json::Value::MakeStr(filehash::AlgoName(algo)));
         result->Set(L"entries", arr);
+        // 完整性必须说清楚：只给一串哈希而不说"有没有算完"，
+        // 调用方会把"预算用完"当成"这些文件就是这些摘要"（其实可能算的是半个文件）。
+        result->Set(L"timedOut", json::Value::MakeBool(timedOut));
+        result->Set(L"complete", json::Value::MakeBool(!timedOut));
 
         if (human) {
             std::wstring text = std::wstring(filehash::AlgoName(algo)) + L"　成功 " +
                                 std::to_wstring(okCount) + L" 个";
             if (failCount) text += L"，失败 " + std::to_wstring(failCount) + L" 个";
+            if (timedOut) text += L"（**未算完**：超出时间预算，结果不完整）";
             text += L"\r\n\r\n" + report;
             if (failCount) text += L"\r\n读取失败：\r\n" + failures;
             ShowReport(hwnd_, theme_, L"文件摘要", text);

@@ -4,6 +4,7 @@
 #include "app.h"
 
 #include "ai_server.h"
+#include "modal.h"
 
 // ---------------------------------------------------------------- 消息
 LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -33,8 +34,16 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_TIMER:
         if (w == kStatsTimer)
             self.RefreshStats();
-        else if (w == kAiTimer)
-            ai::PumpRequests();   // 命令 handler 只能在 UI 线程跑
+        else if (w == kAiTimer) {
+            // 模态框开着的时候**不派发** AI 命令。
+            //
+            // 【为什么】模态框自己的消息循环里照样收得到 WM_TIMER，
+            // 于是命令 handler 会**重入**地跑在模态框的循环里：
+            // 可能再开一个框（框套框），也可能改掉那个框正在等的选中项。
+            // 请求留在队列里，等模态框关掉再处理；客户端那边照旧按
+            // 10 秒时限拿超时（语义不变，只是不再有重入）。
+            if (modal::Depth() == 0) ai::PumpRequests();
+        }
         else if (w == kSessionTimer) {
             KillTimer(h, kSessionTimer);
             self.SaveSessionSnapshot();   // 崩溃前的最后一份可恢复会话

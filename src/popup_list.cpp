@@ -1,5 +1,6 @@
 #include "popup_list.h"
 
+#include "modal.h"        // modal::Scope：登记模态层（AI 泵据此避让）
 #include "platform_win.h"
 #include "popup_toggle.h"
 
@@ -858,6 +859,9 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
 
     // 对齐 mod 19298-19301：GetMessage 返回 -1 是错误（不能继续循环），
     // 返回 0 是 WM_QUIT（必须原样 PostQuitMessage 交还宿主）。
+    // modal::Scope：把这段循环登记成"模态层" —— 模态期间不派发 AI 命令
+    // （见 modal.h 里 Depth() 的说明）。
+    modal::Scope modalScope;
     MSG msg;
     int gm;
     while (!st.done && (gm = GetMessageW(&msg, nullptr, 0, 0)) > 0) {
