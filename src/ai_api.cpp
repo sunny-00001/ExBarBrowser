@@ -329,6 +329,14 @@ std::wstring StateToJson(const StateSnapshot& s) {
     // itemCount / viewMode 用 number。unsigned 转 int 在这里安全（项目数不会溢出）。
     v.Set(L"itemCount", json::Value::MakeInt(static_cast<int>(s.itemCount)));
     v.Set(L"viewMode", json::Value::MakeInt(s.viewMode));
+
+    // ---- 可写状态的回读（见 StateSnapshot 的注释：能改就必须能读）----
+    // 这几个字段各自对应一条命令，只有写没有读时调用方无法确认改没改成。
+    v.Set(L"sortMode", json::Value::MakeInt(s.sortMode));
+    v.Set(L"groupBy", json::Value::MakeInt(s.groupBy));
+    v.Set(L"bookmarkBarVisible", json::Value::MakeBool(s.bookmarkBarVisible));
+    v.Set(L"navPaneVisible", json::Value::MakeBool(s.navPaneVisible));
+    v.Set(L"previewPaneVisible", json::Value::MakeBool(s.previewPaneVisible));
     return json::Stringify(v, 0);
 }
 

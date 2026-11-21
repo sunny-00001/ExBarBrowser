@@ -89,12 +89,25 @@ CallResult Call(const std::wstring& command, const json::Value& args, bool appro
 
 // 状态快照（只读，R19：与 UI 同源，不另存副本）。
 // 由 App 注册的回调填充，避免 ai 层反向依赖 App。
+//
+// 【为什么这几个字段必须有】凡是 AI 能**改**的状态，就必须能**读**回来。
+// 只有写没有读时，调用方拿到 isError=false 就等于"我改成功了"—— 而实际
+// 可能被前置条件静默跳过、被用户刚才的操作覆盖、或参数取了默认值。
+// 这类"写完无法验证"的接口会把错误推到很久以后才暴露（且现场已丢失）。
+// 判据见 tools/check_ai_meta.py 第 17 项：可写的界面状态字段必须有回读。
 struct StateSnapshot {
     std::wstring activePath;              // 当前标签路径
     std::vector<std::wstring> tabPaths;   // 所有标签路径（按标签栏顺序）
     int activeTab = -1;                   // 激活标签序号（0 起）
     unsigned itemCount = 0;               // 当前目录项目数
     int viewMode = -1;                    // 当前视图模式（FVM_*），-1 = 未知
+
+    // ---- 可写状态的回读（每个都对应一条 view.* / bmk.* 命令）----
+    int sortMode = -1;                    // view.sort 改写；-1 = 未知
+    int groupBy = -1;                     // view.group 改写
+    bool bookmarkBarVisible = false;      // bmk.show / bmk.hide / bmk.toggle 改写
+    bool navPaneVisible = false;          // view.toggle.nav 改写
+    bool previewPaneVisible = false;      // view.toggle.preview 改写
 };
 using StateFn = std::function<StateSnapshot()>;
 void SetStateProvider(StateFn fn);

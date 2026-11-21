@@ -166,6 +166,17 @@ void App::OnCreate() {
         s.viewMode = viewMode_;
         for (const auto& it : tabSet_.items()) s.tabPaths.push_back(it.path);
         if (Tab* t = Active()) s.itemCount = t->items;
+
+        // 可写状态的回读（见 ai::StateSnapshot 的注释：能改就必须能读）。
+        // 一律取**同一份**真源 —— 排序/分组/窗格/书签栏都在 Settings 里，
+        // 不在这里另存副本（R19）。另存副本会让"命令改了 A、回读读到 B"这种
+        // 分叉只在用户发现界面与 AI 说法不一致时才暴露。
+        const Settings& cfg = Config::Get().s();
+        s.sortMode = cfg.sortMode;
+        s.groupBy = cfg.groupBy;
+        s.bookmarkBarVisible = cfg.showBookmark;
+        s.navPaneVisible = cfg.showNavPane;
+        s.previewPaneVisible = cfg.showPreviewPane;
         return s;
     });
 
