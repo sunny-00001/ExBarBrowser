@@ -79,12 +79,20 @@ std::wstring MakeToken() {
     return buf;
 }
 
-// 管道名后缀用主窗口句柄：客户端不需要知道 pid，只需要连到"正在跑的那个窗口"。
-// 进程退出 → 句柄失效 → 旧名自然连不上，不会连到僵尸管道。
+// 管道名必须**进程唯一**：客户端读 ai-pipe.txt 拿全名，不猜名字。
+// 后缀 = 窗口句柄（有窗口时）+ pid：
+//   · 句柄标示"哪个窗口"，进程退出即失效，不会连到僵尸管道；
+//   · pid 是必须的 —— 无窗口进程（单测 / headless e2e / 启动早期）原来全用
+//     "default"，两个并发实例串到同一个管道，各自拿自己的令牌去连对方的管道，
+//     表现为随机 bad_token（实测：先起一个占位进程，pipe_e2e 立刻 12 条失败）。
 std::wstring PipeName() {
-    wchar_t buf[32] = L"default";
+    const unsigned long pid = GetCurrentProcessId();
+    wchar_t buf[80];
     if (HWND h = FindWindowW(id::kMainClass, nullptr))
-        swprintf(buf, 32, L"%llx", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(h)));
+        swprintf(buf, 80, L"%llx_%lu",
+                 static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(h)), pid);
+    else
+        swprintf(buf, 80, L"default_%lu", pid);
     return std::wstring(kPipePrefix) + buf;
 }
 

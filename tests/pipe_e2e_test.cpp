@@ -95,6 +95,11 @@ int main() {
     Check(tf::ReadText(tf::Join(Config::Get().Dir(), L"ai-pipe.txt"), &pipe), "读到管道名文件");
     Check(!token.empty(), "令牌非空");
     Check(!pipe.empty(), "管道名非空");
+    // 管道名必须带本进程 pid：无窗口的 headless 实例原来共用 "..._default"，
+    // 并发时测试连到别人的管道、拿自己的令牌去握手 -> 随机 bad_token。
+    // 这条断言锁住契约，防止以后"简化"掉 pid 又复现那个查了很久的间歇红。
+    Check(pipe.find(std::to_wstring(GetCurrentProcessId())) != std::wstring::npos,
+          "管道名包含本进程 pid（并发实例不串线）");
     std::printf("        pipe=%ls token=%ls...\n", pipe.c_str(),
                 token.substr(0, 8).c_str());
 
