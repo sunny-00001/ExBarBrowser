@@ -126,6 +126,34 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (int d = DpiOf(h); d > 0 && d != self.theme_.dpi) self.ApplyTheme(d);
         return 0;
 
+    case WM_SYSCOMMAND: {
+        // 标题栏系统菜单里的应用入口：转投命令总线，与导航栏按钮/快捷键/命令面板
+        // 走同一条路径（前置检查、审计、写状态只在一个入口）。
+        // 注意 SC_* 用整个 wParam（含高位），自定义项只需 LOWORD —— 先判自定义段，
+        // 其余（还原/移动/大小/最小化/最大化/关闭）一律交系统默认。
+        const UINT id = LOWORD(w);
+        switch (id) {
+        case kSysViewMenu:
+            CommandBus::Get().Invoke(CmdId::NavViewMenu, Args::Empty(), L"sysmenu");
+            return 0;
+        case kSysPalette:
+            CommandBus::Get().Invoke(CmdId::CommandPalette, Args::Empty(), L"sysmenu");
+            return 0;
+        case kSysPrefs:
+            CommandBus::Get().Invoke(CmdId::Preferences, Args::Empty(), L"sysmenu");
+            return 0;
+        case kSysHotkeys:
+            CommandBus::Get().Invoke(CmdId::HotkeyManager, Args::Empty(), L"sysmenu");
+            return 0;
+        case kSysQuit:
+            CommandBus::Get().Invoke(CmdId::QuitExplorer, Args::Empty(), L"sysmenu");
+            return 0;
+        default:
+            break;
+        }
+        return DefWindowProcW(h, m, w, l);
+    }
+
     case WM_CLOSE:
         self.OnDestroy();
         DestroyWindow(h);

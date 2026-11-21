@@ -245,6 +245,23 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (sink_ && sink_(target, m, button, CurrentMods(), pt)) return 0;
         return 0;
     }
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP: {
+        // 书签栏侧键：按命中项算 target（书签/文件夹/空白/溢出），按钮编号
+        // 从 wParam 解析（与 shell_input 同口径），交给规则引擎触发前进/后退。
+        const int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
+        POINT pt{x, y};
+        ClientToScreen(h, &pt);
+        const int idx = HitItem(x, y);
+        const int target = idx >= 0 ? (items_[static_cast<size_t>(idx)].folder
+                                           ? MT_BOOKMARK_FOLDER
+                                           : MT_BOOKMARK)
+                                    : (HitOverflow(x, y) ? MT_OVERFLOW : MT_BOOKMARK_EMPTY);
+        const int button = XButtonFromWParam(w);
+        if (button < 0) return 0;
+        if (sink_ && sink_(target, m, button, CurrentMods(), pt)) return 0;
+        return 0;
+    }
     case WM_LBUTTONDOWN: {
         int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
         POINT pt{x, y};

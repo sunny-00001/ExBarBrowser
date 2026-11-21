@@ -318,6 +318,14 @@ CallResult CallImpl(const std::wstring& command, const json::Value& args, bool a
             }
         }
     }
+
+    // 总判定：有断言时必须是"handler 成功 && 断言全过"；无断言时就是 ok。
+    // 集中算一次，事件与响应用同一份，避免两处各算一遍而口径漂移。
+    r.verdict = r.ok;
+    if (r.hasAssertions) {
+        for (const auto& a : r.assertions.arr)
+            if (!a.GetBool(L"ok", true)) { r.verdict = false; break; }
+    }
     return r;
 }
 
@@ -331,13 +339,8 @@ CallResult Call(const std::wstring& command, const json::Value& args, bool appro
     data.Set(L"args", args);   // 事件里带参数：事后回看才知道"改成了什么"
     data.Set(L"ok", json::Value::MakeBool(r.ok));
     if (!r.error.empty()) data.Set(L"error", json::Value::MakeStr(r.error));
-    if (r.hasAssertions) {
-        data.Set(L"assertions", r.assertions);
-        bool verdict = true;
-        for (const auto& a : r.assertions.arr)
-            if (!a.GetBool(L"ok", true)) verdict = false;
-        data.Set(L"verdict", json::Value::MakeBool(verdict));
-    }
+    if (r.hasAssertions) data.Set(L"assertions", r.assertions);
+    data.Set(L"verdict", json::Value::MakeBool(r.verdict));
     events::Publish(L"command", data);
     return r;
 }
@@ -373,6 +376,8 @@ std::wstring ResultToJson(const CallResult& r) {
     // 自断言：与 structuredContent 同级给出，便于客户端只看一处就知道
     // "命令说成了" 与 "效果确实对" 是否一致。
     if (r.hasAssertions) v.Set(L"assertions", r.assertions);
+    // 总判定：调用方（含 ebbctl / 意图层）只读这一个字段就能回答"成没成"。
+    v.Set(L"verdict", json::Value::MakeBool(r.verdict));
     return json::Stringify(v, 0);
 }
 
@@ -396,6 +401,20 @@ std::wstring StateToJson(const StateSnapshot& s) {
     v.Set(L"bookmarkBarVisible", json::Value::MakeBool(s.bookmarkBarVisible));
     v.Set(L"navPaneVisible", json::Value::MakeBool(s.navPaneVisible));
     v.Set(L"previewPaneVisible", json::Value::MakeBool(s.previewPaneVisible));
+
+    // ---- 选中与焦点（观测面）：AI 回答"用户选中了什么/焦点在哪"的唯一来源 ----
+    v.Set(L"selectionCount", json::Value::MakeInt(static_cast<int>(s.selectionCount)));
+    json::Value sel = json::Value::MakeArray();
+    json::Value folders = json::Value::MakeArray();
+    for (size_t i = 0; i < s.selectionPaths.size(); ++i) {
+        sel.arr.push_back(Str(s.selectionPaths[i]));
+        bool isFolder = i < s.selectionFolders.size() && s.selectionFolders[i];
+        folders.arr.push_back(json::Value::MakeBool(isFolder));
+    }
+    v.Set(L"selection", sel);
+    v.Set(L"selectionFolders", folders);
+    v.Set(L"selectionTruncated", json::Value::MakeBool(s.selectionTruncated));
+    v.Set(L"focus", Str(s.focus));
     return json::Stringify(v, 0);
 }
 

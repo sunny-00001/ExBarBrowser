@@ -117,6 +117,10 @@ enum class CmdId : int {
     // 与配置域同一范式：可枚举、可调用、可回读。build/test 异步跑完发事件，
     // 不占着 UI 线程等；rollback 是破坏性写，必须 approve。
     DevSnapshot, DevBuild, DevTest, DevJob, DevRollback,
+    // 新增命令一律加在**枚举末尾**（check_commands.py 的 C1b 规则）：
+    // enum class 无显式赋值，往中间插会让后面所有 id 整体位移，
+    // 基线（data/commands-baseline.json）与既有持久化引用全部失配。
+    BmkAddSelection,   // 无参，needsSelection：收藏文件视图当前选中的文件夹（可多选）
 };
 
 // 命令的风险等级（与 mod 的 risk / 架构规则 R18 对齐）。

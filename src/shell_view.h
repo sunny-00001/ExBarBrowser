@@ -49,6 +49,18 @@ public:
     // 当前选中项数量。供"命令可否执行"的前置判定用，因此不走 statistics 缓存
     // （缓存 800ms 刷新一次，用作"能不能删"会得到过期答案）。
     unsigned SelectedCount();
+    // 一次"观测选中"的条目：文件系统给完整路径，命名空间给解析名（::{GUID}\...）。
+    struct SelectionItem {
+        std::wstring path;
+        bool isFolder = false;
+    };
+    // 枚举当前选中项（观测面：AI 要回答"选中的是哪些、是什么类型"）。
+    // cap 是快照能携带的上限（防全选上万项撑爆管道响应）；返回选中总数 ——
+    // out.size() < 返回值即发生截断。与 SelectedCount 同一条枚举路径，不出两份口径。
+    unsigned SelectionPaths(unsigned cap, std::vector<SelectionItem>& out);
+    // 恢复选中（会话重启）：逐条解析路径并 SelectItem。尽力语义 ——
+    // 目录内容已变时部分条目会静默失败，不报错不阻塞启动。
+    void SelectPaths(const std::vector<std::wstring>& paths);
     void ApplyTheme();
     void EraseBackground(HDC dc, const RECT& rc);  // 容器窗口 WndProc 用
 

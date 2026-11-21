@@ -561,6 +561,89 @@ unsigned ShellView::SelectedCount() {
     return count;
 }
 
+unsigned ShellView::SelectionPaths(unsigned cap, std::vector<SelectionItem>& out) {
+    out.clear();
+    unsigned total = SelectedCount();   // 总数同源，用于截断判定
+    if (total == 0 || cap == 0) return total;
+
+    IShellView* view = CurrentView();   // 返回已 AddRef，本函数负责 Release
+    if (!view) return 0;
+    IFolderView* fv = nullptr;
+    if (SUCCEEDED(view->QueryInterface(IID_IFolderView, reinterpret_cast<void**>(&fv))) && fv) {
+        IEnumIDList* en = nullptr;
+        if (SUCCEEDED(fv->Items(SVGIO_SELECTION, IID_IEnumIDList,
+                                reinterpret_cast<void**>(&en))) && en) {
+            out.reserve(total < cap ? total : cap);
+            for (unsigned taken = 0; taken < cap; ++taken) {
+                PITEMID_CHILD pidl = nullptr;
+                if (en->Next(1, &pidl, nullptr) != S_OK || !pidl) break;
+                IShellItem* item = nullptr;
+                if (SUCCEEDED(SHCreateItemFromIDList(pidl, IID_IShellItem,
+                                                     reinterpret_cast<void**>(&item))) && item) {
+                    SelectionItem si;
+                    PWSTR name = nullptr;
+                    // DESKTOPABSOLUTEEDITING：文件系统给完整路径（C:\a\b），
+                    // 命名空间给解析名（::{GUID}\子项）；比 PARSING 少一层显示转义。
+                    if (SUCCEEDED(item->GetDisplayName(SIGDN_DESKTOPABSOLUTEEDITING, &name)) && name) {
+                        si.path = name;
+                        CoTaskMemFree(name);
+                    }
+                    SFGAOF attr = 0;
+                    item->GetAttributes(SFGAO_FOLDER, &attr);
+                    si.isFolder = (attr & SFGAO_FOLDER) != 0;
+                    if (!si.path.empty()) out.push_back(std::move(si));
+                    item->Release();
+                }
+                CoTaskMemFree(pidl);
+            }
+            en->Release();
+        }
+        fv->Release();
+    }
+    view->Release();
+    return total;
+}
+
+void ShellView::SelectPaths(const std::vector<std::wstring>& paths) {
+    if (paths.empty() || !browser_) return;
+    IShellView* view = CurrentView();
+    if (!view) return;
+    IFolderView* fv = nullptr;
+    if (FAILED(view->QueryInterface(IID_IFolderView, reinterpret_cast<void**>(&fv))) || !fv) {
+        view->Release();
+        return;
+    }
+    // SelectItem 要**相对当前 folder 的子 pidl**；SHParseDisplayName 给绝对 pidl。
+    // 由 IPersistFolder2::GetCurPIDL 拿 folder 绝对 pidl，再 ILFindChild 切出子段
+    // （返回值指向 abs 内部，不单独释放）。条目不存在/目录已变 → 解析失败静默跳过。
+    IPersistFolder2* pf = nullptr;
+    PIDLIST_ABSOLUTE folder = nullptr;
+    if (SUCCEEDED(fv->GetFolder(IID_IPersistFolder2, reinterpret_cast<void**>(&pf))) && pf) {
+        pf->GetCurFolder(&folder);   // MinGW 的 IPersistFolder2 方法名（SDK 叫 GetCurPIDL）
+        pf->Release();
+    }
+    if (!folder) {
+        fv->Release();
+        view->Release();
+        return;
+    }
+    for (size_t i = 0; i < paths.size(); ++i) {
+        PIDLIST_ABSOLUTE abs = nullptr;
+        if (FAILED(SHParseDisplayName(paths[i].c_str(), nullptr, &abs, 0, nullptr)) || !abs)
+            continue;
+        const PCUITEMID_CHILD child = ILFindChild(folder, abs);
+        if (child) {
+            // 首条清掉旧选中；后续追加。失败静默：恢复是尽力语义。
+            const UINT flags = (i == 0) ? (SVSI_SELECT | SVSI_DESELECTOTHERS) : SVSI_SELECT;
+            view->SelectItem(child, flags);
+        }
+        ILFree(abs);
+    }
+    ILFree(folder);
+    fv->Release();
+    view->Release();
+}
+
 unsigned ShellView::ItemCount() {
     if (!browser_) return 0;
     IShellView* view = nullptr;

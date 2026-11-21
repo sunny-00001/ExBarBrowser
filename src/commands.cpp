@@ -186,6 +186,9 @@ const std::vector<CommandDef> kTable = {
     // ---- 补齐三处"只有鼠标能做"的动作（拖放添加 / 拖拽重排 / 读取树）----
     // 前两条与拖放走**同一份实现**：菜单、拖放、脚本、AI 都调它们。
     {CmdId::BmkAdd, L"bmk.add.path", L"Bookmark", L"书签栏", L"添加书签（指定路径）", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要收藏的目录完整路径\"},\"name\":{\"type\":\"string\",\"description\":\"显示名；省略则取末段\"},\"parentId\":{\"type\":\"string\",\"description\":\"父分类 id；省略=顶层\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false},
+    // 收藏**选中的**文件夹（与 bmk.add.current 的"当前目录"是两个意图：选中≠当前）。
+    // needsSelection + HasSelection 前置：无选中时前置拒绝，不猜用户意图。
+    {CmdId::BmkAddSelection, L"bmk.add.selection", L"Bookmark", L"书签栏", L"收藏选中的文件夹", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true, true, Requirements{Req::HasSelection}},
     {CmdId::BmkMove, L"bmk.move", L"Bookmark", L"书签栏", L"移动书签", true, Effects{0, 0, 0, 0, 1, Scope::App}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"要移动的书签 id\"},\"toId\":{\"type\":\"string\",\"description\":\"目标分类 id（移入它内部）\"},\"toIndex\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"在目标内的位置；省略=末尾\"}},\"required\":[\"id\"],\"additionalProperties\":false}", true, false},
     // bmk.list 是**读**：其余 bmk.* 要的 id 由它给出。没有它，
     // AI 拿到"删除书签"却无从知道有哪些 id —— 命令表就是断的。

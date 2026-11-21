@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "common.h"  // WPARAM / VK_XBUTTON1/2、GetKeyState 等 Win32 类型与 API
+
 enum MouseTarget {
     MT_UNKNOWN = -1,     // 非可配置区域（预览窗格/滚动条/未知元素），不匹配规则
     MT_EMPTY = 0,        // 文件列表空白
@@ -75,6 +77,13 @@ int MouseTriggerFromName(const std::wstring& name);
 // 返回 0 有两个含义：没按修饰键，或按了 AltGr（右 Alt + 左 Ctrl —— 德语/波兰语等
 // 布局下 AltGr+E 是字符「ę」，不能被当成 Ctrl+Alt+E 吃掉）。调用方按"无修饰"处理。
 int CurrentMods();
+
+// WM_XBUTTONDOWN/UP 的 wParam → MBTN_X1/MBTN_X2。wParam 的 HIWORD 携带侧键编号
+// （XBUTTON1/XBUTTON2），但经 WM_PARENTNOTIFY 上抛的消息不带编号 —— 此时用
+// VK_XBUTTON1/2 的物理按下状态兜底，口径与 shell_input 的 ButtonFrom 完全一致。
+// 各自绘栏（标签/导航/书签/状态）处理 XBUTTON 消息时统一走这里，避免四份解析漂移。
+// 无编号且物理状态也判不出时返回 -1（调用方放行消息）。
+int XButtonFromWParam(WPARAM w);
 
 class MouseRules {
 public:

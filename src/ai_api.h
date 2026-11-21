@@ -87,6 +87,13 @@ struct CallResult {
     // 但 CallResult 有断言失败时，ai 层会把它写进审计并在响应里显式给出。
     json::Value assertions = json::Value::MakeArray();
     bool hasAssertions = false;
+
+    // 总判定："这次调用到底成没成"——调用方只看这一个字段即可，不必自己去
+    // 遍历 assertions 或纠结 ok 与断言的关系。语义：
+    //   · 有断言：verdict = ok && 全部断言通过（真正"效果也对"）
+    //   · 无断言：verdict = ok（手头只有 handler 的成功信号，不编造更强结论）
+    // 注意 verdict 不篡改 ok：审计里 ok 始终是 handler 的原值，保持真相。
+    bool verdict = false;
 };
 
 // 按 JSON Schema 校验参数。返回 false 时 err 给出人可读原因。
@@ -121,6 +128,16 @@ struct StateSnapshot {
     bool bookmarkBarVisible = false;      // bmk.show / bmk.hide / bmk.toggle 改写
     bool navPaneVisible = false;          // view.toggle.nav 改写
     bool previewPaneVisible = false;      // view.toggle.preview 改写
+
+    // ---- 选中与焦点（观测面：AI 要能回答"用户此刻选中了什么、焦点在哪"）----
+    // selectionPaths 与 selectionCount 同源（同一条 shell 枚举路径）；
+    // paths 是按快照上限截断后的部分，truncated=true 表示没带全。
+    unsigned selectionCount = 0;          // 选中项总数
+    std::vector<std::wstring> selectionPaths; // 选中项路径（文件系统=完整路径；命名空间=解析名）
+    std::vector<bool> selectionFolders;   // 与 selectionPaths 一一对应：是否文件夹
+    bool selectionTruncated = false;      // paths 被上限截断
+    std::wstring focus;                   // 焦点面板：file_view / nav_tree /
+                                          // bookmark_bar / address_bar / unknown
 };
 using StateFn = std::function<StateSnapshot()>;
 void SetStateProvider(StateFn fn);

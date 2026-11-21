@@ -34,7 +34,7 @@ inline constexpr DefHotkey kHotkeys[] = {
     {L"hotkeyToggleHidden", L"ToggleHidden", L"Ctrl+H"},
     {L"hotkeyToggleSystemFiles", L"ToggleSystemFiles", L"Ctrl+Shift+H"},
     {L"hotkeyToggleExtensions", L"ToggleExtensions", L"Ctrl+Alt+E"},
-    {L"hotkeyTogglePreviewPane", L"TogglePreviewPane", L"Ctrl+Alt+P"},
+    {L"hotkeyTogglePreviewPane", L"TogglePreviewPane", L"Alt+P"},
     {L"hotkeyToggleNavPane", L"ToggleNavPane", L"Ctrl+Shift+L"},
     {L"hotkeyOpenDownloads", L"GoDownloads", L"Ctrl+Shift+J"},
     {L"hotkeyOpenDesktop", L"GoDesktop", L"Ctrl+Shift+D"},

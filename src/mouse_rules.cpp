@@ -122,6 +122,41 @@ void MouseRules::LoadDefaults() {
     s.command = L"PathCopyDir";
     s.builtin = true;
     rules_.push_back(s);
+
+    // 侧键默认（浏览器惯例：X1=后退、X2=前进；Exbar/资源管理器增强工具同此）。
+    //
+    // 【为什么铺这么多 target】侧键规则没有"任意区域"通配：Find 是 target 精确匹配，
+    // 而侧键可能落在文件视图空白/文件/文件夹、标签栏、导航栏、书签栏、状态栏、
+    // 预览窗格上 —— shell_input 与四个栏各自报告不同 target。只绑一个 target 的
+    // 侧键规则会让"在文件上按侧键没反应、在空白处正常"这类割裂行为。
+    // 文件/文件夹上不铺 MT_FILE/MT_FOLDER：这两类留给用户自己配（有人要"侧键中键
+    // 在文件上=关闭"之类），空白与栏区域是浏览器前进/后退的无争议默认。
+    // 用户在 mouse.json 里写同组合规则时排在后面，优先级更高（Find 从后往前）。
+    static const int kSideTargets[] = {MT_EMPTY,      MT_UNKNOWN, MT_VIEW,    MT_TAB,
+                                       MT_NAV,        MT_ADDRESS, MT_TREE,    MT_STATUS,
+                                       MT_STATUS_SEG, MT_PREVIEW, MT_BOOKMARK,
+                                       MT_BOOKMARK_FOLDER, MT_BOOKMARK_EMPTY};
+    for (int t : kSideTargets) {
+        MouseRule back;
+        back.target = t;
+        back.button = MBTN_X1;
+        back.trigger = TR_SINGLE;
+        back.mods = 0;
+        back.action = L"command";
+        back.command = L"NavBack";
+        back.builtin = true;
+        rules_.push_back(back);
+
+        MouseRule fwd;
+        fwd.target = t;
+        fwd.button = MBTN_X2;
+        fwd.trigger = TR_SINGLE;
+        fwd.mods = 0;
+        fwd.action = L"command";
+        fwd.command = L"NavForward";
+        fwd.builtin = true;
+        rules_.push_back(fwd);
+    }
 }
 
 void MouseRules::Load(const std::wstring& path) {
@@ -194,6 +229,19 @@ int CurrentMods() {
     // AltGr = 右 Alt + 左 Ctrl：字符输入，不是修饰键组合
     if ((GetKeyState(VK_RMENU) & 0x8000) && (GetKeyState(VK_LCONTROL) & 0x8000)) return 0;
     return m;
+}
+
+int XButtonFromWParam(WPARAM w) {
+    DWORD x = HIWORD(w);
+    if (!x) {  // WM_PARENTNOTIFY 不带侧键编号：用物理按下状态兜底
+        const bool x1 = (GetKeyState(VK_XBUTTON1) & 0x8000) != 0;
+        const bool x2 = (GetKeyState(VK_XBUTTON2) & 0x8000) != 0;
+        if (x1 && !x2) x = XBUTTON1;
+        else if (x2 && !x1) x = XBUTTON2;
+    }
+    if (x == XBUTTON1) return MBTN_X1;
+    if (x == XBUTTON2) return MBTN_X2;
+    return -1;
 }
 
 const MouseRule* MouseRules::Find(int target, int button, int trigger, int mods) const {

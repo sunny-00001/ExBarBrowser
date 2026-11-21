@@ -73,6 +73,21 @@ private:
     static constexpr UINT_PTR kStatsTimer = 1;
     // AI 通道的请求泵定时器：监听线程排队 → 本定时器在 UI 线程执行命令。
     static constexpr UINT_PTR kAiTimer = 2;
+    // 系统菜单（标题栏右键 / Alt+Space）自定义项的命令 ID 段。
+    // 避开系统保留的 SC_* (0xF000+)：LOWORD(WM_SYSCOMMAND::wParam) 落在这一段时
+    // 由 WndProc 转投命令总线，其余交 DefWindowProc（还原/移动/大小/最小化…）。
+    static constexpr UINT kSysMenuBase = 0xE100;
+    enum SysMenuCmd : UINT {
+        kSysViewMenu = kSysMenuBase + 1,
+        kSysPalette,
+        kSysPrefs,
+        kSysHotkeys,
+        kSysQuit,
+    };
+    // 把应用入口挂进系统菜单。只追加高层入口并转投现有命令（NavViewMenu /
+    // CommandPalette / Preferences / HotkeyManager / QuitExplorer），视图菜单的
+    // 8 档子菜单不在系统菜单里再抄一份 —— 那会造出第二套实现，迟早漂移。
+    void BuildSystemMenu();
 
     // 标签
     int NewTab(const std::wstring& path, int index = -1);
@@ -111,6 +126,14 @@ private:
     Tab* ById(int id);
     int ActiveIndex() const;
     std::wstring ActivePath() const;
+    // 焦点面板判定（观测面）：按真实窗口层级判断焦点属于哪个面板，
+    // 匹配不上就如实返回 unknown，不猜。AI 状态快照每次现取。
+    std::wstring FocusPaneOf(HWND focus);
+
+    // 会话选中恢复（P3）：启动时挂起，首次导航完成时消费一次。
+    // pendingSelPath_ 是目标目录（匹配才恢复）；用户先导航去了别处即放弃。
+    std::wstring pendingSelPath_;
+    std::vector<std::wstring> pendingSelItems_;
     void SyncChrome();
     // AI 通道热插拔：按当前配置启停管道服务与请求泵定时器（幂等）。
     // 启动时调一次；运行中 config.set aiEnabled 之后由 WM_APP_SYNC_AI 再调。

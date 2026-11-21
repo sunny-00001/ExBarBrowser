@@ -75,6 +75,7 @@ struct Settings {
     std::vector<std::wstring> recentPaths;   // 最近访问，front = 最新
     std::vector<std::wstring> sessionPaths;  // 上次关闭时的标签
     int sessionActive = 0;
+    std::vector<std::wstring> sessionSelection;  // 关闭时活动标签的选中项（重启恢复用）
     std::vector<std::wstring> lockedPaths;   // 锁定标签（按路径持久化）
     std::vector<TabMeta> tabMeta;            // 标签改名/颜色（按路径持久化）
     std::vector<std::wstring> closedTabs;    // 关闭历史（可重开）
@@ -126,7 +127,8 @@ public:
     std::wstring DataDir() const;      // 与 Dir() 相同：数据就放在 data\ 里
 
     void AddRecent(const std::wstring& path);
-    void RememberSession(const std::vector<std::wstring>& paths, int active);
+    void RememberSession(const std::vector<std::wstring>& paths, int active,
+                         const std::vector<std::wstring>& selection = {});
     // 标签个性化（改名/颜色）的写入口。path 是定位键，alias 空 + color 0 = 删除该项。
     // 只改内存；落盘时机与其它会话状态一致（App 退出流程统一 Save）。
     void SetTabMeta(const std::wstring& path, const std::wstring& alias, int color);

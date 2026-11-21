@@ -252,6 +252,26 @@ std::wstring App::ActivePath() const {
     return t ? t->path : std::wstring();
 }
 
+std::wstring App::FocusPaneOf(HWND focus) {
+    if (!focus) return L"unknown";
+    // 顺序 = 判定精度：自有窗口（书签栏/导航栏）用 hwnd 精确匹配，shell 提供的
+    // 类名次之，最后才是视图容器子孙。都匹配不上就 unknown —— 猜错比不答更糟
+    // （AI 会拿着错误焦点做决策）。
+    if (bookmarkBar_.hwnd() &&
+        (focus == bookmarkBar_.hwnd() || IsChild(bookmarkBar_.hwnd(), focus)))
+        return L"bookmark_bar";
+    if (navBar_.hwnd() && (focus == navBar_.hwnd() || IsChild(navBar_.hwnd(), focus)))
+        return L"address_bar";
+    wchar_t cls[64] = {};
+    GetClassNameW(focus, cls, _countof(cls));
+    if (lstrcmpW(cls, L"SysTreeView32") == 0) return L"nav_tree";
+    if (Tab* t = Active(); t && t->view) {
+        if (focus == t->view->hwnd() || IsChild(t->view->hwnd(), focus))
+            return L"file_view";
+    }
+    return L"unknown";
+}
+
 int App::FindTab(ShellView* view) const {
     for (const auto& kv : tabs_)
         if (kv.second->view.get() == view) return kv.first;

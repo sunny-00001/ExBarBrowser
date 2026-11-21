@@ -191,6 +191,14 @@ void App::OnTabNav(ShellView* view, const std::wstring& path, const std::wstring
         t->nav.Complete(path);  // 无路径：只清 pending
     }
 
+    // 会话选中恢复：首次导航完成即消费。目标目录匹配 → 恢复选中；
+    // 用户启动后立刻导航去了别处 = 放弃恢复（不追着旧目录补选中）。
+    if (!pendingSelItems_.empty()) {
+        if (str::IEquals(path, pendingSelPath_)) view->SelectPaths(pendingSelItems_);
+        pendingSelPath_.clear();
+        pendingSelItems_.clear();
+    }
+
     t->split = SplitCache{};  // 换了目录：上一目录的分类缓存不能复用（"12 个项目"撞车时最坑）
     if (items) t->items = items;  // 回调里 ItemCount 恒 0，别把已取到的计数抹掉
     if (!display.empty()) t->display = display;

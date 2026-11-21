@@ -188,6 +188,7 @@ void Config::Load() {
     s_.recentPaths = ReadStringArray(root, L"recentPaths");
     s_.sessionPaths = ReadStringArray(root, L"sessionPaths");
     s_.sessionActive = root.GetInt(L"sessionActive", 0);
+    s_.sessionSelection = ReadStringArray(root, L"sessionSelection");
     s_.lockedPaths = ReadStringArray(root, L"lockedPaths");
     s_.tabMeta = ReadTabMeta(root);
     s_.closedTabs = ReadStringArray(root, L"closedTabs");
@@ -251,6 +252,7 @@ void Config::Save() {
     root.Set(L"recentPaths", MakeStringArray(s_.recentPaths));
     root.Set(L"sessionPaths", MakeStringArray(s_.sessionPaths));
     root.Set(L"sessionActive", json::Value::MakeInt(s_.sessionActive));
+    root.Set(L"sessionSelection", MakeStringArray(s_.sessionSelection));
     root.Set(L"lockedPaths", MakeStringArray(s_.lockedPaths));
     root.Set(L"tabMeta", MakeTabMeta(s_.tabMeta));
     root.Set(L"closedTabs", MakeStringArray(s_.closedTabs));
@@ -286,9 +288,13 @@ void Config::AddRecent(const std::wstring& path) {
     // 落盘时机由 App 的退出流程统一负责（OnDestroy 里 cfg.Save()）。
 }
 
-void Config::RememberSession(const std::vector<std::wstring>& paths, int active) {
+void Config::RememberSession(const std::vector<std::wstring>& paths, int active,
+                             const std::vector<std::wstring>& selection) {
     s_.sessionPaths = paths;
     s_.sessionActive = active;
+    // 选中项恢复是"尽力"语义：视图就绪后 SelectItem 可能因目录已变而部分失败，
+    // 静默容忍（保存仍在，下次关闭会覆盖）。
+    s_.sessionSelection = selection;
 }
 
 void Config::SetTabMeta(const std::wstring& path, const std::wstring& alias, int color) {

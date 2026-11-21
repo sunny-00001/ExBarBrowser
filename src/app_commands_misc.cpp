@@ -143,6 +143,30 @@ void App::RegisterMiscCommands() {
         bookmarkBar_.Reload();
         return true;
     });
+    // 收藏**选中的**文件夹（可多选）。与 bmk.add.current 的"当前目录"是两个意图：
+    // current = 我正在看的目录；selection = 我框选的条目。只收文件夹，文件与
+    // 已收藏项跳过 —— 批量动作必须可预期：AI 从观测面预知 selectionCount 与
+    // selectionFolders，执行后用 bmk.list 验证，不在这里引入第三份口径。
+    reg(CmdId::BmkAddSelection, [this](const Args&) {
+        Tab* t = Active();
+        if (!t || !t->view) return false;
+        std::vector<ShellView::SelectionItem> sel;
+        t->view->SelectionPaths(256, sel);   // 与状态快照同一上限，口径一致
+        if (sel.empty()) return false;       // HasSelection 前置已挡一层，双保险
+        BookmarkStore& store = BookmarkStore::Get();
+        bool any = false;
+        for (const auto& si : sel) {
+            if (!si.isFolder || si.path.empty()) continue;   // 文件不是书签目标
+            if (store.FindByPath(si.path)) continue;         // 已收藏：跳过，不静默重复
+            const std::wstring name =
+                nav::IsNamespace(si.path) ? ico::DisplayName(si.path) : LeafOf(si.path);
+            if (!store.AddPath(name, si.path).empty()) any = true;
+        }
+        if (!any) return false;   // 全部跳过（无新增）：如实失败，调用方回观测面查原因
+        store.Save();
+        bookmarkBar_.Reload();
+        return true;
+    });
     reg(CmdId::BmkToggleBar, [this](const Args&) {
         Settings& s = Config::Get().mutableSettings();
         s.showBookmark = !s.showBookmark;

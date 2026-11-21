@@ -79,6 +79,28 @@ bool App::CreateMainWindow(HINSTANCE hInst) {
     return hwnd_ != nullptr;
 }
 
+void App::BuildSystemMenu() {
+    // WS_OVERLAPPEDWINDOW 已含 WS_SYSMENU：标准的"还原/移动/大小/最小化/最大化/
+    // 关闭"一直在。这里补的是**应用自己的入口** —— 视图菜单、命令面板、首选项、
+    // 快捷键管理器、退出，让它们像 explore 一样可从标题栏右键 / Alt+Space 到达。
+    // 之前这些只有导航栏按钮与命令面板两个入口，系统菜单完全没有。
+    HMENU sys = GetSystemMenu(hwnd_, FALSE);
+    if (!sys) return;
+    // 幂等：主题切换/重建窗口时可能重进；用自定义项的 ID 存在性判重，
+    // 避免每次 OnCreate 都追加一份重复菜单项。
+    MENUITEMINFOW probe{};
+    probe.cbSize = sizeof(probe);
+    if (GetMenuItemInfoW(sys, kSysViewMenu, FALSE, &probe)) return;
+
+    AppendMenuW(sys, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(sys, MF_STRING, kSysViewMenu, L"视图菜单(&V)");
+    AppendMenuW(sys, MF_STRING, kSysPalette, L"命令面板(&C)");
+    AppendMenuW(sys, MF_STRING, kSysPrefs, L"首选项(&P)");
+    AppendMenuW(sys, MF_STRING, kSysHotkeys, L"快捷键管理器(&K)");
+    AppendMenuW(sys, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(sys, MF_STRING, kSysQuit, L"退出(&X)");
+}
+
 void App::OnCreate() {
     theme_.Init(hwnd_);
     win::RegisterClassOnce(kViewAreaClass, DefWindowProcW);
@@ -236,6 +258,24 @@ void App::OnCreate() {
         s.bookmarkBarVisible = cfg.showBookmark;
         s.navPaneVisible = cfg.showNavPane;
         s.previewPaneVisible = cfg.showPreviewPane;
+
+        // ---- 选中与焦点（观测面）----
+        // 与命令前置同一来源（活动标签的 shell 视图），R19 同源不另存副本。
+        // 选中路径走 shell 枚举（IFolderView::Items），快照带上限防响应爆炸。
+        if (Tab* t = Active(); t && t->view) {
+            constexpr unsigned kSelectionCap = 256;
+            std::vector<ShellView::SelectionItem> sel;
+            s.selectionCount = t->view->SelectionPaths(kSelectionCap, sel);
+            s.selectionTruncated = sel.size() < s.selectionCount;
+            for (const auto& it : sel) {
+                s.selectionPaths.push_back(it.path);
+                s.selectionFolders.push_back(it.isFolder);
+            }
+        }
+        GUITHREADINFO gi = { sizeof(gi) };
+        s.focus = (GetGUIThreadInfo(GetCurrentThreadId(), &gi) && gi.hwndFocus)
+                      ? FocusPaneOf(gi.hwndFocus)
+                      : L"unknown";
         return s;
     });
 
@@ -270,6 +310,7 @@ void App::OnCreate() {
 
     SetTimer(hwnd_, kStatsTimer, 800, nullptr);
     ApplyDarkTitleBar(hwnd_, theme_.dark);
+    BuildSystemMenu();
 }
 
 int App::Run(HINSTANCE hInst, const std::wstring& initialPath) {
@@ -295,6 +336,13 @@ int App::Run(HINSTANCE hInst, const std::wstring& initialPath) {
             if (tabSet_.Count() == 0) NewTab(HomePath());
         } else {
             NewTab(HomePath());
+        }
+        // 会话选中恢复：挂到**活动标签**的目标目录上，等首次导航完成时消费
+        // （视图就绪前 SelectItem 无效）。用户立刻导航去别处 = 放弃恢复。
+        if (s.sessionActive >= 0 && s.sessionActive < static_cast<int>(s.sessionPaths.size())
+            && !s.sessionSelection.empty()) {
+            pendingSelPath_ = s.sessionPaths[s.sessionActive];
+            pendingSelItems_ = s.sessionSelection;
         }
     }
 
@@ -378,7 +426,14 @@ void App::OnDestroy() {
     std::vector<std::wstring> paths;
     for (const auto& t : tabSet_.items())
         if (!t.path.empty()) paths.push_back(t.path);
-    cfg.RememberSession(paths, ActiveIndex());
+    // 选中状态一并入会话：重启后活动标签的选中项可恢复（尽力语义）。
+    std::vector<std::wstring> selPaths;
+    if (Tab* t = Active(); t && t->view) {
+        std::vector<ShellView::SelectionItem> sel;
+        t->view->SelectionPaths(256, sel);
+        for (const auto& it : sel) selPaths.push_back(it.path);
+    }
+    cfg.RememberSession(paths, ActiveIndex(), selPaths);
     s.closedTabs = tabSet_.closed();
     cfg.Save();
 

@@ -185,6 +185,20 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (tab >= 0 && !items_[static_cast<size_t>(tab)].locked) NotifyClose(tab);
         return 0;
     }
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP: {
+        // 侧键前进/后退：标签栏自己没有默认行为，全部交给鼠标规则。
+        // target/button/mods/坐标四元组必须与文件视图、其它栏同口径
+        // （shell_input::ButtonFrom 与 XButtonFromWParam 解析一致），
+        // 否则规则引擎的 target 精确匹配会落空，侧键在标签栏静默失效。
+        const int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
+        POINT pt{x, y};
+        ClientToScreen(h, &pt);
+        const int button = XButtonFromWParam(w);
+        if (button < 0) return 0;
+        if (sink_ && sink_(MouseTargetAt(x, y), m, button, CurrentMods(), pt)) return 0;
+        return 0;
+    }
     case WM_CONTEXTMENU: {
         // Shift+F10 / VK_APPS 走这个消息（lParam = -1,-1），右键走 WM_RBUTTONUP。
         // Mozilla 的无障碍验收要求：每个图标功能都要有键盘可达路径。

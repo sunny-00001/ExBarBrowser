@@ -95,12 +95,18 @@ LRESULT StatusBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_LBUTTONDBLCLK:
     case WM_LBUTTONDOWN:
     case WM_RBUTTONDOWN:
-    case WM_MBUTTONDOWN: {
+    case WM_MBUTTONDOWN:
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP: {
         POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
         ClientToScreen(h, &pt);
         int button = (m == WM_LBUTTONDOWN || m == WM_LBUTTONDBLCLK)
                          ? MBTN_LEFT
                          : (m == WM_RBUTTONDOWN ? MBTN_RIGHT : MBTN_MIDDLE);
+        if (m == WM_XBUTTONDOWN || m == WM_XBUTTONUP) {
+            button = XButtonFromWParam(w);
+            if (button < 0) return 0;
+        }
         // 段上要报 MT_STATUS_SEG：mouse.json 里按"状态栏段"配的规则以前永远命中不到。
         const int target = HitSegment(GET_X_LPARAM(l), GET_Y_LPARAM(l)) >= 0 ? MT_STATUS_SEG
                                                                             : MT_STATUS;

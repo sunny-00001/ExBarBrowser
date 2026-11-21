@@ -450,6 +450,18 @@ LRESULT NavBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (sink_ && sink_(NavTargetAt(x, y), m, MBTN_MIDDLE, CurrentMods(), pt)) return 0;
         return 0;
     }
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP: {
+        // 侧键在导航栏同样可达：前进/后退规则落在 MT_NAV（按钮区）与
+        // MT_ADDRESS（地址/面包屑区）等 target 上，与文件视图同口径。
+        const int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
+        POINT pt{x, y};
+        ClientToScreen(h, &pt);
+        const int button = XButtonFromWParam(w);
+        if (button < 0) return 0;
+        if (sink_ && sink_(NavTargetAt(x, y), m, button, CurrentMods(), pt)) return 0;
+        return 0;
+    }
     default:
         break;
     }
