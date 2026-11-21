@@ -43,6 +43,26 @@
 - 结果里必带 `scannedFiles` / `hashedFiles` / `deniedDirs` / `timedOut` / `complete`：
   只给"没有重复"而不说"扫没扫完"、"有没有目录打不开"，用户会据此删错东西。
 
+### 新增（批量重命名 `Ctrl+Shift+R`、按类型选择）
+
+- **`file.rename.batch`**：模式串 `{name}` / `{ext}` / `{old}` / `{n}` / `{nn}` / `{nnn}`。
+  三条安全约束：**全部先校验才动手**（重名 / 撞已有文件 / 非法字符 / 空名）、
+  预览确认（前 20 条「旧 → 新」）、逐项 `shellops::RenameTo`（`FOF_ALLOWUNDO`，`Ctrl+Z` 可退）。
+  模式里没写 `{ext}` 也**不会丢扩展名**——"改前半段"是最常见的意图，悄悄丢掉 `.txt`
+  会让文件双击打不开。纯函数 `filetools::PlanBatchRename`，单测 20 项。
+  没有接 PowerRename：外部依赖不保证存在，而"按了没反应"正是要解决的问题本身。
+- **`file.select.type`**：以首个选中项为样板选同扩展名的文件（Total Commander 的 Num+ 口径）。
+  不取"所有选中项类型的并集"——那样选两三种之后点一次就等于全选，命令会退化成"全选"。
+
+### 修复
+
+- **AI 侧失败不再只说 `{}`**（`ai_server.cpp`）：声明了 `outputSchema` 的命令失败时，
+  `hasResult` 为真会把空的 `structuredContent` 当正文输出，真正的原因
+  （`r.error`，例如"目标已存在：gamma2.log"）被丢掉。现在失败优先、原因进文本块。
+- **新命令失败时给出具体原因**（`CommandBus::NoteFailure`）：`tool.hash` 的算法名打错、
+  `tool.dupfinder` 的目录不存在、`file.rename.batch` 的第几条冲突 —— 不再统一报
+  "命令执行失败"。名字打错和值超范围该做的下一步完全不同。
+
 ### 新增（选择族、撤销、搜索框）
 
 - **选择族四条**：`file.select.invert`（`Ctrl+I`）、`file.select.files`、
@@ -67,9 +87,13 @@
 
 ### 移除
 
-- **两条永远做不到的键位**：`hotkeyMergeAllWindows`（`Ctrl+Alt+W`，单窗口模型没有
-  explorer 标签可合并）与 `hotkeyToggleCheckboxes`（`Ctrl+Alt+M`，shell 视图无公开接口，
-  DECISIONS D2）。留着键位等于对用户撒谎：按了没反应，且永远不会有。
+- **三条永远做不到的键位**：`hotkeyMergeAllWindows`（`Ctrl+Alt+W`，单窗口模型没有
+  explorer 标签可合并）、`hotkeyToggleCheckboxes`（`Ctrl+Alt+M`，shell 视图无公开接口，
+  DECISIONS D2）、`hotkeyAiTogglePanel`（`Ctrl+Alt+A`，本工程的 AI 是**外部 agent**
+  通过命名管道驱动窗口，窗口里没有也不需要"聊天"；真该给用户看的是管道名/令牌/最近调用，
+  那是另一条命令）。
+  留着键位等于对用户撒谎：按了没反应，且永远不会有。至此**占位键位归零**：
+  `check_commands` 的 PENDING 表已空。
 
 ---
 

@@ -33,7 +33,7 @@ baseline: 2026-11-21 21:00
 | Go | 10 | 10 | 0 |
 | Nav | 6 | 6 | 0 |
 | Path | 7 | 6 | 1（`path.copy.link`） |
-| File | 35 | 33 | 2（`file.select.type` / `file.rename.batch`） |
+| File | 35 | 35 | 0 |
 | View | 12 | 11 | 1（`view.toggle.checkboxes`） |
 | Window | 12 | 9 | 3（`win.preferences` / `win.ai.toggle` / `win.ai.stop`） |
 | External | 4 | 2 | 2（`ext.run` / `ext.sendkeys`） |
@@ -42,7 +42,7 @@ baseline: 2026-11-21 21:00
 | Session | 4 | 2 | 2（`session.delete` / `session.list`） |
 | Tool | 13 | 7 | 6 |
 | Search | 2 | 0 | 2 |
-| **合计** | **156** | **136** | **20** |
+| **合计** | **156** | **138** | **18** |
 
 > 口径：脚本按 `src/commands.cpp` 里 `{CmdId::X, …}` 字面形式逐条统计分组与 `implemented`，
 > 不按 README 宣称。命令行：见 `tools/check_commands.py`（同时校验 keymap × 处理器三方一致）。
@@ -64,9 +64,9 @@ baseline: 2026-11-21 21:00
 > （旧版本手写的 90/36 与代码不一致：`GoTab1..9` 在 keymap 里绑了但目录里没有，
 > `CopyToFolder`/`MoveToFolder` 也一直缺，已补齐。）
 
-一句话结论：**"看、走、记、标签、路径、视图开关、文件集工具、命令契约、AI 接口"已经补齐；
-剩下的缺口是搜索（2，要接 Everything 的 IPC）、AI 面板（2，缺窗口内对话 UI）、
-批量重命名（建议接 PowerRename）、按类型选择，以及 6 条与既有 `fs.*` 语义重叠的 `tool.*` 包装命令。**
+一句话结论：**File 组 35 条全部落地；剩下的 18 条是搜索（2，要接 Everything 的 IPC）、
+AI 面板（2，缺窗口内对话 UI）、6 条与既有 `fs.*` 语义重叠的 `tool.*` 包装命令，
+以及少量"本工程模型下没有意义/没有把握"的项（合并窗口、复选框、RunCommand/SendKeys 等）。**
 
 ---
 
@@ -103,7 +103,7 @@ PowerShell（在当前目录开终端）/ 主文件夹。
 完整路径 / 文件名 / 当前目录 / UNC（`\\localhost\C$\…`）/ 扩展名 / 所有标签路径 → 剪贴板。
 `PathCopyLink`（复制为快捷方式）未实现。
 
-### 3.5 File（35）—— 已实现 33
+### 3.5 File（35）—— 全实现
 
 mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
 
@@ -120,15 +120,22 @@ mod 的 25 条 + 本工程新增的 10 条确定式 `Fs*` 命令。
 | **`FsOpen` / `FsOpenInNewTab` / `FsOpenInNewWindow` / `FsProperties`** | 确定式版本，补掉"只能操作选中项"的债务 |
 | **`FsCopy` / `FsCut`** | 与 `Ctrl+C/X` 同义：只准备剪贴板，不产生副本/移动。想真复制到某处用 `FsCopyTo` |
 
-未实现：`SelectByType`（按首项的扩展名选中同类）、`BatchRename`（建议接 PowerRename）。
+**全实现。** 2026-11-21 补齐最后两条：`SelectByType`（`file.select.type`，以首个选中项为
+样板选同类扩展名）与 `BatchRename`（`file.rename.batch`，`Ctrl+Shift+R`）。
 
+> 批量重命名**没有**接 PowerRename，而是做了最小可解释集合：模式串
+> （`{name}` / `{ext}` / `{old}` / `{n}` / `{nn}` / `{nnn}`）+ 全部先校验再动手
+> （重名 / 撞已有文件 / 非法字符 / 空名）+ 预览确认 + 逐项 `RenameTo`（`FOF_ALLOWUNDO`，
+> `Ctrl+Z` 可退）。理由：PowerRename 不保证存在，而"按了没反应"正是要解决的问题本身。
+> 纯函数 `filetools::PlanBatchRename` 可单测（`tests/file_tools_test.cpp`）。
+>
 > 选择族与撤销已于 2026-11-21 补齐：`SelectInvert`（`Ctrl+I`）/ `SelectFiles` /
 > `SelectFolders`（`Ctrl+Alt+D`）/ `SelectByPattern`（`Ctrl+Shift+F`）走
 > `shellops::SelectWhere` + `shellops::SelectByPattern`，匹配语义交给系统
 > `PathMatchSpecExW`（不自创通配语法）；`CmdUndo`（`Ctrl+Z`）转发给 shell 视图自己的撤销栈。
 > `SelectByType` 与它们共用 `SelectWhere`，缺的只是"取首项扩展名"这一步。
 >
-> 反向选择/按类型选择不需要单独的 `SelectionModel`：`IFolderView::Item` + `SelectItem`
+> 既没有单独的 `SelectionModel` 也不需要：`IFolderView::Item` + `SelectItem`
 > 已经够用，先前的判断（"缺选择集抽象"）过于保守，实测直接做即可。
 >
 > 交互式与确定式**并列存在**不是重复：`F2` 的体验就是"弹输入框问名字"，

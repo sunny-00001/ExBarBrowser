@@ -63,6 +63,7 @@ private:
     void RegisterTabCommands();
     void RegisterFileCommands();
     void RegisterMiscCommands();
+    void RegisterDevCommands();
     void Layout();
     // dpiOverride > 0 时用它（WM_DPICHANGED 的 wParam 才是权威值）
     void ApplyTheme(int dpiOverride = 0);

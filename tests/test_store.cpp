@@ -45,6 +45,30 @@ static std::wstring TempDir() {
     return dir;
 }
 
+// 夹具写入：**必须成功**，否则后面的判据读的是上一段留下的文件。
+//
+// 【为什么单独包一层】tf::WriteText 是"写 .tmp → MoveFileEx 替换"的原子写，
+// 改名这一下会被 AV / 搜索索引器瞬时占用挡住（ERROR_SHARING_VIOLATION），
+// 而这里 12 处夹具调用原来都不看返回值 —— 写失败后 store.Load 读到的是
+// **上一段的内容**，于是报出的是"假红"。这不是假设：全量跑时 test_store
+// 曾有两条 `无重复 -> 删 0 条` / `无重复时不产生撤销快照` 失败，单独重跑
+// 同一个二进制 3 次全过，正是这条路径。
+//
+// 所以：重试跨过瞬时占用；仍失败按"无法运行"(77) 退出，而不是继续跑出一串
+// 没有意义的红 —— 与 clipboard_test 的 77 同一个口径。
+#define FIXTURE(path, text)                                                          \
+    do {                                                                             \
+        bool wrote = false;                                                          \
+        for (int i = 0; i < 20 && !wrote; ++i) {                                     \
+            wrote = tf::WriteText((path), (text));                                   \
+            if (!wrote) Sleep(25); /* 20 × 25ms ≈ 0.5s，够跨过一次扫描 */            \
+        }                                                                            \
+        if (!wrote) {                                                                \
+            std::printf("无法运行：夹具写入失败（被占用/权限），判据无从成立\n");     \
+            return 77;                                                               \
+        }                                                                            \
+    } while (0)
+
 int main() {
     BookmarkStore& store = BookmarkStore::Get();
     const std::wstring dir = TempDir();
@@ -52,7 +76,7 @@ int main() {
 
     // 用户的书签文件一个字节都不动。下面全部在 temp 里完成。
     printf("测试数据目录：%ls\n\n", dir.c_str());
-    tf::WriteText(file,
+    FIXTURE(file,
                   L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
                   L"<DT><A HREF=\"file:///D:/\" >D</A>\r\n"
                   L"<DT><A HREF=\"file:///C:/\" >C</A>\r\n"
@@ -80,7 +104,7 @@ int main() {
             seed += L"<DT><A HREF=\"file:///D:/" + std::to_wstring(i) + L"\" >i" +
                     std::to_wstring(i) + L"</A>\r\n";
         seed += L"</DL><p>\r\n";
-        tf::WriteText(file, seed);
+        FIXTURE(file, seed);
         store.Load(file);
     }
     for (int i = 0; i < 30 && !store.roots().empty(); ++i)
@@ -90,7 +114,7 @@ int main() {
     while (store.Undo()) ++steps;
     CHECK(steps == 20, "undo capped at 20");
     // 重新种回 3 项文件（上面的上限测试已把文件改成 30 项种子）
-    tf::WriteText(file,
+    FIXTURE(file,
                   L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
                   L"<DT><A HREF=\"file:///D:/\" >D</A>\r\n"
                   L"<DT><A HREF=\"file:///C:/\" >C</A>\r\n"
@@ -164,7 +188,7 @@ int main() {
         CHECK(store.FileChanged(), "文件不可见（已删除）-> 保守判为有变化");
 
         // 复原，后续用例继续用
-        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+        FIXTURE(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
                             L"<DT><A HREF=\"file:///D:/\" >D</A>\r\n</DL><p>\r\n");
         store.Load(file);
         CHECK(!store.FileChanged(), "重新加载后基线恢复正常");
@@ -178,16 +202,16 @@ int main() {
     {
         // 造一个"存在但读不懂"的文件：有内容，但不是 Netscape 书签格式。
         const std::wstring bad = L"\xD6\xD0\xCE\xC4 这不是书签文件";  // 含非 ASCII
-        tf::WriteText(file, bad);
+        FIXTURE(file, bad);
 
         // 先装一份可用书签，确认后续 Save 有东西可丢
-        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+        FIXTURE(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
                             L"<DT><A HREF=\"file:///D:/\" >D</A>\r\n</DL><p>\r\n");
         store.Load(file);
         CHECK(Names() == L"D|", "guard: seeded with D");
 
         // 现在把文件换成读不懂的内容，再 Load
-        tf::WriteText(file, bad);
+        FIXTURE(file, bad);
         CHECK(!store.Load(file), "guard: Load rejects non-bookmark content");
         CHECK(store.LoadFailed(), "guard: LoadFailed() reports it");
         CHECK(Names() == L"D|", "guard: in-memory tree NOT cleared by failed Load");
@@ -211,7 +235,7 @@ int main() {
     // 同一份含分类的导入文件连导两次 -> 分类里的书签 1 -> 2 -> 4 份。
     printf("\n重复导入同一份含分类的书签不得翻倍\n");
     {
-        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+        FIXTURE(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
                             L"<DT><A HREF=\"file:///D:/\" >D</A>\r\n"
                             L"<DT><H3>分类A</H3>\r\n<DL><p>\r\n"
                             L"<DT><A HREF=\"file:///C:/x\" >X</A>\r\n"
@@ -316,7 +340,7 @@ int main() {
     // 数据消失路径，必须在 store 里拦住。
     printf("\nMoveTo：拖进分类 / 拒绝成环\n");
     {
-        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+        FIXTURE(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
                             L"<DT><A HREF=\"file:///D:/x\" >X</A>\r\n"
                             L"<DT><H3>A</H3>\r\n<DL><p>\r\n"
                             L"<DT><H3>B</H3>\r\n<DL><p>\r\n"
@@ -358,7 +382,7 @@ int main() {
     // ---- SortRecursive：分类内部也要排 ----
     printf("\nSortRecursive：递归排序（含分类内部）\n");
     {
-        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+        FIXTURE(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
                             L"<DT><H3>Z分类</H3>\r\n<DL><p>\r\n"
                             L"<DT><A HREF=\"file:///D:/b\" >bee</A>\r\n"
                             L"<DT><A HREF=\"file:///D:/a\" >ant</A>\r\n"
@@ -382,7 +406,7 @@ int main() {
     // ---- RemoveDuplicatePaths：跨层级去重 ----
     printf("\nRemoveDuplicatePaths：同一路径不重复占位\n");
     {
-        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+        FIXTURE(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
                             L"<DT><A HREF=\"file:///D:/dup\" >dup-top</A>\r\n"
                             L"<DT><H3>分类</H3>\r\n<DL><p>\r\n"
                             L"<DT><A HREF=\"file:///D:/dup\" >dup-in-folder</A>\r\n"
@@ -397,7 +421,7 @@ int main() {
         CHECK(store.Undo() && store.Flatten().size() == 3, "去重可撤销");
 
         // 没有重复时不该产生撤销记录（"清理"不该无端点亮"撤销删除"）
-        tf::WriteText(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+        FIXTURE(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
                             L"<DT><A HREF=\"file:///D:/a\" >a</A>\r\n"
                             L"<DT><A HREF=\"file:///D:/b\" >b</A>\r\n</DL><p>\r\n");
         store.Load(file);

@@ -131,13 +131,12 @@ ExBarBrowser.exe（本进程）
 | 无搜索（Everything） | 找文件要回到 explorer 或 Everything | P3（复用 `evipc`） |
 | 无预览 / 详细信息窗格 | `IExplorerBrowser` 无公开接口 | P3（`IPreviewHandler` 自绘） |
 | 无复选框模式 | `IFolderView` 未接 | P3 |
-| 按类型选择未做 | 反选 / 按文件 / 按目录 / 按模式已可用（`Ctrl+I` / `Ctrl+Alt+D` / `Ctrl+Shift+F`），只有"选中同类"还缺 | P3（`shellops::SelectWhere` 已有，缺"取首项扩展名"） |
-| 无批量重命名 | `Ctrl+Shift+R` 已解绑（不再"按了没反应"） | 接 PowerRename，不自建规则编辑器 |
 | 无会话管理 UI | `SessionList`/`SessionDelete` 未实现，只能存/取当前组 | P3 |
 | AI 面板未接 | 接口已通（JSON-RPC），但窗口内没有对话 UI | P4 |
 | 无 i18n | 文案硬编码中文 | 不做 |
 
-> 2026-11-21 已从本表移除：工具集（哈希 / 查重 / 文件夹比对）、选择族、撤销。
+> 2026-11-21 已从本表移除：工具集（哈希 / 查重 / 文件夹比对）、选择族（含按类型选择）、
+> 撤销、批量重命名。
 > 撤销走 shell 自己的 `IFileOperation` 撤销栈（落盘操作都带 `FOF_ALLOWUNDO`），
 > 不是自建栈 —— 见 CHANGELOG 本轮条目。
 
@@ -482,10 +481,10 @@ ExBarBrowser/                       独立 git 仓库（main）
   前置条件、交互与确定分离、结构化返回值、点分命名空间、MCP 兼容层、内容补全、能力缺口补齐；
   AI 操作接口（JSON-RPC over 管道，当时 86 工具，现 89）；导航收口为组件（`nav_path` / `nav_history`）；
   存储改便携模式（`<exe>\data`）；基础设施收编（窗口类/字符串/日志/剪贴板/tooltip/字形）。
-- **P3（进行中）**：搜索（复用 `evipc`）、预览窗格、会话管理 UI、批量重命名（接 PowerRename）、
-  可选 Shell 扩展 DLL。
+- **P3（进行中）**：搜索（复用 `evipc`）、预览窗格、会话管理 UI、可选 Shell 扩展 DLL。
   已提前落地：目录统计（`OpTopN` / `OpDiskUsage`）、文件集工具（`tool.hash` / `tool.dupfinder` /
-  `tool.compare`）、选择族四条、撤销（`Ctrl+Z`）、搜索框（`Ctrl+F`）、书签导入导出与拖放。
+  `tool.compare`）、选择族五条、批量重命名（`Ctrl+Shift+R`）、撤销（`Ctrl+Z`）、
+  搜索框（`Ctrl+F`）、书签导入导出与拖放。
 - **P4**：UI 资产互通（`tokens.css` / WebView2 chrome）、AI 面板（接口已在，缺窗口内对话 UI）。
 
 细节与验收标准见 [docs/ROADMAP.md](docs/ROADMAP.md)。

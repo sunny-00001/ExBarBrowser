@@ -21,6 +21,12 @@
 #
 # 退出码 = 失败条数（0 即全绿）。
 #
+# 【退出码 77 = "无法运行"】有测试需要交互桌面才能测（clipboard_test 要打开
+# 剪贴板，沙箱/非交互会话下 GetLastError=5 ACCESS_DENIED）。这类条目**不是**
+# 代码结论，混进失败里会让全量跑长期红着一条假问题，真正的回归反而被"这条
+# 一直红"掩盖。所以：77 单列为"无法运行"，不计入退出码，但一定打印出来 ——
+# 绝不静默算绿。
+#
 # 【R21】本脚本只编译并运行控制台程序，不向任何窗口发消息、不动光标、不抢焦点。
 
 set -u
@@ -63,8 +69,8 @@ if [ -z "$OBJS" ]; then
 fi
 
 filter="${1:-}"
-pass=0; fail=0; cfail=0
-failed_names=""
+pass=0; fail=0; cfail=0; norun=0
+failed_names=""; norun_names=""
 
 for t in tests/*.cpp; do
     name=$(basename "$t" .cpp)
@@ -94,6 +100,13 @@ for t in tests/*.cpp; do
         echo "PASS $name"; pass=$((pass + 1))
     else
         rc=$?
+        if [ "$rc" -eq 77 ]; then
+            # 前置条件不满足：既没验证也没否定，单独列出来。
+            echo "NORUN(run=77) $name"
+            head -3 "$OUT/$name.run.log" | sed 's/^/    /'
+            norun=$((norun + 1)); norun_names="$norun_names $name"
+            continue
+        fi
         echo "FAIL(run=$rc) $name"
         tail -4 "$OUT/$name.run.log" | sed 's/^/    /'
         fail=$((fail + 1)); failed_names="$failed_names $name"
@@ -101,8 +114,9 @@ for t in tests/*.cpp; do
 done
 
 echo
-echo "通过 $pass / 运行失败 $fail / 编译失败 $cfail"
+echo "通过 $pass / 无法运行 $norun / 运行失败 $fail / 编译失败 $cfail"
 echo "日志：$OUT/"
+[ -z "$norun_names" ] || echo "无法运行（环境不满足，未验证）：$norun_names"
 [ -z "$failed_names" ] || echo "未通过：$failed_names"
 [ $((fail + cfail)) -eq 0 ] || exit $((fail + cfail))
 exit 0

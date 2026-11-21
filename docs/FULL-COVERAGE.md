@@ -254,9 +254,9 @@ assertions   执行后应满足什么
 **备注**：曾疑「124 标记已实现但只有 123 handler」是缺口，已核实为统计口径差异
 （正则把 `regT(CmdId::X` 等模板计入），实际**无缺失**。
 
-**环境性失败**：`clipboard_test` 需要独占系统剪贴板。本机 `cliphost-app.exe`
-持有时 `OpenClipboard` 返回 `err=5`，测试会失败；这不是实现缺陷（用 ctypes 直接
-调 `OpenClipboard` 同样失败）。判据：`GetLastError()==5` 且失败与本次代码改动无关。
+**环境性跳过**：`clipboard_test` 需要独占系统剪贴板。本机 `cliphost-app.exe`
+持有时 `OpenClipboard` 返回 `err=5`（用 ctypes 直接调同样失败），测试记为
+「无法运行」而非「失败」—— 环境不满足不能当成实现缺陷，也不能假装通过。
 
 ---
 
@@ -268,7 +268,7 @@ assertions   执行后应满足什么
    `settings_reg`（32 项）+ 设置面板。契约见 §10.1。
 3. ✅ **事件流**：`events/subscribe` 推 `command` / `state.changed`，`events/since` 补历史。契约见 §10.2。
 4. ✅ **测试隔离**：`EXBARBROWSER_PROFILE` 指定目录，`MULTI=1` 默认 `data\profile-multi`。契约见 §10.3。
-5. **开发面**：快照 + 编译 + 测试 + 回滚。**最后做**，因为它依赖前四层的判据。
+5. ✅ **开发面**：快照 + 编译 + 测试 + 作业回读 + 回滚。契约见 §10.4。
 
 > 顺序的理由：前四项都是**让判据成立**，第五项是**让 Agent 自主使用判据**。
 > 判据不成立时做自动化，只会让错误自动扩散。
@@ -354,6 +354,32 @@ assertions   执行后应满足什么
 启动的实例从自己的 `settings.json` 读到 `viewMode=2`，`config.set` 改成 3 后只有
 该 profile 的文件变化，用户 `data\settings.json` 的 SHA-256 前后一致。检查器
 第 20 项已用「把 profileBuf 换成空串」验证能真失败。
+
+---
+
+### 10.4 开发面的契约（Agent 能自己用前四层的判据）
+
+前四层把「操作可验证」做成了事实，但 Agent 还不会自己用：它得拿到现状、改代码、
+编译、跑测试、读结果，错了还能退回。这五条命令把这条链收进同一条命令总线 ——
+人从命令面板可达，机器从 AI 通道可达，没有第二套实现。
+
+| 契约 | 落地 | 为什么必须这样 |
+|---|---|---|
+| **先快照再动手** | `dev.snapshot` 返回 HEAD / 脏文件列表 / diff 统计 / profile 目录 | 没有「改之前什么样」，回滚就没有基准，也无法判断是否误改了别人的文件 |
+| **耗时操作异步** | `dev.build` / `dev.test` 立即返回 `jobId`，完成时推 `dev.job.done` 事件 | 在 UI 线程等编译会卡死窗口；有了事件流也不该让客户端轮询 |
+| **结果可回读** | `dev.job` 读回 `done` / `exitCode` / `output` | 事件可能丢，回读是兜底；两者形状一致才能互证 |
+| **复用仓库脚本** | 底层仍是 `build_fast.py` / `tests/run_all.sh` / `git` | 另写一份"AI 专用构建"必然与人工构建分叉，最后测试 green 的是假代码 |
+| **回滚要校验路径** | 拒绝对路径 / 盘符 / `..` / 命令分隔符 / 未修改文件 | `git checkout --` 是真正会丢数据的命令，不能靠调用方自律 |
+| **人侧等价确认** | 命令面板对破坏性命令弹确认；AI 侧仍需 `approve=true` + `aiAllowDanger` | 面板直接走 CommandBus，不补这一步就成了绕过批准的后门 |
+
+**验收（真实管道）**：`dev.snapshot` 拿到当前 HEAD；订阅后调 `dev.test {filter:"events"}`
+得到 `jobId=job-4`，收到 `dev.job.done` 事件（exitCode=0，输出含 `PASS events_test`），
+`dev.job` 回读一致；`dev.rollback {path:"../evil"}` 带 `approve=true` 仍被路径校验拒绝。
+检查器第 21 项已用「去掉人侧确认判据」验证能真失败。
+
+至此五层全部落地：assertions（判据）→ 设置数据化（操作自身）→ 事件流（反馈）→
+测试隔离（安全试验场）→ 开发面（自主闭环）。`docs/FULL-COVERAGE.md` 里的差距表
+已逐项转为 ✅。
 
 ---
 

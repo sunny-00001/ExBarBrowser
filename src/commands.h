@@ -107,6 +107,10 @@ enum class CmdId : int {
     ConfigGet,         // {key}        读一项
     ConfigSet,         // {key, value} 写一项（带类型与范围校验）
     BmkFocus,          // 焦点进入书签栏（->/<- 选，Enter 开，Shift+F10 菜单，Esc 退回视图）
+    // ---- 开发面（操作代码本身：快照/编译/测试/回滚）----
+    // 与配置域同一范式：可枚举、可调用、可回读。build/test 异步跑完发事件，
+    // 不占着 UI 线程等；rollback 是破坏性写，必须 approve。
+    DevSnapshot, DevBuild, DevTest, DevJob, DevRollback,
 };
 
 // 命令的风险等级（与 mod 的 risk / 架构规则 R18 对齐）。

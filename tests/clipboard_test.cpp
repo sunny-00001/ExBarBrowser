@@ -12,6 +12,9 @@
 //     -o /tmp/clipboard_test.exe -lole32 -luser32
 //
 // 注意：本测试**会改动系统剪贴板**（这是它的目的）。跑之前请自行保存。
+//
+// 退出码：0 = 全通过；1 = 有 CHECK 失败（真问题）；77 = 环境不满足（本进程
+// 打不开剪贴板），run_all.sh 记为"无法运行"而非失败 —— 见 ProbeClipboard。
 #include <windows.h>
 
 #include <cstdio>
@@ -30,6 +33,39 @@ static int fails = 0;
         }                                 \
     } while (0)
 
+// 前置条件探针：本进程能不能碰剪贴板。
+//
+// 【为什么必须先探】剪贴板是**全系统独占**资源。在没有交互桌面权限的环境里
+// （沙箱、非交互会话、被别的进程长期持有），OpenClipboard 直接返回
+// ERROR_ACCESS_DENIED(5)。此时下面每一条 CHECK 都会 FAIL —— 但这不是
+// SetClipboardText 的结论，而是"根本没测"。把它报成 9 个 FAIL 的后果是
+// 每次全量跑都红着一条假问题，久了真正的回归会被"这条一直红"掩盖。
+//
+// 所以：探不通 → 退出码 77（run_all.sh 记为"无法运行"），一句话说清是环境。
+// 探得通 → 下面的 CHECK 全部是真判据，失败就是代码的问题。
+//
+// 说明用的是窄字符串：printf 的 %ls 在 C locale 下遇到非 ASCII 就截断，
+// 曾经把这条诊断打成半句"OpenClipboard "，最要紧的错误码反而丢了。
+static bool ProbeClipboard(std::string* why) {
+    for (int i = 0; i < 5; ++i) {
+        if (OpenClipboard(nullptr)) {
+            CloseClipboard();
+            return true;
+        }
+        Sleep(20);
+    }
+    const DWORD err = GetLastError();
+    *why = "OpenClipboard 失败，GetLastError=" + std::to_string(err);
+    if (err == ERROR_ACCESS_DENIED) {
+        // 把会话也打出来：下次换台机器一眼能看出是不是会话隔离。
+        DWORD sid = 0;
+        ProcessIdToSessionId(GetCurrentProcessId(), &sid);
+        *why += "（进程会话 " + std::to_string(sid) +
+                "，通常是没有交互桌面权限或被沙箱限制）";
+    }
+    return false;
+}
+
 static std::wstring ReadClip() {
     std::wstring r;
     if (OpenClipboard(nullptr)) {
@@ -47,6 +83,15 @@ static std::wstring ReadClip() {
 }
 
 int main() {
+    // 前置条件：打不开剪贴板就连"测"都谈不上，报 FAIL 会掩盖真正的回归。
+    std::string why;
+    if (!ProbeClipboard(&why)) {
+        std::printf("无法运行：%s\n", why.c_str());
+        std::printf("这不是被测代码的结论 —— 本机环境不让本进程访问剪贴板。\n");
+        std::printf("请在交互桌面（非沙箱）环境重跑本测试。\n");
+        return 77;
+    }
+
     printf("写入与读回\n");
     {
         CHECK(SetClipboardText(nullptr, L"AAA"), "写入 AAA 成功");

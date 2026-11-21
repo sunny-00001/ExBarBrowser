@@ -304,6 +304,7 @@ void App::RegisterCommands() {
     RegisterTabCommands();
     RegisterFileCommands();
     RegisterMiscCommands();
+    RegisterDevCommands();
 }
 
 // ---------------------------------------------------------------- 菜单
@@ -435,6 +436,15 @@ void App::ShowCommandPalette() {
     const int idx = menu.Show(hwnd_, theme_, at, opt);
     if (idx < 0 || idx >= static_cast<int>(defs.size())) return;
     const CommandDef& d = *defs[static_cast<size_t>(idx)];
+
+    // 破坏性命令在人侧也要确认。AI 侧的 approve 由 ai::Call 管，
+    // 面板直接走 CommandBus，少了这一步就成了"绕过批准的后门"。
+    if (d.effects.destructive) {
+        const int yes = MessageBoxW(hwnd_,
+            (L"「" + std::wstring(d.title) + L"」会覆盖现有内容。确定执行吗？").c_str(),
+            L"确认执行", MB_YESNO | MB_ICONWARNING);
+        if (yes != IDYES) return;
+    }
 
     // 无必填参数：直接以空参调用（与原来一致）。
     if (!HasRequiredParams(d)) {

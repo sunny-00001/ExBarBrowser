@@ -118,6 +118,7 @@ HUMAN_PATH = {
     # 前提是该段启用（statusSegs 默认含 Seg_Size=5）。
     'fs.properties': '状态栏「选中容量」段点击 → CmdProps（参数 target 取选中项）；'
                      '默认配置 statusSegs={0..6} 含该段。注意没有 Alt+Enter 绑定',
+    'dev.rollback': '命令面板选中后先弹破坏性确认，再按 schema 追问 path（与 AI 侧 approve 等价）',
     'tool.stat': '状态栏「选中容量」段 + 详细信息视图列展示同一组字段'
                  '（名称/大小/类型/隐藏/只读）',
 
@@ -1041,6 +1042,10 @@ def main():
 
     def param_source(c):
         """B 路：返回一条能把必填参数递进去的人类路径说明，找不到返回 None。"""
+        # 命令面板已按 argsSchema 追问必填参数（见上面 palette_all 的两条判据），
+        # 所以"面板覆盖"本身就是一条能把参数递进去的路，不必每条命令再登记一次。
+        if palette_all and not c.get('destructive'):
+            return '命令面板：按 argsSchema 追问必填参数后调用'
         own = (paths.get(c['name']) or []) + (paths.get(c['id']) or [])
         for w in own:
             if '带参数' in w or '内联参数' in w:
@@ -1269,6 +1274,29 @@ def main():
             fail('测试隔离缺：' + label)
     else:
         ok('MULTI/PROFILE 实例落在独立目录，派生路径与内存配置都随之切换')
+
+    # ---------------------------------------------------------------- 21
+    print('\n21. 开发面必须形成可验证的闭环（快照/编译/测试/回滚）')
+    table = (ROOT / 'src/commands.cpp').read_text(encoding='utf-8', errors='replace')
+    dev_cpp = (ROOT / 'src/dev_tools.cpp').read_text(encoding='utf-8', errors='replace')
+    dev_handlers = (ROOT / 'src/app_commands_dev.cpp').read_text(encoding='utf-8', errors='replace')
+    palette = _body_of(app_commands, 'void App::ShowCommandPalette()')
+    dev_missing = []
+    for label, cond in [
+        ('五条开发命令齐全', all(('L"dev.' + n + '"') in table for n in
+                              ('snapshot', 'build', 'test', 'job', 'rollback'))),
+        ('耗时作业异步且发完成事件', 'std::thread' in dev_cpp and 'dev.job.done' in dev_cpp),
+        ('全部用带结果的注册', dev_handlers.count('regR(CmdId::Dev') >= 5),
+        ('破坏性命令人侧要确认', 'MB_YESNO' in palette and 'effects.destructive' in palette),
+        ('回滚有路径校验', 'ValidRepoPath' in dev_cpp and '..' in dev_cpp),
+        ('有开发面单测', (ROOT / 'tests/dev_tools_test.cpp').exists()),
+    ]:
+        if not cond: dev_missing.append(label)
+    if dev_missing:
+        for label in dev_missing:
+            fail('开发面闭环缺：' + label)
+    else:
+        ok('快照/编译/测试/作业/回滚齐全，异步结果可订阅，回滚有人侧确认')
 
     print()
     if g_fail:

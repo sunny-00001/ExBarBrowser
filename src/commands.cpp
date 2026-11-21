@@ -197,6 +197,16 @@ const std::vector<CommandDef> kTable = {
     // 并在需要时自行记下旧值 —— 这也是断言要读回来的原因之一。
     {CmdId::ConfigSet, L"config.set", L"Config", L"设置", L"修改设置项", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"设置项的键名（settings.json 里的名字）\"},\"value\":{\"description\":\"新值；类型须与 config.list 里的 kind 一致\"}},\"required\":[\"key\",\"value\"],\"additionalProperties\":false}", true, false},
 
+    // ---- 开发面：让 Agent 能自己完成「读现状 → 改 → 编译 → 测 → 回滚」----
+    // 这五条不新增业务逻辑，只是把仓库里已有的 build.sh / tests/run_all.sh / git
+    // 收进同一条命令总线。人从命令面板可达（R20），机器从 AI 通道可达。
+    {CmdId::DevSnapshot, L"dev.snapshot", L"Dev", L"开发", L"读取代码工作树快照", true, Effects{1, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"head\":{\"type\":\"string\"},\"status\":{\"type\":\"string\"},\"diffStat\":{\"type\":\"string\"},\"repo\":{\"type\":\"string\"},\"profile\":{\"type\":\"string\"},\"bash\":{\"type\":\"string\"},\"python\":{\"type\":\"string\"},\"error\":{\"type\":\"string\"}},\"required\":[\"head\",\"status\"]}"},
+    {CmdId::DevBuild, L"dev.build", L"Dev", L"开发", L"异步编译当前工作树", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"description\":\"可选：编译目标，默认整个工程\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\"}},\"required\":[\"jobId\"]}"},
+    {CmdId::DevTest, L"dev.test", L"Dev", L"开发", L"异步运行测试", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"filter\":{\"type\":\"string\",\"description\":\"只跑名字含该串的测试；省略=全量\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"jobId\":{\"type\":\"string\"}},\"required\":[\"jobId\"]}"},
+    {CmdId::DevJob, L"dev.job", L"Dev", L"开发", L"查询异步作业结果", true, Effects{1, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"dev.build/dev.test 返回的 jobId\"}},\"required\":[\"id\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\"},\"done\":{\"type\":\"boolean\"},\"exitCode\":{\"type\":\"integer\"},\"output\":{\"type\":\"string\"},\"error\":{\"type\":\"string\"}},\"required\":[\"id\",\"done\"]}"},
+    // 不可撤销：回滚会丢掉工作树里对该文件的改动。调用方必须先 dev.snapshot
+    // 记下 before，并在需要时自行备份；approve=true 表示人已确认这一次覆盖。
+    {CmdId::DevRollback, L"dev.rollback", L"Dev", L"开发", L"把仓库内文件恢复到 HEAD", true, Effects{0, 1, 0, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"仓库内相对路径，如 src/commands.cpp\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"before\":{\"type\":\"string\"},\"after\":{\"type\":\"string\"}},\"required\":[\"before\",\"after\"]}"},
     {CmdId::BmkFocus, L"bmk.focus", L"Bookmark", L"书签栏", L"聚焦书签栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false},
     // ---- Session ----
     {CmdId::SessionSave, L"session.save", L"Session", L"标签栏", L"保存标签组", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false},

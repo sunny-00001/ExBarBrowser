@@ -239,14 +239,13 @@ P4  差异化            AI 面板 → chrome Web 化 → 与 mod 的 UI 资产�
 
 ### 4.7 P3-6 选择族与撤销（2026-11-21 大部分已完成）
 
-已完成：`SelectInvert` / `SelectFiles` / `SelectFolders` / `SelectByPattern` / `CmdUndo`。
+已完成：`SelectInvert` / `SelectFiles` / `SelectFolders` / `SelectByType` / `SelectByPattern` /
+`CmdUndo` / `BatchRename`（模式串 + 预览 + 全部先校验，未接 PowerRename）。
 **前置判断被推翻**：不需要单独的 `SelectionModel` 抽象 —— `shell_ops` 的
 `SelectWhere(pred)` / `SelectByPattern` 直接基于 `IFolderView::Item` + `SelectItem`
 就够用，先造抽象反而会多一层"谁持有选中集"的同步问题。
 
 仍未做：
-- `SelectByType` —— 与已验证的 `SelectWhere` 同形，缺的只是"取首项扩展名"这一步。
-- `BatchRename` —— 建议直接接 PowerRename，不自建规则编辑器。
 - `ToggleCheckboxes` —— shell 视图无公开接口（DECISIONS D2），键位已删。
 - `PathCopyLink` —— 需要判断"能否生成链接"，低价值。
 
