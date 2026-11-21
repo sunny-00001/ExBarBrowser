@@ -159,6 +159,33 @@ int main() {
     rr.risk = L"write";
     std::wstring rj = ai::ResultToJson(rr);
     Check(rj.find(L"\"ok\":false") != std::wstring::npos, "CallResult ok=false 正确序列化");
+    Check(rj.find(L"\"verdict\":false") != std::wstring::npos, "响应含顶层 verdict（无断言时=ok）");
+
+    ai::CallResult okNoAssert;
+    okNoAssert.command = L"NavBack";
+    okNoAssert.risk = L"write";
+    okNoAssert.ok = true;
+    okNoAssert.verdict = true;           // 无断言 → verdict=ok
+    std::wstring okJson = ai::ResultToJson(okNoAssert);
+    Check(okJson.find(L"\"verdict\":true") != std::wstring::npos,
+          "无断言命令成功 → verdict=true");
+
+    // 断言失败不改 ok，但 verdict=false：审计真相与效果判定分开。
+    ai::CallResult badEffect;
+    badEffect.command = L"ViewSort";
+    badEffect.risk = L"write";
+    badEffect.ok = true;
+    badEffect.verdict = false;
+    badEffect.hasAssertions = true;
+    badEffect.assertions = json::Value::MakeArray();
+    json::Value a = json::Value::MakeObject();
+    a.Set(L"ok", json::Value::MakeBool(false));
+    badEffect.assertions.arr.push_back(std::move(a));
+    std::wstring badJson = ai::ResultToJson(badEffect);
+    Check(badJson.find(L"\"ok\":true") != std::wstring::npos,
+          "断言失败时 ok 仍是 handler 原值 true（审计不失真）");
+    Check(badJson.find(L"\"verdict\":false") != std::wstring::npos,
+          "断言失败 → verdict=false（调用方一眼知效果不对）");
 
     std::printf("\n%s（失败 %d 项）\n", g_fail == 0 ? "全部通过" : "有失败", g_fail);
     return g_fail == 0 ? 0 : 1;

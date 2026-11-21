@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 全量单测：编 + 跑 tests/ 下的每一个 .cpp（当前 32 个）。
+# 全量单测：编 + 跑 tests/ 下的每一个 .cpp（用下方 for 循环自动枚举，数量随仓库增长）。
+# 数量不写死在这里 —— 曾写"当前 32 个"，实际涨到 39 个却长期没人改，口径就漂了。
 #
 # 【为什么要这个脚本】文档一直写着"tests/ 有 N 个单测"，但从来没人能一键跑 ——
 # 每个测试直接链 src/*.cpp，需要的 `.cpp` 各不相同（`keymap_test` 要 str+log+platform_win，
@@ -7,13 +8,16 @@
 # 于是实际跑的人只会跑文档里列的那几条，其余长期"存在但没人运行"
 # （`keymap_test` 就是因此红着没人发现，见 CHANGELOG）。
 #
-# 【这里怎么解决】**复用主构建的 obj**，而不是为每个测试重新推依赖：
-#   1. 先跑一次 `bash build.sh`（增量，通常 <1s）把 obj 刷新到最新；
-#   2. 链接时取 `obj/*.obj`，**排除** `main.obj`（它含 WinMain）、`*_test.obj`
-#      与 `*.check.obj`（构建脚本为语法检查生成的副本，与正式 obj 同符号 → 重复定义）；
+# 【这里怎么解决】**复用一套专属的 obj，而不是为每个测试重新推依赖**：
+#   1. 先跑一次构建，把 obj 刷新到最新；
+#   2. 链接时取这批 obj，**排除** `main.obj`（它含 WinMain）、`*_test.obj`
+#      与 `*.check.obj`（语法检查副本，与正式 obj 同符号 → 重复定义）；
 #   3. 测试文件本身单独编，与这批 obj 一起链接。
 #
-# 这样每条测试只需 ~3 秒链接，且依赖关系由主构建保证 —— 不存在"手写依赖表过期"的问题。
+# 【并行会话隔离】OBJDIR 指向 $OUT/obj、产物叫 ExBarBrowser.test.exe —— 与
+# 主构建的 obj/ + ExBarBrowser.exe **物理分开**。多会话同时编译时，主构建清空
+# 重建 obj/ 不会把测试链接到一半的 obj 抽走（曾导致 25 个测试同时 COMPILE-FAIL）。
+# build_fast.py 已支持 --objdir / --out，这里只是用上它。
 #
 # 用法：
 #   bash tests/run_all.sh            # 全量
@@ -48,23 +52,25 @@ LIBS="-static -static-libstdc++ -static-libgcc \
 -lole32 -luuid -lshell32 -lshlwapi -ladvapi32 -luxtheme -ldwmapi -lcomctl32 -lgdi32 -luser32 -loleaut32 -lbcrypt"
 
 OUT="${TMPDIR:-/tmp}/ebb_tests"
+OBJDIR="$OUT/obj"                       # 测试专属中间目录，与主构建 obj/ 物理隔离
 mkdir -p "$OUT"
 
-# 1. 刷新 obj（增量；已是最新时约 0.3s）
-echo "刷新 obj …"
-if ! bash build.sh --out "$OUT/_warm.exe" >"$OUT/_build.log" 2>&1; then
+# 1. 刷新测试专属 obj（增量；已是最新时约 0.3s）
+#    --objdir 隔离 obj/PCH/资源对象；--out 给独立 exe 名，不碰主构建的 ExBarBrowser.exe。
+echo "刷新 obj（测试专属 $OBJDIR）…"
+if ! bash build.sh --objdir "$OBJDIR" --out "$OUT/ExBarBrowser.test.exe" >"$OUT/_build.log" 2>&1; then
     echo "构建失败，先修构建再跑单测："
     grep -iE "error|warning" "$OUT/_build.log" | head -10
     exit 2
 fi
 
-# 2. 收集可复用的 obj
-OBJS=$(ls obj/*.obj 2>/dev/null \
-       | grep -vE "obj/(main|.*_test)\.obj$" \
+# 2. 收集可复用的 obj（从测试专属目录，不读主构建的 obj/）
+OBJS=$(ls "$OBJDIR"/*.obj 2>/dev/null \
+       | grep -vE "/(main|.*_test)\.obj$" \
        | grep -v "\.check\.obj$" \
        | tr '\n' ' ')
 if [ -z "$OBJS" ]; then
-    echo "obj/ 里没有可复用的目标文件（构建脚本的产物目录变了吗？）"
+    echo "$OBJDIR 里没有可复用的目标文件（构建脚本的产物目录变了吗？）"
     exit 2
 fi
 
@@ -114,7 +120,7 @@ for t in tests/*.cpp; do
 done
 
 echo
-echo "通过 $pass / 无法运行 $norun / 运行失败 $fail / 编译失败 $cfail"
+echo "通过 $pass / 无法运行 $norun / 运行失败 $fail / 编译失败 $cfail（共 $((pass + norun + fail + cfail)) 个测试）"
 echo "日志：$OUT/"
 [ -z "$norun_names" ] || echo "无法运行（环境不满足，未验证）：$norun_names"
 [ -z "$failed_names" ] || echo "未通过：$failed_names"

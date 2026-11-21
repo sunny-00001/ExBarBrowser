@@ -8,7 +8,11 @@
   2. 每个 aiExposed 的命令：argsSchema 必须是合法 JSON 对象
   3. schema 声明的参数必须能在 handler 里找到取用（args.Int/Str/Bool("<键>")）
      —— 否则就是"声明了参数但没实现"，调用方传了等于白传
-  4. needsSelection 的命令不应暴露（AI 无法用参数指定目标）
+  4. needsSelection 的命令暴露给 AI 的前提：观测面可读选中
+     （state 快照输出 selectionCount）。旧规则"一律不暴露"基于观测面不存在
+     时"AI 无法指定目标"；观测面落地后人机协作语义成立——用户在界面选中
+     （人表达意图），AI 先读 selection 确认目标、再调用命令作用于它。
+     观测面一旦缺失（被删/断链）立即恢复 ERROR。
   5. 无参数命令的 schema 应显式写 additionalProperties:false
      （MCP 规范：空 schema 的语义是"接受任意参数"，是不安全的默认值）
    ...
@@ -378,6 +382,25 @@ def _body_of(text, name, kind='struct'):
     return body or ''
 
 
+def _state_selection_observable():
+    """观测面是否可读选中：ai_api.cpp 的 StateToJson 是否输出 selectionCount。
+
+    needsSelection 命令能否暴露给 AI 取决于此（见第 4 项与第 14 项）：
+    观测面在场 → AI 可先读 selection 确认目标再调用；缺失 → 恢复"不许暴露"。
+    结果缓存，全跑只读一次文件。"""
+    global _SEL_OBS
+    if _SEL_OBS is None:
+        try:
+            src = Path(__file__).resolve().parent.parent / 'src' / 'ai_api.cpp'
+            _SEL_OBS = 'L"selectionCount"' in src.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            _SEL_OBS = False
+    return _SEL_OBS
+
+
+_SEL_OBS = None
+
+
 def parse_commands():
     raw = COMMANDS.read_text(encoding='utf-8')
     text = _strip_comments(raw)
@@ -678,14 +701,23 @@ def main():
     if not bad:
         ok('全部对齐')
 
-    print('\n4. needsSelection 的命令不应暴露（AI 无法指定目标）')
+    print('\n4. needsSelection 暴露的前提：观测面可读选中（先读 selection 再调用）')
+    # 旧规则是"一律不暴露"——当时没有观测面，"AI 无法指定目标"是事实。
+    # state 快照输出 selection 之后前提变了：AI 能先读 selection 确认目标
+    # 再调用，这正是人机协作（用户在界面表达意图）。检测锚点是 ai_api.cpp
+    # 里 StateToJson 对 selectionCount 的输出——观测面被删/断链立即恢复 ERROR。
     bad = 0
-    for c in cmds:
-        if c['needsSelection'] and c['exposed']:
-            fail(f'{c["name"]} 依赖选中项却又暴露给 AI，目标不可表达')
-            bad += 1
-    if not bad:
-        ok('无冲突')
+    if not _state_selection_observable():
+        for c in cmds:
+            if c['needsSelection'] and c['exposed']:
+                fail(f'{c["name"]} 依赖选中项却又暴露给 AI，且观测面不可读选中（目标不可表达）')
+                bad += 1
+        if not bad:
+            ok('无 needsSelection 暴露（观测面缺失时该规则自动收紧）')
+    else:
+        ok(f'观测面在场（state 输出 selectionCount），'
+           f'{sum(1 for c in cmds if c["needsSelection"] and c["exposed"])} 条'
+           f' needsSelection 命令可暴露')
 
     print('\n5. 无参数命令的 schema 应显式声明不接受参数')
     bad = 0
@@ -751,7 +783,7 @@ def main():
     for c in cmds:
         if not c['implemented']:
             continue
-        if c['needsSelection'] and 'HasSelection' not in c['requires']:
+        if c['needsSelection'] and 'HasSelection' not in ','.join(c['requires']):
             if c['exposed']:
                 fail(f'{c["name"]} 暴露且依赖选中项，但没有 HasSelection 前置')
                 bad += 1
@@ -966,8 +998,10 @@ def main():
         if not c['implemented']:
             fail(f'{c["name"]} 暴露给 AI 但未实现（会出现却调不动）')
             bad += 1
-        if c['needsSelection']:
-            fail(f'{c["name"]} 暴露给 AI 但依赖当前选中（机器无法指定目标）')
+        # 依赖选中项：观测面在场（第 4 项检测过）才允许暴露——AI 先读
+        # selection 确认目标再调用；观测面缺失时这里恢复 ERROR。
+        if c['needsSelection'] and not _state_selection_observable():
+            fail(f'{c["name"]} 暴露给 AI 但依赖当前选中且观测面不可读（机器无法指定目标）')
             bad += 1
         if c['name'] in UI_ONLY:
             fail(f'{c["name"]} 是纯人机 UI，不该暴露')
