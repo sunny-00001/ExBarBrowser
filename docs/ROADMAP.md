@@ -210,12 +210,16 @@ P4  差异化            AI 面板 → chrome Web 化 → 与 mod 的 UI 资产�
 `Alt+K` 打开管理器：范围筛选、改键/清除/恢复默认、冲突/系统占用/未实现标记。
 存储改为 `data\keymap.json`（不再有 `exbrowser` 段，与 mod 的数据目录已分离）。
 
-### 4.4 P3-2 搜索（待做）
+### 4.4 P3-2 搜索（一半已做：`search.find`；Everything 通道待做）
 
-- 接 `evipc`（Everything IPC）：复用 mod 的 actor 化客户端，命名管道 + 共享内存。
-- UI：导航栏右侧搜索框（`NavBar` 扩展），结果以"虚拟文件夹"呈现还是"结果列表"呈现需要定
-  （mod 是 NSE 虚拟文件夹 `ebda`，本工程没有 NSE，只能自绘列表）。
-- 对应命令 `SearchEverything` / `OpSearch`（`FocusSearch` 依赖搜索框存在）。
+- **已做（2026-11-21）**：`search.find` 走 shell 自己的 `search-ms:` 协议，结果落在
+  同一个 `IShellView` 里 —— 排序 / 右键 / 拖放照旧可用，不需要自绘结果列表，
+  也不需要 Everything。导航栏搜索框与命令总线共用 `App::RunSearch` 一份实现，
+  URL 拼装是纯函数（`src/search_url.*` + 单测），端到端见 `obj/e2e_search.py`。
+  语义：搜索是**导航**，空串 / 只有空白 = 退出搜索回到来源目录。
+- 待做：接 `evipc`（Everything IPC）：复用 mod 的 actor 化客户端，命名管道 + 共享内存。
+  对应命令 `SearchEverything`。这一步的价值是"全盘按文件名即时搜索"（200 ms 内出结果），
+  与 `search.find` 的"当前目录内查"是两件事 —— 所以没有拿 `search-ms` 去冒充它。
 - **验收**：输入 `*.log` 在 200 ms 内出前 50 条；双击结果导航到所在目录并选中。
 
 ### 4.5 P3-3 工具（helper IPC，部分已做）
