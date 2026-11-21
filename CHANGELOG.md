@@ -19,6 +19,13 @@
 
 ## [Unreleased]
 
+### 修复
+
+- `tests/run_all.sh` 的链接库补 `-luiautomationcore`：主构建 `build_fast.py` 的
+  `LIBS` 早有这一项，单测脚本漏了。两边链的是同一个 obj 目录，单测链接时少一个
+  导入库，只要被链进去的 TU 引用了 uiautomationcore 导出的函数，就会在链接期统一
+  报 `undefined symbol` —— 与任何单个测试无关，看起来像"测试全坏了"。
+
 ### 新增（AI 通道：失败可机器分类 + 能力面自述）
 
 让"新会话 → 提需求 → 调命令 → 缺什么补什么"这条闭环真正落在产品通道里，而不是外部脚本里：
