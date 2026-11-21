@@ -83,24 +83,66 @@ void App::RegisterDevCommands() {
         snapshot.Set(L"createdAt", Str(snap.createdAt));
         int saved = 0;
         json::Value files = json::Value::MakeArray();
+        // changedFiles：P0-9 的"改写可见性"观测面 ——
+        // 路径 + mtime + SHA-256。调用方拿它能**独立核对**"现在这份是不是
+        // 我上次看到的那一份"，不必相信 git status 的一段文本；
+        // 两次快照之间比 sha256，就知道内容有没有被改过。
+        json::Value changed = json::Value::MakeArray();
         for (const auto& f : snap.files) {
             if (f.saved) ++saved;
             json::Value o = json::Value::MakeObject();
             o.Set(L"path", Str(f.path));
             o.Set(L"saved", json::Value::MakeBool(f.saved));
             o.Set(L"tracked", json::Value::MakeBool(f.tracked));
-            o.Set(L"bytes", json::Value::MakeInt(static_cast<int>(f.bytes)));
-            if (!f.reason.empty()) o.Set(L"reason", Str(f.reason));
+            // 用 MakeNum 而不是 MakeInt：bytes 是 64 位，int 会截断到 31 位 ——
+            // 一个 3 GB 的文件会报成 2 GB（看起来像"文件变小了"）。
+            o.Set(L"bytes", json::Value::MakeNum(static_cast<double>(f.bytes)));
             // P0-9：快照也要带这两个字段，agent 才能核对"落盘的是哪一版"。
             // mtime 是十进制 Unix 秒的字符串（避开 32 位溢出），空串=取不到。
             o.Set(L"mtime", Str(f.mtime));
             o.Set(L"sha256", Str(f.sha256));
+            if (!f.reason.empty()) o.Set(L"reason", Str(f.reason));
             files.arr.push_back(std::move(o));
+
+            json::Value c = json::Value::MakeObject();
+            c.Set(L"path", Str(f.path));
+            c.Set(L"tracked", json::Value::MakeBool(f.tracked));
+            c.Set(L"bytes", json::Value::MakeNum(static_cast<double>(f.bytes)));
+            c.Set(L"mtime", Str(f.mtime));
+            c.Set(L"sha256", Str(f.sha256));
+            changed.arr.push_back(std::move(c));
         }
         snapshot.Set(L"savedFiles", json::Value::MakeInt(saved));
         snapshot.Set(L"totalFiles", json::Value::MakeInt(static_cast<int>(snap.files.size())));
-        snapshot.Set(L"files", files);
+        snapshot.Set(L"files", std::move(files));
+        snapshot.Set(L"changedFiles", std::move(changed));
         *out = std::move(snapshot);
+        return true;
+    });
+
+    regR(CmdId::DevDiff, [](const Args& args, json::Value* out) {
+        // dev.diff 是纯只读观测：不落盘、不改工作树、不建快照。
+        // 审阅"agent 改了什么"不该有副作用 —— 那是 dev.snapshot 的职责。
+        //
+        // path 可选：只审一个文件时用它，能把一次调用压到 1 条 git 命令；
+        // 省略则给全部改动文件（超预算会显式标 truncated，不会假装给全了）。
+        const std::wstring path = str::Trim(args.Str(L"path"));
+        if (!path.empty()) {
+            // 路径必须是仓库内相对路径：这条命令会照着它去读文件内容。
+            std::wstring err;
+            if (!devtools::ValidRepoPath(path, &err)) {
+                CommandBus::Get().NoteFailure(err.empty() ? L"路径不合法" : err);
+                return false;
+            }
+        }
+        json::Value result;
+        std::wstring err;
+        if (!devtools::Diff(path, &result, &err)) {
+            // git 不可用要如实报错，不返回一个"看起来没改动"的空 diff（那是假绿）。
+            CommandBus::Get().NoteFailure(err.empty() ? L"无法读取工作树 diff" : err);
+            return false;
+        }
+        *out = std::move(result);
         return true;
     });
 

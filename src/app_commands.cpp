@@ -459,6 +459,12 @@ void App::ShowStatusMenu(POINT screen) {
         L"文件夹计数", L"文件计数", L"已选/总数", L"修改日期", L"路径",
         L"选中容量",   L"容器/磁盘", L"隐藏文件三态", L"类型",
     };
+    // D7：段下标 0..Seg_Count-1 与菜单动作号必须显式分段。以前靠
+    // "100/101 不会和段下标撞"这条隐式约定，加一项就可能静默错位。
+    enum StatusAction {
+        kCopyPath = 100,
+        kHideStatusBar = 101,
+    };
     ui::Menu menu;
     const auto& enabled = Config::Get().s().statusSegs;
     for (int i = 0; i < Seg_Count; ++i) {
@@ -467,24 +473,23 @@ void App::ShowStatusMenu(POINT screen) {
         menu.AddChecked(kSegNames[i], on, i, StatusSegmentIcon(i));
     }
     menu.Separator()
-        .Add(L"复制当前路径", 100, ico::IconId::Copy)
-        .Add(L"隐藏状态栏", 101, ico::IconId::Eye);
+        .Add(L"复制当前路径", kCopyPath, ico::IconId::Copy)
+        .Add(L"隐藏状态栏", kHideStatusBar, ico::IconId::Eye);
 
     ui::MenuOptions opt;
     opt.toggleKey = L"status.menu";
     const int data = menu.Show(hwnd_, theme_, screen, opt);
-    if (data < 0) return;
-    if (data == 100) {
+    if (data == kCopyPath) {
         CommandBus::Get().Invoke(CmdId::PathCopyDir, Args::Empty(), Actor::Ui());
         return;
     }
-    if (data == 101) {
+    if (data == kHideStatusBar) {
         Config::Get().mutableSettings().showStatus = false;
         Config::Get().Save();
         Layout();
         return;
     }
-    if (data < 0) return;
+    if (data < 0 || data >= Seg_Count) return;  // 只剩段下标；越界一律不当段处理
 
     auto& segs = Config::Get().mutableSettings().statusSegs;
     auto it = std::find(segs.begin(), segs.end(), data);

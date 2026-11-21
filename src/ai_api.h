@@ -190,6 +190,11 @@ struct StateSnapshot {
     // ---- 可写状态的回读（每个都对应一条 view.* / bmk.* 命令）----
     int sortMode = -1;                    // view.sort 改写；-1 = 未知
     int groupBy = -1;                     // view.group 改写
+    // 任意属性键的回读（P3-4）：view.sort.bykey / view.group.bykey 改写。
+    // 规范格式 "{GUID},pid"；空 = 未知/未分组。与 int 档位并存但互不推导：
+    // 档位是常用列的快捷方式，bykey 覆盖任意列，两条路径都从 shell 现读。
+    std::wstring sortKey;
+    std::wstring groupKey;
     bool bookmarkBarVisible = false;      // bmk.show / bmk.hide / bmk.toggle 改写
     bool navPaneVisible = false;          // view.toggle.nav 改写
     bool previewPaneVisible = false;      // view.toggle.preview 改写

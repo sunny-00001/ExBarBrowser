@@ -134,4 +134,37 @@ bool Toggle(IShellView* view, const std::wstring& id, bool* nowVisible) {
     return true;
 }
 
+const std::vector<KnownProperty>& KnownProperties() {
+    // 函数内静态：避免跨 TU 的初始化顺序问题；第一次调用才构造 id 串。
+    static const std::vector<KnownProperty> table = [] {
+        struct Entry {
+            PROPERTYKEY key;
+            const wchar_t* title;
+        };
+        const Entry entries[] = {
+            {PKEY_ItemNameDisplay, L"名称"},
+            {PKEY_DateModified, L"修改日期"},
+            {PKEY_DateCreated, L"创建日期"},
+            {PKEY_DateAccessed, L"访问日期"},
+            {PKEY_ItemTypeText, L"类型"},
+            {PKEY_Size, L"大小"},
+            {PKEY_Author, L"作者"},
+            {PKEY_Title, L"标题"},
+            {PKEY_Company, L"公司"},
+            {PKEY_Comment, L"注释"},
+            {PKEY_Keywords, L"标记"},
+            {PKEY_FileDescription, L"文件说明"},
+            {PKEY_OriginalFileName, L"原始文件名"},
+            {PKEY_ContentType, L"内容类型"},
+            {PKEY_FileName, L"文件名"},
+        };
+        std::vector<KnownProperty> out;
+        out.reserve(sizeof(entries) / sizeof(entries[0]));
+        for (const auto& e : entries)
+            out.push_back({e.key, ColumnIdToString(e.key), e.title});
+        return out;
+    }();
+    return table;
+}
+
 }  // namespace shellcolumns

@@ -58,4 +58,22 @@ inline int ZoomIconPx(int px, int steps) {
     return ClampIconPx(px + steps * kZoomStepPx);
 }
 
+// 从 shell 现读的 (FVM, iconPx) 反查档位下标（D2：视图菜单打勾跟真实状态同步）。
+// FVM_THUMBNAIL 一档被 3 个下标共用，必须按 iconPx 精确匹配；返回的图标像素
+// 会被 DPI 缩放，所以用"最接近的档位"而不是严格相等。找不到返回 -1（未知）。
+inline int ModeIndexFor(int fvm, int iconPx) {
+    int best = -1;
+    int bestDelta = -1;
+    for (int i = 0; i < kCount; ++i) {
+        if (kModes[i].fvm != fvm) continue;
+        const int delta = kModes[i].icon > iconPx ? kModes[i].icon - iconPx
+                                                  : iconPx - kModes[i].icon;
+        if (best < 0 || delta < bestDelta) {
+            best = i;
+            bestDelta = delta;
+        }
+    }
+    return best;
+}
+
 }  // namespace viewmode

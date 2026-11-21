@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ai_events.h"
+#include "dev_diff.h"
 #include "dev_proc.h"
 #include "dev_snapshot.h"
 #include "eval_surface.h"
@@ -178,92 +179,62 @@ bool GetJob(const std::wstring& id, Job* out) {
     return true;
 }
 
-// 解析 `git diff --numstat` 的一行："<added>\t<deleted>\t<path>"（二进制是 "-\t-\t..."）。
-// 返回 path 与增删行数；非新增/删除的普通改动才有意义。
-bool ParseNumstat(const std::wstring& line, std::wstring* path, int* added, int* deleted) {
-    const size_t t1 = line.find(L'\t');
-    if (t1 == std::wstring::npos) return false;
-    const size_t t2 = line.find(L'\t', t1 + 1);
-    if (t2 == std::wstring::npos) return false;
-    const std::wstring a = line.substr(0, t1);
-    const std::wstring d = line.substr(t1 + 1, t2 - t1 - 1);
-    if (a == L"-" || d == L"-") return false;  // 二进制：行数无意义
-    *added = _wtoi(a.c_str());
-    *deleted = _wtoi(d.c_str());
-    *path = line.substr(t2 + 1);
-    return !path->empty();
-}
-
-// 逐文件的增删行数（numstat 只给 changed 文件，与 CurrentChanges 的路径并集用）。
-// key 是仓库内相对路径（正斜杠）；numstat 给的路径已是正斜杠，无需再归一化。
-std::map<std::wstring, std::pair<int, int>> DiffNumstat() {
-    std::map<std::wstring, std::pair<int, int>> out;
-    // 工作区 + 暂存区都算：dev.diff 是"从上次提交到现在改了什么"的完整视图。
-    for (const auto& args : {
-             std::vector<std::wstring>{L"-c", L"core.quotepath=false", L"diff", L"--numstat"},
-             std::vector<std::wstring>{L"-c", L"core.quotepath=false", L"diff", L"--cached",
-                                       L"--numstat"},
-         }) {
-        const std::wstring text = GitArgs(args);
-        size_t start = 0;
-        while (start <= text.size()) {
-            size_t end = text.find(L'\n', start);
-            if (end == std::wstring::npos) end = text.size();
-            std::wstring line = text.substr(start, end - start);
-            while (!line.empty() && line.back() == L'\r') line.pop_back();
-            std::wstring path;
-            int added = 0, deleted = 0;
-            if (ParseNumstat(line, &path, &added, &deleted)) {
-                auto& slot = out[path];
-                slot.first += added;
-                slot.second += deleted;
-            }
-            if (end == text.size()) break;
-            start = end + 1;
-        }
+// 当前工作树的**结构化 diff**（只读，不落盘、不改工作树）。
+//
+// 【为什么核心逻辑在 dev_diff.cpp】"git 输出怎么解析"必须只有一份真源：
+// 路径解析（-z、无引号）、状态分类、未跟踪文件的合成 —— 散在两处必然分叉，
+// 而分叉的代价是"有的路径能看见、有的看不见"，且没人说得清为什么。
+//
+// 【为什么不给整仓的 patch 文本】一份几千 KB 的 patch 文本没法审：
+// 调用方要自己再解析一遍才能知道"哪个文件改了什么"。这里给的是**按文件分好、
+// 行号算好**的结构，调用方可以直接定位到行。
+bool Diff(const std::wstring& onlyPath, json::Value* out, std::wstring* err) {
+    devdiff::Options opt;
+    opt.root = tf::ExeDir();
+    opt.onlyPath = onlyPath;
+    const devdiff::Report rep = devdiff::Compute(opt);
+    if (!rep.ok) {
+        if (err) *err = rep.error.empty() ? L"读工作树 diff 失败" : rep.error;
+        return false;
     }
-    return out;
-}
-
-std::wstring Diff() {
     json::Value v = json::Value::MakeObject();
-    const std::wstring head = str::Trim(Git(L"rev-parse", {L"--short", L"HEAD"}));
-    v.Set(L"head", Str(head));
-    if (head.empty()) {
-        v.Set(L"error", Str(L"git rev-parse 没有输出（仓库不可用？）"));
-        return json::Stringify(v, 0);
-    }
-
-    const auto changes = devsnap::CurrentChanges();
-    const auto numstat = DiffNumstat();
+    v.Set(L"head", Str(rep.head));
+    // totalFiles 是 unsigned long long：用 MakeNum，MakeInt 会截断到 31 位。
+    v.Set(L"totalFiles", json::Value::MakeNum(static_cast<double>(rep.totalFiles)));
+    v.Set(L"truncated", json::Value::MakeBool(rep.truncated));
+    if (!rep.truncatedReason.empty()) v.Set(L"truncatedReason", Str(rep.truncatedReason));
+    if (!rep.note.empty()) v.Set(L"note", Str(rep.note));
     json::Value files = json::Value::MakeArray();
-    for (const auto& f : changes) {
+    for (const devdiff::FileDiff& f : rep.files) {
         json::Value o = json::Value::MakeObject();
         o.Set(L"path", Str(f.path));
+        o.Set(L"status", Str(f.status));
+        if (!f.origPath.empty()) o.Set(L"origPath", Str(f.origPath));
         o.Set(L"tracked", json::Value::MakeBool(f.tracked));
         o.Set(L"bytes", json::Value::MakeNum(static_cast<double>(f.bytes)));
         o.Set(L"mtime", Str(f.mtime));
         o.Set(L"sha256", Str(f.sha256));  // 空 = 没算出来（目录/已删），不是"内容是空的"
-        auto it = numstat.find(f.path);
-        o.Set(L"added", json::Value::MakeInt(it == numstat.end() ? 0 : it->second.first));
-        o.Set(L"deleted", json::Value::MakeInt(it == numstat.end() ? 0 : it->second.second));
+        o.Set(L"added", json::Value::MakeInt(f.added));
+        o.Set(L"deleted", json::Value::MakeInt(f.deleted));
+        o.Set(L"truncated", json::Value::MakeBool(f.truncated));
+        if (!f.reason.empty()) o.Set(L"reason", Str(f.reason));
+        json::Value hunks = json::Value::MakeArray();
+        for (const devdiff::Hunk& h : f.hunks) {
+            json::Value ho = json::Value::MakeObject();
+            ho.Set(L"oldStart", json::Value::MakeInt(h.oldStart));
+            ho.Set(L"oldLines", json::Value::MakeInt(h.oldLines));
+            ho.Set(L"newStart", json::Value::MakeInt(h.newStart));
+            ho.Set(L"newLines", json::Value::MakeInt(h.newLines));
+            ho.Set(L"header", Str(h.header));
+            ho.Set(L"text", Str(h.text));
+            hunks.arr.push_back(std::move(ho));
+        }
+        o.Set(L"hunks", std::move(hunks));
         files.arr.push_back(std::move(o));
     }
     v.Set(L"files", std::move(files));
-
-    // patch 可能很大（一次大重构几 MB）——头+尾裁剪，中间的省略处留标记。
-    // 需要完整 diff 的调用方可以自己跑 git diff：这里给的是**审阅用摘要**，不是存档。
-    const std::wstring patch = GitArgs({L"-c", L"core.quotepath=false", L"diff",
-                                        L"--no-ext-diff", L"--no-color"});
-    const std::wstring staged = GitArgs({L"-c", L"core.quotepath=false", L"diff", L"--cached",
-                                         L"--no-ext-diff", L"--no-color"});
-    bool truncated = false;
-    v.Set(L"patch", Str(TrimOutput(patch, &truncated)));
-    bool stagedTruncated = false;
-    v.Set(L"stagedPatch", Str(TrimOutput(staged, &stagedTruncated)));
-    v.Set(L"patchTruncated", json::Value::MakeBool(truncated || stagedTruncated));
-    v.Set(L"stat", Str(Git(L"diff", {L"--stat"})));
-    return json::Stringify(v, 0);
+    if (out) *out = std::move(v);
+    return true;
 }
 
 std::wstring Snapshot() {

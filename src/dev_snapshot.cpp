@@ -148,25 +148,6 @@ unsigned long long FileSizeOf(const std::wstring& path) {
     return (static_cast<unsigned long long>(attr.nFileSizeHigh) << 32) | attr.nFileSizeLow;
 }
 
-// 文件的最后写入时间（十进制 Unix 秒，字符串形态）。返回空串 = 取不到，不编造。
-// 为什么用字符串而不是整数：JSON 的 Value 只有 GetInt（32 位），Unix 秒 2038 年溢出；
-// 字符串既能精确表达大整数，人读清单时也一眼能看出，还免去 double 精度问题。
-// 为什么是 UTC Unix 秒而不是本地格式串：调用方要的是**可比较**的时间戳，
-// 本地格式串在不同时区/语言下不可比，机器也无法拿它做"哪份更新"的判断。
-std::wstring FileMtimeOf(const std::wstring& path) {
-    WIN32_FILE_ATTRIBUTE_DATA attr{};
-    if (!GetFileAttributesExW(tf::ToExtended(path).c_str(), GetFileExInfoStandard, &attr))
-        return L"";
-    // FILETIME 是 1601-01-01 起、100ns 为单位；Unix 是 1970-01-01 起、秒为单位。
-    ULARGE_INTEGER ticks;
-    ticks.LowPart = attr.ftLastWriteTime.dwLowDateTime;
-    ticks.HighPart = attr.ftLastWriteTime.dwHighDateTime;
-    constexpr unsigned long long kEpochOffset = 116444736000000000ULL;
-    constexpr unsigned long long kTicksPerSecond = 10000000ULL;
-    if (ticks.QuadPart < kEpochOffset) return L"";
-    return std::to_wstring((ticks.QuadPart - kEpochOffset) / kTicksPerSecond);
-}
-
 // 文件内容摘要（SHA-256 小写 hex）。空文件也如实算（哈希空串有确定值），
 // 取不到（被独占/读失败）返回空串 —— 空串的含义是"没算出来"，不是"内容是空的"。
 std::wstring Sha256Of(const std::wstring& path) {
@@ -280,7 +261,7 @@ Snapshot Create() {
         f.bytes = FileSizeOf(abs);
         // P0-9：mtime 对**所有**存在的文件都取（含没保存内容的），
         // sha256 只对真的复制下来的文件算 —— 没存的那些没有内容副本可校验。
-        f.mtime = FileMtimeOf(abs);
+        f.mtime = tf::FileMtimeUnix(abs);
         if (IsDirectory(abs)) {
             f.reason = L"目录（不复制内容）";
             s.files.push_back(std::move(f));
@@ -323,24 +304,6 @@ Snapshot Create() {
     }
     s.ok = true;
     return s;
-}
-
-std::vector<FileEntry> CurrentChanges() {
-    const std::vector<std::wstring> tracked = TrackedFiles();
-    std::vector<FileEntry> out;
-    for (const std::wstring& rel : ChangedFiles()) {
-        FileEntry f;
-        f.path = rel;
-        f.tracked = std::find(tracked.begin(), tracked.end(), rel) != tracked.end();
-        const std::wstring abs = AbsOf(rel);
-        f.bytes = FileSizeOf(abs);
-        f.mtime = FileMtimeOf(abs);
-        // 与 Create() 分工：这里**不落盘**，但 SHA-256 算的是当前工作树那份文件本身。
-        // 目录跳过（HashFile 对目录返回失败）；删除了的文件 bytes=0，也跳过。
-        if (!IsDirectory(abs) && f.bytes) f.sha256 = Sha256Of(abs);
-        out.push_back(std::move(f));
-    }
-    return out;
 }
 
 bool Load(const std::wstring& id, Snapshot* out) {

@@ -160,6 +160,10 @@ enum class CmdId : int {
     ViewZoomChoose,      // 无参，UI：打开图标大小档位菜单
     // ---- P0-9：改写可见性（只读观测，不落盘）----
     DevDiff,             // 无参，只读：返回工作树的结构化 diff（文件+SHA-256+mtime+patch），供审阅"agent 改了什么"
+    // ---- P3-4：任意属性排序/分组（只允许追加在末尾，见 C1b）----
+    ViewSortByKey,       // {key[,ascending]}：按任意 PROPERTYKEY 排序
+    ViewGroupByKey,      // {key}：按任意 PROPERTYKEY 分组
+    ViewPropsList,       // 无参，只读：列出可排序/分组的常用属性键（id 可直接给 bykey）
 };
 
 // 命令的风险等级（与 mod 的 risk / 架构规则 R18 对齐）。

@@ -33,6 +33,37 @@ int main() {
     Expect(snap.Find(L"head") && snap.Find(L"status") && snap.Find(L"profile"),
            "快照含 HEAD / 脏文件 / profile（闭环的起点）");
 
+    // P0-9：改写可见性。dev.diff 是只读观测，必须返回可核对的结构化数据。
+    //
+    // 【这里测的是"不编造"】测试 exe 所在目录通常不是 git 仓库，
+    // 所以更该断言的是：**失败时不返回一份看起来像"没有改动"的空 diff** ——
+    // 那是最坏的一种假绿（审阅者会以为"确实没改动"）。
+    // 内容级的正确性由 tests/dev_diff_test.cpp 在真仓库里测。
+    json::Value diff;
+    std::wstring derr;
+    if (devtools::Diff(L"", &diff, &derr)) {
+        Expect(diff.IsObject() && diff.Find(L"head"), "dev.diff 返回合法 JSON 且带 head");
+        const json::Value* files = diff.Find(L"files");
+        Expect(files && files->IsArray(), "dev.diff 含 files[]（改了哪些文件）");
+        Expect(diff.Find(L"truncated"), "dev.diff 带整体截断标记（审阅视图不谎报完整）");
+        if (files && files->IsArray()) {
+            bool shapeOk = true;
+            for (const auto& f : files->arr) {
+                if (!f.Find(L"path") || !f.Find(L"status") || !f.Find(L"mtime") ||
+                    !f.Find(L"sha256") || !f.Find(L"added") || !f.Find(L"deleted") ||
+                    !f.Find(L"hunks")) {
+                    shapeOk = false;
+                    break;
+                }
+            }
+            Expect(shapeOk,
+                   "dev.diff 每个文件都带 path/status/mtime/sha256/added/deleted/hunks");
+        }
+    } else {
+        Expect(!derr.empty(), "dev.diff 失败时给出原因（不编造空 diff）");
+        Expect(!diff.Find(L"files"), "dev.diff 失败时不返回一份像\"没有改动\"的结果");
+    }
+
     std::printf("  通过 %d / 失败 %d\n", pass, fail);
     return fail ? 1 : 0;
 }

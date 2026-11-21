@@ -117,8 +117,8 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 |---|---|---|---|
 | 详情视图 | **详情列可自定义**（选列：名称/修改日期/类型/大小/创建日期/访问日期/属性/作者/路径/标签…） | ✅ 已补 | 视图菜单 →「选择详细信息…」；`shell_columns` 封装 `IColumnManager`，列 id 稳定为 `{GUID}:pid` |
 | 视图 | **图标大小缩放**（Ctrl+滚轮 + 缩放滑块） | ✅ 滚轮已补 | `view.zoom` + mouse.json `wheel_up`/`wheel_down`（mods=1）；状态栏缩放滑块未做，改用视图菜单「图标大小…」 |
-| 视图 | 「排序方式」「分组依据」**二级菜单**（按任意列/任意属性） | 高 | `popup_list` 目前是平铺模型，要加一层子菜单 |
-| 视图 | 按任意属性分组（现在只有 无/类型/日期/大小 四档） | 中 | `shellops::GetSort` 只认 4 个 `PROPERTYKEY`，用户按别的列排序后**视图菜单打勾会全部消失** |
+| 视图 | 「排序方式」「分组依据」**二级菜单** | ✅ 已补 | 父层小结 + 子层四档 + 方向翻转；下钻式不侵入 `popup_list` 模态循环 |
+| 视图 | 按任意属性排序/分组（原只有 无/类型/日期/大小 四档） | ✅ 已补 | `view.sort.bykey` / `view.group.bykey` 收 `{GUID}:pid`；`view.props.list` 列可用属性；快照回读 `sortKey`/`groupKey` |
 | 导航窗格 | 主页/快速访问/OneDrive/此电脑/网络 的完整树、树右键菜单、「在文件夹中显示」 | 中 | `folder_tree.cpp` 有基础 |
 | 标签栏 | **垂直标签**、拖出成新窗口、多标签拆分到新窗口、标签组 | 中 | 另有 `tab.pin`（固定标签）与 `tab.lock`（锁定标签）两条命令**已实现但无键**（只在右键菜单可达） |
 | 状态栏 | 缩放滑块 | 中 | |
@@ -164,14 +164,14 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 | # | 问题 | 证据 | 影响 |
 |---|---|---|---|
 | **D1** ✅ 已修 | **主题令牌有两个来源** | 原 `src/theme.cpp` 里 `bg`/`bar` 直接硬编码，并有 `kTabColorsDark`/`kTabColorsLight` 两组标签色板；P1 已并入 `src/ui_palette.h`，`theme.cpp` 只从 `UiPalette` / `TabColorsFor()` 取值 | 模板用色不再两处各写一份 |
-| **D2** | **视图档位与视图真实状态不同步** | `App::SetViewStateFn`（`src/app.cpp`）：`vs.sort`/`vs.ascending` 从视图现读（正确），但 `vs.group` 抄配置、`vs.mode` 抄 `viewMode_` | 用户在 shell 里点列头改排序 → 菜单打勾跟着变（好）；但**改分组或视图档位则不同步** → 菜单打勾在旧档位。同一个坑在 mode/group 上仍在 |
-| **D3** | **状态栏窄窗丢弃顺序把"有动作"的段先丢掉** | `StatusBar::Layout` 的 `kDropOrder = {Seg_Type, Seg_Eye, Seg_Disk, Seg_Size, Seg_Date}`；而 `Seg_Date` 在 `App::SetClickFn` 里**是有动作的**（点它 → 按日期排序） | 窄窗下最有用的"点日期改排序"入口**最先消失**。丢弃顺序应按"有无点击动作"排，不该按枚举顺序倒着排 |
-| **D4** | **`ShellView::ApplyNavPaneWanted` 隐藏后留空位** | 通过 `EnumChildWindows` 找 `NamespaceTreeControl` 后 `ShowWindow(SW_HIDE)`，但**shell 视图内容区不自动重排**（代码只 `InvalidateRect(container_)`） | "隐藏导航窗格"是**留空位**而不是真收起。与 `AGENTS.md` 的"导航窗格开关"承诺有落差 |
+| **D2** ✅ 已修 | **视图档位与视图真实状态不同步** | 原 `App::SetViewStateFn` 的 `vs.group` 抄配置、`vs.mode` 抄 `viewMode_`。现改为**四项全从 shell 现读**：排序/方向走 `GetSort`/`GetSortKey`，分组走 `GetGroupKey`（内置四档映射下标、任意键留 -1 由小结字符串表达），档位走 `GetViewMode` + `viewmode::ModeIndexFor(fvm, iconPx)`（`FVM_THUMBNAIL` 一档三用，按像素最接近匹配） | 菜单打勾从此回答"现在是什么"，不再说谎；`tests/view_modes_test.cpp` 覆盖反查 |
+| **D3** 复核后不成立 | **状态栏窄窗丢弃顺序** | 审计原记"`Seg_Date` 有动作却最先消失"，但现行 `kDropOrder = {Seg_Type, Seg_Eye, Seg_Disk, Seg_Size, Seg_Date}` 是**第一个丢 Seg_Type**（唯一无点击动作的段），`Seg_Date` 最后才丢 —— 已符合"无动作的先丢" | 原描述与实际代码顺序相反，无需改动；保留记录避免下次重复排查 |
+| **D4** ⚠️ 已缓解 | **`ShellView::ApplyNavPaneWanted` 隐藏后留空位** | 原只 `InvalidateRect`（只重画不重排）。现隐藏/显示后用当前 client rect 再调一次 `browser_->SetRect(nullptr, rc)`，迫使 IExplorerBrowser 重排框架子窗口；尺寸不变故不闪烁 | 比单纯重画更接近正解；是否完全收起空位需用户界面复核（shell 框架内部布局不透明） |
 | **D5** | **`GetPaneState` 的 `EPS_FORCE` 与采样值自压** | `CapturePreviewPaneState` 采回来的 `previewPaneWanted_` 与 `EPS_FORCE` 压进去的值是同一个变量 | 采样值没有权威来源，真实状态可能被自己覆盖 |
 | **D6** | **导航窗格/预览窗格状态时序竞争** | `CapturePreviewPaneBeforeNavigation` / `Sink::OnNavigationPending` / `ShellView::SetVisible` 三处各自采样 | 采样点不一致时最终值取决于哪条路径先到 |
-| **D7** | **`ShowStatusMenu` 两处「静默吞掉」** | `src/app_commands.cpp`：`if (data < 0) return;` 在 `data==100/101` 判断**之后**又出现一次；段勾选逻辑把菜单 `data` 直接当段下标 | 依赖"菜单 action 号 0..8 与 100/101 不冲突"这一**隐式约定**，没有枚举保护。对比 `NavBar::SegCmd` 用枚举（头注释明写"用枚举而不是裸 int"）—— 同一工程内两种做法不一致 |
+| **D7** ✅ 已修 | **`ShowStatusMenu` 两处「静默吞掉」** | 删掉冗余的第二次 `if (data<0) return`，把 100/101 提成 `enum StatusAction { kCopyPath, kHideStatusBar }`，越界 `data >= Seg_Count` 一律不当段处理 | 动作号与段下标的分离从隐式约定变成显式枚举，与 `NavBar::SegCmd` 同一做法 |
 | **D8** | **`Theme::dark` 默认值 `true`** | `src/theme.h` 成员默认值 `dark = true`，只有 `Theme::Init` 里才 `dark = SystemIsDark()` | 任何在 `Init` 之前读 `theme_.dark` 的路径（如 `ApplyDarkTitleBar`）会拿到错的"深色" |
-| **D9** | **`ViewSort` 方向落盘有洞** | `App::ViewSort` 成功后才写配置，方向从 `GetSort` **读回**；若 `GetSort` 返回 false（用户按了 4 个键之外的列），`s.sortAscending` **保留旧值** | 配置里的排序方向可能与视图实际方向相反 |
+| **D9** ✅ 已修 | **`ViewSort` 方向落盘有洞** | 原成功后用 `GetSort` 读回方向，任意列时它返回 false → 方向不落盘。现改用 `GetSortKey`（任意列都成立）读方向 | 配置方向不再与视图实际方向相反 |
 
 ### 4.2 显示层缺失
 
@@ -227,9 +227,9 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 
 1. ✅ 详情列自定义（`IColumnManager`）—— `shell_columns` + 三条命令 + 视图菜单入口；`tests/shell_columns_test.cpp` 覆盖列 id 往返
 2. ✅ `Ctrl+滚轮` 缩放 + 视图菜单离散档位（`view.zoom` / `view.zoom.set` / `view.zoom.choose`；`tests/view_modes_test.cpp` 钳制边界）
-3. 「排序方式 / 分组依据」二级菜单（`popup_list` 加子菜单层）
-4. 排序/分组维度放开到任意属性（现在硬限死 4 个 `PROPERTYKEY`）
-5. 修复 D2/D3/D4/D7/D9 这几个显示状态不同步与丢弃顺序问题
+3. ✅ 「排序方式 / 分组依据」二级菜单 —— 父层两项带 chevron 显示当前值与方向，子层列四档并可直接翻转方向；用下钻式而非横向 flyout（`popup_list` 是 `SetCapture` 单模态循环，真 flyout 要重构捕获模型，波及所有下拉）
+4. ✅ 排序/分组维度放开到任意属性 —— 新增 `view.sort.bykey` / `view.group.bykey`（收 `{GUID}:pid`，与 `view.columns.list` 同格式）+ `view.props.list` 给机器一份可抄的属性表；底层 `SetSortByKey`/`SetGroupByKey` 复用 IFolderView2，state 快照加 `sortKey`/`groupKey` 回读供自断言。旧 0..3 档位命令保留为快捷方式，不制造双真相
+5. ✅ 显示状态同步 —— D2（档位/排序/分组/方向全从 shell 现读 + `ModeIndexFor` 反查）、D7（状态菜单动作号改枚举）、D9（方向读回走 `GetSortKey`）；D3 复核后不成立（现行丢弃顺序已把无动作的段先丢）；D4 缓解（`SetRect` 迫使重排，是否完全收起需 UI 复核）。D5/D6/D8 未列本批（需真实 UI 采样点验证，属另一轮）
 
 ---
 

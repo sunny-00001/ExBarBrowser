@@ -64,6 +64,8 @@ std::wstring StateToJson(const StateSnapshot& s) {
     // 这几个字段各自对应一条命令，只有写没有读时调用方无法确认改没改成。
     v.Set(L"sortMode", json::Value::MakeInt(s.sortMode));
     v.Set(L"groupBy", json::Value::MakeInt(s.groupBy));
+    v.Set(L"sortKey", Str(s.sortKey));
+    v.Set(L"groupKey", Str(s.groupKey));
     v.Set(L"bookmarkBarVisible", json::Value::MakeBool(s.bookmarkBarVisible));
     v.Set(L"navPaneVisible", json::Value::MakeBool(s.navPaneVisible));
     v.Set(L"previewPaneVisible", json::Value::MakeBool(s.previewPaneVisible));

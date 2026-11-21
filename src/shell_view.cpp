@@ -1053,8 +1053,17 @@ void ShellView::ApplyNavPaneWanted() {
             opts = static_cast<EXPLORER_BROWSER_OPTIONS>(opts & ~EBO_SHOWFRAMES);
         browser_->SetOptions(opts);
     }
-    // 窗格占位变了，让 shell 视图重新算布局
-    if (container_) InvalidateRect(container_, nullptr, TRUE);
+    // 窗格占位变了，必须让 shell **重新算布局**，不是只重画：
+    // 单纯 InvalidateRect 只重画像素，导航树隐藏后留下的空位还在（D4）。
+    // 用当前尺寸重设一次 browser 矩形，IExplorerBrowser 会重新排框架子窗口，
+    // 把内容区扩展到原导航窗格的位置。尺寸不变 => 不会闪烁/不改外部布局。
+    if (container_) {
+        RECT rc{};
+        if (GetClientRect(container_, &rc)) {
+            InvalidateRect(container_, nullptr, TRUE);
+            if (browser_) browser_->SetRect(nullptr, rc);
+        }
+    }
 }
 
 bool ShellView::NavPaneVisible() const {

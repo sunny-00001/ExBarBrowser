@@ -35,10 +35,17 @@ std::wstring BuildCommandLine(const std::wstring& program,
 // 返回 false 表示**进程没能启动**（err 给原因）；起来了但退出码非 0 仍返回 true，
 // 退出码在 code 里 —— "跑失败"和"跑不起来"是两回事，调用方要分开报。
 //
+// overflow（可为 nullptr）：输出是否**因为超过 kMaxOutputBytes 而被截断**。
+//
+// 【为什么必须报出来】截断后的输出看起来和完整的输出**一模一样** ——
+// 调用方无法分辨"这就是全部"与"后面还有"。对 diff 这种"拿来看全貌"的用途，
+// 静默截断就是假绿：审阅者以为看完了。所以截断必须能报给上层，由上层如实标记。
+//
 // 输出上限 kMaxOutputBytes：超了截断并**主动断开管道**，否则子进程会卡在
 // 满管道上写不动，我们又在等它退出 —— 死锁。
 bool RunCapture(const std::wstring& program, const std::vector<std::wstring>& args,
-                const std::wstring& cwd, int* code, std::wstring* output, std::wstring* err);
+                const std::wstring& cwd, int* code, std::wstring* output, std::wstring* err,
+                bool* overflow = nullptr);
 
 // 带**硬超时**的版本：到点就把**整棵进程树**杀掉，并置 timedOut=true。
 //
@@ -57,9 +64,11 @@ bool RunCapture(const std::wstring& program, const std::vector<std::wstring>& ar
 // timeoutMs = 0 表示不限时（保持旧行为）。
 // timedOut（可为 nullptr）告诉你这次是不是被超时干掉的 ——
 // "被超时杀掉"与"跑失败了"是两回事，调用方要分开报。
+// overflow（可为 nullptr）告诉你输出是不是**因为超过上限而被截断**了（见上）。
 bool RunCaptureTimeout(const std::wstring& program, const std::vector<std::wstring>& args,
                        const std::wstring& cwd, unsigned long long timeoutMs,
-                       int* code, std::wstring* output, std::wstring* err, bool* timedOut);
+                       int* code, std::wstring* output, std::wstring* err, bool* timedOut,
+                       bool* overflow = nullptr);
 
 // 输出上限（字节）。截断时保留**头部与尾部**：
 // 编译错误既可能出现在前面（第一处报错），也可能出现在后面（汇总），

@@ -99,16 +99,19 @@ std::wstring BuildCommandLine(const std::wstring& program,
 }
 
 bool RunCapture(const std::wstring& program, const std::vector<std::wstring>& args,
-                const std::wstring& cwd, int* code, std::wstring* output, std::wstring* err) {
-    return RunCaptureTimeout(program, args, cwd, 0, code, output, err, nullptr);
+                const std::wstring& cwd, int* code, std::wstring* output, std::wstring* err,
+                bool* overflow) {
+    return RunCaptureTimeout(program, args, cwd, 0, code, output, err, nullptr, overflow);
 }
 
 bool RunCaptureTimeout(const std::wstring& program, const std::vector<std::wstring>& args,
                        const std::wstring& cwd, unsigned long long timeoutMs,
-                       int* code, std::wstring* output, std::wstring* err, bool* timedOut) {
+                       int* code, std::wstring* output, std::wstring* err, bool* timedOut,
+                       bool* overflow) {
     if (code) *code = -1;
     if (output) output->clear();
     if (timedOut) *timedOut = false;
+    if (overflow) *overflow = false;
 
     SECURITY_ATTRIBUTES sa;
     sa.nLength = sizeof(sa);
@@ -288,6 +291,12 @@ bool RunCaptureTimeout(const std::wstring& program, const std::vector<std::wstri
     if (output) {
         std::lock_guard<std::mutex> lk(shared->mu);
         *output = str::FromUtf8(shared->bytes);
+    }
+    // 截断要如实报出去：被截掉的输出与"本来就这么长"**看起来完全一样**，
+    // 上层分辨不出来 —— 对"拿来看全貌"的用途（diff、编译日志）就是假绿。
+    if (overflow) {
+        std::lock_guard<std::mutex> lk(shared->mu);
+        *overflow = shared->overflow;
     }
     return true;
 }

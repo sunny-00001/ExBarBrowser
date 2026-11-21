@@ -43,6 +43,10 @@ public:
         int sort = -1;    // 0..3（-1 = 未知）
         int group = -1;   // 0..3
         bool ascending = true;
+        // 任意属性排序/分组时，int 档位表达不了真实列；父菜单小结改用这两个
+        // 从 shell 现读的 {GUID}:pid 字符串（D2/D9）。空 = 无/未知。
+        std::wstring sortKey;
+        std::wstring groupKey;
     };
     using ViewStateFn = std::function<ViewState()>;
     // 面包屑段右键菜单的动作号。用枚举而不是裸 int：App 侧要 switch 它，

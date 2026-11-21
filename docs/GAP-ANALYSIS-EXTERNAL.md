@@ -1,8 +1,8 @@
 ---
 status: current
-baseline: 2026-11-22（第五轮全面比对：文档逐条 vs 代码实测）
-method: 全网检索（2026-11-21）+ 本仓代码实测 + 文档全部条目逐条重验
-上一版: 2026-11-21 第四轮
+baseline: 2026-11-22（第七轮：并发会话合流 + 判据抗重构）
+method: 全网检索（2026-11-21）+ 本仓代码实测 + 文档全部条目逐条重验 + P0-9 代码修复 + 提交前复核
+上一版: 2026-11-22 第六轮（第 1 档收口 + 文档状态标签）
 ---
 
 # 外部对标与缺口报告（第五轮全面比对）：人机协作 / AI 操作软件 / 自我迭代
@@ -20,6 +20,18 @@ method: 全网检索（2026-11-21）+ 本仓代码实测 + 文档全部条目逐
 >
 > **⚠️ 读本文前先看 §0.0**：§0–§4 是**发现过程的历史记录**，其"证据/后果"列描述的是
 > **发现当时的状态**，不是当前状态。凡条目已修，以 §0.0 的逐条比对表与 §7.1.1 为准。
+>
+> **第六轮修订（2026-11-22）**：①§4 每条标题现已加**状态标签**（✅已修/⏳部分/❌未修），
+> 标题仍是发现当时的原话以便追溯，但**当前状态一律以标签与 §0.0.1 为准**；
+> ②P0-9 已修（`dev.diff` + `changedFiles` 的 mtime/SHA-256 全部落地，见 §6 修订记录）；
+> ③命令表基线 184→185（新增 `dev.diff`）。數字漂移的根治仍是 P2-4：以校验器实时导出为准。
+>
+> **第七轮修订（2026-11-22 提交前复核）**：①并发会话把 `dev.diff` 从 `dev_tools.cpp` 的
+> `std::wstring Diff()` 重构成独立引擎 `src/dev_diff.{h,cpp}`（`devdiff::Report Compute`），
+> 补齐未跟踪文件 / patch 合成 / 截断标记——实现**更强**，非回退；同步新增
+> `view.sort.bykey`/`view.group.bykey`（P3-4 任意属性排序/分组）。②第 21 项判据从"绑函数名/路径"
+> 改为**绑行为**（`Report Compute` + `devdiff::Compute` 调用 + 字段结构），避免实现重构即假失败。
+> ③实测基线 185/176/144 → **188/179/147**；`check_commands` / `check_ai_meta` 25 项全绿。
 
 ---
 
@@ -28,9 +40,10 @@ method: 全网检索（2026-11-21）+ 本仓代码实测 + 文档全部条目逐
 > 本轮把文档**全部条目**（P0×13 / P1×9 / P2×10 / A×13 / B×15 / C×12 / D×6 / E×2 / N×7）
 > 逐条与当前代码比对。只写**结论 + 实测证据**；历史论证保留在原条目。
 >
-> **实测基线**：命令表 **184** 条 / 已实现 **175** / AI 暴露 **143**；`check_ai_meta` **25** 项；
-> `check_commands` 三方一致；`check_components` **FAIL 2 条**（行数欠账 + 评估面过期）。
-> 对比第三轮基线（173/165/140/22 项）——期间命令表涨了 11 条、检查涨了 3 项。
+> **实测基线（第七轮）**：命令表 **188** 条 / 已实现 **179** / AI 暴露 **147**；`check_ai_meta` **25** 项；
+> `check_commands` 三方一致；`check_components` **FAIL**（评估面过期 8 项，需人工重签，见 §7.2）。
+> 第六轮基线 185/176/144；第五轮 184/175/143（新增 `dev.diff`）；第三轮 173/165/140。
+> 对比第三轮——期间命令表涨了 15 条、检查涨了 3 项。**数字漂移本身是 P2-4**：以校验器实时导出为准。
 
 ### 0.0.1 错误清单逐条状态（P0/P1/P2）
 
@@ -44,7 +57,7 @@ method: 全网检索（2026-11-21）+ 本仓代码实测 + 文档全部条目逐
 | **P0-6** | 拒绝不进审计 | **✅ 已修** | `data/audit.jsonl` 规范 JSONL，`AuditRejected` + 拒绝路径全覆盖 |
 | **P0-7** | 清单可自签 | **✅ 已修** | `--human-confirm` + `selfSeal`（C++/Python 交叉验证一致）+ git 信任层 |
 | **P0-8** | 清单未入库 | **✅ 已修** | `git ls-files` 已跟踪；当前 `M ` 已暂存 |
-| **P0-9** | 改写完全不可见 | **⏳ 部分** | `dev.snapshot` 已带 `files[]`（path/saved/tracked/bytes/reason）+ `snapshotId`；**仍无** `dev.diff`、无 mtime/SHA-256 |
+| **P0-9** | 改写完全不可见 | **✅ 已修（第六轮）** | `dev.diff`（只读观测，含 files[]+SHA-256+mtime+增删行+patch）+ `dev.snapshot.files[]` 增 mtime/sha256；`check_ai_meta` 第 21 项加 6 条机械判据；`AI_ONLY_QUERIES` 登记；单测锁形状 |
 | **P0-10** | 7 种真人输入判成机器 | **✅ 已修** | `ActorKind{Human,Ai}` + 9 个工厂；`fromMachine()` 改判 `kind==Ai` |
 | **P0-11** | 同义命令两套 Effects | **✅ 已修** | `kEffect*` 具名常量；第 24 项逐项比对 10 组配对 |
 | **P0-12** | 路径未归一化 | **✅ 已修** | `pathutil::ToShellPath()` 全项目收口；**残留**：无机械规则（新入口仍可能漏） |
@@ -69,14 +82,15 @@ method: 全网检索（2026-11-21）+ 本仓代码实测 + 文档全部条目逐
 | **P2-9** | 事件无 traceId/turn/step | **❌ 未修** | `ai_events.cpp` 无这些字段；`ai_server` 不读 `_meta` |
 | **P2-10** | 死规则 | **✅ 已修** | `check_components` 输出无死规则提示 |
 
-**小计**：P0 11 已修 / 1 部分（P0-9）/ 1 残留（P0-12）；P1 4 已修 / 4 未修 / 1 撤回；P2 3 已修 / 2 部分 / 5 未修。
+**小计（第六轮修订后）**：P0 **12 已修 / 1 残留（P0-12 无机械规则）**；P1 4 已修 / 4 未修 / 1 撤回；P2 3 已修 / 2 部分 / 5 未修。
+第 1 档（事故与假绿）**全部实质缺口已闭环**，仅剩 P0-12 的"机械规则"残留（属 P2 治理范畴）。
 
 ### 0.0.2 缺失清单状态（A/B/C/D/E/N）
 
 | 维度 | 已补 / 已关闭 | 未补（按 §7 档位） |
 |---|---|---|
 | **A 人机协作（13）** | **A13** actor 身份类型（=P0-10）、**A9** 部分（双门=粗粒度权限） | A1 提问通道 / A2 置信度提问 / A3 操作面板 / A4 中途接管 / A5 三阈值 / A6 plan-first / A7 checkpoint / A8 成本刹车 / A10 审批面 / A11 审批分级 / A12 选择性撤销（均第 2 档） |
-| **B AI 操作反馈（15）** | **B14** 契约单一来源（=P0-11）、**B15** blocked 细分（=P1-9/FailKind） | B1 Tasks / B2 progress / B3 resources/prompts / B4 logging / B5 三级轨迹 / B6 错误细分残留 / B7 统计 / B8 落盘事件 / B9 状态 diff / B10 多客户端 / B11 明确弃权 / B12 `_meta` / **B13 `dev.diff`**（第 2–3 档） |
+| **B AI 操作反馈（15）** | **B14** 契约单一来源（=P0-11）、**B15** blocked 细分（=P1-9/FailKind）、**B13 `dev.diff`（第六轮，=P0-9）** | B1 Tasks / B2 progress / B3 resources/prompts / B4 logging / B5 三级轨迹 / B6 错误细分残留 / B7 统计 / B8 落盘事件 / B9 状态 diff / B10 多客户端 / B11 明确弃权 / B12 `_meta`（第 2–3 档） |
 | **C 自我迭代（12）** | **C4** 已关闭（=eval_surface）；**C8** 部分（真超时+作业对象，无沙箱） | **C2b 接受器（最高）** / C1 archive / C2 打分 / C3 funnel / C5 跨会话 / C5b 污染防护 / C6 技能泛化 / C7 工具自优化 / C8b epoch / C9 域外 hold-out |
 | **D 工程治理（6）** | **D6** 未提交资产（6 个新文件全部 `git ls-files` 命中）；**D3** 部分（10 条确定式都有目标参数）；**D4** 部分（15/184 无显式别名） | D1 `check_arch.py` / D2 e2e（仅 1 条 Python + 1 个 pipe e2e）/ D5 死规则已清 |
 | **E 协议代际（2）** | — | E1 协议核停在上一代 / E2 Tasks 2026 不兼容（第 3 档） |
@@ -374,10 +388,14 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 ## 4. 错误清单
 
 > 判定标准：**本仓内部矛盾**或**可复现的缺陷**。每条附文件 + 行号，可直接落修。
+>
+> **⚠️ 状态标签说明（第六轮加）**：下面每条标题是**发现当时**的原话（保留以便追溯证据链），
+> 标题后的标签才是**当前状态**：`✅已修` = 代码已落地并有校验/单测锁住；`⏳部分` = 核心已修、残留属治理范畴；
+> `❌未修` = 缺口仍在；`N/A` = 已撤回的误判。**只读标题会得出错误结论，务必连同标签与 §0.0.1 一起看。**
 
 ### 4.1 P0 — 会导致事故或"假绿"（13 条）
 
-#### P0-1（修正）`dev.build` / `dev.test` 仍**绕过危险双门**
+#### P0-1（修正）`dev.build` / `dev.test` 仍**绕过危险双门**　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -387,7 +405,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 对标 | Skalse 等人定理：安全来自**限制 agent 能做什么**。RewardHackingAgents 实测：约 50% 的 episode 出现篡改 evaluator 的尝试 |
 | 修法 | ①`dev.build`/`dev.test` 的 `destructive` 置 1（⇒ 必须 `approve=true`）；②`approve` 的语义从布尔升级为**绑定参数哈希**（防"批一次、跑十次"）；③`openWorld=1` 已在（保留） |
 
-#### P0-2 `file.undo` 仍无可用撤销栈（严重性下调，能力缺口仍在）
+#### P0-2 `file.undo` 仍无可用撤销栈（严重性下调，能力缺口仍在）　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -397,7 +415,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 对标 | 可逆性分级（§2.1）：半可逆动作应有"异步送审 + 可逆窗口"，不可逆才强制同步闸门 —— 本仓现在**两者都做不到**，因为既没有真栈也没有分级 |
 | 修法 | 在 `fs.*` 侧自建撤销栈（同 `bmk.*` 的 `PushUndo` 口径，`src/bookmarks.cpp:741`）；同时在 `Effects` 里把 `undoable` 与 `destructive` 分开声明，让 agent 能**按可逆性**选审批强度 |
 
-#### P0-3 28 条命令声明 `undoable`，只有 13 条真有撤销栈
+#### P0-3 28 条命令声明 `undoable`，只有 13 条真有撤销栈　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -406,7 +424,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 对标 | 可选择性撤销（§2.1）：需要"撤第 N 步"，不是 LIFO-20 |
 | 修法 | 引入 `undoable` 的**机械校验**（见 P1-8）：`undoable=1` 必须在命令表里指向一个真实栈，否则置 0 或补栈 |
 
-#### P0-4 `verdict` 对 159/165 条命令恒等于 `ok`；真正无任何回执的是 45 条写类暴露命令
+#### P0-4 `verdict` 对 159/165 条命令恒等于 `ok`；真正无任何回执的是 45 条写类暴露命令　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -416,7 +434,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 对标 | Anthropic《Building Effective Agents》：evaluator-optimizer 的前提是 evaluator **真能判失败**；OSWorld 的教训是 **FAIL 是一等动作**（恒答 FAIL 得 8.13%，26 个基线里 21 个更差） |
 | 修法 | ①`check_ai_meta.py` 增加第 23 项：**所有 `readOnly=0` 且 AI 暴露的命令必须有 `assertion` 或 `outputSchema`，否则报错并列出**（豁免须写理由）；②`StateToJson()` 扩到覆盖 `tab.*` / `fs.*` / `view.*` / `nav.*`；③`view.toggle.hidden/system/extensions`、`tab.rename`、`tab.color`、`config.set` 目前**有写无读** |
 
-#### P0-5 `dev.rollback` 不可逆，而文档指引的 `dev.snapshot` 不保存内容
+#### P0-5 `dev.rollback` 不可逆，而文档指引的 `dev.snapshot` 不保存内容　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -425,7 +443,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 对标 | Cursor checkpoint：存的是**内容**不是 diff 摘要；"每次 diff 的完整审计"是沙箱不可协商项 |
 | 修法 | ①`dev.snapshot` 真正落盘（写 `snapshot/<ts>/` 保存改动文件副本），返回可 restore 的 `snapshotId`；②`dev.rollback` 增加 `snapshotId` 参数；③description 中写明"不可逆"与"需先快照" |
 
-#### P0-6 危险拒绝 / `bad_args` / `schema_invalid` **不进审计**
+#### P0-6 危险拒绝 / `bad_args` / `schema_invalid` **不进审计**　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -434,7 +452,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 对标 | Darwin Gödel Machine 的 archive 提供**可追溯 lineage**；客观激励 hacks 之所以能被发现，前提是**日志完整** |
 | 修法 | 把审计下沉到 `ai_api.cpp` 的**统一出口**：所有早退路径写一条 `actor=ai ok=0 code=<10 类机器码>`，并在 `CommandBus::Audit` 签名上补 `errorCode` 字段 |
 
-#### P0-7【本轮新增】评估面清单可被 agent **自己重签** —— `eval_surface` 的最大洞
+#### P0-7【本轮新增】评估面清单可被 agent **自己重签** —— `eval_surface` 的最大洞　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -444,7 +462,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 对标 | "贪心接受 = p-hacking"综述的结论：**评分实现对提议者隐藏**，只暴露分数与轨迹；**发现的利用一律按"候选失败"计**；RQGM 的做法是 **epoch 内评估器完全冻结**，只在带锚的 epoch 边界由人提升 |
 | 修法 | ①**签发权与改写权分离**：清单的 SHA-256 上限值不写在仓库里，而写在**仓库外**的受信位置（如 `%LOCALAPPDATA%` 或用户自己的签名文件），或由 git tag / 签名提交承载；②清单文件本身纳入 `PROTECTED_FILES`（自指保护）；③重签必须走**人可见的交互**（例如弹出确认窗写明"你正在放宽判据"），AI 通道**不得**触发重签；④引入 **epoch 模型**：评估面在一个 epoch 内冻结，跨 epoch 的提升需要锚数据集 + 人签字（RQGM 口径），比"永久锁死"更可持续 |
 
-#### P0-8【本轮新增】`data/eval-surface.json` **根本没入库** → "可追溯"承诺当前是假的
+#### P0-8【本轮新增】`data/eval-surface.json` **根本没入库** → "可追溯"承诺当前是假的　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -452,7 +470,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 后果 | ①`src/eval_surface.h:32` 承诺"签发记录进 git，可追溯" —— **当前不成立**；②`dev.rollback` 用 `git checkout --` 回滚，**回滚不了未入库的清单**；③谁在什么时候放宽了判据，**git 里查不到**；④换机器/CI 上清单不存在 → `eval_surface::Check()` 返回 `ok=false` → `dev.build`/`dev.test` **直接拒绝启动**（这是 fail-closed，设计正确，但会让 CI 一开始就红） |
 | 修法 | `git add data/eval-surface.json` 并把它纳入 `PROTECTED_FILES`；同时在 `gen_eval_baseline.py` 里加自检：清单必须已被 git 跟踪（`git ls-files --error-unmatch`），否则拒绝签发 |
 
-#### P0-9 自我迭代的"改"这一步**完全在信任边界之外**
+#### P0-9 自我迭代的"改"这一步**完全在信任边界之外**　`✅已修（第六轮）`
 
 | 项 | 内容 |
 |---|---|
@@ -463,7 +481,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 修法 | ①**不新增写文件命令**，改为**观测**：`dev.snapshot` 增加 `changedFiles`（含 mtime + SHA-256）让 agent 与人都能对比"上一轮到现在改了哪些文件"；②新增 `dev.diff`（返回 `git diff` 的结构化结果）作为审计与人工审阅的**唯一视图**；③`eval_surface` 的受保护目录从 `tests/`+`tools/` 扩展到**关键源码**（如 `src/commands.cpp`、`src/ai_api.cpp`、`src/commands.h`）—— 这些正是"判据"的一部分：改软 `check_ai_meta.py` 里的豁免名单即可绕过断言覆盖率检查 |
 
 
-#### P0-10【本轮新增】`fromMachine()` 把 7 种**真人输入**判成"机器" —— 人机判据整体失真
+#### P0-10【本轮新增】`fromMachine()` 把 7 种**真人输入**判成"机器" —— 人机判据整体失真　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -474,7 +492,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 对标 | Amershi 2019「细粒度反馈与控制」；**显式身份是一切的前提** —— 审计、分级审批、信任增长曲线都必须先答对"这次是谁做的"；OTel 轨迹要求记"谁批的、何时批的" |
 | 修法 | ①`actor` 从 `const wchar_t*` 升级为**带分类的类型**（`enum class ActorKind { Human, Ai, Scheduler }` + 可读名字），每个调用点显式声明；②`fromMachine()` 改判 `kind == Ai`；③`check_components.py` 增加规则：**禁止新增 actor 字符串字面量**（必须走枚举/工厂），否则下次又会漏一个 —— 这条比修 8 个调用点更重要，因为**漏一个就等于整条防线失效**；④迁移期先止血：把 `ui/key/mouse/seq/drop/palette/sysmenu` 显式列入 Human 白名单 |
 
-#### P0-11【本轮新增】同义命令的元数据分两套，且**暴露给 AI 的那份是错的那份**
+#### P0-11【本轮新增】同义命令的元数据分两套，且**暴露给 AI 的那份是错的那份**　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -484,7 +502,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 对标 | AGENTS.md §1.3 唯一来源原则（颜色/字号/品牌串"只有一个来源"）—— 风险元数据也该只有**一个**来源；`Effects` 是声明式契约，**契约不能因入口不同而变** |
 | 修法 | ①`fs.*` 与 `file.*` 共用**同一份 `Effects`**（在 `commands.cpp` 里定义常量 `kEffectsFsDelete` 供两条命令引用），或②让 `fs.*` 成为 `file.*` 的**别名**（同 `CmdId`，用 `legacyName` 机制），从根上消灭第二份声明；③`check_ai_meta.py` 增加第 25 项：**配对同名操作的 `Effects` 必须一致**（脚本维护一张 `fs.X ↔ file.X` 配对表） |
 
-#### P0-12【第四轮新增】外部路径没归一化 —— 同一份输入，导航能吃、`fs.*` 不能吃，还报一个**错的错**
+#### P0-12【第四轮新增】外部路径没归一化 —— 同一份输入，导航能吃、`fs.*` 不能吃，还报一个**错的错**　`✅已修（残留：无机械规则）`
 
 | 项 | 内容 |
 |---|---|
@@ -496,7 +514,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 已修的部分 | 新增 `pathutil::ToShellPath()`（`src/path_util.cpp:35`）作为**全项目唯一收口**：正斜杠→反斜杠、折叠连续分隔符、去尾分隔符；`::` / `shell:` 原样放行。`src/shell_view.cpp:419` 改为调同一份；`src/shell_ops.cpp:164,1130`、`src/shell_ops_path.cpp:15,16,44,77`（撤销栈按路径的那组）、`src/app_commands_fs.cpp` 的 10 条 `fs.*`（8 处调用点）、`src/app_commands.cpp:288-289` 的 `file.copy.to` / `file.move.to` 全部接上。批量版 `pathutil::ToShellPaths()`（`src/path_util.cpp:50`）避免调用点自己写循环漏项 |
 | 剩余缺口 | `check_components.py` **还没有**"外部路径必须过 `ToShellPath`"的机械规则 —— 规则目前靠人记住，新入口仍可能再漏一次。补法：静态扫 `fs.*` / `file.*` handler 里的 `args.Str(L"path"/L"target"/L"targets")` 直接流向 shell API 的调用点，命中即报错 |
 
-#### P0-13【第四轮新增】撤销失败会"改撤别的操作" —— 撤 A 失败，结果撤了 B
+#### P0-13【第四轮新增】撤销失败会"改撤别的操作" —— 撤 A 失败，结果撤了 B　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -510,7 +528,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 
 ### 4.2 P1 — 闭环能力 / 协议正确性（9 条，含 3 条新增）
 
-#### P1-1 MCP 停在 `2024-11-05`，且外部参照系已跨代
+#### P1-1 MCP 停在 `2024-11-05`，且外部参照系已跨代　`❌未修`
 
 | 项 | 内容 |
 |---|---|
@@ -519,7 +537,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | **本轮的关键修正** | **"补 `notifications/initialized`"这条修法在 2026 语义下已作废** —— MCP `2026-07-28` 用 SEP-2575 **删除了整个握手**。同时 Tasks 在 2026 变成**扩展**且与 2025-11-25 **线不兼容**（SEP-2663）。按 2026 语义，正确路径是：`resultType` + `inputRequests` + `requestState` 的 **Multi Round-Trip Requests**（SEP-2322） |
 | 修法 | ①短期：`protocolVersion` 提升到 `"2025-11-25"` 并做**向下兼容**（客户端报老版本仍握手成功）；②补 `ping`（最小代价，跨代都还在）；③`tools.listChanged` 置 `true` 并在命令表变更时发通知（当前恒 `false` ⇒ **永不通知**，工具表变更对客户端不可见）；④中期：按 2026 语义实现 `resultType:"input_required"` + `inputRequests` + 不透明 `requestState`（服务端"问人"的唯一正确形态）；⑤`requestState` 必须按**不可信输入**处理（MCP Ruby SDK 用 AES-256-GCM 封缄 + TTL + 绑定原始 method/target/args） |
 
-#### P1-2 单管道单连接，阻断多 Agent 并行
+#### P1-2 单管道单连接，阻断多 Agent 并行　`❌未修`
 
 | 项 | 内容 |
 |---|---|
@@ -528,7 +546,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 对标 | MCP 2026-07-28 的整个方向就是**协议核无状态**：任何请求可落在任何实例上，不需要粘性会话。**本仓的"单会话"假设正是被这一代规范淘汰的那一代设计** |
 | 修法 | `nMaxInstances` 提到 16，ServeLoop 改为**多实例轮询/多线程**；或每个连接一个线程 |
 
-#### P1-3 审计缺参数哈希 / 耗时 / 审批标记 / sessionId，且不是 `audit.jsonl`；更根本的是**actor 没有身份类型**
+#### P1-3 审计缺参数哈希 / 耗时 / 审批标记 / sessionId，且不是 `audit.jsonl`；更根本的是**actor 没有身份类型**　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -538,7 +556,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 对标 | OTel 轨迹要求记**决策点**与**人动作**（请求过审批、**谁**批的、何时）；LLM API 侧 request-id / usage / latency 是标配；DGM archive 依赖**可追溯 lineage** |
 | 修法 | ①先修 P0-10 的 actor 类型；②审计行改 JSONL：`ts / actorKind / actorName / cmd / argsHash / args / ok / verdict / errorCode / durationMs / approvedBy / sessionId / pid / traceId`；③保留旧文本行兼容或提供迁移脚本 |
 
-#### P1-4 `CommandDef` 无 `description` 字段，违反自订 C7
+#### P1-4 `CommandDef` 无 `description` 字段，违反自订 C7　`❌未修`
 
 | 项 | 内容 |
 |---|---|
@@ -546,7 +564,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 后果 | 工具描述**无法表达"何时不要用"** —— 而这正是 Amershi 2019 的核心建议与 Anthropic《Writing effective tools for agents》明确点名的失败模式 |
 | 修法 | `CommandDef` 加 `description`（中文短句，≤80 字），`Describe()` 优先取显式值，缺失时回退自动拼接并**在 check_ai_meta 里报缺失**；给每条 `aiExposed` 命令补"何时不要用" |
 
-#### P1-5【上一版撤回】`openWorld` 的"自相矛盾"**不存在**
+#### P1-5【上一版撤回】`openWorld` 的"自相矛盾"**不存在**　`N/A（误判已撤回）`
 
 | 项 | 内容 |
 |---|---|
@@ -554,7 +572,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 本轮实测 | **上一版读错了字段序**。`src/commands.h:237-241` 的顺序是 `readOnly / destructive / idempotent / openWorld / undoable`；`Effects{0, 0, 1, 1, 0, Scope::App}` 中第 4 位是 `openWorld=1`。`dev.build`、`dev.test`、`dev.snapshot`、`dev.rollback` 的 `openWorld` **全部为 1**。源码注释也写明："openWorld=1：它会真的起外部进程（python build_fast.py）" |
 | 处置 | **撤回这条错误**。但它不是白错 —— 它暴露了 P2-5（裸 0/1 聚合初始化）已经造成了一次**真实误读**，因此 P2-5 升级为 P1-6 |
 
-#### P1-6（升级）`Effects` 用裸 `0/1` 聚合初始化 → 已造成一次真实误读
+#### P1-6（升级）`Effects` 用裸 `0/1` 聚合初始化 → 已造成一次真实误读　`❌未修`
 
 | 项 | 内容 |
 |---|---|
@@ -564,7 +582,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 后果 | 5 个 bool 里任一写错 = 风险等级错一档（`destructive` 写错 = 双门失效），编译器不报错，静态检查也不查（`check_ai_meta.py` 第 6 项只查 `readOnly×destructive` 互斥与 `destructive+CurrentTab` 无目标参数，**不查位序**） |
 | 修法 | ①`Effects` 改**具名聚合初始化**（C++20 designated initializers：`Effects{.destructive=true, .openWorld=true}`）或改用带构造函数的 `EffectSet`；②`check_ai_meta.py` 增加位序自检；③至少把 `destructive` 与 `openWorld` 抽成两个**独立具名布尔**，从表里直接看出来 |
 
-#### P1-7【本轮新增】`dev.build` / `dev.test` 的"编译即执行代码"没有任何闸门
+#### P1-7【本轮新增】`dev.build` / `dev.test` 的"编译即执行代码"没有任何闸门　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -573,7 +591,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 对标 | 沙箱不可协商项：隔离容器默认无网、工作区作用域文件访问、**硬超时**、命令过滤。本仓**零隔离** |
 | 修法 | ①`dev.build`/`dev.test` 的 `destructive` 置 1；②`dev.test` 增加**硬超时**（当前 `kJobTimeoutMs=30min` 只是**淘汰**用的，不是**杀死**用的 —— 见 P2-3）；③提供**可选**的低权限子进程执行路径（本仓 `dev_proc` 已走 `CreateProcess`，加 `CREATE_SUSPENDED` + 限制 token 是可行方向） |
 
-#### P1-8（新增自 P0-3 修法）`undoable` / `destructive` 缺少机械校验
+#### P1-8（新增自 P0-3 修法）`undoable` / `destructive` 缺少机械校验　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -581,7 +599,7 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 后果 | `undoable=1` 的 28 条里 15 条是**声明与实现不符**；这类不一致在静态检查全绿的情况下长期存活 |
 | 修法 | `check_ai_meta.py` 增加第 24 项：`undoable=1` 的命令必须能映射到一个真实撤销栈（可维护一张 `CmdId → 栈实现` 的显式表；映射不到的置 0） |
 
-#### P1-9【第四轮新增】失败原因被压成一句废话 —— 真因只存在于 HRESULT 里，却被丢掉
+#### P1-9【第四轮新增】失败原因被压成一句废话 —— 真因只存在于 HRESULT 里，却被丢掉　`✅已修`
 
 | 项 | 内容 |
 |---|---|
@@ -745,12 +763,12 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 
 ### 7.1.1 落地进度（截至 2026-11-21 第四轮）
 
-> **2026-11-22 第五轮全面比对校正**：下表是**第四轮当时**的进度快照，部分条目已再次推进。
+> **2026-11-22 第五轮全面比对校正（第六轮已进一步修订）**：下表是**第四轮当时**的进度快照，部分条目已再次推进。
 > 当前权威状态见 **§0.0.1**。两处需要修正的旧表述：
-> ①下表"第 6 序 P0-9 ⏳"——`dev.snapshot` 现已带 `files[]` + `snapshotId`，**仍缺** `dev.diff`；
+> ①下表"第 6 序 P0-9 ⏳"——第六轮已修完（`dev.diff` + `changedFiles` 的 mtime/SHA-256 全部落地）；
 > ②下表"第 3 序 P0-1 ✅"已由本轮实测复核确认（`destructive=1` + 测试锁死）。
 
-第 1 档（事故与假绿）**已基本走完**：
+第 1 档（事故与假绿）**全部实质缺口已闭环**：P0-1~P0-11、P0-13 已修，P0-12 主体已修（残留"机械规则"属 P2 治理）。
 
 | 序 | 项 | 状态 | 落地物 |
 |---|---|---|---|
@@ -763,15 +781,14 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 | 3 | P0-1 / P1-7 `dev.*` 双门 | ✅ | `dev.build` / `dev.test` 的 `destructive` 置 1（编译即执行代码，必须进危险双门 `aiAllowDanger` + approve） |
 | 4 | P0-4 回执覆盖 + blocked 细分 | ✅ | 回执：自断言 6→91 条、豁免机制落地，第 23 项门槛把"既无断言也无豁免"钉成 0 条；细分：`blocked` 拆成 `precondition_unmet` / `lock_conflict` / `canceled_by_user` / `not_supported`（+ `timed_out`），类别由调用点经 `FailKind` 声明、`FailKindCode` 唯一映射，第 22 项加判据"`blocked` 不许退化回一锅端" |
 | 5 | P0-6 审计完整 + JSONL | ✅ | `src/audit_log.{h,cpp}`：`audit.jsonl`（规范格式，一行一条 JSON，按 2 MB 轮转）+ `audit.log`（旧文本镜像），两者由**同一个** Record 渲染，不会对不上；补参数哈希 / 耗时 / 审批标记 |
-| 6 | P0-9 改写可见性 | ⏳ | 部分：`dev.snapshot` 现在带 `files[]`（路径 + 字节数 + 是否已跟踪）；仍缺结构化 `dev.diff` |
+| 6 | P0-9 改写可见性 | ✅ | 第六轮收口：`dev.diff`（只读观测，files[] 带 path/mtime/sha256/added/deleted + patch/stagedPatch/裁剪标记）+ `dev.snapshot.files[]` 增 mtime/sha256；`check_ai_meta` 第 21 项加 6 条机械判据、`AI_ONLY_QUERIES` 登记、单测锁形状 |
 | — | **P0-2 追加**：`search.find` 契约不成立 | ✅ | `aiExposed=false` + `outputSchema=nullptr`；第 10 项加判据 c"未实现的命令不得声明 outputSchema" |
 
 第 2 档（闭环能力）与第 3 档（协议与工程治理）**尚未开始**。
 
-**下一步建议**：按 §7.1 序号继续做 **6（P0-9 改写可见性 → 结构化 `dev.diff`）→ 第 2 档的 7（接受器 + archive + 打分 + funnel）**。
-理由：第 1 档的 3/4/5 已全部走完 —— "让系统能说真话"这一段收口了；
-剩下 6 是第 1 档最后一条（改写可见性），而第 2 档的 archive/接受器/打分
-必须建立在可信的轨迹与判据之上 —— 判据不可信时，打分只是给假绿量体温。
+**下一步建议**：第 1 档已全部走完（含 P0-9），按 §7.1 序号进入 **第 2 档的 7（接受器 + archive + 打分 + funnel）**。
+理由：第 1 档 13 条 P0 全部收口 —— "让系统能说真话"这一段完整闭环；
+第 2 档的 archive/接受器/打分必须建立在可信的轨迹与判据之上 —— 判据不可信时，打分只是给假绿量体温。
 
 ### 7.2 一句话结论（2026-11-22 第五轮全面比对后重写）
 
@@ -783,26 +800,31 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 > 支持 N1；**RewardHackingAgents**（约 50% episode 篡改 evaluator，唯一有效防御是锁死）
 > 支持 `eval_surface` 的方向。
 >
-> **"让系统能说真话"这一段（§7.1 第 1 档）已基本收口**：13 条 P0 中 **11 条已修 / 1 条部分 / 1 条留残留**。
+> **"让系统能说真话"这一段（§7.1 第 1 档）已完整收口**：13 条 P0 中 **12 条已修 / 1 条留残留（P0-12 机械规则）**。
 > `fromMachine()` 误判真人（→ `ActorKind`）、同义命令两套元数据（→ 具名 Effects 常量）、
 > 清单未入库可自签（→ 入库 + selfSeal + `--human-confirm`）、`dev.*` 绕过双门（→ `destructive=1`）、
-> 假 `undoable`（→ 22 条全真栈 + 第 25 项）、假绿 `verdict`（→ 90 条断言 + 53 条带理由豁免）、
-> 拒绝不进审计（→ `audit.jsonl` 统一出口）—— **全部关闭**。
+> 假 `undoable`（→ 22 条全真栈 + 第 25 项）、假绿 `verdict`（→ 91 条断言 + 53 条带理由豁免）、
+> 拒绝不进审计（→ `audit.jsonl` 统一出口）、**改写不可见（→ 第六轮 `dev.diff` + mtime/SHA-256）**
+> —— **全部关闭**。
 >
 > **仍然在的（下一步按此顺序）**：
-> ① **P0-9**：`dev.snapshot` 已能看见"改了哪些文件"，但**没有结构化 `dev.diff`**，也没有
-> `changedFiles` 的 mtime/SHA-256 —— agent 改源码那一步仍不可逐行审阅（第 1 档最后一条）；
+> ① **C2b 接受器 + C1/C2**：没有任何机制判定"这次改动更好" —— 在此之前 archive 只会越滚越脏（第 2 档第一优先）；
 > ② **P1-1/E1**：协议核停在 `2024-11-05`，下一代的 `server/discover` / `_meta` / MRTR 全不认识 ——
 > 这是"能不能被下一代客户端用"的问题，不是功能多寡（第 3 档，可与第 2 档并行启动）；
-> ③ **C2b 接受器 + C1/C2**：没有任何机制判定"这次改动更好" —— 在此之前 archive 只会越滚越脏；
-> ④ **第 1 档残留**：P0-12 的路径归一化无机械规则、P1-6 的 `Effects` 裸 0/1 位序无自检、
-> P2-2 的 `g_jobs` 跨重启即丢。
+> ③ **第一档残留的机械规则**：P0-12 的路径归一化无机械规则、P1-6 的 `Effects` 裸 0/1 位序无自检（属 P2 治理）；
+> ④ **P2 遗留**：`g_jobs` 跨重启即丢（P2-2）、事件不落盘（P2-1）、`check_arch.py` 不存在（P2-6）。
 >
-> **当前先决卡点（非 P0，但阻塞 `dev.build`/`dev.test`）**：评估面清单过期（7 项未重签）导致
-> `check_components` 退出码 1，双门会 fail-closed 拒绝启动。需**由人**跑一次
-> `python tools/gen_eval_baseline.py --human-confirm` 并 `git add`——AI 通道不得触发（P0-7 的设计意图）。
+> **当前先决卡点（非 P0，但阻塞 `dev.build`/`dev.test`）**：评估面清单过期导致
+> `check_components` 退出码 1，双门会 fail-closed 拒绝启动。过期来源有两部分：
+> ①第五轮已记录的 7 项（并发会话新增/修改的测试与工具）；
+> ②第六轮修 P0-9 时**必然**改动了 `tools/check_ai_meta.py`（加判据 21）与 `tests/dev_tools_test.cpp`（加形状断言）——
+> 这两处正是评估面保护对象，只要改判据就必须重签，这是 P0-7 守卫的**预期行为**，不是回归。
+> 处理：**由人**核对改动无误后跑 `python tools/gen_eval_baseline.py --human-confirm` 并 `git add`——
+> AI 通道不得触发（P0-7 的设计意图）。
+> 另有 6 个历史文件超 500 行记账基线（app.cpp / app_commands.cpp / app_commands_files.cpp /
+> commands.cpp / commands.h / shell_view.cpp）——或拆文件、或由人授权销账，均不属本轮自动修复范围。
 >
-> 结论：**骨架可信了，但闭环还没合上**。第 1 档只剩 P0-9（改写可见性）；
+> 结论：**骨架可信了，闭环也合上了（第 1 档）**。13 条 P0 全部实质收口，
 > 第 2 档从"接受器"开始，第 3 档协议升级可并行。**在 C2b 之前谈"自我迭代"仍为时过早**。
 
 ---
@@ -889,11 +911,11 @@ src/ 151 文件 33351 行 | tests/ 48 文件 6518 行 | exe 33.2 MB
 > 这正是 P2-4 的结论——本报告自己已经历 173 → 175 → 184 三次漂移。
 
 ```bash
-# 基线三检（第五轮实测）
-python tools/check_commands.py     # 命令表 184 / 已实现 175 / 处理器 175 / keymap 105，三方一致
-python tools/check_ai_meta.py       # 25 项全过（新增第 23/24/25 项：断言门槛 / 配对 Effects / undoable 真栈）
-python tools/check_components.py    # FAIL 2 条：单文件 ≤500 行（10 个欠账）+ 评估面过期（未重签）
-python tools/gen_eval_baseline.py --check   # 7 项待重签 → dev.build/dev.test fail-closed
+# 基线三检（第七轮实测；旧数字见版本记录，勿据此处推断当前状态）
+python tools/check_commands.py     # 命令表 188 / 已实现 179 / 处理器 179 / keymap 105，三方一致
+python tools/check_ai_meta.py       # 25 项全过（第 21 项已改绑行为，抗 dev.diff 重构）
+python tools/check_components.py    # FAIL：评估面过期 8 项（未重签，需人工 --human-confirm）
+python tools/gen_eval_baseline.py --check   # 8 项待重签 → dev.build/dev.test fail-closed
 
 # 【第三轮新增方法】用校验器自己的解析器导元数据，而不是正则抽字段
 python -c "
@@ -955,6 +977,8 @@ git ls-files data/eval-surface.json                   # 空
 | **v3** | **2026-11-21 22:23** | **换轴复核：从"目标↓比"改为"声明↔校验器↔实现"三角比对**<br>①**新增 P0-10**：`fromMachine()` 把 7 种真人输入判成机器（8 种 actor 里 7 种是错的）—— 本轮唯一真正的新 P0，且是身份类机制的总根因<br>②**新增 P0-11**：同义命令 `fs.*` / `file.*` 元数据分两套，暴露给 AI 的那份更乐观<br>③**修正 P0-4 的口径**：v2 说"几乎全部不可验"说过头了；实际 45 条无可验，另有 89 条靠 `outputSchema`<br>④新增 1 条 A（A13 actor 身份）、2 条 B（B14 契约多源头、B15 错误未细分）<br>⑤新增维度 E（协议代际）与 6 条自我迭代 2026 实证（PACE / RewardHackingAgents / EVOMAL / RQGM / RRSI / 2609.04170）<br>⑥**修正自身的两处误判**：撤回对 `fs.copy` schema 的怀疑（实测正确）；撤回"Ctrl+Z 会触发 bmk.undo 被拒"的推断（Ctrl+Z 绑的是 `file.undo`）<br>⑦方法升级：改用 `check_ai_meta.parse_commands()` 导元数据，不再正则抽字段 |
 | **v4** | **2026-11-21 深夜** | **按 §7.1 逐项改造**：13 条 P0 中 11 条落地（详见 §7.1.1）；端到端跑又挖出 F-1 路径归一化（P0-12）、F-2 撤销误撤（P0-13）、F-3 失败原因细分（P1-9），均当场修掉；确立"`dev.*` 双门 + 评估面 selfSeal + `ActorKind`"三件套 |
 | **v5** | **2026-11-22 06:55** | **全面比对（本次）**：把文档全部条目（P0×13 / P1×9 / P2×10 / A×13 / B×15 / C×12 / D×6 / E×2 / N×7）逐条与代码实测比对，新增 **§0.0 权威状态层**：<br>①P0 11 已修 / 1 部分（P0-9 `dev.diff`）/ 1 残留（P0-12 机械规则）；P1 4 已修 / 4 未修 / 1 撤回；P2 3 已修 / 2 部分 / 5 未修<br>②**发现文档自身两处硬伤**：§4 各条目仍用发现当时的"仍…"语气、§7.2 结论三句与当前代码相反；数字从 173→175→184 二次漂移（P2-4 传导到报告自身）<br>③**重写 §7.2**：以当前状态为准，明确"骨架可信但闭环未合"，卡点是评估面清单过期（7 项）与 C2b 接受器缺位<br>④**撤回自身一处新误判**：`search.find` 的 `schema=True` 是**输入** schema，`outputSchema` 仍为 `nullptr`，文档原述正确<br>⑤实测基线更新：命令表 **184** / 已实现 175 / AI 暴露 143 / `check_ai_meta` 25 项 / `check_components` FAIL 2 条 |
+| **v6** | **2026-11-22 07:10** | **按"文档问题修文档、代码问题修代码"收口第 1 档**：<br>①**修代码 P0-9**：新增 `dev.diff` 只读观测命令（CmdId 追加末尾，命令表 185 条），返回 files[]（path/mtime/sha256/added/deleted）+ patch/stagedPatch + 裁剪标记；`dev.snapshot.files[]` 补 mtime/sha256；`file_hash`/`dev_snapshot` 复用同一份 SHA-256 实现；`check_ai_meta` 第 21 项加 6 条机械判据、`AI_ONLY_QUERIES` 登记、单测锁形状；编译+链接+单测+25 项校验全过<br>②**修文档**：§4 全部 22 条标题加状态标签（✅/⏳/❌/N/A），消除"只读标题得错误结论"的硬伤；§0.0.1 P0-9 改已修、基线更新 185/176/144；§0.0.2 B13 关闭；§7.1.1/§7.2 同步为"第 1 档完整收口"<br>③**未擅动的两处人类决策卡点**：评估面清单过期（需人跑 `--human-confirm`）、6 文件超行数记账（需拆文件或授权销账）——详见 §7.2 |
+| **v7** | **2026-11-22 07:16** | **提交前复核：并发会话合流 + 判据抗重构**：<br>①**清理多余构建**：删 3 个临时 exe + 8 个旧 obj 目录（约 740MB，git 均未跟踪、非当前编译目标）；保留 `obj/`、`ExBarBrowser.exe`、占用中的 `ExBarBrowser.new.exe`<br>②**并发会话合流**：`dev.diff` 从 `dev_tools.cpp` 重构为独立引擎 `src/dev_diff.{h,cpp}`（`devdiff::Report Compute`，补未跟踪文件/patch 合成/截断标记）；新增 `view.sort.bykey`/`view.group.bykey`（P3-4）。实现更强，非回退<br>③**修判据脆弱性**：第 21 项从"绑函数名/文件路径"（`std::wstring Diff()`/`FileMtimeOf`）改为**绑行为**（`Report Compute` + `devdiff::Compute` 调用 + 字段结构），消除重构即假失败<br>④**基线更新**：185/176/144 → **188/179/147**；`check_commands` / `check_ai_meta` 25 项全绿；`check_components` 仅剩评估面过期 8 项（需人工重签，AI 不触发） |
 
 
 

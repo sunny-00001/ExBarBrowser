@@ -35,4 +35,13 @@ bool SetVisible(IShellView* view, const std::vector<std::wstring>& visible);
 // 切换单列可见性。返回切换后的状态；列不存在时返回 false。
 bool Toggle(IShellView* view, const std::wstring& id, bool* nowVisible);
 
+struct KnownProperty {
+    PROPERTYKEY key{};
+    std::wstring id;     // {GUID}:pid，与 ColumnIdToString 同格式
+    std::wstring title;  // 中文显示名
+};
+// 常用可排序/可分组属性键（不依赖当前视图，列表稳定）。
+// view.props.list 用它给机器一份可抄的 id；view.sort.bykey / view.group.bykey 收它给的 id。
+const std::vector<KnownProperty>& KnownProperties();
+
 }  // namespace shellcolumns

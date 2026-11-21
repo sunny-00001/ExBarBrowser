@@ -187,6 +187,9 @@ AI_ONLY_QUERIES = {
     'tool.job.get': '返回作业状态与结果；作业状态不在界面上（进度窗口只在跑的那一瞬存在）',
     'tool.job.cancel': '取消正在跑的作业；人在进度窗口上按"取消"才是有人可见反馈的等价路径',
     'tool.job.list': '列出全部作业；界面上没有作业列表',
+    # P0-9：dev.diff 人也能在命令面板触发，但结构化 diff 只写进审计/返回值，
+    # 面板本身不渲染 patch —— 它的价值就是给 agent 审阅"这一轮改了什么"。
+    'dev.diff': '返回工作树的结构化 diff（文件+SHA-256+mtime+patch）；命令面板不渲染 patch，结果给 agent 审阅',
 }
 
 # 同义命令配对：两条命令做的是**同一件事**，走的是同一批底层实现
@@ -1670,9 +1673,57 @@ def main():
     dev_handlers = (ROOT / 'src/app_commands_dev.cpp').read_text(encoding='utf-8', errors='replace')
     palette = _body_of(app_commands, 'void App::ShowCommandPalette()')
     dev_missing = []
+    # P0-9：dev.diff 与 changedFiles 的 mtime/sha256 是"改写可见性"的一对判据 ——
+    # 缺任何一个，agent 改源码那一步就又回到信任边界之外。
+    diff_cpp = (ROOT / 'src/dev_tools.cpp').read_text(encoding='utf-8', errors='replace')
+    # 判据绑"行为/结构"，不绑函数名与文件位置：Diff 引擎一度在 dev_tools.cpp
+    # （std::wstring Diff()/CurrentChanges()），后被抽到独立的 dev_diff.cpp
+    # （devdiff::Report Compute）——实现更完整，但写死旧符号的判据会假失败。
+    diff_engine = (ROOT / 'src/dev_diff.cpp').read_text(encoding='utf-8', errors='replace')
+    diff_engine_h = (ROOT / 'src/dev_diff.h').read_text(encoding='utf-8', errors='replace')
+    # 解析层已拆到独立文件（src/dev_diff_parse.cpp）——判据绑"行为"不绑"文件位置"，
+    # 所以两个文件的内容合起来看。
+    diff_parse = (ROOT / 'src/dev_diff_parse.cpp').read_text(encoding='utf-8', errors='replace')
+    diff_all = diff_engine + diff_parse
+    snap_cpp = (ROOT / 'src/dev_snapshot.cpp').read_text(encoding='utf-8', errors='replace')
+    snap_h = (ROOT / 'src/dev_snapshot.h').read_text(encoding='utf-8', errors='replace')
     for label, cond in [
-        ('五条开发命令齐全', all(('L"dev.' + n + '"') in table for n in
-                              ('snapshot', 'build', 'test', 'job', 'rollback'))),
+        ('dev.diff 命令已注册', 'L"dev.diff"' in table),
+        ('dev.diff 有带结果的处理器', 'regR(CmdId::DevDiff' in dev_handlers),
+        ('dev.diff 只读不改工作树', 'Effects{1, 0, 1, 1, 0' in table),
+        ('diff 引擎独立且只读（Compute 返回结构化 Report）',
+         'Report Compute' in diff_engine and 'devdiff::Compute' in diff_cpp),
+        ('changedFiles 带 mtime 与 sha256',
+         'std::wstring mtime' in snap_h and 'std::wstring sha256' in snap_h
+         and 'f.mtime = ' in snap_cpp and 'f.sha256 = ' in snap_cpp
+         and 'std::wstring mtime' in diff_engine_h and 'std::wstring sha256' in diff_engine_h),
+        ('diff 输出含 sha256/mtime/status/hunks 字段',
+         'L"sha256"' in diff_cpp and 'L"mtime"' in diff_cpp
+         and 'L"status"' in diff_cpp and 'L"hunks"' in diff_cpp),
+        # P0-9 重写后的四条行为判据 —— 少任何一条，"agent 改了什么"就又漏一块：
+        #   ① 未跟踪的新文件：git diff 的所有变体都看不见它，必须单独取，
+        #      否则 agent 写出来的新文件一个字都看不到（还报 added=0，像"没改"）。
+        #   ② 清单与内容同源：清单（name-status）、行数（numstat）、内容（patch）
+        #      都得出自 diff HEAD。混用 git status（索引口径）会让重命名判定对不上。
+        #   ③ 截断必须上报：输出被 256 KB 上限截断后看起来和完整的一样 ——
+        #      不报出来就是假绿（审阅者以为看全了）。
+        #   ④ 纯重命名时 git 不发 ---/+++ 行，要从 rename to/from 取路径，
+        #      否则那一项会被整个丢掉。
+        ('未跟踪的新文件单独取（git diff 看不见它）',
+         '"--others"' in diff_engine and '"--exclude-standard"' in diff_engine),
+        ('清单与内容同源（相对 HEAD，不用索引口径）',
+         '"--name-status"' in diff_engine and '"--numstat"' in diff_engine),
+        ('输出截断必须上报（不静默截断）',
+         'patchOverflow' in diff_engine and 'nameStatusOverflow' in diff_engine),
+        ('纯重命名也能取到路径（git 不发 ---/+++ 行）',
+         'rename to ' in diff_all and 'rename from ' in diff_all),
+        ('diff 有内容级单测（在真仓库里造场景）',
+         (ROOT / 'tests/dev_diff_test.cpp').exists()),
+    ]:
+        if not cond: dev_missing.append(label)
+    for label, cond in [
+        ('六条开发命令齐全', all(('L"dev.' + n + '"') in table for n in
+                              ('snapshot', 'diff', 'build', 'test', 'job', 'rollback'))),
         ('耗时作业异步且发完成事件', 'std::thread' in dev_cpp and 'dev.job.done' in dev_cpp),
         ('全部用带结果的注册', dev_handlers.count('regR(CmdId::Dev') >= 5),
         ('破坏性命令人侧要确认', 'MB_YESNO' in palette and 'effects.destructive' in palette),

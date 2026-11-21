@@ -183,7 +183,17 @@
     "NavTreeExpandAll",
     "ToolJobGet",
     "ToolJobCancel",
-    "ToolJobList"
+    "ToolJobList",
+    "ViewColumnsList",
+    "ViewColumnsSet",
+    "ViewColumnsChoose",
+    "ViewZoom",
+    "ViewZoomSet",
+    "ViewZoomChoose",
+    "DevDiff",
+    "ViewSortByKey",
+    "ViewGroupByKey",
+    "ViewPropsList"
   ],
   "legacyNames": [
     "AiStop",
@@ -344,10 +354,19 @@
     "ToolJobGet",
     "ToolJobList",
     "UnmapDrive",
+    "ViewColumnsChoose",
+    "ViewColumnsList",
+    "ViewColumnsSet",
     "ViewGroup",
+    "ViewGroupByKey",
     "ViewMode",
     "ViewNext",
     "ViewPrev",
-    "ViewSort"
+    "ViewPropsList",
+    "ViewSort",
+    "ViewSortByKey",
+    "ViewZoom",
+    "ViewZoomChoose",
+    "ViewZoomSet"
   ]
 }

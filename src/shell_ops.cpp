@@ -569,21 +569,9 @@ bool SelectIndex(IShellView* view, int index) {
     return SUCCEEDED(hr);
 }
 
-bool SetSort(IShellView* view, int mode, int ascending) {
+bool SetSortByKey(IShellView* view, const PROPERTYKEY& key, int ascending) {
     ComPtr<IFolderView2> fv2 = GetFv2(view);
     if (!fv2) return false;
-    const PROPERTYKEY* key = &PKEY_ItemNameDisplay;
-    switch (mode) {
-    case 1: key = &PKEY_DateModified; break;
-    case 2: key = &PKEY_ItemTypeText; break;
-    case 3: key = &PKEY_Size; break;
-    default: break;
-    }
-    // 方向：
-    //   ascending == 0/1 → 用调用方给的方向（启动恢复用，必须可指定）
-    //   ascending == -1  → 与 explorer 一致：对同一列再次排序 = 反向
-    // 不区分这两种语义的话，"启动时恢复上次的降序"就无法表达 —— 只会被当成
-    // "再点一次"，反而把方向翻转回去。
     int dir = 1;
     if (ascending >= 0) {
         dir = ascending ? 1 : -1;
@@ -593,17 +581,26 @@ bool SetSort(IShellView* view, int mode, int ascending) {
             cols = std::min(cols, 8);
             std::vector<SORTCOLUMN> cur(static_cast<size_t>(cols));
             if (SUCCEEDED(fv2->GetSortColumns(cur.data(), cols)) &&
-                IsEqualGUID(cur[0].propkey.fmtid, key->fmtid) && cur[0].propkey.pid == key->pid &&
+                IsEqualGUID(cur[0].propkey.fmtid, key.fmtid) && cur[0].propkey.pid == key.pid &&
                 cur[0].direction > 0)
                 dir = -1;
         }
     }
     SORTCOLUMN col{};
-    col.propkey = *key;
+    col.propkey = key;
     col.direction = dir;
-    // 不再调 view->Refresh()：SetSortColumns 本身就会让视图重排，
-    // 额外 Refresh 在大目录上等于重新枚举一遍（实测几百 ms 卡顿）。
     return SUCCEEDED(fv2->SetSortColumns(&col, 1));
+}
+
+bool SetSort(IShellView* view, int mode, int ascending) {
+    const PROPERTYKEY* key = &PKEY_ItemNameDisplay;
+    switch (mode) {
+    case 1: key = &PKEY_DateModified; break;
+    case 2: key = &PKEY_ItemTypeText; break;
+    case 3: key = &PKEY_Size; break;
+    default: break;
+    }
+    return SetSortByKey(view, *key, ascending);
 }
 
 bool GetSort(IShellView* view, int* mode, bool* ascending) {
@@ -631,6 +628,36 @@ bool GetSort(IShellView* view, int* mode, bool* ascending) {
 
     if (mode) *mode = m;
     if (ascending) *ascending = cur[0].direction >= 0;
+    return true;
+}
+
+bool GetSortKey(IShellView* view, PROPERTYKEY* out, bool* ascending) {
+    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    if (!fv2) return false;
+    int cols = 0;
+    if (FAILED(fv2->GetSortColumnCount(&cols)) || cols <= 0) return false;
+    cols = std::min(cols, 8);
+    std::vector<SORTCOLUMN> cur(static_cast<size_t>(cols));
+    int got = cols;
+    if (FAILED(fv2->GetSortColumns(cur.data(), got)) || got <= 0) return false;
+    if (out) *out = cur[0].propkey;
+    if (ascending) *ascending = cur[0].direction >= 0;
+    return true;
+}
+
+bool SetGroupByKey(IShellView* view, const PROPERTYKEY& key) {
+    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    if (!fv2) return false;
+    return SUCCEEDED(fv2->SetGroupBy(key, TRUE));
+}
+
+bool GetGroupKey(IShellView* view, PROPERTYKEY* out) {
+    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    if (!fv2) return false;
+    BOOL asc = FALSE;
+    PROPERTYKEY k{};
+    if (FAILED(fv2->GetGroupBy(&k, &asc))) return false;
+    if (out) *out = k;
     return true;
 }
 

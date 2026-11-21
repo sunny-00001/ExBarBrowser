@@ -203,6 +203,24 @@ bool IsDirectory(const std::wstring& path) {
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
+// 文件最后写入时间（十进制 Unix 秒）。
+//
+// FILETIME 是 1601-01-01 起、100ns 为单位；Unix 是 1970-01-01 起、秒为单位，
+// 两者相差 11644473600 秒 —— 这个偏移是常数，直接减即可，不用换算成 SYSTEMTIME
+// 再换回来（那一步会引入时区误差：FILETIME 本身是 UTC，不是本地时间）。
+std::wstring FileMtimeUnix(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA attr{};
+    if (!GetFileAttributesExW(ToExtended(path).c_str(), GetFileExInfoStandard, &attr))
+        return L"";
+    ULARGE_INTEGER ticks;
+    ticks.LowPart = attr.ftLastWriteTime.dwLowDateTime;
+    ticks.HighPart = attr.ftLastWriteTime.dwHighDateTime;
+    constexpr unsigned long long kEpochOffset = 116444736000000000ULL;  // 秒 → 100ns
+    constexpr unsigned long long kTicksPerSecond = 10000000ULL;
+    if (ticks.QuadPart < kEpochOffset) return L"";
+    return std::to_wstring((ticks.QuadPart - kEpochOffset) / kTicksPerSecond);
+}
+
 bool EnsureDir(const std::wstring& path) {
     if (path.empty()) return false;
     DWORD attr = GetFileAttributesW(ToExtended(path).c_str());

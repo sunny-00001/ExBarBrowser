@@ -6,6 +6,7 @@
 #include "folder_tree.h"
 #include "icon_resolve.h"
 #include "menu.h"
+#include "shell_columns.h"   // 属性键显示名（父菜单小结）
 #include "popup_toggle.h"
 #include "text_file.h"
 #include "view_modes.h"
@@ -43,6 +44,13 @@ static const ico::IconId kSortGlyphs[kSortGroupCount] = {
     ico::IconId::Page, ico::IconId::Calendar, ico::IconId::Tag, ico::IconId::HardDrive};
 static const ico::IconId kGroupGlyphs[kSortGroupCount] = {
     ico::IconId::Close, ico::IconId::Tag, ico::IconId::Calendar, ico::IconId::HardDrive};
+
+// 任意属性键的中文显示名（父菜单小结用）。查不到返回空串 —— 调用方退回档位标签。
+std::wstring PropertyTitle(const std::wstring& id) {
+    for (const auto& p : shellcolumns::KnownProperties())
+        if (p.id == id) return p.title;
+    return L"";
+}
 
 }  // namespace
 
@@ -405,13 +413,21 @@ void NavBar::ShowViewMenu(POINT screen) {
     // 父层只显示当前值小结 + 右向 chevron，具体四档在子菜单里选 —— 平铺时
     // 视图档位 + 4 排序 + 4 分组共 16 行，一屏放不下还混在一起。
     // 小结里保留方向（升序/降序），这样不展开也知道当前排序方向。
+    // 小结优先用从 shell 现读的属性键中文名（能表达任意列，D2）；
+    // 键为空/查不到时退回 0..3 档位标签。方向总是在小结里显示。
     std::wstring sortHint = L"排序方式";
-    if (vs.sort >= 0 && vs.sort < kSortGroupCount) {
+    std::wstring sortTitle = PropertyTitle(vs.sortKey);
+    if (!sortTitle.empty())
+        sortHint += L"：" + sortTitle;
+    else if (vs.sort >= 0 && vs.sort < kSortGroupCount)
         sortHint += L"：" + std::wstring(kSortLabels[vs.sort]);
+    if (!sortTitle.empty() || (vs.sort >= 0 && vs.sort < kSortGroupCount))
         sortHint += vs.ascending ? L"（升序）" : L"（降序）";
-    }
     std::wstring groupHint = L"分组依据";
-    if (vs.group >= 0 && vs.group < kSortGroupCount)
+    std::wstring groupTitle = PropertyTitle(vs.groupKey);
+    if (!groupTitle.empty())
+        groupHint += L"：" + groupTitle;
+    else if (vs.group >= 0 && vs.group < kSortGroupCount)
         groupHint += L"：" + std::wstring(kGroupLabels[vs.group]);
     menu.Separator();
     menu.AddPath(sortHint, L"", 1100, /*folder=*/true);   // 右端 chevron = 有下一级

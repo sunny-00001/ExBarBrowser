@@ -58,6 +58,19 @@ bool GetJob(const std::wstring& id, Job* out);
 // 返回 JSON 文本。失败不编造数据，给 error 字段。
 std::wstring Snapshot();
 
+// 当前工作树的**结构化 diff**（只读：不落盘、不改工作树、不建快照）。
+//
+// onlyPath 非空时只看这一个文件（仓库内相对路径）；空 = 全部改动文件。
+//
+// 返回 false 表示**读不出来**（仓库不可用 / git 起不来），err 给原因 ——
+// 这种情况下**不**返回一个"看起来没改动"的空 diff：那是假绿。
+// 成功时 out 是结构化结果：按文件分组，每组带状态（untracked/added/modified/
+// deleted/renamed）、增删行数、SHA-256、mtime 与逐行 hunk。
+//
+// 【为什么不落盘】审阅"agent 改了什么"不该有副作用：落盘的是 dev.snapshot
+// 的职责，而它会覆盖工作树内容（双门要过）。
+bool Diff(const std::wstring& onlyPath, json::Value* out, std::wstring* err);
+
 // 【P0-9：结构化 diff，只读】返回 JSON 文本：
 //   head / files[]（path/status/tracked/bytes/mtime/sha256/added/deleted）
 //   / patch / stagedPatch / patchTruncated / stat / error

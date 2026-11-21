@@ -8,6 +8,9 @@
 
 #include "common.h"
 
+// PROPERTYKEY 需要 objbase/wtypes 的前置声明，common.h 已包含它们。
+#include <propkey.h>
+
 namespace shellops {
 
 bool CopySelection(IShellView* view, bool cut);
@@ -178,6 +181,17 @@ bool SetSort(IShellView* view, int mode, int ascending = -1);
 // ascending 为当前实际方向。
 bool GetSort(IShellView* view, int* mode, bool* ascending);
 bool SetGroup(IShellView* view, int mode);  // 0 无 1 类型 2 日期 3 大小
+
+// ---- 任意属性键（P3-4：放开排序/分组维度）----
+// 属性键的**文本格式统一由 shell_columns 的 {GUID}:pid 承担**（唯一真相），
+// 本层只收发二进制 PROPERTYKEY。
+// 按任意属性键排序。ascending 语义同 SetSort（>=0 指定，-1 同列反向）。
+bool SetSortByKey(IShellView* view, const PROPERTYKEY& key, int ascending = -1);
+bool SetGroupByKey(IShellView* view, const PROPERTYKEY& key);
+// 回读当前排序列的属性键（无排序列时返回 false）。
+bool GetSortKey(IShellView* view, PROPERTYKEY* out, bool* ascending);
+// 回读当前分组属性键（未分组时 key.fmtid 为 GUID_NULL）。
+bool GetGroupKey(IShellView* view, PROPERTYKEY* out);
 bool ToggleHidden(IShellView* view, int which, HWND owner);  // which: 0 hidden 1 system 2 ext
 int CycleHiddenState(IShellView* view, HWND owner);          // 返回新状态 0/1/2
 

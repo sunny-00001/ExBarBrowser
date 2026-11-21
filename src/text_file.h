@@ -49,6 +49,16 @@ bool AppendLine(const std::wstring& path, const std::string& bytes, unsigned lon
 bool Exists(const std::wstring& path);
 // 是不是目录。不存在的路径返回 false（调用方应先用 Exists 区分"不存在"与"是文件"）。
 bool IsDirectory(const std::wstring& path);
+
+// 文件最后写入时间：**十进制 Unix 秒**的字符串形态。取不到返回空串。
+//
+// 【为什么用字符串而不是整数】JSON 的 Value 只有 GetInt（32 位）——
+// Unix 秒在 2038 年就溢出；而且"取不到"与"时间是 0"必须能分开，
+// 空串正好表达"取不到"，0 表达"1970 年"（那也是真实值，不该被当成缺失）。
+//
+// 【为什么是 Unix 秒而不是本地格式串】调用方要的是**可比较**的时间戳：
+// 本地格式串在不同时区/语言下不可比，机器没法拿它判断"哪一版更新"。
+std::wstring FileMtimeUnix(const std::wstring& path);
 bool EnsureDir(const std::wstring& path);
 bool CopyFileIfMissing(const std::wstring& from, const std::wstring& to);
 

@@ -10,6 +10,8 @@
 #include "text_file.h"
 #include "mouse_rules.h"
 #include "shell_ops.h"
+#include "shell_columns.h"   // 属性键文本格式的唯一来源（{GUID}:pid）
+#include "view_modes.h"      // ModeIndexFor：从 shell 现读档位（D2）
 #include "view_stats.h"
 
 namespace {
@@ -143,23 +145,57 @@ void App::OnCreate() {
     navBar_.SetZoomFn([this](POINT at) { ShowZoomMenu(at); });
     navBar_.SetRecentFn([] { return Config::Get().s().recentPaths; });
     navBar_.SetClearHistoryFn([this] { (void)ClearHistory(); });
-    // 视图菜单打勾用：当前档位来自 viewMode_（用户偏好），排序/分组从**视图**现读。
-    // 不从 Config 直接抄排序：用户可能在 shell 里点了列头反向排序，
-    // 那时配置里的 sortAscending 是旧的 —— 菜单会打勾到错误的方向上。
+    // 视图菜单打勾用：档位/排序/分组/方向**全部**从 shell 视图现读（D2）。
+    // 以前 mode 抄 viewMode_（用户意图）、group/sort 抄 Config（上次落盘），
+    // 于是用户在 shell 里点列头、改分组、换视图档位后，菜单打勾停在旧值 ——
+    // 用户看到的是"点了没反应"，其实是菜单在说谎。配置只是"意图"，
+    // 菜单要回答"现在是什么"，两者不能混用（R19 同源）。
     navBar_.SetViewStateFn([this] {
         NavBar::ViewState vs;
-        vs.mode = viewMode_;
+        vs.mode = viewMode_;       // 读不到视图时退回用户意图，不留空白
         vs.sort = Config::Get().s().sortMode;
         vs.group = Config::Get().s().groupBy;
         vs.ascending = Config::Get().s().sortAscending;
-        if (IShellView* v = ActiveView()) {
-            int gotMode = -1;
-            bool gotAsc = true;
-            if (shellops::GetSort(v, &gotMode, &gotAsc)) {
-                if (gotMode >= 0 && gotMode < 4) vs.sort = gotMode;
-                vs.ascending = gotAsc;
+        if (Tab* t = Active(); t && t->view) {
+            if (IShellView* v = t->view->CurrentView()) {
+                int gotMode = -1;
+                bool gotAsc = true;
+                if (shellops::GetSort(v, &gotMode, &gotAsc)) {
+                    if (gotMode >= 0 && gotMode < 4) vs.sort = gotMode;
+                    vs.ascending = gotAsc;
+                }
+                // 任意列排序 GetSort 认不出 → 保留配置档位；菜单小结用 sortKey
+                // （下面现读）显示真实列，不给用户看一个打在错误项上的勾。
+                PROPERTYKEY sk{};
+                if (shellops::GetSortKey(v, &sk, &gotAsc)) {
+                    vs.sortKey = shellcolumns::ColumnIdToString(sk);
+                    vs.ascending = gotAsc;
+                }
+                // 分组同理：内置四档映射到下标，任意键留 -1（小结用 groupKey）。
+                PROPERTYKEY gk{};
+                if (shellops::GetGroupKey(v, &gk) && gk.fmtid != GUID_NULL) {
+                    vs.groupKey = shellcolumns::ColumnIdToString(gk);
+                    const std::wstring id = vs.groupKey;
+                    for (int i = 0; i < 4; ++i) {
+                        PROPERTYKEY known{};
+                        // 内置档位与 shell_ops::SetGroup 的 0..3 映射同源。
+                        const PROPERTYKEY* p = nullptr;
+                        if (i == 1) p = &PKEY_ItemTypeText;
+                        else if (i == 2) p = &PKEY_DateModified;
+                        else if (i == 3) p = &PKEY_Size;
+                        if (p && shellcolumns::ColumnIdFromString(id, &known) &&
+                            IsEqualPropertyKey(known, *p)) { vs.group = i; break; }
+                    }
+                } else {
+                    vs.group = 0;  // shell 明确说没分组
+                }
+                v->Release();
             }
-            v->Release();
+            int fvm = 0, iconPx = 0;
+            if (t->view->GetViewMode(&fvm, &iconPx)) {
+                const int idx = viewmode::ModeIndexFor(fvm, iconPx);
+                if (idx >= 0) vs.mode = idx;
+            }
         }
         return vs;
     });
@@ -272,6 +308,19 @@ void App::OnCreate() {
         // 与命令前置同一来源（活动标签的 shell 视图），R19 同源不另存副本。
         // 选中路径走 shell 枚举（IFolderView::Items），快照带上限防响应爆炸。
         if (Tab* t = Active(); t && t->view) {
+            // 排序/分组键从 shell 现读（R19 同源）：bykey 命令改的是 shell 的
+            // PROPERTYKEY，回读必须读同一处，不能从 int 档位反推 —— 任意属性
+            // 本来就不在 0..3 里，反推会得到空的假值。
+            if (IShellView* v = t->view->CurrentView()) {
+                PROPERTYKEY sk{};
+                bool asc = false;
+                if (shellops::GetSortKey(v, &sk, &asc))
+                    s.sortKey = shellcolumns::ColumnIdToString(sk);
+                PROPERTYKEY gk{};
+                if (shellops::GetGroupKey(v, &gk) && gk.fmtid != GUID_NULL)
+                    s.groupKey = shellcolumns::ColumnIdToString(gk);
+                v->Release();
+            }
             constexpr unsigned kSelectionCap = 256;
             std::vector<ShellView::SelectionItem> sel;
             s.selectionCount = t->view->SelectionPaths(kSelectionCap, sel);

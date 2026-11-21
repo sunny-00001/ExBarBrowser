@@ -26,6 +26,22 @@ int main() {
     Check(!shellcolumns::ColumnIdFromString(L"{00000000-0000-0000-0000-000000000000}:abc", &out),
           "非数字 pid 被拒绝");
 
+    // P3-4：可排序属性表里的每个 id 都必须能被 bykey 命令原样解析回来 ——
+    // 否则 view.props.list 给机器一份"抄过去就报错"的清单，是假能力。
+    const auto& known = shellcolumns::KnownProperties();
+    Check(!known.empty(), "常用属性表非空");
+    bool allRoundTrip = true;
+    bool allTitled = true;
+    for (const auto& p : known) {
+        PROPERTYKEY back{};
+        if (!shellcolumns::ColumnIdFromString(p.id, &back) ||
+            !IsEqualPropertyKey(p.key, back))
+            allRoundTrip = false;
+        if (p.title.empty()) allTitled = false;
+    }
+    Check(allRoundTrip, "属性表每个 id 都能往返解析");
+    Check(allTitled, "属性表每条都有中文显示名");
+
     std::printf(g_fail ? "有失败（失败 %d 项）\n" : "全部通过\n", g_fail);
     return g_fail ? 1 : 0;
 }

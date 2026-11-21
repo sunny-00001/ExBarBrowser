@@ -614,9 +614,12 @@ void App::RegisterFileCommands() {
             changed = true;
         }
         if (IShellView* v = ActiveView()) {
-            int gotMode = -1;
+            // D9：GetSort 只认 0..3 四列，用户此前若用 view.sort.bykey 设了任意
+            // 属性列，它会返回 false → 方向落盘被跳过，配置与视图越来越偏。
+            // GetSortKey 对任意列都成立，方向读写必须走它。
+            PROPERTYKEY got{};
             bool gotAsc = true;
-            if (shellops::GetSort(v, &gotMode, &gotAsc)) {
+            if (shellops::GetSortKey(v, &got, &gotAsc)) {
                 if (s.sortAscending != gotAsc) {
                     s.sortAscending = gotAsc;
                     changed = true;
@@ -728,6 +731,67 @@ void App::RegisterFileCommands() {
     });
     reg(CmdId::ViewColumnsChoose, [this](const Args&) {
         ShowColumnMenu(navBar_.SettingsAnchor());
+        return true;
+    });
+    // P3-4：按任意属性排序/分组。key 用 shell_columns 的 {GUID}:pid（与
+    // view.columns.list / view.props.list 输出的 id 完全同格式，可直接抄）。
+    // 解析失败按 bad_args 分类 —— 机器侧拿到的是能改参数的码，不是一句中文。
+    regR(CmdId::ViewSortByKey, [this](const Args& args, json::Value* result) {
+        PROPERTYKEY key{};
+        if (!shellcolumns::ColumnIdFromString(args.Str(L"key"), &key)) {
+            CommandBus::Get().NoteFailure(L"属性键格式非法，应为 {GUID}:pid（见 view.props.list）",
+                                          FailKind::PreconditionUnmet);
+            return false;
+        }
+        int ascending = -1;
+        if (args.Has(L"ascending")) ascending = args.Bool(L"ascending", true) ? 1 : 0;
+        Tab* t = Active();
+        if (!t || !t->view || !result) return false;
+        IShellView* v = t->view->CurrentView();
+        if (!v) return false;
+        const bool ok = SUCCEEDED(shellops::SetSortByKey(v, key, ascending));
+        if (ok) {
+            // 回读真实生效值（ascending 省略时方向由 shell 推导，不能复述入参）。
+            PROPERTYKEY got{};
+            bool gotAsc = false;
+            if (shellops::GetSortKey(v, &got, &gotAsc)) {
+                result->Set(L"key", json::Value::MakeStr(shellcolumns::ColumnIdToString(got)));
+                result->Set(L"ascending", json::Value::MakeBool(gotAsc));
+            }
+        }
+        v->Release();
+        return ok;
+    });
+    regR(CmdId::ViewGroupByKey, [this](const Args& args, json::Value* result) {
+        PROPERTYKEY key{};
+        if (!shellcolumns::ColumnIdFromString(args.Str(L"key"), &key)) {
+            CommandBus::Get().NoteFailure(L"属性键格式非法，应为 {GUID}:pid（见 view.props.list）",
+                                          FailKind::PreconditionUnmet);
+            return false;
+        }
+        Tab* t = Active();
+        if (!t || !t->view || !result) return false;
+        IShellView* v = t->view->CurrentView();
+        if (!v) return false;
+        const bool ok = SUCCEEDED(shellops::SetGroupByKey(v, key));
+        if (ok) {
+            PROPERTYKEY got{};
+            if (shellops::GetGroupKey(v, &got))
+                result->Set(L"key", json::Value::MakeStr(shellcolumns::ColumnIdToString(got)));
+        }
+        v->Release();
+        return ok;
+    });
+    regR(CmdId::ViewPropsList, [this](const Args&, json::Value* result) {
+        if (!result) return false;
+        json::Value arr = json::Value::MakeArray();
+        for (const auto& p : shellcolumns::KnownProperties()) {
+            json::Value row = json::Value::MakeObject();
+            row.Set(L"id", json::Value::MakeStr(p.id));
+            row.Set(L"title", json::Value::MakeStr(p.title));
+            arr.arr.push_back(std::move(row));
+        }
+        result->Set(L"properties", std::move(arr));
         return true;
     });
     reg(CmdId::ViewZoom, [this](const Args& args) {

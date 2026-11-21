@@ -39,10 +39,9 @@ struct FileEntry {
     std::wstring sha256;   // 内容摘要（小写 hex；空文件/取不到时为空，reason 给因）
 };
 
-// 当前工作树的改动文件视图（**只读，不落盘**）。
-// 与 Create() 用同一个 ChangedFiles()，但这里只做"改了什么 + mtime + sha256"，
-// 不复制内容 —— 给 dev.diff 用：审阅一次改动不需要先存一份快照。
-std::vector<FileEntry> CurrentChanges();
+// 当前工作树的改动文件视图（**只读，不落盘**）已搬到 src/dev_diff.h ——
+// 那里还带着状态分类与逐行 hunk，是"改写可见性"的完整观测面。
+// 本文件只管"存内容"这一件事（快照与按快照还原）。
 
 // 一份快照。
 struct Snapshot {
