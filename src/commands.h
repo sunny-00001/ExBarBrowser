@@ -100,6 +100,12 @@ enum class CmdId : int {
     BmkAdd,            // {path, name?, parentId?} 添加一条（拖放/脚本/AI 的共同入口）
     BmkMove,           // {id, toId} 或 {id, toIndex}  移动（拖拽重排的结构化版本）
     BmkList,           // {parentId?}  返回书签树（**读**：其余 bmk.* 要的 id 从这里来）
+    // ---- 设置域（操作软件自身：可枚举 / 可读 / 可写 / 可回读）----
+    // 这三条是「AI 调试某个设置项」那条路的入口。没有它们，设置只能是
+    // 编译期 struct，机器侧既不知道有哪些项，也没有稳定名字去定位。
+    ConfigList,        // 列出全部设置项（key/类型/范围/当前值）
+    ConfigGet,         // {key}        读一项
+    ConfigSet,         // {key, value} 写一项（带类型与范围校验）
     BmkFocus,          // 焦点进入书签栏（->/<- 选，Enter 开，Shift+F10 菜单，Esc 退回视图）
 };
 
@@ -159,6 +165,12 @@ public:
                 if (e.IsString() && !e.str.empty()) out.push_back(e.str);
         return out;
     }
+
+    // 原样取一个参数（不转型）。给"值类型由数据决定"的命令用 ——
+    // 典型是 config.set：value 是布尔还是整数取决于 key，用 Bool/Int 取
+    // 会把"给了字符串"静默变成 0/false。返回 nullptr = 没传这个键，
+    // 与"传了空值"必须区分（前者该报参数缺失，后者该被注册表校验拒绝）。
+    const json::Value* Any(const wchar_t* key) const { return v_.Find(key); }
 
 private:
     json::Value v_;
@@ -299,6 +311,7 @@ struct CommandDef {
     // 因为它会一直绿。
     const char* assertion = nullptr;
 
+
     // 旧字段的兼容视图：把 effects 映射回三档。仅用于既有代码/AI 白名单的
     // 粗粒度判断，新代码请直接读 effects。
     Risk LegacyRisk() const {
@@ -415,6 +428,18 @@ public:
     // 于是对外只能报"执行失败"，把问题留给了猜。
     const std::wstring& lastBlockReason() const { return lastBlockReason_; }
 
+    // 由 handler 主动给出"我为什么没做成"。
+    //
+    // 前置条件拒绝（CanExecute）有 reason，可 handler 内部失败（key 不存在、
+    // 类型不符、路径为空……）以前只能 return false，原因烂在日志里，调用方
+    // 拿到的是笼统的"执行失败"。调用方因此无法决策 —— 名字打错和值超范围
+    // 该做的下一步完全不同。
+    //
+    // 约定：handler 在 return false 之前调用；Dispatch 随后把它搬到
+    // lastBlockReason_，于是 UI / AI / 审计看到的是同一句话。
+    // 返回 true 的 handler 不需要调用（残留会由下次 Dispatch 开头清空）。
+    void NoteFailure(const std::wstring& reason) { pendingReason_ = reason; }
+
 private:
     CommandBus() = default;
     bool Dispatch(CmdId id, const Args& args, json::Value* result, const wchar_t* actor);
@@ -424,4 +449,5 @@ private:
     std::vector<std::pair<CmdId, ResultHandler>> resultHandlers_;
     std::wstring last_;
     std::wstring lastBlockReason_;
+    std::wstring pendingReason_;   // handler 报的原因，本次 Dispatch 内消费
 };

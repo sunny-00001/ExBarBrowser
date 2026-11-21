@@ -394,6 +394,12 @@ void NavBar::ShowViewMenu(POINT screen) {
     for (int i = 0; i < 4; ++i)
         menu.AddChecked(kGroups[i], vs.group == i, 200 + i, kGroupGlyphs[i]);
 
+    // 「设置…」放在最下面：它是"其它可调项"的入口，与上面三组（视图/排序/分组）
+    // 不是同一层级的即时动作。动作号 900 与 0..7 / 1xx / 2xx 分开，
+    // 免得将来视图档位扩到 9 档时撞号。
+    menu.Separator();
+    menu.Add(L"设置…", 900, ico::IconId::Settings);
+
     RECT anchor = fieldRc_;
     for (const auto& b : buttons_)
         if (b.id == kView) anchor = b.rc;
@@ -404,7 +410,10 @@ void NavBar::ShowViewMenu(POINT screen) {
     opt.toggleKey = L"nav.view";
     opt.initialRow = initial;
     const int data = menu.Show(hwnd_, *theme_, at, opt);
-    if (data >= 200) {
+    if (data == 900) {
+        // 面板自己会按同一锚点重新打开，这里只把位置交出去。
+        if (onSettings_) onSettings_(at);
+    } else if (data >= 200) {
         if (onSortGroup_) onSortGroup_(1, data - 200);
     } else if (data >= 100) {
         if (onSortGroup_) onSortGroup_(0, data - 100);

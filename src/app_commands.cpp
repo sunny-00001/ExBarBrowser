@@ -27,6 +27,146 @@ std::wstring ExePath() {
     return std::wstring(buf, n);
 }
 
+// ---- 命令面板的参数收集 ----
+//
+// 面板要能触发"带必填参数"的命令，所以需要：判断有没有必填参数、以及把它们
+// 从用户输入里收集成一份合法参数对象。参数一律**从 schema 读**，不在这里硬编码
+// 任何命令知识（命令表是唯一真源）。
+
+// 解析 argsSchema（失败视为无 schema）。
+static bool ParseArgsSchema(const CommandDef& d, json::Value* schema) {
+    if (!d.argsSchema || !d.argsSchema[0]) {
+        *schema = json::Value::MakeObject();
+        return true;
+    }
+    std::wstring perr;
+    if (!json::Parse(str::FromUtf8(d.argsSchema), *schema, &perr) || !schema->IsObject()) {
+        return false;   // schema 非法是实现缺陷，面板不该静默当成"无参数"
+    }
+    return true;
+}
+
+// 是否声明了必填参数。没有 schema / 没有 required 数组 / 数组为空 → false。
+static bool HasRequiredParams(const CommandDef& d) {
+    json::Value schema;
+    if (!ParseArgsSchema(d, &schema)) return false;
+    const json::Value* req = schema.Find(L"required");
+    return req && req->IsArray() && !req->arr.empty();
+}
+
+// 把一段文本按参数类型解释成 JSON 值。
+// 失败返回 false（面板会就此取消，绝不把一个空值塞进命令）。
+static bool CoerceParam(const std::wstring& key, const std::wstring& type,
+                        const std::wstring& text, json::Value* out) {
+    std::wstring desc = str::Trim(text);
+    if (type == L"integer" || type == L"number") {
+        // 严格取整：带小数点/非数字一律拒绝，避免把 "3.7" 静默截成 3。
+        std::wstring digits = desc;
+        if (digits.empty()) return false;
+        for (auto& c : digits) {
+            if (c < L'0' || c > L'9') {
+                if (c == L'-' && digits.find(L'-') == 0 && std::count(digits.begin(),
+                                                                     digits.end(),
+                                                                     L'-') == 1)
+                    continue;
+                return false;
+            }
+        }
+        // 用 wcstoll 直接在宽字符上取值：先转 UTF-8 再 strtoll 会多一次
+        // "转换失败也不报错"的机会，而这里只有纯数字串。
+        errno = 0;
+        wchar_t* end = nullptr;
+        const long long v = std::wcstoll(digits.c_str(), &end, 10);
+        if (errno != 0 || end == digits.c_str() || (end && *end != L'\0')) return false;
+        *out = json::Value::MakeInt(static_cast<int>(v));
+        return true;
+    }
+    if (type == L"boolean") {
+        // 常见几种写法都认，但认不清就拒绝（不猜默认值 —— 猜错会让开关状态反了）。
+        const std::wstring low = str::Lower(desc);
+        if (low == L"true" || low == L"1" || low == L"yes" || low == L"是" || low == L"开") {
+            *out = json::Value::MakeBool(true);
+            return true;
+        }
+        if (low == L"false" || low == L"0" || low == L"no" || low == L"否" || low == L"关") {
+            *out = json::Value::MakeBool(false);
+            return true;
+        }
+        return false;
+    }
+    if (type == L"array") {
+        // 分号分隔的字符串数组（适合"一组路径/一组目标"的参数）。
+        json::Value arr = json::Value::MakeArray();
+        size_t start = 0;
+        while (start <= desc.size()) {
+            const size_t semi = desc.find(L';', start);
+            const std::wstring one = str::Trim(desc.substr(
+                start, semi == std::wstring::npos ? std::wstring::npos : semi - start));
+            if (!one.empty()) arr.arr.push_back(json::Value::MakeStr(one));
+            if (semi == std::wstring::npos) break;
+            start = semi + 1;
+        }
+        if (arr.arr.empty()) return false;
+        *out = arr;
+        return true;
+    }
+    // string 或未声明类型的参数（如 config.set 的 value）：保留原文。
+    *out = json::Value::MakeStr(desc);
+    return true;
+}
+
+// 交互式收集必填参数。返回 false = 用户取消或某个参数无法解析。
+// err 用于给出人可读的原因（写进日志，便于排查"面板里这条命令为什么没执行"）。
+// owner/theme 由调用方传进来：对话框要靠它们定位与配色，匿名命名空间里拿不到 App。
+static bool CollectParamsInteractive(HWND owner, const Theme& theme, const CommandDef& d,
+                                     json::Value* out, std::wstring* err) {
+    json::Value schema;
+    if (!ParseArgsSchema(d, &schema)) {
+        if (err) *err = L"参数 schema 解析失败";
+        return false;
+    }
+    const json::Value* req = schema.Find(L"required");
+    const json::Value* props = schema.Find(L"properties");
+    if (!req || !req->IsArray() || !props || !props->IsObject()) {
+        if (err) *err = L"schema 缺少 required/properties";
+        return false;
+    }
+
+    json::Value args = json::Value::MakeObject();
+    for (const auto& rkey : req->arr) {
+        if (!rkey.IsString()) continue;
+        const std::wstring key = rkey.str;
+        const json::Value* prop = props->Find(key.c_str());
+        const std::wstring type = prop ? prop->GetStr(L"type") : L"string";
+        const std::wstring desc = prop ? prop->GetStr(L"description") : key;
+
+        // 用 desc 做输入框初值/提示，标题带上命令名，用户能分清在填哪个参数。
+        std::wstring label = key;
+        if (!desc.empty()) label += L" —— " + desc;
+        std::wstring text;
+        // 数组/未声明类型的参数走"原始文本"框；其余也走文本框再按类型解释。
+        const bool raw = (type == L"array" || type.empty());
+        if (!PromptText(owner, theme, std::wstring(d.title) + L" · 参数 " + key, label,
+                        L"", &text)) {
+            return false;   // 用户取消：什么都不做，不调用命令
+        }
+
+        json::Value val;
+        if (raw && type == L"array") {
+            if (!CoerceParam(key, type, text, &val)) {
+                if (err) *err = L"参数 " + key + L" 需要分号分隔的列表";
+                return false;
+            }
+        } else if (!CoerceParam(key, type, text, &val)) {
+            if (err) *err = L"参数 " + key + L" 需要 " + type;
+            return false;
+        }
+        args.Set(key, std::move(val));
+    }
+    *out = std::move(args);
+    return true;
+}
+
 }  // namespace
 
 IShellView* App::ActiveView() {
@@ -96,6 +236,10 @@ void App::ApplyPersistedViewState(ShellView* view) {
     const Settings& s = Config::Get().s();
     const int mode = (s.viewMode >= 0 && s.viewMode < ViewModeCount()) ? s.viewMode : 3;
     view->SetViewMode(kViewModes[mode].fvm, kViewModes[mode].icon);
+    // 档位也要跟着走：viewMode_ 是"当前档位"的唯一活状态（状态栏、视图菜单、
+    // ai::State 都读它）。只改配置不改这里，表现是"视图变了、菜单还打勾在旧档"。
+    // 这条赋值在新建标签时是幂等的（值来自同一份配置），所以不必分两种调用方。
+    viewMode_ = mode;
 
     if (IShellView* sv = view->CurrentView()) {
         // 显式传方向：启动恢复不能走"再点一次反向"的交互语义，否则降序会被翻回升序。
@@ -261,17 +405,22 @@ void App::ShowStatusMenu(POINT screen) {
 }
 
 void App::ShowCommandPalette() {
+    // 面板要分两类：无必填参数的（点选即执行）与带必填参数的（选中后追问参数）。
+    //
+    // 以前是**整条跳过带参命令** —— 理由是"面板只能给空参，带参命令空参调用会静默
+    // 清空别名/颜色"。但那条判据只证明了"不能空参调用"，没证明"带参命令人不能触发"。
+    // 结果是 config.get / config.set / file.rename 这类命令在人类侧**只有 AI 能触发**，
+    // 违反 R20（人机等价）—— 面板跳过的每个带参命令，都是一条只有机器能做的动作。
+    //
+    // 正确做法：面板里**列出**带参命令，选中后按 schema **追问必填参数**（标签名/输入框），
+    // 追问够了才调用，所以绝不出现空参调用。追问失败（用户取消）就什么都不做。
     std::vector<const CommandDef*> defs;
     ui::Menu menu;
     for (const auto& d : CommandTable()) {
         if (!d.implemented) continue;
-        // 面板只能给空参。带必填参数的命令若混进来，handler 会收到空值：
-        // tab.rename 会被当成"清空别名"、tab.color 会被当成"设成无颜色"，
-        // 都是静默丢用户数据。参数命令走各自 UI（右键菜单/热键参数/AI）。
-        if (d.argsSchema && std::string(d.argsSchema).find("\"required\"") != std::string::npos)
-            continue;
         std::wstring label = std::wstring(d.title) + L"    [" + d.group + L"]";
-        // 命令面板统一用搜索字形：它表示“在这里找命令”，不假装每条命令各有图标。
+        // 带必填参数的命令标出"需参数"，让用户在点之前就知道会追问。
+        if (HasRequiredParams(d)) label += L"  (…)";
         menu.Add(label, static_cast<int>(defs.size()), ico::IconId::Search);
         defs.push_back(&d);
     }
@@ -285,7 +434,23 @@ void App::ShowCommandPalette() {
     opt.toggleKey = L"cmd.palette";
     const int idx = menu.Show(hwnd_, theme_, at, opt);
     if (idx < 0 || idx >= static_cast<int>(defs.size())) return;
-    CommandBus::Get().Invoke(defs[static_cast<size_t>(idx)]->id, Args::Empty(), L"palette");
+    const CommandDef& d = *defs[static_cast<size_t>(idx)];
+
+    // 无必填参数：直接以空参调用（与原来一致）。
+    if (!HasRequiredParams(d)) {
+        CommandBus::Get().Invoke(d.id, Args::Empty(), L"palette");
+        return;
+    }
+
+    // 有必填参数：先追问，再调用。**绝不空参调用** —— 空参会让 tab.rename 变成
+    // "清空别名"、tab.color 变成"设成无颜色"，都是静默丢用户数据。
+    json::Value args = json::Value::MakeObject();
+    std::wstring schemaErr;
+    if (!CollectParamsInteractive(hwnd_, theme_, d, &args, &schemaErr)) {
+        if (!schemaErr.empty()) LogDbg(L"[palette] %s 的参数收集失败：%s", d.name, schemaErr.c_str());
+        return;   // 用户取消/参数被拒：不调用，什么也不做
+    }
+    CommandBus::Get().Invoke(d.id, Args::FromJson(args), L"palette");
 }
 
 void App::ShowViewMenuAt() { navBar_.ShowViewMenuNow(); }

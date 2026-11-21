@@ -39,7 +39,7 @@ cd "$ROOT" || exit 2
 FLAGS="-std=c++20 -O1 -target x86_64-w64-mingw32 -DUNICODE -D_UNICODE \
 -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 -D_WIN32_IE=0x0A00 -Isrc"
 LIBS="-static -static-libstdc++ -static-libgcc \
--lole32 -luuid -lshell32 -lshlwapi -ladvapi32 -luxtheme -ldwmapi -lcomctl32 -lgdi32 -luser32 -loleaut32"
+-lole32 -luuid -lshell32 -lshlwapi -ladvapi32 -luxtheme -ldwmapi -lcomctl32 -lgdi32 -luser32 -loleaut32 -lbcrypt"
 
 OUT="${TMPDIR:-/tmp}/ebb_tests"
 mkdir -p "$OUT"

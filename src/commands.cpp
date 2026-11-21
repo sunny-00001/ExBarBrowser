@@ -157,7 +157,7 @@ const std::vector<CommandDef> kTable = {
     {CmdId::CommandPalette, L"win.palette", L"Window", L"窗口", L"命令面板", true, Effects{1, 0, 0, 0, 0, Scope::App}, kNoArgs, false, false},
     {CmdId::HotkeyManager, L"win.hotkeys", L"Window", L"窗口", L"快捷键管理器", true, Effects{0, 1, 0, 0, 0, Scope::System}, kNoArgs, false, false},
     {CmdId::FocusAddress, L"win.focus.address", L"Window", L"导航栏", L"聚焦地址栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false},
-    {CmdId::FocusSearch, L"win.focus.search", L"Window", L"导航栏", L"聚焦搜索框", false, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, false, false},
+    {CmdId::FocusSearch, L"win.focus.search", L"Window", L"导航栏", L"聚焦搜索框", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false},
     {CmdId::Preferences, L"win.preferences", L"Window", L"窗口", L"首选项", false, Effects{0, 1, 0, 0, 0, Scope::System}, kNoArgs, false, false},
     // ---- External ----
     {CmdId::OpenTerminal, L"ext.terminal", L"External", L"导航栏", L"在此打开终端", true, Effects{0, 0, 0, 1, 0, Scope::System}, kNoArgs, true, false},
@@ -185,6 +185,16 @@ const std::vector<CommandDef> kTable = {
     // bmk.list 是**读**：其余 bmk.* 要的 id 由它给出。没有它，
     // AI 拿到"删除书签"却无从知道有哪些 id —— 命令表就是断的。
     {CmdId::BmkList, L"bmk.list", L"Bookmark", L"书签栏", L"列出书签", true, Effects{1, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"parentId\":{\"type\":\"string\",\"description\":\"只列该分类下；省略=整棵树\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"isFolder\":{\"type\":\"boolean\"},\"parentId\":{\"type\":\"string\"}},\"required\":[\"id\",\"name\",\"isFolder\"]}}}}"},
+    // ---- 设置域 ----
+    // config.list 是「能枚举」的落地：AI 先问有哪些项，再按 key 读/写，
+    // 全程不依赖界面文案或坐标。
+    {CmdId::ConfigList, L"config.list", L"Config", L"设置", L"列出全部设置项", true, Effects{1, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"items\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"settings.json 里的键名，读写都用它\"},\"kind\":{\"type\":\"string\",\"description\":\"bool / int / string / string[] / int[] / object(readonly)\"},\"doc\":{\"type\":\"string\",\"description\":\"中文名与说明\"},\"writable\":{\"type\":\"boolean\",\"description\":\"false = 只读，doc 会说明该用哪个入口\"},\"value\":{},\"min\":{\"type\":\"integer\"},\"max\":{\"type\":\"integer\"}},\"required\":[\"key\",\"kind\",\"writable\"]}}}}"},
+    {CmdId::ConfigGet, L"config.get", L"Config", L"设置", L"读取设置项", true, Effects{1, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"设置项的键名（settings.json 里的名字），见 config.list\"}},\"required\":[\"key\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\"},\"value\":{}},\"required\":[\"key\"]}"},
+    // config.set 不是 destructive（不改磁盘文件），但**不可撤销**：
+    // 覆盖了用户原来的值就找不回来了。所以调用方应当先 get 再 set，
+    // 并在需要时自行记下旧值 —— 这也是断言要读回来的原因之一。
+    {CmdId::ConfigSet, L"config.set", L"Config", L"设置", L"修改设置项", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"设置项的键名（settings.json 里的名字）\"},\"value\":{\"description\":\"新值；类型须与 config.list 里的 kind 一致\"}},\"required\":[\"key\",\"value\"],\"additionalProperties\":false}", true, false},
+
     {CmdId::BmkFocus, L"bmk.focus", L"Bookmark", L"书签栏", L"聚焦书签栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false},
     // ---- Session ----
     {CmdId::SessionSave, L"session.save", L"Session", L"标签栏", L"保存标签组", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false},
@@ -192,9 +202,11 @@ const std::vector<CommandDef> kTable = {
     {CmdId::SessionDelete, L"session.delete", L"Session", L"标签栏", L"删除标签组", false, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, false, false},
     {CmdId::SessionList, L"session.list", L"Session", L"标签栏", L"列出标签组", false, Effects{1, 0, 1, 0, 0, Scope::App}, kNoArgs, false, false},
     // ---- 占位（未实现）----
-    {CmdId::DupFinder, L"tool.dupfinder", L"Tool", L"文件视图", L"查找重复文件", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
-    {CmdId::FileHash, L"tool.hash", L"Tool", L"文件视图", L"计算哈希", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
-    {CmdId::FolderCompare, L"tool.compare", L"Tool", L"文件视图", L"比较文件夹", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    // 文件集工具已实现（2026-11-21）：见 app_commands_files.cpp 末尾三条 regR。
+    // 它们的"人工路径"是**不带参数**调用（目标取界面现状），agent 路径带参数返回 JSON。
+    {CmdId::DupFinder, L"tool.dupfinder", L"Tool", L"文件视图", L"查找重复文件", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要扫描的目录；省略则用当前目录\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒）；默认 1500，超时返回已找到的部分并置 timedOut\"},\"minBytes\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"小于此字节数的文件不参与；默认 1（排除 0 字节占位文件）\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"groups\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"bytes\":{\"type\":\"integer\",\"description\":\"组内每份的大小\"},\"hash\":{\"type\":\"string\",\"description\":\"SHA-256（小写十六进制）\"},\"files\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"bytes\":{\"type\":\"integer\"}},\"required\":[\"path\"]}}},\"required\":[\"bytes\",\"hash\",\"files\"]}},\"wastedBytes\":{\"type\":\"integer\",\"description\":\"保留一份后可回收的字节数\"},\"scannedFiles\":{\"type\":\"integer\"},\"hashedFiles\":{\"type\":\"integer\",\"description\":\"实际计算摘要的文件数（含未进结果的候选）\"},\"deniedDirs\":{\"type\":\"integer\",\"description\":\"打不开的目录数（>0 说明结果偏少）\"},\"timedOut\":{\"type\":\"boolean\"},\"complete\":{\"type\":\"boolean\",\"description\":\"是否扫完整个子树\"},\"elapsedMs\":{\"type\":\"integer\"}},\"required\":[\"path\",\"groups\",\"wastedBytes\",\"complete\"]}"},
+    {CmdId::FileHash, L"tool.hash", L"Tool", L"文件视图", L"计算哈希", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"要计算摘要的文件路径；省略则用当前选中项\"},\"algorithm\":{\"type\":\"string\",\"enum\":[\"md5\",\"sha1\",\"sha256\"],\"description\":\"摘要算法；默认 sha256。认不出的名字会失败，不会退回默认值\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"algorithm\":{\"type\":\"string\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"ok\":{\"type\":\"boolean\"},\"hash\":{\"type\":\"string\",\"description\":\"小写十六进制；ok=false 时缺省\"},\"bytes\":{\"type\":\"integer\"},\"error\":{\"type\":\"string\",\"description\":\"ok=false 时的原因\"}},\"required\":[\"path\",\"ok\"]}}},\"required\":[\"algorithm\",\"entries\"]}"},
+    {CmdId::FolderCompare, L"tool.compare", L"Tool", L"文件视图", L"比较文件夹", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"left\":{\"type\":\"string\",\"description\":\"左侧目录\"},\"right\":{\"type\":\"string\",\"description\":\"右侧目录\"},\"byContent\":{\"type\":\"boolean\",\"description\":\"true=同大小再比 SHA-256（默认）；false=只比大小（快，但同大小不同内容会算作相同）\"},\"budgetMs\":{\"type\":\"integer\",\"minimum\":100,\"maximum\":30000,\"description\":\"时间预算（毫秒）；默认 1500\"}},\"required\":[\"left\",\"right\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"left\":{\"type\":\"string\"},\"right\":{\"type\":\"string\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"rel\":{\"type\":\"string\",\"description\":\"相对路径\"},\"leftBytes\":{\"type\":\"integer\"},\"rightBytes\":{\"type\":\"integer\"},\"state\":{\"type\":\"string\",\"enum\":[\"onlyLeft\",\"onlyRight\",\"differ\"]}},\"required\":[\"rel\",\"state\"]}},\"sameCount\":{\"type\":\"integer\"},\"differCount\":{\"type\":\"integer\"},\"onlyLeftCount\":{\"type\":\"integer\"},\"onlyRightCount\":{\"type\":\"integer\"},\"timedOut\":{\"type\":\"boolean\"},\"complete\":{\"type\":\"boolean\"},\"elapsedMs\":{\"type\":\"integer\"}},\"required\":[\"left\",\"right\",\"entries\",\"complete\"]}"},
     {CmdId::SearchEverything, L"search.everything", L"Search", L"导航栏", L"搜索", false, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, false},
     // ---- 只读查询（P6：读操作返回结构化结果）----
     // 这两条是第一批带 outputSchema 的命令，用来验证返回值设计。
@@ -291,6 +303,15 @@ std::wstring DescribeArgs(const Args& args) {
     std::wstring s = json::Stringify(args.raw(), 0);
     if (s.size() > 160) s = s.substr(0, 157) + L"...";
     return s;
+}
+
+// 审计里的参数摘要：失败且 handler 报了原因时，把原因附在同一行。
+// 不另开字段，是为了让"一条命令一行"这个性质保持 —— 事后 grep 一条命令
+// 就能看到为什么失败，不用在几行之间拼时间戳。
+std::wstring ArgsDescForAudit(const Args& args, bool ok, const std::wstring& reason) {
+    const std::wstring desc = DescribeArgs(args);
+    if (ok || reason.empty()) return desc;
+    return desc.empty() ? (L"(failed: " + reason + L")") : (desc + L" (failed: " + reason + L")");
 }
 
 // 从 schema 里挑出"旧字符串参数该落到哪个键"。
@@ -480,6 +501,7 @@ bool CommandBus::Dispatch(CmdId id, const Args& args, json::Value* result, const
     // 每次都先清空：否则上一次的拒绝原因会被下一次成功调用带出去，
     // 调用方读到"成功了但原因还是旧的"，比没有原因更误导。
     lastBlockReason_.clear();
+    pendingReason_.clear();
 
     // 前置检查：不满足就不调 handler。以前这里没有这一层，结果是
     // "无历史时点后退"——handler 里静默 return false，界面毫无反馈。
@@ -506,7 +528,9 @@ bool CommandBus::Dispatch(CmdId id, const Args& args, json::Value* result, const
         json::Value out = json::Value::MakeObject();
         bool ok = kv.second ? kv.second(args, &out) : false;
         last_ = def->name;
-        Audit(*def, DescribeArgs(args), actor, ok);
+        // handler 自己报的原因优先于笼统的"失败"：它知道是名字错还是值超范围。
+        if (!ok && !pendingReason_.empty()) lastBlockReason_ = pendingReason_;
+        Audit(*def, ArgsDescForAudit(args, ok, pendingReason_), actor, ok);
         if (result) *result = std::move(out);
         return ok;
     }
@@ -515,7 +539,8 @@ bool CommandBus::Dispatch(CmdId id, const Args& args, json::Value* result, const
         if (kv.first != id) continue;
         bool ok = kv.second ? kv.second(args) : false;
         last_ = def->name;
-        Audit(*def, DescribeArgs(args), actor, ok);
+        if (!ok && !pendingReason_.empty()) lastBlockReason_ = pendingReason_;
+        Audit(*def, ArgsDescForAudit(args, ok, pendingReason_), actor, ok);
         // 无返回值命令：给空对象而非旧数据（不编造）。
         if (result) *result = json::Value::MakeObject();
         return ok;

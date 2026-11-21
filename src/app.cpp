@@ -115,6 +115,7 @@ void App::OnCreate() {
     });
     navBar_.SetHistoryFn([this](bool back) { return HistoryList(back); },
                          [this](int depth, bool back) { JumpHistory(depth, back); });
+    navBar_.SetSettingsFn([this](POINT at) { ShowSettingsPanel(at); });
     navBar_.SetRecentFn([] { return Config::Get().s().recentPaths; });
     navBar_.SetClearHistoryFn([this] { ClearHistory(); });
     // 视图菜单打勾用：当前档位来自 viewMode_（用户偏好），排序/分组从**视图**现读。
@@ -152,6 +153,40 @@ void App::OnCreate() {
     BookmarkStore::Get().SetSaveNotifyFn([this](bool ok) { NotifyBookmarkSave(ok); });
     // 书签栏的键盘态按 Esc 退出后要把焦点还给视图，否则 Delete / type-ahead 全哑。
     bookmarkBar_.SetRefocusFn([this] { FocusActiveView(); });
+    // 导航栏搜索框提交：用 shell 自己的 search-ms 协议在当前目录里搜。
+    //
+    // 为什么不自建扫描：那要么阻塞 UI（大目录几十万项），要么起线程/helper
+    // （另一套索引与用户看到的视图不一致）。search-ms 是资源管理器自己走的路，
+    // 结果就在同一个 IShellView 里呈现 —— 排序、右键、拖放全部照旧可用。
+    //
+    // 空串 = 取消搜索：回到原目录（搜索视图没有"上一级"，只能记住来源）。
+    navBar_.SetSearchFn([this](const std::wstring& query) {
+        Tab* t = Active();
+        if (!t || !t->view) return;
+        // 搜索来源目录：正在搜索时用记下来的那个，否则用当前目录。
+        const std::wstring here = t->path();
+        if (query.empty()) {
+            if (!searchFrom_.empty()) {
+                const std::wstring back = searchFrom_;
+                searchFrom_.clear();
+                NavigateActive(back, true);
+            }
+            return;
+        }
+        // 已经是搜索视图时，来源目录要用最早的（否则"在搜索结果里再搜"会搜到 0 项）。
+        if (searchFrom_.empty()) searchFrom_ = here;
+        // search-ms 语法：crumb 限定范围，query 是搜索词。
+        // 双引号包住路径（可能含逗号/空格），词本身也转义引号。
+        std::wstring q = query;
+        for (size_t i = 0; i < q.size(); ++i)
+            if (q[i] == L'"') q.insert(i++, 1, L'"');   // 引号翻倍转义
+        const std::wstring url =
+            L"search-ms:query=" + q + L"&crumb=location:" + searchFrom_ + L"&";
+        if (!t->view->Navigate(url)) {
+            LogDbg(L"[search] 无法搜索：%s", url.c_str());
+            MessageBeep(MB_ICONWARNING);
+        }
+    });
 
     // 面包屑段右键：动作作用于"右键的那一段"，不是当前目录。
     // 这里把段路径转成既有的命令/入口，不新写一套文件语义：

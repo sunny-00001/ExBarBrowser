@@ -27,6 +27,9 @@ public:
     using SortGroupFn = std::function<void(int kind, int arg)>;  // kind: 0 排序 1 分组
     using RecentFn = std::function<std::vector<std::wstring>()>;
     using ClearHistoryFn = std::function<void()>;  // 清空地址框下拉里的历史
+    // 打开设置面板。参数是弹层的屏幕锚点（视图按钮下方）—— 面板与其它弹层
+    // 同一套定位方式，不在面板内部自己算位置（那样两个地方都要算一次）。
+    using SettingsFn = std::function<void(POINT)>;
     // 当前视图状态的只读查询：视图模式下标 / 排序方式 / 分组方式。
     // 视图菜单要打勾（"现在用的是哪一档"），而导航栏不持有这些状态 ——
     // 它们只在 Config::Settings + ShellView 里。以前菜单完全不标当前值，
@@ -104,6 +107,7 @@ public:
     void SetSegmentCmdFn(SegmentCmdFn fn) { segmentCmd_ = std::move(fn); }
     void SetRecentFn(RecentFn fn) { recentList_ = std::move(fn); }
     void SetClearHistoryFn(ClearHistoryFn fn) { clearHistory_ = std::move(fn); }
+    void SetSettingsFn(SettingsFn fn) { onSettings_ = std::move(fn); }
     // 退出地址编辑后把焦点还回视图（Enter/Esc/Tab 三条路径共用）
     void SetRefocusFn(std::function<void()> fn) { refocus_ = std::move(fn); }
 
@@ -217,5 +221,6 @@ private:
     SegmentCmdFn segmentCmd_;
     RecentFn recentList_;
     ClearHistoryFn clearHistory_;
+    SettingsFn onSettings_;
     std::function<void()> refocus_;
 };

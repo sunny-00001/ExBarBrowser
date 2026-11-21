@@ -120,6 +120,22 @@ HUMAN_PATH = {
                      '默认配置 statusSegs={0..6} 含该段。注意没有 Alt+Enter 绑定',
     'tool.stat': '状态栏「选中容量」段 + 详细信息视图列展示同一组字段'
                  '（名称/大小/类型/隐藏/只读）',
+
+    # 文件集工具三条（2026-11-21）：设计是"空参数 = 取界面现状，带参数 = 机器点名"，
+    # 所以 hash / dupfinder 无必填参数、走命令面板自动满足；compare 有两个必填路径，
+    # 人由两框输入给出（左侧预填当前目录），结果统一进只读报告窗口（report.cpp）。
+    'tool.compare': '命令面板 → tool.compare：弹 PromptText2 两个输入框'
+                    '（左=当前目录预填，右=手工填或粘贴目标目录），确认后调 CompareFolders；'
+                    '结果弹只读报告窗口（report.cpp），可 Ctrl+A / Ctrl+C 取走',
+
+    # 设置面板（视图菜单「设置…」）：列出键表里每一项与当前值。
+    # 值在渲染时直读键表（一屏几十行，不能每行发一次命令），但**选中某项后**
+    # 走 config.get 读最新值、config.set 写回 —— 与 AI 完全同一条路径、同一份校验。
+    # 参数 key 就是被点中的那一行的键名（settings.json 里的名字）。
+    'config.get': '视图菜单「设置…」→ 设置面板（settings_panel.cpp）：'
+                  '点某一项时先调 config.get 读最新值（参数 key 即该行的键名）',
+    'config.set': '视图菜单「设置…」→ 设置面板：布尔项点一下翻转、数值/字符串弹输入框、'
+                  '数组填逗号分隔，一律调 config.set（参数 key/value 来自该行与输入框）',
 }
 
 # 机器专用查询：人能通过命令面板触发，但拿到的是 JSON（写进审计日志），
@@ -466,7 +482,9 @@ def collect_arg_key_usage():
             body = parts[i + 1]
             # Has 不能单独算"取用"：只判断存在却不读值仍会静默丢弃参数。
             # 正常写法 Has(k) ? Int(k, default) : fallback 里的 Int 已能被下面抓到。
-            keys = set(re.findall(r'args\.(?:Int|Str|Bool|StrArray)\(L"([^"]+)"', body))
+            # Any 是"原样取 JSON"的访问器（config.set 的 value 类型由数据决定，
+            # 用 Int/Str/Bool 取会把错类型静默转默认值），算作正常取用。
+            keys = set(re.findall(r'args\.(?:Int|Str|Bool|StrArray|Any)\(L"([^"]+)"', body))
             usage.setdefault(cid, set()).update(keys)
     return usage
 
@@ -982,19 +1000,35 @@ def main():
                 paths.setdefault(cmd, []).append(why)
             del paths[setting]
 
-    # 命令面板覆盖哪些命令：读 ShowCommandPalette 的实现，
-    # 确认它遍历 CommandTable()、筛掉未实现与"有必填参数"的命令，并用空参调用。
-    # 只筛 !implemented 会让 tab.rename/tab.color 这类带参命令被空参调用，
-    # 后果不是"没反应"而是静默清空别名/颜色 —— 必须在这里钉住。
+    # 命令面板覆盖哪些命令：读 ShowCommandPalette 的实现。
+    #
+    # 判据变过一次，原因值得记下来：
+    #   旧判据 = "筛掉未实现与有必填参数的命令，其余空参调用"。
+    #   它防的是真危险（tab.rename/tab.color 空参调用会静默清别名/颜色），
+    #   但代价是把 config.get / config.set / file.rename 这类带参命令
+    #   在人类侧整条抹掉 —— 只有 AI 能触发，正好违反本项要守护的 R20。
+    #   而且"面板跳过"根本不是防静默清空的唯一办法：按 schema 追问参数再调用，
+    #   同样不会空参调用，还多了人类入口。
+    #
+    # 所以现在的判据是两条，任一不成立都说明"带参命令又被人类侧漏掉了"：
+    #   ① 面板遍历整张命令表（只筛 !implemented），并且**两条路都在**：
+    #      无必填参数走 Args::Empty()，有必填参数走 Args::FromJson(收集结果)。
+    #   ② 参数收集器从 argsSchema 里读 required/properties —— 不允许硬编码
+    #      某几条命令的参数名，否则新增命令又得改面板（回到打补丁）。
     app_commands = (ROOT / 'src/app_commands.cpp').read_text(encoding='utf-8')
     palette_body = _body_of(app_commands, 'void App::ShowCommandPalette()')
     palette_all = ('CommandTable()' in palette_body
                    and '!d.implemented' in palette_body
-                   and '\\"required\\"' in palette_body
-                   and 'Args::Empty()' in palette_body)
+                   and 'Args::Empty()' in palette_body
+                   and 'Args::FromJson(' in palette_body)
     if not palette_all:
-        fail('命令面板必须"列出已实现且无必填参数的命令，并以空参调用" —— '
-             '带参命令走自己的 UI；否则会静默清空标签别名/颜色')
+        fail('命令面板必须"列出所有已实现命令"，且无必填参数走空参、'
+             '有必填参数走按 schema 收集后的参数 —— 否则带参命令在人类侧不可达（R20）')
+        return 1
+    collect_body = _body_of(app_commands, 'CollectParamsInteractive')
+    if not ('"required"' in collect_body and '"properties"' in collect_body):
+        fail('命令面板的参数收集器必须从 argsSchema 读 required/properties，'
+             '不能硬编码某几条命令的参数名')
         return 1
 
     def required_of(c):

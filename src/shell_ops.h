@@ -139,7 +139,11 @@ std::vector<std::wstring> SelectedPaths(IShellView* view);
 // 这是 shell 视图的标准协议（与 IExplorerBrowser 一致），不依赖内部窗口类名。
 //
 // 返回 false = 没有可撤销的操作，或视图没有响应（调用方应响一声而不是假装成功）。
-bool Undo(IShellView* view, HWND owner);
+// 注意：**没有 owner 参数**，是刻意的。
+// 撤销动词偶尔会带出模态确认框；本函数会被 AI 通道在 UI 线程调用，
+// 一旦进入模态循环就会卡死整个消息泵（实测：之后所有管道命令都返回空）。
+// 撤销本身不需要人确认（它是恢复，不是破坏），所以一律以无 UI 方式调用。
+bool Undo(IShellView* view);
 
 // 单项目属性（按完整路径，必须在当前视图内）。
 struct ItemInfo {

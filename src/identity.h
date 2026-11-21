@@ -37,6 +37,7 @@ constexpr wchar_t kPopupClass[] = L"ExBarBrowser_Popup";
 constexpr wchar_t kPromptClass[] = L"ExBarBrowser_Prompt";
 constexpr wchar_t kSeqHintClass[] = L"ExBarBrowser_SeqHint";
 constexpr wchar_t kHotkeysClass[] = L"ExBarBrowser_Hotkeys";
+constexpr wchar_t kReportClass[] = L"ExBarBrowser_Report";
 
 // ---- 进程级资源名 ----
 // 单实例互斥体（Local\ 前缀 = 每用户会话隔离）

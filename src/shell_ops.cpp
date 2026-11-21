@@ -975,7 +975,7 @@ std::vector<std::wstring> SelectedPaths(IShellView* view) {
     return out;
 }
 
-bool Undo(IShellView* view, HWND owner) {
+bool Undo(IShellView* view) {
     if (!view) return false;
 
     // 【怎么撤】向视图的背景上下文菜单要 "undo" 谓词并调用它。
@@ -997,8 +997,10 @@ bool Undo(IShellView* view, HWND owner) {
     ComPtr<IContextMenu> cm;
     if (FAILED(view->GetItemObject(SVGIO_BACKGROUND, IID_IContextMenu,
                                    reinterpret_cast<void**>(&cm))) ||
-        !cm)
+        !cm) {
+        LogDbg(L"[undo] GetItemObject(IContextMenu) 失败");
         return false;
+    }
 
     HMENU menu = CreatePopupMenu();
     if (!menu) return false;
@@ -1011,17 +1013,50 @@ bool Undo(IShellView* view, HWND owner) {
         for (int i = 0; i < count && !done; ++i) {
             const UINT id = GetMenuItemID(menu, i);
             if (id == static_cast<UINT>(-1)) continue;   // 分隔线/子菜单
-            wchar_t verb[64] = L"";
-            if (FAILED(cm->GetCommandString(id - 1, GCS_VERBW, nullptr,
-                                            reinterpret_cast<char*>(verb),
-                                            static_cast<UINT>(_countof(verb)))))
+            // 【不要用 GetCommandString 逐项问动词名】
+            //
+            // 实测踩出来的坑：GCS_VERBW 会为该菜单项**懒加载对应的 shell 扩展**。
+            // 第三方扩展（云盘客户端/右键增强）一旦在它的处理里阻塞，这里就永久
+            // 挂住 —— 而本函数运行在 UI 线程（ai::PumpRequests 由定时器驱动），
+            // 后果是整个消息泵卡死：界面不再重绘，管道后续请求全部返回空。
+            // 实测日志：QueryContextMenu 正常返回 122 项，循环第一次 GetCommandString
+            // 就再没回来。
+            //
+            // 改用菜单项自身的**文本**：shell 给 undo 行加的 caption 是本地化的
+            // "撤销 <操作名>" / "Undo <op>"。读菜单文本是纯菜单操作，不碰扩展。
+            wchar_t text[160] = L"";
+            if (!GetMenuStringW(menu, id, text, static_cast<int>(_countof(text)), MF_BYCOMMAND))
                 continue;
-            // 规范动词名（大小写不敏感）。shell 的英文动词表里是 "undo"。
-            if (!str::IEquals(verb, L"undo")) continue;
+            // 前缀匹配（而不是"包含"）：shell 给 undo 行的 caption 形如
+            // "撤销 <操作名>" / "Undo <op>"，前缀是稳定的、本地化的。
+            // 用"包含"会误命中任何带该词根的项（本地化词根重叠时尤其危险）。
+            // 先剥掉前导的勾选标记/空白，再比前缀。
+            std::wstring label = str::Trim(str::Lower(text));
+            while (!label.empty() &&
+                   (label.front() == L'✓' || label.front() == L'√' ||
+                    label.front() == L'>' || label.front() == L' '))
+                label.erase(0, 1);
+            const bool isUndo = str::IStartsWith(label, L"undo") ||
+                                str::IStartsWith(label, L"撤销") ||
+                                str::IStartsWith(label, L"復原") ||
+                                str::IStartsWith(label, L"取り消し");
+            if (!isUndo) continue;
             CMINVOKECOMMANDINFOEX ici{};
             ici.cbSize = sizeof(ici);
+            // 【不要传宿主窗口，也不要 SW_SHOWNORMAL】
+            //
+            // 这一条是被实测逼出来的：撤销动词偶尔会带出模态确认框（"确实要撤销
+            // 删除吗 / 该操作无法撤销时改为永久删除"）。一旦传了 hwnd，
+            // shell 会把它当 owner 去 **ModalLoop** —— 而本函数由 AI 通道在
+            // **UI 线程**的定时器里调用（ai::PumpRequests），模态循环会连带
+            // 卡死整个消息泵：界面不再重绘，管道后续请求也永远拿不到响应。
+            // 实测现象：一次 file.undo 之后，同一连接上后续所有命令都返回空。
+            //
+            // 撤销本来也不需要人确认（它是"恢复"，不是破坏性操作），所以
+            // 这里显式声明无 UI + 无 owner：让 shell 走它的静默路径。
+            // 若某天真需要确认，应当由调用方先问人，而不是把模态塞进 UI 线程。
             ici.fMask = CMIC_MASK_UNICODE | CMIC_MASK_FLAG_NO_UI;
-            ici.hwnd = owner;   // 撤销可能弹确认框（如"永久删除"提示），必须有宿主窗口
+            ici.hwnd = nullptr;
             ici.lpVerb = MAKEINTRESOURCEA(id - 1);
             ici.lpVerbW = MAKEINTRESOURCEW(id - 1);
             ici.nShow = SW_SHOWNORMAL;

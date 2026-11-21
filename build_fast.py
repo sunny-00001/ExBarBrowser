@@ -98,7 +98,7 @@ LIBS = [
     "-static-libstdc++", "-static-libgcc",
     "-lole32", "-loleaut32", "-luuid", "-luser32", "-lgdi32", "-lshell32",
     "-lshlwapi", "-lcomctl32", "-ldwmapi", "-luxtheme", "-ladvapi32", "-lpropsys",
-    "-luiautomationcore",
+    "-luiautomationcore", "-lbcrypt",
 ]
 
 

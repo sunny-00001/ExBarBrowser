@@ -34,12 +34,13 @@ PENDING = {
     #     （所有落盘操作都带 FOF_ALLOWUNDO，已在系统栈里）。
     # 批量重命名建议直接接 PowerRename，不自建规则编辑器（OPERATION-MODEL §7）。
     "hotkeyBatchRename": "BatchRename 待实现（接 PowerRename）",
-    # 搜索：依赖导航栏搜索框存在（ROADMAP §4.4 P3-2），Ctrl+F 先留着占位。
-    "hotkeyFocusSearch": "FocusSearch 待实现（前置导航栏搜索框，§4.4 P3-2）",
-    # 工具集：要跨目录大范围扫描，必须进 helper 或工作线程，否则 UI 假死（§4.5 P3-3）。
-    "hotkeyDupFinder": "DupFinder 待实现（需 helper 进程 + IPC，§4.5）",
-    "hotkeyFileHash": "FileHash 待实现（需 helper 进程 + IPC，§4.5）",
-    "hotkeyFolderCompare": "FolderCompare 待实现（需 helper 进程 + IPC，§4.5）",
+    # 搜索框与 Ctrl+F 已于 2026-11-21 落地（NavBar::FocusSearch + search-ms）。
+    # 工具集三条已于 2026-11-21 实现：DupFinder / FileHash / FolderCompare
+    # （file_hash.cpp + file_tools.cpp，预算内同步扫描 + 只读报告窗口）。
+    # 这里原先的理由写着"需 helper 进程 + IPC"，实现时发现不必要：
+    # 预算是显式的（timedOut/complete 如实上报），单文件哈希本来就必须读完整文件，
+    # 用 helper 换来的只是"扫描时界面不卡"，代价是一整套 IPC 与生命周期管理。
+    # 代价是预算耗尽会少扫一部分 —— 报告里写清楚了，比假死或假数字好。
     # AI 面板：接口层（ai_api / ai_server）已通，缺窗口内对话 UI 与历史（ROADMAP §5 P4）。
     "hotkeyAiTogglePanel": "AiTogglePanel 待实现（缺面板 UI，接口层已就绪）",
     # 已删键位（2026-11-21）：hotkeyMergeAllWindows（Ctrl+Alt+W）与

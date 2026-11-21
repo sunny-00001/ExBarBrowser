@@ -144,6 +144,9 @@ private:
     void ShowTabMenu(int index, int action);
     void ShowTabColor(int index, int color);
     void ShowViewMenuAt();
+    // 设置面板：表（settings_reg）驱动的可调项列表，改动走 config.set 命令。
+    // at 是弹层的屏幕锚点（视图菜单按钮下方），与其它弹层一致。
+    void ShowSettingsPanel(POINT at);
 
     // 命令辅助
     IShellView* ActiveView();
@@ -189,4 +192,8 @@ private:
     // 它们只在 Config::Settings 里存一份，需要时现取，避免两份值漂移。
     int viewMode_ = 3;
     bool inDestroy_ = false;
+    // 搜索视图的来源目录（非空 = 当前标签正在显示搜索结果）。
+    // 搜索视图没有"上一级"，取消搜索必须靠它回到进来时的目录 ——
+    // 否则取消之后用户只能自己重新输一遍路径。
+    std::wstring searchFrom_;
 };

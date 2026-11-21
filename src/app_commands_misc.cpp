@@ -7,6 +7,7 @@
 #include "hotkey_manager.h"
 #include "bookmarks.h"
 #include "icon_resolve.h"
+#include "settings_reg.h"
 
 // 打开终端：wt 优先，失败退回 PowerShell。
 // 不是本文件的私有工具 —— "跳转"分片里的 GoPowerShell 也要用（声明在 app_commands.h），
@@ -22,6 +23,17 @@ void RunTerminal(HWND owner, const std::wstring& dir, bool admin) {
                   SW_SHOWNORMAL);
 }
 
+
+// 这些设置项决定"当前标签的视图长什么样"。config.set 写完它们必须套用到
+// 活动视图，否则用户/AI 改完屏幕上没有任何变化 —— 只能等下次启动才看见。
+//
+// 为什么这份名单不在注册表里：注册表描述的是"值与类型"，而"写完要推给谁"
+// 是界面知识（视图、窗口、栏各自不同）。放在命令层，是因为只有这一层同时
+// 知道设置项与窗口。
+static bool AffectsActiveView(const std::wstring& key) {
+    return key == L"viewMode" || key == L"sortMode" || key == L"sortAscending" ||
+           key == L"groupBy";
+}
 
 void App::NotifyBookmarkSave(bool ok) {
     if (ok) return;
@@ -310,6 +322,65 @@ void App::RegisterMiscCommands() {
             root.Set(L"entries", std::move(arr));
             *out = std::move(root);
         }
+        return true;
+    });
+
+    // ---------------- 设置域 ----------------
+    // 这三条是「AI 调试某个设置项」的入口。之前设置是编译期 struct，
+    // 机器侧既不知道有哪些项，也没有稳定名字去定位 —— 那条路只能靠人眼看界面。
+    //
+    // 读写都走 settings_reg 的同一份表，不在这里另存副本：
+    // 两份副本一旦分叉，"命令改了 A、界面显示 B"就只有用户能发现。
+    regR(CmdId::ConfigList, [](const Args&, json::Value* out) -> bool {
+        if (!out) return false;
+        json::Value items = settings_reg::DumpAll();
+        json::Value root = json::Value::MakeObject();
+        root.Set(L"items", std::move(items));
+        *out = std::move(root);
+        return true;
+    });
+    regR(CmdId::ConfigGet, [](const Args& args, json::Value* out) -> bool {
+        const std::wstring key = args.Str(L"key");
+        if (key.empty() || !out) return false;
+        json::Value value;
+        if (!settings_reg::Get(key, &value)) {
+            return false;   // key 不存在：如实报失败，不返回空值（那会像"值是空"）
+        }
+        json::Value root = json::Value::MakeObject();
+        root.Set(L"key", json::Value::MakeStr(key));
+        root.Set(L"value", std::move(value));
+        *out = std::move(root);
+        return true;
+    });
+    // config.set 之后必须写盘：改内存不落盘的话，重启就回退了 ——
+    // 而"改了看不见效果、下次启动才暴露"正是设置类 bug 最难查的形态。
+    reg(CmdId::ConfigSet, [this](const Args& args) {
+        const std::wstring key = args.Str(L"key");
+        if (key.empty()) {
+            CommandBus::Get().NoteFailure(L"缺少 key：设置项的点分名（见 config.list）");
+            return false;
+        }
+        // value 是任意 JSON（bool / int / string），类型由注册表按 key 校验。
+        // 这里不用 args.Bool/Int —— 那会把"传了字符串给布尔项"变成静默的 false。
+        const json::Value* value = args.Any(L"value");
+        if (!value) {
+            CommandBus::Get().NoteFailure(L"缺少 value：要设成什么");
+            return false;
+        }
+        std::wstring err;
+        if (!settings_reg::Set(key, *value, &err)) {
+            CommandBus::Get().NoteFailure(err);   // 原因直达 UI / AI / 审计
+            return false;
+        }
+        Config::Get().Save();
+        // 刷新依赖设置的界面。只有这里知道该刷什么，
+        // 所以刷新放命令层，而不是让注册表自己去找窗口。
+        //
+        // 视图那几项必须套到当前标签：只写配置的话，改完屏幕上毫无变化 ——
+        // 正是"改了看不见效果、重启才发现"那类 bug。套用走启动时同一个
+        // ApplyPersistedViewState，不另写一份。
+        if (AffectsActiveView(key)) ApplyPersistedViewState(Active() ? Active()->view.get() : nullptr);
+        SyncChrome();
         return true;
     });
 

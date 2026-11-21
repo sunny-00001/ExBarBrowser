@@ -22,6 +22,11 @@ struct Value {
     bool IsArray() const { return type == kArray; }
     bool IsObject() const { return type == kObject; }
     bool IsString() const { return type == kString; }
+    // 类型判定的另外两支。补齐的理由：只提供上面四个会让调用方写成
+    // `type == kBool` —— 一旦将来新增类型（如 kInt），那些比较不会报错、
+    // 只会静默判定为 false。集中成 IsXxx 之后，新增类型只改这里。
+    bool IsBool() const { return type == kBool; }
+    bool IsNumber() const { return type == kNumber; }
 
     const Value* Find(const wchar_t* key) const;
     std::wstring GetStr(const wchar_t* key, const std::wstring& def = L"") const;
