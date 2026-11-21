@@ -137,5 +137,8 @@ void NavBar::Paint(HWND h) {
 
         // 边框最后描（否则被框内填充盖掉）
         ui::FrameRectColor(mem, fieldRc_, theme_->editBorder);
+        // 搜索框的边框由本栏画（EDIT 自己只有内容区，没有边框）。
+        // 与地址框同色同粗：两个输入框并排时边框不一致会显得像坏了一个。
+        if (searchVisible_) ui::FrameRectColor(mem, searchRc_, theme_->editBorder);
     });
 }
