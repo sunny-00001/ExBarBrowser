@@ -239,9 +239,14 @@ public:
         *ppv = nullptr;
         return E_NOINTERFACE;
     }
-    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&ref_); }
+    // InterlockedIncrement/Decrement 返回 LONG，COM 的 AddRef/Release 要 ULONG。
+    // 引用计数不可能为负（多减一次就是 bug，届时 0xFFFFFFFF 也是"极大"，
+    // 与 LONG 的解释无关），所以这里的位模式转换是安全的。
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return static_cast<ULONG>(InterlockedIncrement(&ref_));
+    }
     ULONG STDMETHODCALLTYPE Release() override {
-        ULONG r = InterlockedDecrement(&ref_);
+        const ULONG r = static_cast<ULONG>(InterlockedDecrement(&ref_));
         if (r == 0) delete this;
         return r;
     }

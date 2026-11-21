@@ -132,7 +132,7 @@ static void RefreshHot(PopupState* st, HWND hList) {
     st->hotExpander = -1;
     if (st->treeMode && idx >= 0) {
         RECT irc;
-        if (SendMessageW(hList, LB_GETITEMRECT, idx, reinterpret_cast<LPARAM>(&irc)) >= 0) {
+        if (SendMessageW(hList, LB_GETITEMRECT, static_cast<WPARAM>(idx), reinterpret_cast<LPARAM>(&irc)) >= 0) {
             RECT er = ExpanderRect(irc, *st->theme);
             if (PtInRect(&er, cpt)) st->hotExpander = idx;
         }
@@ -174,13 +174,13 @@ static void RebuildTree(PopupState* st) {
     for (int vi = 0; vi < static_cast<int>(st->visible.size()); ++vi) {
         int id = static_cast<int>(SendMessageW(st->list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"")));
         if (id >= 0) {
-            SendMessageW(st->list, LB_SETITEMDATA, id,
+            SendMessageW(st->list, LB_SETITEMDATA, static_cast<WPARAM>(id),
                          static_cast<LPARAM>(st->visible[static_cast<size_t>(vi)]));
-            SendMessageW(st->list, LB_SETITEMHEIGHT, id, st->itemH);
+            SendMessageW(st->list, LB_SETITEMHEIGHT, static_cast<WPARAM>(id), st->itemH);
         }
     }
     SendMessageW(st->list, WM_SETREDRAW, TRUE, 0);
-    SendMessageW(st->list, LB_SETTOPINDEX, topIdx, 0);
+    SendMessageW(st->list, LB_SETTOPINDEX, static_cast<WPARAM>(topIdx), 0);
     ResizeToFit(st);
     RefreshHot(st, st->list);
     InvalidateRect(st->list, nullptr, FALSE);
@@ -221,7 +221,7 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
         int newHotExp = -1;
         if (st->treeMode && idx >= 0) {
             RECT irc;
-            if (SendMessageW(h, LB_GETITEMRECT, idx, reinterpret_cast<LPARAM>(&irc)) >= 0) {
+            if (SendMessageW(h, LB_GETITEMRECT, static_cast<WPARAM>(idx), reinterpret_cast<LPARAM>(&irc)) >= 0) {
                 RECT er = ExpanderRect(irc, *st->theme);
                 POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
                 if (PtInRect(&er, pt)) newHotExp = idx;
@@ -311,13 +311,16 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
         if (idx < 0 || idx >= RowCount(st) || RowInert(st, idx)) return 0;
 
         if (st->treeMode) {
-            int vi = idx;
-            int ni = st->visible[static_cast<size_t>(vi)];
+            const int vi = idx;
+            // 名字带 hit 前缀：外层（本函数前半段）已有一个 ni，
+            // 同名会让读者以为这是同一个量的延续。
+            const int hitNi = st->visible[static_cast<size_t>(vi)];
             RECT irc;
-            if (SendMessageW(h, LB_GETITEMRECT, vi, reinterpret_cast<LPARAM>(&irc)) >= 0) {
+            if (SendMessageW(h, LB_GETITEMRECT, static_cast<WPARAM>(vi),
+                             reinterpret_cast<LPARAM>(&irc)) >= 0) {
                 RECT er = ExpanderRect(irc, *st->theme);
-                POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-                if (PtInRect(&er, pt) && st->tree[static_cast<size_t>(ni)].hasChildren) {
+                const POINT expPt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};   // 不叫 pt：外层已有
+                if (PtInRect(&er, expPt) && st->tree[static_cast<size_t>(hitNi)].hasChildren) {
                     ToggleExpand(st, vi);   // 就地展开/收回，不关闭弹窗
                     return 0;
                 }
@@ -355,7 +358,7 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
                 SendMessageW(h, LB_SETCURSEL, static_cast<WPARAM>(-1), 0);
             } else {
                 st->curSel = cur;
-                SendMessageW(h, LB_SETCURSEL, cur, 0);
+                SendMessageW(h, LB_SETCURSEL, static_cast<WPARAM>(cur), 0);
             }
             InvalidateRect(h, nullptr, FALSE);
             return 0;
@@ -377,13 +380,13 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
                     ToggleExpand(st, vi);
                     // mod 18647-18649：RESETCONTENT 清掉了光标，键盘展开后要恢复选中行
                     st->curSel = vi;
-                    SendMessageW(h, LB_SETCURSEL, vi, 0);
+                    SendMessageW(h, LB_SETCURSEL, static_cast<WPARAM>(vi), 0);
                     InvalidateRect(h, nullptr, FALSE);
                 } else if (w == VK_LEFT) {
                     if (n.expanded) {
                         ToggleExpand(st, vi);
                         st->curSel = vi;
-                        SendMessageW(h, LB_SETCURSEL, vi, 0);
+                        SendMessageW(h, LB_SETCURSEL, static_cast<WPARAM>(vi), 0);
                         InvalidateRect(h, nullptr, FALSE);
                     } else if (n.parent >= 0) {
                         // 收起态按左键 = 选中父节点（Explorer 树行为）
@@ -391,7 +394,7 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
                         for (int v = 0; v < static_cast<int>(st->visible.size()); ++v) {
                             if (st->visible[static_cast<size_t>(v)] == pi) {
                                 st->curSel = v;
-                                SendMessageW(h, LB_SETCURSEL, v, 0);
+                                SendMessageW(h, LB_SETCURSEL, static_cast<WPARAM>(v), 0);
                                 InvalidateRect(h, nullptr, FALSE);
                                 break;
                             }
@@ -443,12 +446,12 @@ LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         RECT rc;
         GetWindowRect(h, &rc);
         // 四条边而不是 Rectangle+NULL_BRUSH：复用唯一的分隔线原语，少一套 pen/brush 样板。
-        const int w = rc.right - rc.left;
+        const int wndW = rc.right - rc.left;   // 不叫 w：本函数上半段已有一个 w
         const int hh = rc.bottom - rc.top;
-        RECT t{0, 0, w, 0};
-        RECT b{0, hh - 1, w, hh - 1};
+        RECT t{0, 0, wndW, 0};
+        RECT b{0, hh - 1, wndW, hh - 1};
         RECT lf{0, 0, 0, hh};
-        RECT rt{w - 1, 0, w - 1, hh};
+        RECT rt{wndW - 1, 0, wndW - 1, hh};
         ui::DrawSeparator(dc, t, false, st->theme->line);
         ui::DrawSeparator(dc, b, false, st->theme->line);
         ui::DrawSeparator(dc, lf, true, st->theme->line);
@@ -673,8 +676,8 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
         for (int ni : st.visible) {
             int id = static_cast<int>(SendMessageW(st.list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"")));
             if (id >= 0) {
-                SendMessageW(st.list, LB_SETITEMDATA, id, static_cast<LPARAM>(ni));
-                SendMessageW(st.list, LB_SETITEMHEIGHT, id, st.itemH);
+                SendMessageW(st.list, LB_SETITEMDATA, static_cast<WPARAM>(id), static_cast<LPARAM>(ni));
+                SendMessageW(st.list, LB_SETITEMHEIGHT, static_cast<WPARAM>(id), st.itemH);
             }
         }
     } else {
@@ -682,8 +685,8 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
             LRESULT idx = SendMessageW(st.list, LB_ADDSTRING, 0,
                                        reinterpret_cast<LPARAM>((*st.rows)[i].label.c_str()));
             if (idx >= 0) {
-                SendMessageW(st.list, LB_SETITEMDATA, idx, static_cast<LPARAM>(i));
-                SendMessageW(st.list, LB_SETITEMHEIGHT, idx,
+                SendMessageW(st.list, LB_SETITEMDATA, static_cast<WPARAM>(idx), static_cast<LPARAM>(i));
+                SendMessageW(st.list, LB_SETITEMHEIGHT, static_cast<WPARAM>(idx),
                              RowHeight(&st, static_cast<int>(i)));
             }
         }
@@ -708,6 +711,7 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
     // "用户想收回时窗口早过期"的问题。
     SetCapture(st.list);
     popup::NoteOpened(st.toggleKey.c_str());
+    LogDbg(L"[popup] open key=%s cap=%p", st.toggleKey.c_str(), GetCapture());
 
     // 对齐 mod 19298-19301：GetMessage 返回 -1 是错误（不能继续循环），
     // 返回 0 是 WM_QUIT（必须原样 PostQuitMessage 交还宿主）。
@@ -724,6 +728,7 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
     // 注销要无条件做：不管这次是"选中/Esc"主动结束，还是"点外部/失活"被动结束，
     // 弹层没了的下一瞬间，同键的 Show* 都必须能正常打开。
     popup::NoteClosed(st.toggleKey.c_str());
+    LogDbg(L"[popup] close key=%s picked=%d", st.toggleKey.c_str(), st.picked);
     if (IsWindow(st.self)) DestroyWindow(st.self);
 }
 
