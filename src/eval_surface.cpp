@@ -203,17 +203,11 @@ std::wstring CanonicalForm(const json::Value& manifest) {
 
 bool ComputeSelfSealOf(const json::Value& manifest, std::wstring* out) {
     const std::wstring canon = CanonicalForm(manifest);
-    std::string utf8;
-    {
-        const int n = WideCharToMultiByte(CP_UTF8, 0, canon.c_str(),
-                                          static_cast<int>(canon.size()),
-                                          nullptr, 0, nullptr, nullptr);
-        if (n <= 0) return false;
-        utf8.resize(static_cast<size_t>(n));
-        WideCharToMultiByte(CP_UTF8, 0, canon.c_str(),
-                            static_cast<int>(canon.size()),
-                            utf8.data(), n, nullptr, nullptr);
-    }
+    // 统一走 str::ToUtf8（不直接调 WideCharToMultiByte）：
+    // 转换规则散在多处时，"清单正文到底按什么字节算哈希"就会变得不确定 ——
+    // 而 selfSeal 的全部意义就是"这个字节序列是唯一的"。
+    const std::string utf8 = str::ToUtf8(canon);
+    if (utf8.empty() && !canon.empty()) return false;
     return filehash::HashBytes(utf8.data(), utf8.size(), filehash::Algo::Sha256, out);
 }
 

@@ -40,7 +40,9 @@ bool EnsureDir(const std::wstring& dir) {
                 if (i < dir.size()) cur += dir[i];
                 continue;
             }
-            if (!CreateDirectoryW(cur.c_str(), nullptr) &&
+            // 长路径：CreateDirectoryW 同样受 MAX_PATH 限制，
+            // 深目录（>260 字符）必须走扩展前缀，否则建不出来。
+            if (!CreateDirectoryW(tf::ToExtended(cur).c_str(), nullptr) &&
                 GetLastError() != ERROR_ALREADY_EXISTS)
                 return false;
         }
@@ -140,12 +142,13 @@ std::vector<std::wstring> ChangedFiles() {
 
 unsigned long long FileSizeOf(const std::wstring& path) {
     WIN32_FILE_ATTRIBUTE_DATA attr{};
-    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attr)) return 0;
+    if (!GetFileAttributesExW(tf::ToExtended(path).c_str(), GetFileExInfoStandard, &attr))
+        return 0;
     return (static_cast<unsigned long long>(attr.nFileSizeHigh) << 32) | attr.nFileSizeLow;
 }
 
 bool IsDirectory(const std::wstring& path) {
-    const DWORD attr = GetFileAttributesW(path.c_str());
+    const DWORD attr = GetFileAttributesW(tf::ToExtended(path).c_str());
     return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
@@ -153,7 +156,8 @@ bool IsDirectory(const std::wstring& path) {
 bool CopyFileTo(const std::wstring& src, const std::wstring& dst) {
     const std::wstring dir = ParentOf(dst);
     if (!dir.empty() && !EnsureDir(dir)) return false;
-    return CopyFileW(src.c_str(), dst.c_str(), FALSE) != FALSE;
+    // CopyFileW 同样受 MAX_PATH 限制：源与目标都要走扩展前缀。
+    return CopyFileW(tf::ToExtended(src).c_str(), tf::ToExtended(dst).c_str(), FALSE) != FALSE;
 }
 
 std::wstring HashOf(const std::wstring& rel) {
