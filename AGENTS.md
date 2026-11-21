@@ -137,8 +137,10 @@ python tests/e2e/bookmark_move_e2e.py 坚果云    # E2E 闭环验收（落盘/�
 
 | 规则 | 判据 / 做法 |
 |---|---|
-| 单文件 ≤500 行 | `wc -l src/*.cpp` 按行数倒序看头部；超了按职责拆（`nav_bar` → `nav_bar_draw` / `nav_bar_actions`） |
+| 单文件 ≤500 行 | `wc -l src/*.cpp` 按行数倒序看头部；超了按职责拆（`nav_bar` → `nav_bar_draw` / `nav_bar_actions`）。棘轮在 `data/file-length-baseline.json`：涨过记账行数即报错，降下来自动收紧 |
 | 一文件一职责 | 文件名能一句话说清它干什么；说不清就是两个文件 |
+| **按作用域拆，不按行数拆** | `shell_ops.cpp` 的"视图作用域"与 `shell_ops_path.cpp` 的"路径作用域"是两种语义；`app_commands_files.cpp` 的 `file.*`（选中集）与 `app_commands_fs.cpp` 的 `fs.*`（点名路径）入参就不同。混在一起时读的人要翻到文件末尾才发现还有另一套语义 |
+| **共用机制只有一份** | `IFileOperation` 的执行与判败只有 `shellopexec::Run()`（`src/shell_op_exec.{h,cpp}`）一处 —— 抄一半就会漏 `GetAnyOperationsAborted` |
 | 一个共享头 | 只有 `common.h` 被所有 TU 包含，只放类型/常量/纯内联工具，**不放业务** |
 | 依赖单向 | `app` → 各栏 / `shell_view` → `nav_model` / `theme` → `common`；下层不得反向 include 上层 |
 | 无全局可变状态 | 例外只有 `App::Get()` / `Config::Get()` / `ai_server` 的管道线程状态；栏与组件内部不得有文件级可变状态 |
@@ -171,6 +173,44 @@ python tests/e2e/bookmark_move_e2e.py 坚果云    # E2E 闭环验收（落盘/�
   （`scripts/shot.py` 按 `ExBarBrowser_Main` 找窗口），改名要同批改脚本与文档。
 - 跨软件契约永不改名：`EXBAR_ID` / `EXBAR_ICON` / `EXBAR_FLAGS` 书签属性、
   `data/` 下文件名、`settings.json` 键名、`WM_COPYDATA` 魔数 `0xEBB1`。
+
+### 4.1 三条"说真话"的口径（2026-11-21 起）
+
+**① 外部路径进 shell 前必须过 `pathutil::ToShellPath`**
+
+`SHCreateItemFromParsingName` / `SHParseDisplayName` **只认反斜杠**，
+收到 `C:/dir/file.txt` 直接返回 `E_INVALIDARG(0x80070057)`；而正斜杠在
+Windows 里是完全合法的路径写法（`CreateFile` 也接受），AI 也天然会这么写。
+
+规则：**任何来自外部（AI / 脚本 / 命令行 / 配置）的路径，
+在交给 shell API 之前一律 `pathutil::ToShellPath()`**（正斜杠→反斜杠、
+折叠连续分隔符、去尾分隔符；`::` / `shell:` 命名空间原样）。
+唯一实现在 `src/path_util.{h,cpp}`，不要另抄一份。
+
+不归一化的后果不是"报错"，而是"报一个错的错"——"无法定位源文件
+（HRESULT=0x80070057）"，使用者完全看不出真因是分隔符。
+
+**② 声明 `undoable=1` 就要真的有撤销机制**
+
+`Effects::undoable` 的语义是"**我们**能不能撤销"（不是"系统理论上能不能"）。
+声明了却没有撤销栈 = 对调用方说谎。`tools/check_ai_meta.py` 第 25 项按
+`UNDO_MECHANISM` 清单做**双向**校验：声明了必须有机制，登记了也必须真声明。
+
+文件操作的撤销栈是**应用内自建**的（`src/file_undo.{h,cpp}`，逆操作式，
+上限 20，同 `bmk.*` 口径）。两条边界规则：
+- 机器**不能**撤销人工的操作（栈顶是人工操作时，机器调用直接失败）；
+- 撤销失败**不弹栈**（记录还在，可重试）；部分失败时把已撤成功的项剔掉。
+
+`Effects` 的常量在 `src/commands.cpp` 顶部（`kEffectDelete` / `kEffectRename` …），
+`file.*` 与 `fs.*` 引用**同一份** —— 同义命令两套声明是 P0-11 那类缺陷。
+
+**③ `actor` 是身份类型，不是字符串**
+
+`ActorKind { Human, Ai }` + `Actor{kind, source}`。工厂：`Actor::Ui()` /
+`Key()` / `Mouse()` / `SysMenu()` / `Palette()` / `Seq()` / `Drop()` /
+`Settings()` / `Ai()`。`fromMachine()` 判的是 `kind == Ai`，
+**不是**"来源字符串不是 ui/key/mouse"—— 那样会把真人输入判成机器
+（P0-10：撤销边界、审计归类、分级审批全都以它为前提）。
 
 ---
 
@@ -236,6 +276,11 @@ python tests/e2e/bookmark_move_e2e.py 坚果云    # E2E 闭环验收（落盘/�
 | `EXBARBROWSER_MULTI=1` 后连不上通道 | 发现文件被写到 `data\profile-multi\`，不是 `data\` | 用 `agentctl`（自动在两个目录找活的端点），不要写死 `data\ai-pipe.txt` |
 | 启动成功但下一次调用 `channel_down` | 命令结束时子进程被连带回收 | 用后台任务跑 `agentctl serve`，不要用一次性 `up` |
 | `--help` 打不出用法就以为脚本坏了 | `tools/check_components.py` 没有 `--help`，任何参数都会直接跑检查 | 看脚本头注释；查规则用 `--list` |
+| 给 shell 的路径忘了转义分隔符 | `SHCreateItemFromParsingName` 对 `C:/x` 返回 `E_INVALIDARG(0x80070057)`，报错却是"无法定位源文件" | 外部路径一律 `pathutil::ToShellPath()`；见 §4.1 ① |
+| `fs.rename` 报"目标不在当前视图" | 目标**确实**不在视图里（路径写错 / 目标已改名），不是 bug | 先 `tool.list` 看当前目录里到底有什么 |
+| 改了 `tests/` 或 `tools/` 就跑 `dev.build` | 评估面清单过期 → 信任层 fail-closed → 直接拒绝启动 | `python tools/gen_eval_baseline.py --human-confirm` **并提交**，见 §7 |
+| 行数棘轮在**编辑中途**量基线 | 记账值比真正提交进去的少（如 `shell_ops.cpp` 记 1384、实际提交 1502）→ 棘轮在自己诞生的那笔提交上就报错 | 基线必须在**提交态**量：`git stash` 掉改动后量，或提交后再跑 `--update-length-baseline` |
+| 抄一半 `IFileOperation` 的判败逻辑 | 删除路径查 `GetAnyOperationsAborted`、改名路径不查 → "用户取消了删除"被记成 ok=1 | 执行器只有一份：`shellopexec::Run()`（`src/shell_op_exec.{h,cpp}`），两边都调它 |
 
 ---
 
@@ -245,6 +290,10 @@ python tests/e2e/bookmark_move_e2e.py 坚果云    # E2E 闭环验收（落盘/�
 - [ ] `agentctl.py status` 的 `stale=false` —— 验证的是本次构建的产物，不是旧 exe
 - [ ] `bash tests/run_all.sh` 全绿（动到命令表 / 输入端 / AI 元数据时必跑）
 - [ ] `check_commands.py` / `check_ai_meta.py` / `check_components.py` 三个全绿
+- [ ] **动过 `tests/` 或 `tools/` 的话**：`python tools/gen_eval_baseline.py --human-confirm`
+      重新签发评估面，**并把 `data/eval-surface.json` 提交** ——
+      清单的信任锚就是"已被 git 跟踪 + 工作树干净"，没提交的话
+      `dev.build` / `dev.test` 会 fail-closed 拒绝启动（这是对的，不是 bug）
 - [ ] 没有新增模拟输入；新脚本头注释写了"不发合成输入，只读；不动光标、不抢焦点"
 - [ ] 改到交互路径的：手点一遍；深/浅色、100%/150% DPI 各看一次；必要时 `scripts\shot.py` 留图
 - [ ] `CHANGELOG.md` 的 `[Unreleased]` 有对应条目
