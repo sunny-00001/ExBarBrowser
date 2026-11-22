@@ -18,6 +18,10 @@ backup/
 shot*.png
 out*.png
 
+# Python 字节码：tools/ 下的 CLI 每次运行都可能生成，不入库
+__pycache__/
+*.pyc
+
 # 编辑器 / 系统
 .vs/
 .vscode/
