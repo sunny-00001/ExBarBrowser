@@ -2030,6 +2030,54 @@ def main():
     else:
         ok('配对 e-process（E ≥ 1/α）+ 原始轨迹 archive + 五级 funnel，且有假接受率实测')
 
+    # ---------------------------------------------------------------- 27
+    # 第 2 档 序 8（B8 + B5 + P2-9 + B12）：事件必须跨重启可追溯。
+    # 只留内存环形缓冲 = 反思没有原料；没有 trace/turn/step = 无法把一条
+    # 事件对回"第几轮第几步"；不读 _meta.traceparent = 跨进程 trace 断开。
+    print('\n27. 事件必须落盘 + 三级轨迹 + 请求 _meta 贯穿')
+    ev2_h = (ROOT / 'src/ai_events.h').read_text(encoding='utf-8', errors='replace')
+    ev2_cpp = (ROOT / 'src/ai_events.cpp').read_text(encoding='utf-8', errors='replace')
+    ev2_srv = (ROOT / 'src/ai_server.cpp').read_text(encoding='utf-8', errors='replace')
+    ev2_test = (ROOT / 'tests/events_test.cpp').read_text(encoding='utf-8', errors='replace')
+    ev2_missing = []
+    for label, cond in [
+        ('事件落盘 events.jsonl 并按大小轮转',
+         'L"events.jsonl"' in ev2_cpp and 'tf::AppendLine(EventsPath()' in ev2_cpp
+         and 'kRotateBytes' in ev2_cpp),
+        ('启动时恢复序号与历史（不是重启就清零）',
+         'void LoadFromDisk()' in ev2_cpp and 'events::LoadFromDisk();' in ev2_srv),
+        ('Clear 只清内存，磁盘历史留着',
+         'void Clear()' in ev2_cpp and 'g_events.clear();' in ev2_cpp),
+        ('事件带 traceId / spanId / turn / step / ts',
+         all(k in ev2_h for k in ('std::wstring traceId', 'std::wstring spanId',
+                                  'int turn', 'int step', 'std::wstring ts'))),
+        ('落盘与推送同源投影（字段不会只对一边有）',
+         'json::Value ToValue(const Event& e)' in ev2_cpp
+         and 'json::Value v = ToValue(e)' in ev2_cpp),
+        ('W3C traceparent 严格解析（55 字符 / ff 版本 / 全零 id）',
+         'text.size() != 55' in ev2_cpp and '0xff' in ev2_cpp
+         and 'traceZero' in ev2_cpp and 'spanZero' in ev2_cpp),
+        ('请求读 params._meta.traceparent',
+         'TraceContextFromRequest' in ev2_h and 'L"traceparent"' in ev2_cpp
+         and 'L"_meta"' in ev2_cpp),
+        ('请求边界建 scope，审计 traceId 与事件同源',
+         'RequestScope traceScope(req)' in ev2_srv
+         and 'events::CurrentTraceIdOr(' in ev2_srv),
+        ('嵌套请求分派不另开一轮', 'if (t_armed) return;' in ev2_cpp),
+        ('单测覆盖 traceparent / 三级轨迹 / 落盘往返',
+         'ParseTraceparent(tp' in ev2_test and 'LoadFromDisk()' in ev2_test
+         and 'GetStr(L"parentSpanId")' in ev2_test),
+        ('落盘事件不入库（不污染 dev.diff）',
+         'data/events.jsonl' in (ROOT / '.gitignore').read_text(encoding='utf-8', errors='replace')),
+    ]:
+        if not cond:
+            ev2_missing.append(label)
+    if ev2_missing:
+        for label in ev2_missing:
+            fail('事件落盘 / 三级轨迹缺：' + label)
+    else:
+        ok('事件落盘可跨重启续接，traceId/turn/step 贯穿请求与审计')
+
     print()
     if g_fail:
         print(f'失败 {g_fail} 项')

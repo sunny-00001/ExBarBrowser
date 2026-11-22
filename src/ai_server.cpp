@@ -93,8 +93,7 @@ BOOL CALLBACK FindOwnMainProc(HWND h, LPARAM lp) {
     GetWindowThreadProcessId(h, &pid);
     if (pid != GetCurrentProcessId()) return TRUE;
     wchar_t cls[64] = L"";
-    if (GetClassNameW(h, cls, _countof(cls)) &&
-        wcscmp(cls, id::kMainClass) == 0) {
+    if (GetClassNameW(h, cls, _countof(cls)) && wcscmp(cls, id::kMainClass) == 0) {
         *reinterpret_cast<HWND*>(lp) = h;
         return FALSE;
     }
@@ -111,8 +110,7 @@ std::wstring PipeName() {
     const unsigned long pid = GetCurrentProcessId();
     wchar_t buf[80];
     if (HWND h = OwnMainWindow())
-        swprintf(buf, 80, L"%llx_%lu",
-                 static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(h)), pid);
+        swprintf(buf, 80, L"%llx_%lu", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(h)), pid);
     else
         swprintf(buf, 80, L"default_%lu", pid);
     return std::wstring(kPipePrefix) + buf;
@@ -168,15 +166,12 @@ std::wstring RunOnUiThread(const std::wstring& request) {
 
 // 订阅请求识别与游标提取。放在管道线程用，只解析不执行任何命令。
 bool IsSubscribeRequest(const std::string& line) {
-    json::Value req;
-    std::wstring err;
-    return json::Parse(str::FromUtf8(line), req, &err) &&
-           req.GetStr(L"method") == L"events/subscribe";
+    json::Value req; std::wstring err;
+    return json::Parse(str::FromUtf8(line), req, &err) && req.GetStr(L"method") == L"events/subscribe";
 }
 
 uint64_t AfterOfRequest(const std::string& line) {
-    json::Value req;
-    std::wstring err;
+    json::Value req; std::wstring err;
     if (!json::Parse(str::FromUtf8(line), req, &err)) return 0;
     uint64_t after = static_cast<uint64_t>(req.GetInt(L"after", 0));
     if (const json::Value* p = req.Find(L"params"))
@@ -348,8 +343,9 @@ bool StartServer(void (*postToUi)(const std::wstring& requestLine)) {
     if (g_running) return true;
     g_token = MakeToken();
     g_pipe_name = PipeName();
-    // 每次启动都是一条新的事件流：旧进程的历史不应被新客户端当成刚刚发生的。
-    events::Clear();
+    // 恢复上一进程留下的最近事件与序号（B8）：磁盘历史不能被新进程当成
+    // "刚刚发生的"，但也不能因为重启就消失 —— 自迭代要在它上面做反思。
+    events::LoadFromDisk();
     events::ResetStateBaseline();
     WriteDiscoveryFiles(g_token, g_pipe_name);
     g_running = true;
@@ -496,6 +492,10 @@ std::wstring HandleRequestLine(const std::wstring& line) {
     if (!json::Parse(line, req, &perr) || !req.IsObject())
         return json::Stringify(Err(L"invalid_json"), 0);
 
+    // 请求边界：解析 _meta.traceparent，开一轮 trace。命令、事件、审计
+    // 在整条调用链上共用同一个 traceId（B5 / P2-9 / B12）。
+    const events::RequestScope traceScope(req);
+
     // ---- 协议分派：有 jsonrpc 字段走 JSON-RPC 2.0（MCP 兼容），否则走旧格式 ----
     if (req.Find(L"jsonrpc")) return HandleRpcLine(req);
 
@@ -562,7 +562,8 @@ std::wstring HandleRequestLine(const std::wstring& line) {
         const json::Value* args = req.Find(L"args");
         const json::Value empty = json::Value::MakeObject();
         const bool approve = req.GetBool(L"approve", false);
-        CallResult r = Call(name, args ? *args : empty, approve);
+        CallResult r = Call(name, args ? *args : empty, approve,
+                            events::CurrentTraceIdOr(std::wstring()));
         return ResultToJson(r);
     }
 
@@ -576,11 +577,8 @@ namespace {
 // 从 JSON-RPC 请求里取令牌：MCP 没有令牌概念，所以约定放 params.__token；
 // 也接受顶层 token（有些客户端会把自定义字段放外面）。
 std::wstring RpcToken(const json::Value& req) {
-    if (const json::Value* params = req.Find(L"params")) {
-        if (params->IsObject()) {
-            std::wstring t = params->GetStr(L"__token");
-            if (!t.empty()) return t;
-        }
+    if (const json::Value* p = req.Find(L"params")) {
+        if (p->IsObject() && !p->GetStr(L"__token").empty()) return p->GetStr(L"__token");
     }
     return req.GetStr(L"token");
 }
@@ -678,7 +676,8 @@ std::wstring HandleRpcLine(const json::Value& req) {
         const json::Value emptyArgs = json::Value::MakeObject();
         const bool approve = p.GetBool(L"approve", false);
 
-        CallResult r = Call(name, arguments ? *arguments : emptyArgs, approve, ai::TraceIdOf(id));
+        CallResult r = Call(name, arguments ? *arguments : emptyArgs, approve,
+                            events::CurrentTraceIdOr(ai::TraceIdOf(id)));
 
         // MCP 的 Tool Result 形状：content 数组 + isError。
         // 失败也走 result（不是 JSON-RPC error）—— 那是"工具执行失败"，

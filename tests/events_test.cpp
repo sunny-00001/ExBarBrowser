@@ -5,7 +5,10 @@
 
 #include "ai_api.h"
 #include "ai_events.h"
+#include "common.h"
+#include "config.h"
 #include "json.h"
+#include "text_file.h"
 
 static int g_pass = 0, g_fail = 0;
 
@@ -91,6 +94,101 @@ int main() {
                one->Find(L"data")->Find(L"state")->GetStr(L"activePath") == L"C:\\two",
            "载荷里带的是新状态，不是旧快照");
     ai::SetStateProvider(nullptr);
+
+    // ---- B5 / B12：W3C traceparent 与三级轨迹 ----
+    // 解析必须严格：格式不对就当没有，绝不"尽力猜一个 traceId"——
+    // 猜出来的 trace 会让两个无关请求在观测面上并成一条，比没有更糟。
+    const std::wstring tp = L"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    TraceContext tc;
+    Expect(ParseTraceparent(tp, &tc), "合法 traceparent 通过");
+    Expect(tc.traceId == L"4bf92f3577b34da6a3ce929d0e0e4736", "trace-id 取 32 hex");
+    Expect(tc.parentSpanId == L"00f067aa0ba902b7", "span-id 取 16 hex");
+    Expect(tc.flags == 1, "trace flags 取对");
+    Expect(!ParseTraceparent(L"ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", &tc),
+           "ff 版本（W3C 保留）拒绝");
+    Expect(!ParseTraceparent(L"00-00000000000000000000000000000000-00f067aa0ba902b7-01", &tc),
+           "全零 trace-id 拒绝");
+    Expect(!ParseTraceparent(L"00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01", &tc),
+           "全零 span-id 拒绝");
+    Expect(!ParseTraceparent(L"00-4bf92f3577b34da6a3ce929d0e0e473g-00f067aa0ba902b7-01", &tc),
+           "非 hex 字符拒绝");
+    Expect(!ParseTraceparent(L"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-0111", &tc),
+           "长度不对拒绝");
+
+    // _meta 可能在 params 里（JSON-RPC），也可能在顶层（旧格式）。
+    json::Value meta = json::Value::MakeObject();
+    meta.Set(L"traceparent", json::Value::MakeStr(tp));
+    json::Value params = json::Value::MakeObject();
+    params.Set(L"_meta", meta);
+    json::Value req = json::Value::MakeObject();
+    req.Set(L"params", params);
+    TraceContext fromReq;
+    Expect(TraceContextFromRequest(req, &fromReq) && fromReq.traceId == tc.traceId,
+           "params._meta.traceparent 能读到");
+    json::Value reqTop = json::Value::MakeObject();
+    reqTop.Set(L"_meta", meta);
+    Expect(TraceContextFromRequest(reqTop, &fromReq), "顶层 _meta 也能读到");
+    json::Value bad = json::Value::MakeObject();
+    bad.Set(L"params", json::Value::MakeObject());
+    Expect(!TraceContextFromRequest(bad, &fromReq), "没有 _meta 返回 false，不编造 trace");
+
+    Clear();
+    const uint64_t tb = LastSeq();
+    {
+        RequestScope scope(req);
+        Expect(CurrentTraceIdOr(L"fallback") == tc.traceId, "请求上下文里的 traceId 覆盖 fallback");
+        Publish(L"invoke_agent", d);
+        Publish(L"execute_tool", d);
+        {
+            RequestScope nested(req);
+            Publish(L"chat", d);
+        }
+        json::Value traced = Parse(Since(tb));
+        const auto& evs = traced.Find(L"events")->arr;
+        Expect(evs.size() == 3, "三条轨迹事件都发出");
+        Expect(evs[0].GetStr(L"traceId") == tc.traceId, "事件带 W3C traceId");
+        Expect(evs[0].GetStr(L"parentSpanId") == tc.parentSpanId, "首条事件挂上游 span");
+        Expect(evs[1].GetStr(L"parentSpanId") == evs[0].GetStr(L"spanId"),
+               "同轮内 span 串成链");
+        Expect(evs[2].GetInt(L"turn", -1) == evs[0].GetInt(L"turn", -1),
+               "嵌套 scope 不另开一轮");
+        Expect(evs[0].GetInt(L"step", 0) == 1 && evs[2].GetInt(L"step", 0) == 3,
+               "step 在本轮内递增");
+        Expect(!evs[0].GetStr(L"ts").empty(), "事件带 ISO 时间戳");
+    }
+    Expect(CurrentTraceIdOr(L"fallback") == L"fallback", "离开请求边界后上下文恢复");
+
+    // ---- B8：落盘 + 跨重启恢复 ----
+    // 用独立 profile，免得测试把真实 data/events.jsonl 当成自己的草稿纸。
+    const std::wstring originalDir = Config::Get().Dir();
+    const std::wstring tmpDir = tf::Join(originalDir, L"events-test");
+    tf::EnsureDir(tmpDir);
+    Config::Get().SetProfileDir(tmpDir);
+    const std::wstring path = EventsPath();
+    DeleteFileW(tf::ToExtended(path).c_str());
+    DeleteFileW(tf::ToExtended(path + L".1").c_str());
+
+    Clear();
+    const uint64_t db = LastSeq();
+    {
+        RequestScope scope(req);
+        Publish(L"command", d);
+    }
+    Expect(tf::Exists(path), "事件写到 data/events.jsonl");
+    std::wstring disk;
+    Expect(tf::ReadText(path, &disk) &&
+               disk.find(L"\"traceId\"") != std::wstring::npos &&
+               disk.find(L"\"step\"") != std::wstring::npos,
+           "落盘行带 traceId / step（不是只写一行 type）");
+    Clear();
+    Expect(tf::Exists(path), "Clear 只清内存，不删磁盘历史");
+    LoadFromDisk();
+    Expect(LastSeq() == db + 1, "重启后序号从磁盘接回，不从头开始");
+    json::Value revived = Parse(Since(db));
+    const auto& rev = revived.Find(L"events")->arr;
+    Expect(rev.size() == 1 && rev[0].GetStr(L"traceId") == tc.traceId,
+           "重启后补回历史且三级轨迹不丢");
+    Config::Get().SetProfileDir(originalDir);
 
     std::printf("  通过 %d / 失败 %d\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

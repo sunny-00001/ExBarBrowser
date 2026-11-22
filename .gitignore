@@ -64,6 +64,11 @@ data/audit.log
 data/audit.log.1
 data/audit.jsonl
 data/audit.jsonl.1
+# 事件流落盘（B8）：跨重启观测历史，含轮转副本。与审计同理不入库；
+# 被忽略才不会被 dev.diff 当成"未跟踪改动"混进候选源码。
+data/events.jsonl
+data/events.jsonl.1
+data/events-test/
 data/ai-token.txt
 data/ai-pipe.txt
 data/.write-probe
