@@ -10,6 +10,8 @@
 #   serve/up/status/down   进程与通道的生命周期，**不碰用户的窗口**（只关自己启的那一个）
 #   tools/call             与 ebbctl 同语义，额外带"第几次重试"与数据目录自动发现
 #   gap                    按产品返回的 errorCode 分类，翻译成"缺哪类能力 + 补哪几处代码"
+#   experience/stats       跨会话经验（先验证再入库 + 可疑隔离 + 上限淘汰）与 B7 统计
+#                          统计优先读 events.jsonl，旧实例回退 audit.jsonl，不报假零
 #
 # R21：全程只走命名管道，不发任何输入消息、不动光标、不抢焦点。
 # 关闭实例用 WM_CLOSE（非输入消息，允许），且只对 data/.agentctl.pid 记录的自有实例。
@@ -30,6 +32,9 @@
 #   python tools/agentctl.py tools [--grep bmk]
 #   python tools/agentctl.py call bmk.list '{}' [--approve] [--retry 2]
 #   python tools/agentctl.py gap bmk.move '{"id":"b-14"}'
+#   python tools/agentctl.py experience add bmk.list --insight "先列书签再下命令"
+#   python tools/agentctl.py experience ls [--all]
+#   python tools/agentctl.py stats
 #
 # 退出码：0 达成；1 未达成（verdict=false / 有缺口）；2 环境问题（通道/构建）。
 import argparse
@@ -48,6 +53,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _HERE)
 from ebbctl import Client, ChannelError  # noqa: E402
+import experience  # noqa: E402
 
 DATA = os.path.join(ROOT, "data")
 EXE = os.path.join(ROOT, "ExBarBrowser.exe")
@@ -700,6 +706,67 @@ def cmd_gap(a):
     return 0 if reason == "ok" else 1
 
 
+# ------------------------------------------------------- C5/C5b 经验沉淀
+
+def _experience_verify(a, spec, proof):
+    """先验证再入库：只读命令现场调一次；写命令必须拿 events.jsonl 里的
+    真实成功事件当证据。绝不因为调用方自报"我成功了"就放进池子。"""
+    if a.command not in spec:
+        return False, "not_in_tools"
+    if spec[a.command].get("annotations", {}).get("readOnlyHint"):
+        r = _call(a.command, {}, False, a.data_dir)
+        return bool(r.get("ok")), {"ok": bool(r.get("ok")),
+                                   "errorCode": r.get("errorCode")}
+    return experience.verify_against_events(a.data_dir, proof, a.command)
+
+
+def cmd_experience(a):
+    data_dir = a.data_dir or DATA
+    act = a.experience_cmd
+    if act == "ls":
+        out = experience.list_entries(data_dir, a.all)
+    elif act == "add":
+        try:
+            args = json.loads(a.args or "{}")
+            proof = json.loads(a.proof or "{}") if a.proof else None
+        except json.JSONDecodeError as ex:
+            print(json.dumps({"ok": False, "reason": "bad_json", "detail": str(ex)},
+                             ensure_ascii=False, indent=2))
+            return 2
+        try:
+            spec = _tools(a.data_dir)
+        except ChannelError:
+            print(json.dumps({"ok": False, "reason": "channel_down"},
+                             ensure_ascii=False, indent=2))
+            return 2
+        entry = {"kind": a.kind, "command": a.command, "insight": a.insight,
+                 "args": args, "source": "agentctl"}
+        if proof is not None:
+            entry["proof"] = proof
+        out = experience.add(data_dir, entry,
+                             verify_fn=lambda c, _u: _experience_verify(a, spec, proof))
+    elif act == "vote":
+        out = experience.vote(data_dir, a.entry_id, a.direction)
+    elif act == "edit":
+        try:
+            spec = _tools(a.data_dir)
+        except ChannelError:
+            print(json.dumps({"ok": False, "reason": "channel_down"},
+                             ensure_ascii=False, indent=2))
+            return 2
+        out = experience.edit(data_dir, a.entry_id, a.insight,
+                              verify_fn=lambda c, u: _experience_verify(a, spec, None))
+    else:
+        out = {"ok": False, "reason": "unknown_action"}
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0 if out.get("ok", True) else 1
+
+
+def cmd_stats(a):
+    print(json.dumps(experience.stats(a.data_dir or DATA), ensure_ascii=False, indent=2))
+    return 0
+
+
 # --------------------------------------------------------------------- 入口
 
 def main(argv=None):
@@ -735,7 +802,30 @@ def main(argv=None):
     p.add_argument("args", nargs="?", default="{}")
     p.add_argument("--approve", action="store_true")
 
+    p = sub.add_parser("experience", help="跨会话经验沉淀（先验证再入库，含污染隔离）")
+    ex = p.add_subparsers(dest="experience_cmd", required=True)
+    p_add = ex.add_parser("add", help="新增一条经验；只读命令现场验证，写命令要 proof")
+    p_add.add_argument("command")
+    p_add.add_argument("--kind", choices=experience.KINDS, default="success")
+    p_add.add_argument("--insight", required=True)
+    p_add.add_argument("--args", default="{}", help="只读命令的验证参数（JSON 对象）")
+    p_add.add_argument("--proof", help='写命令的成功证据：\'{"seq":N,"traceId":"..."}\'')
+    p_ls = ex.add_parser("ls", help="列出活跃经验池与隔离/流水计数")
+    p_ls.add_argument("--all", action="store_true", help="连隔离与 ledger 一起输出")
+    p_vote = ex.add_parser("vote", help="UPVOTE / DOWNVOTE（ExpeL 口径）")
+    p_vote.add_argument("entry_id")
+    p_vote.add_argument("direction", choices=("up", "down"))
+    p_edit = ex.add_parser("edit", help="改写经验；会重新验证，不能绕过入库门槛")
+    p_edit.add_argument("entry_id")
+    p_edit.add_argument("--insight", required=True)
+
+    sub.add_parser("stats", help="每工具错误率 / 每任务轮数 / 人工改写率（B7）")
+
     a = ap.parse_args(argv)
+    if a.cmd == "experience":
+        return cmd_experience(a)
+    if a.cmd == "stats":
+        return cmd_stats(a)
     fn = {"status": cmd_status, "serve": cmd_serve, "up": cmd_up, "down": cmd_down,
           "tools": cmd_tools, "call": cmd_call, "gap": cmd_gap}[a.cmd]
     return fn(a)

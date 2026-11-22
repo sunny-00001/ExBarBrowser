@@ -69,6 +69,7 @@
         "check_commands.py",
         "check_components.py",
         "ebbctl.py",
+        "experience.py",
         "gen_eval_baseline.py",
         "gen_icon.py",
         "gen_keymap.py",
@@ -138,11 +139,12 @@
     "tests/test_store.cpp": "c7faf8cfefce436115627b7048cc7cf4cdcbc37312af81440c4541e5ee603948",
     "tests/upnav_test.cpp": "21be3da7d87e674b9cda90cd9782807a9bab72d7d1d6e5e3b8c45cbc2c39d792",
     "tests/view_modes_test.cpp": "ef1cf8345545fdc486f8bc73c1e363a1c381e6d0931f095800e0857a3694a884",
-    "tools/agentctl.py": "f3c82f13d956ea70908f14a00a21031df2ae73a1f519922ee656bf3b1ee0b22a",
-    "tools/check_ai_meta.py": "83748e2db2b9628491e6df72499791e779a34fb0384f9cf4d68cd84b6a830db5",
+    "tools/agentctl.py": "4a2ef6ec090591d9bc435528f7bc48bcf6dfa22ce3ebb5743c13ee56d9f74149",
+    "tools/check_ai_meta.py": "b9d83476cf1a4d4e6f9253c9e35793c837e4b78610cff0df5765992fb9aa7a4a",
     "tools/check_commands.py": "abb1f1e59cfbd25cd662dbf61f5d94d1a56f5db0ed2f6c77687aaa6aaa363147",
     "tools/check_components.py": "b2d6d52f1a62d67ea8b19d87235d2d21f8918000e4b3a3c71a67f88cc91bd2a8",
     "tools/ebbctl.py": "80a40d56b3ed3a261857f1bf054f7abe6a5ec05f4aa869cff7317797311f1119",
+    "tools/experience.py": "73858e4714a3950986d8e4a04ee2ecd39ec005450bc12f57d19b4e7151da4157",
     "tools/gen_eval_baseline.py": "2725544a6f5eca5ffc745e29f445bbc2acc544ea06dc050f61aee85a6cc3418c",
     "tools/gen_icon.py": "ac1d638edbbc1b2aafb7995b8a96a595e27ab78e6e316727a5a1cac61fc8c943",
     "tools/gen_keymap.py": "82d31ec0bb856f08dce29ab8f6aad8deb183e99e8bfda9f85b0a7247be98002b",
@@ -150,8 +152,8 @@
     "tools/probe_mcp_stdio.py": "24ebda63ce8f16ab530694154866157388e0dedd0a399d74049eb742a64582ac",
     "tools/probe_toggle.py": "b2a86e569ab57464bbbf6a5aef1754e546a2274153592d152dd699e574c0e5c0"
   },
-  "generatedAt": "2026-11-22T08:36:30+08:00",
+  "generatedAt": "2026-11-22T08:41:57+08:00",
   "note": "评估面清单：构建器/测试/校验器。改动这些文件后必须重新签发。",
-  "selfSeal": "b0aec430bf1f98f9f19e0470a1d8a2bcee080fe55d2998d5eb15b4048487e332",
+  "selfSeal": "27a83b5439fe4fd761bcb4992e1959218d90fe60b1546626fdaadba26d5cd4d9",
   "version": 1
 }

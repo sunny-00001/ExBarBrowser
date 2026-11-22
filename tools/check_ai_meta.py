@@ -2078,6 +2078,53 @@ def main():
     else:
         ok('事件落盘可跨重启续接，traceId/turn/step 贯穿请求与审计')
 
+    # ---------------------------------------------------------------- 28
+    # 第 2 档 序 9（C5 + C5b + B7）：经验沉淀不能变成作弊传播通道。
+    # EVOMAL 实测恶意技能自发复制 4.9–9.0 倍、删源后第 5 轮仍有 68% 攻击
+    # 成功率；技能池超临界规模反而拉低表现。所以这里钉的是四道硬闸：
+    # 先验证再入库 / 可疑隔离 / 容量上限 + 淘汰 / 每次变更进 ledger。
+    print('\n28. 跨会话经验必须先验证再入库，且带污染防护与统计')
+    exp_py = ROOT / 'tools/experience.py'
+    exp_text = exp_py.read_text(encoding='utf-8', errors='replace') if exp_py.exists() else ''
+    ctl_text = (ROOT / 'tools/agentctl.py').read_text(encoding='utf-8', errors='replace')
+    exp_missing = []
+    for label, cond in [
+        ('独立经验模块存在', exp_py.exists()),
+        ('ExpeL 四动作 ADD/UPVOTE/DOWNVOTE/EDIT 齐全',
+         all(k in exp_text for k in ('def add(', 'def vote(', 'def edit('))
+         and '"upvote"' in exp_text and '"downvote"' in exp_text),
+        ('agentctl 暴露 experience add/ls/vote/edit',
+         '"experience"' in ctl_text
+         and all(('add_parser("%s"' % n) in ctl_text for n in ('add', 'ls', 'vote', 'edit'))),
+        ('容量硬上限（Reflexion 3 条）',
+         'MAX_ACTIVE = 3' in exp_text and 'while len(active) > max_active' in exp_text),
+        ('淘汰理由进 ledger',
+         '"evict"' in exp_text and '"add"' in exp_text
+         and "LEDGER" in exp_text),
+        ('没有验证回调就拒绝入库',
+         'no verifier' in exp_text or 'verification_failed' in exp_text),
+        ('写命令 proof 必须命中真实事件',
+         'verify_against_events' in exp_text and 'no_matching_success_event' in exp_text),
+        ('可疑内容隔离而非只记日志',
+         'QUARANTINE' in exp_text and 'def suspicious_reasons' in exp_text
+         and '_quarantine(data_dir' in exp_text),
+        ('EDIT 重新验证，不能绕过入库门槛',
+         "def edit(" in exp_text and 'no_verifier' in exp_text),
+        ('B7 三项统计齐全（错误率 / 轮数 / 人工改写）',
+         "perToolErrorRate" in exp_text and "turnsPerTask" in exp_text
+         and "humanRewriteRate" in exp_text
+         and "add_parser(\"stats\"" in ctl_text),
+        ('统计有 audit 回退，不报假零',
+         'event_rows' in exp_text and 'if not event_rows' in exp_text),
+    ]:
+        if not cond:
+            exp_missing.append(label)
+    if exp_missing:
+        for label in exp_missing:
+            fail('跨会话经验缺：' + label)
+    else:
+        ok('经验池先验证后入库 + 隔离/淘汰/ledger；统计覆盖错误率、轮数、人工改写')
+
     print()
     if g_fail:
         print(f'失败 {g_fail} 项')
