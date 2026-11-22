@@ -205,6 +205,12 @@ const Alias kAliases[] = {
     {L"BmkMove",           L"bmk.move"},
     {L"BmkList",           L"bmk.list"},
     {L"BmkFocus",          L"bmk.focus"},
+    // 全量覆盖 Batch 2：书签文件 IO 与带参外部/剪贴板入口。
+    {L"BmkImport",         L"bmk.import"},
+    {L"BmkExport",         L"bmk.export"},
+    {L"BmkReload",         L"bmk.reload"},
+    {L"ClipboardCopy",     L"clipboard.copy"},
+    {L"ExtTerminalAt",     L"ext.terminal.at"},
 
     // --- Session（group=Session）---
     {L"SessionSave",       L"session.save"},

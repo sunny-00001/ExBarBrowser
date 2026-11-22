@@ -8,9 +8,9 @@ baseline: 2026-11-21 21:00
 > 回答一个问题：**独立进程路线现在能替代 explorer 到什么程度，缺口在哪，哪些缺口根本不该补。**
 >
 > 数据来源：`src/commands.cpp` 的命令目录（逐条对照 `implemented` 字段，不按 README 宣称），
-> mod 侧对照其 127 条命令目录（`data/capabilities.json`）。本工程在 mod 的 127 条之外自加 13 条
-> 命令（10 条确定式 `Fs*` + 3 条标签个性化 `tab.rename` / `tab.color` / `tab.close.duplicates`），
-> 因此总数以 `tools/check_commands.py` 实测为准（2026-11-22：**184 条**）。
+> mod 侧对照其 127 条命令目录（`data/capabilities.json`）。本工程在其上补了确定式操作、
+> 菜单动作、长任务/开发面等扩展命令；总数以 `tools/check_commands.py` 实测为准
+> （2026-11-22：**196 条**）。
 > 数字不写死在这里 —— 加一条命令就变，见 §2 口径说明。
 
 ---
@@ -33,18 +33,18 @@ baseline: 2026-11-21 21:00
 | Tab | 40 | 39 | 1（`tab.merge`） |
 | Go | 10 | 10 | 0 |
 | Nav | 10 | 10 | 0 |
-| Path | 7 | 6 | 1（`path.copy.link`） |
+| Path | 8 | 7 | 1（`path.copy.link`） |
 | File | 36 | 36 | 0 |
-| View | 19 | 18 | 1（`view.toggle.checkboxes`） |
+| View | 22 | 21 | 1（`view.toggle.checkboxes`） |
 | Window | 12 | 10 | 2（`win.ai.toggle` / `win.ai.stop`） |
-| External | 4 | 2 | 2（`ext.run` / `ext.sendkeys`） |
-| Bookmark | 18 | 18 | 0 |
+| External | 5 | 3 | 2（`ext.run` / `ext.sendkeys`） |
+| Bookmark | 21 | 21 | 0 |
 | Config | 3 | 3 | 0 |
-| Dev | 5 | 5 | 0 |
+| Dev | 9 | 9 | 0 |
 | Session | 8 | 8 | 0 |
 | Tool | 10 | 10 | 0 |
 | Search | 2 | 0 | 2（`search.everything` / `search.find`） |
-| **合计** | **184** | **175** | **9** |
+| **合计** | **196** | **187** | **9** |
 
 > 口径：脚本按 `src/commands.cpp` 里 `{CmdId::X, …}` 字面形式逐条统计分组与 `implemented`，
 > 不按 README 宣称。命令行：见 `tools/check_commands.py`（同时校验 keymap × 处理器三方一致）。
@@ -54,12 +54,20 @@ baseline: 2026-11-21 21:00
 > 该命令实测恒失败。降级让失败显形（详见 `docs/EXPLORER-GAP-AUDIT.md` §2.1），
 > 真搜索需要换宿主或接 `ISearchFolderItemFactory`，属另一件事。
 >
-> 总数 184 里，10 条确定式命令
+> 总数 196 里，10 条确定式命令
 > （`fs.open` / `fs.open.tab` / `fs.open.window` / `fs.copy.toclip` / `fs.cut.toclip` /
 > `fs.properties` / `fs.rename` / `fs.delete` / `fs.copy` / `fs.move`）不是"mod 有而我们没有"，
 > 而是"机器需要按路径点名操作"的补充 —— 详见 §3.5 与 `docs/OPERATION-MODEL.md` 第 4 步。
 > 另 3 条（`tab.rename` / `tab.color` / `tab.close.duplicates`）是标签右键菜单的补齐，
 > 每条都同时登记为命令（R20 人机等价：菜单动作必须有键盘/面板可达路径）。
+>
+> 2026-11-22 的覆盖率批次又补了 5 条：`bmk.import` / `bmk.export` / `bmk.reload`
+> （书签文件 IO，人走对话框、机器给完整路径）、`clipboard.copy` / `ext.terminal.at`
+> （面包屑与书签右键此前直连底层函数）。它们补齐的不是新能力，而是已有的
+> UI 动作缺少结构化入口这一缺口；现在菜单、面板、快捷键与 AI 走同一条命令路径。
+>
+> Dev 组从 5 条涨到 9 条，来自同一天的开发面审计（diff / archive 等），与本次
+> 人机等价补齐是两条独立的工作线；表格按命令表实测统一对账。
 >
 > Tool 组已实现 10 条：`OpListDir` / `OpStat` / `OpTopN` / `OpDiskUsage` 是**当前视图**的结构化查询；
 > `tool.hash` / `tool.dupfinder` / `tool.compare` 是 2026-11-21 新增的文件集工具

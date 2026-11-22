@@ -1,5 +1,40 @@
 ## [Unreleased]
 
+### 修复（全量覆盖审计：反向检查器过去是假绿）
+
+`tools/check_ai_meta.py` 第 16 项「UI 菜单动作 → 结构化命令」原先只扫
+`tab_strip_actions.cpp` 与 `bookmark_bar.cpp`，且正则只认 `kXxxMenuYyy`
+这类符号动作号。书签栏、状态栏、面包屑、导入弹层用的**数字动作号**
+（1/2/4/6/7、900、3000…）一个都扫不到，于是「全部通过」只覆盖了标签右键。
+
+- 扫描面扩到 `nav_bar_actions.cpp` / `app_commands.cpp` / `bookmark_io.cpp` /
+  `app_commands_files.cpp`；正则放宽到任意动作号；新增 16c 反查过期的登记项。
+- 修复后真实报出 9 个缺口（书签打开/复制路径/重载/导入/导出、面包屑复制路径/
+  在此开终端、导入模式的追加/覆盖），全部在本批次补齐，不是把检查器改回绿。
+- `MENU_ACTIONS` 从 45 项扩到 54 项；第 16b 现在能报告源码里未登记的菜单项。
+
+### 修复（批次 1：命令存在但 UI 绕过了命令总线）
+
+- 状态栏「隐藏状态栏」与段显隐改走 `config.set`；`statusSegs` 从只读改成
+  可写（带 0..Seg_Count-1 范围校验），`ConfigSet` 写完后重建状态栏并 `Layout()`。
+- 面包屑段右键「新标签 / 新窗口 / 属性」原本直接调 `App` 方法，现改走
+  `tab.new` / `fs.open.window` / `fs.properties`，目标路径来自被右键的那一段。
+- `settings_reg::SameValue` 原来只比基本类型，数组写后回读恒判失败；
+  改为递归比较数组/对象，`config.set statusSegs` 的写后回读才真正可信。
+
+### 新增（批次 2：补 5 条命令，关闭人机等价缺口）
+
+- `bmk.import {path, mode}` / `bmk.export {path}` / `bmk.reload`：
+  新增 `BmkExportHtmlTo(path)` 与 `BmkImportHtmlFromFile(path, mode)` 两个
+  **确定式后端**；人工菜单仍弹文件对话框，但只是 UI 适配层，读写共用同一份实现。
+  覆盖模式是破坏性操作（带 AI 审批语义），两种模式都进书签撤销栈；为此给
+  `BookmarkStore::Merge` 补了此前缺失的 `PushUndo()`，撤销声明不再是空承诺。
+- `clipboard.copy {text}` / `ext.terminal.at {path}`：书签「复制路径」与面包屑
+  「复制此路径 / 在此打开终端」从直连底层函数改为调命令，菜单、热键、
+  面板、AI 同源；书签「打开」复用已有的 `fs.open`（参数是书签项的完整路径）。
+- `data/commands-baseline.json` / `data/eval-surface.json` / `docs/PARITY.md`
+  同步重签：命令表实测 196 条 / 已实现 187 / 未实现 9。
+
 ### 变更（"被拦住"不再一锅端：`blocked` 拆成四类 + 一类超时）
 
 以前"被拦住"只有一个 `blocked`。但**被拦住有四种，下一步完全不同**：

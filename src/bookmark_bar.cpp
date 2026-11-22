@@ -4,8 +4,6 @@
 #include "platform_win.h"
 
 #include "bookmark_drop.h"
-#include "bookmark_io.h"
-#include "clipboard.h"
 #include "commands.h"
 #include "config.h"
 #include "folder_tree.h"
@@ -881,19 +879,29 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
     const int action = menu.Show(hwnd_, *theme_, screen, opt);
     if (action < 0) return;
     switch (action) {
-    case 1:
+    case 1: {
         // 只有分类才有"打开"这一步可选；普通书签点"打开"等同导航。
-        if (it.folder)
+        // 走 fs.open：书签项给的本来就是路径，与文件视图双击/AI 带参调用同源。
+        if (it.folder) {
             ShowFolderMenu(index, screen);
-        else
-            Navigate(index);
+        } else if (!it.path.empty()) {
+            json::Value a = json::Value::MakeObject();
+            a.Set(L"path", json::Value::MakeStr(it.path));
+            const bool ok = CommandBus::Get().Invoke(CmdId::FsOpen, Args::FromJson(a), Actor::Ui());
+            if (ok && refocus_) refocus_();   // 与 Navigate() 一样，导航后焦点回视图
+        }
         break;
-    case 2:
-        // 剪贴板写入唯一实现（clipboard.cpp）。失败要留痕 ——
-        // 否则用户"点了复制、粘贴出旧内容"时无从判断是复制没成功。
-        if (!it.path.empty() && !SetClipboardText(hwnd_, it.path))
-            LogDbg(L"[bmk] 复制路径失败（剪贴板被占用？）：%s", it.path.c_str());
+    }
+    case 2: {
+        // 复制路径就是"把文本写进剪贴板"——clipboard.copy 是它的带参结构化入口。
+        // 账号：书签右键与面包屑右键共用一条命令，失败原因也进同一份审计。
+        if (!it.path.empty()) {
+            json::Value a = json::Value::MakeObject();
+            a.Set(L"text", json::Value::MakeStr(it.path));
+            CommandBus::Get().Invoke(CmdId::ClipboardCopy, Args::FromJson(a), Actor::Ui());
+        }
         break;
+    }
     case 3: {
         // 编辑：名称 + 路径双字段（纯分类节点只有名称一项可改）。
         //
@@ -1033,7 +1041,7 @@ void BookmarkBar::ShowEmptyMenu(POINT screen) {
         break;
     }
     case 4:
-        ReloadFromDisk();
+        CommandBus::Get().Invoke(CmdId::BmkReload, Args::Empty(), Actor::Ui());
         break;
     case 8:
         CommandBus::Get().Invoke(CmdId::BmkUndo, Args::Empty(), Actor::Ui());
@@ -1045,22 +1053,32 @@ void BookmarkBar::ShowEmptyMenu(POINT screen) {
         }
         break;
     case 6: {
-        int n = BmkExportHtml(hwnd_, *theme_);
-        if (n == -2)
-            MessageBoxW(hwnd_, L"写入文件失败", L"导出书签", MB_OK | MB_ICONWARNING);
-        else if (n >= 0)
-            MessageBoxW(hwnd_, (L"已导出 " + std::to_wstring(n) + L" 个书签").c_str(), L"导出书签",
-                        MB_OK | MB_ICONINFORMATION);
+        json::Value result;
+        const bool ok = CommandBus::Get().InvokeResult(CmdId::BmkExport, Args::Empty(),
+                                                       &result, Actor::Ui());
+        if (ok) {
+            MessageBoxW(hwnd_,
+                        (L"已导出 " + std::to_wstring(result.GetInt(L"exported", 0)) +
+                         L" 个书签").c_str(),
+                        L"导出书签", MB_OK | MB_ICONINFORMATION);
+        } else if (CommandBus::Get().lastFailKind() != FailKind::CanceledByUser) {
+            MessageBoxW(hwnd_, CommandBus::Get().lastBlockReason().c_str(),
+                        L"导出书签", MB_OK | MB_ICONWARNING);
+        }
         break;
     }
     case 7: {
-        int n = BmkImportHtml(hwnd_, *theme_);
-        if (n > 0) {
-            Reload();
-            MessageBoxW(hwnd_, (L"已导入 " + std::to_wstring(n) + L" 个书签").c_str(), L"导入书签",
-                        MB_OK | MB_ICONINFORMATION);
-        } else if (n == -2) {
-            MessageBoxW(hwnd_, L"文件无效或无法解析", L"导入书签", MB_OK | MB_ICONWARNING);
+        json::Value result;
+        const bool ok = CommandBus::Get().InvokeResult(CmdId::BmkImport, Args::Empty(),
+                                                       &result, Actor::Ui());
+        if (ok) {
+            const int n = result.GetInt(L"imported", 0);
+            if (n > 0)
+                MessageBoxW(hwnd_, (L"已导入 " + std::to_wstring(n) + L" 个书签").c_str(),
+                            L"导入书签", MB_OK | MB_ICONINFORMATION);
+        } else if (CommandBus::Get().lastFailKind() != FailKind::CanceledByUser) {
+            MessageBoxW(hwnd_, CommandBus::Get().lastBlockReason().c_str(),
+                        L"导入书签", MB_OK | MB_ICONWARNING);
         }
         break;
     }

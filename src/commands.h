@@ -164,6 +164,20 @@ enum class CmdId : int {
     ViewSortByKey,       // {key[,ascending]}：按任意 PROPERTYKEY 排序
     ViewGroupByKey,      // {key}：按任意 PROPERTYKEY 分组
     ViewPropsList,       // 无参，只读：列出可排序/分组的常用属性键（id 可直接给 bykey）
+
+    // ---- 全量覆盖 Batch 2：补齐菜单里有、命令表里没有的带参入口 ----
+    // 前三条是书签文件 IO 的确定式后端：AI 给完整路径，人走文件对话框；
+    // 后者只是前者的 UI 适配器，两条路共用同一份 Bmk*HtmlFrom/To 实现。
+    BmkImport,         // {path, mode}  mode=0 追加 / 1 覆盖（破坏性、可撤销）
+    BmkExport,         // {path}        导出到指定文件
+    BmkReload,         // 无参：从 bookmarks.html 重新载入并重建书签栏
+    // 任意文本写剪贴板与"在指定目录开终端"：面包屑/书签右键此前直接调底层函数。
+    ClipboardCopy,     // {text}  写剪贴板（与 fs.copy.toclip 同源，但内容是文本而非路径集）
+    ExtTerminalAt,     // {path}  在指定目录启动终端（ext.terminal 的带参版）
+    // ---- 第 2 档 序 7：接受器 + archive + funnel（只允许追加在末尾，见 C1b）----
+    DevArchiveDecide,  // {trials[]}：纯计算，配对比较 + e-process 判定（只读）
+    DevArchiveRecord,  // {trajectory, repeats[]?, baselineId?, ...}：落盘候选 + 判定
+    DevArchiveList,    // {limit?}：只读列出 archive 候选
 };
 
 // 命令的风险等级（与 mod 的 risk / 架构规则 R18 对齐）。

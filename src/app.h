@@ -79,6 +79,7 @@ private:
     void RegisterFsCommands();
     void RegisterMiscCommands();
     void RegisterDevCommands();
+    void RegisterArchiveCommands();
     void Layout();
     // dpiOverride > 0 时用它（WM_DPICHANGED 的 wParam 才是权威值）
     void ApplyTheme(int dpiOverride = 0);

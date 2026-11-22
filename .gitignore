@@ -80,6 +80,9 @@ data/.agentctl.pid
 # 它是**兜底**不是备份：里面存的是工作树里当时的内容，入库等于把
 # 未提交的改动塞进仓库历史。不入库，但**不能删** —— dev.rollback 靠它还原。
 snapshots/
+# dev.archive 的候选档案：源码副本 + 原始执行轨迹（逐字，不摘要）。
+# 与 snapshots/ 同理不入库；被忽略才不会被 dev.diff 当成"未跟踪改动"。
+archive/
 # 程序自动生成的书签备份（含用户数据，绝不入库）
 data/*.backup-*.html
 

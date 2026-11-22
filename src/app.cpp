@@ -224,24 +224,33 @@ void App::OnCreate() {
     navBar_.SetSearchFn([this](const std::wstring& query) { RunSearch(query, nullptr); });
 
     // 面包屑段右键：动作作用于"右键的那一段"，不是当前目录。
-    // 这里把段路径转成既有的命令/入口，不新写一套文件语义：
-    // 复制走剪贴板原语、终端走 RunTerminal、属性走 shell 动词。
+    // 能点名目标的动作一律转投命令（前置检查/审计/面板/AI 同源）：
+    //   · 新标签 → tab.new {path}     · 新窗口 → fs.open.window {path}
+    //   · 属性   → fs.properties {target}
+    //   · 复制   → clipboard.copy {text}
+    //   · 终端   → ext.terminal.at {path}
+    // 这五项在批次 2 全部转成 CommandBus，右键菜单里不再直接碰剪贴板/进程。
     navBar_.SetSegmentCmdFn([this](const std::wstring& path, NavBar::SegCmd action) {
+        auto withPath = [&](const wchar_t* key) {
+            json::Value a = json::Value::MakeObject();
+            a.Set(key, json::Value::MakeStr(path));
+            return Args::FromJson(a);
+        };
         switch (action) {
         case NavBar::kSegOpenNewTab:
-            NewTab(path, NewTabIndex());
+            CommandBus::Get().Invoke(CmdId::TabNew, withPath(L"path"), Actor::Ui());
             break;
         case NavBar::kSegOpenNewWindow:
-            OpenPathInNewWindow(path);
+            CommandBus::Get().Invoke(CmdId::FsOpenInNewWindow, withPath(L"path"), Actor::Ui());
             break;
         case NavBar::kSegCopyPath:
-            CopyText(path);
+            CommandBus::Get().Invoke(CmdId::ClipboardCopy, withPath(L"text"), Actor::Ui());
             break;
         case NavBar::kSegTerminal:
-            RunTerminal(hwnd_, path, false);
+            CommandBus::Get().Invoke(CmdId::ExtTerminalAt, withPath(L"path"), Actor::Ui());
             break;
         case NavBar::kSegProperties:
-            ShowPathProperties(path);
+            CommandBus::Get().Invoke(CmdId::FsProperties, withPath(L"target"), Actor::Ui());
             break;
         }
     });

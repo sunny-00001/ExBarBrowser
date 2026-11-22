@@ -4,6 +4,8 @@
 #include "app.h"
 
 #include "app_commands.h"
+#include "bookmark_io.h"
+#include "clipboard.h"
 #include "hotkey_manager.h"
 #include "bookmarks.h"
 #include "icon_resolve.h"
@@ -35,6 +37,14 @@ void RunTerminal(HWND owner, const std::wstring& dir, bool admin) {
 static bool AffectsActiveView(const std::wstring& key) {
     return key == L"viewMode" || key == L"sortMode" || key == L"sortAscending" ||
            key == L"groupBy";
+}
+
+// 状态栏两项（显隐 + 段集合）写完后必须重建状态栏：
+// 过去只有右键菜单能改它们，菜单自己调 Layout()/SetEnabledSegments()，
+// 所以从 config.set 走时不会即时生效 —— 这正是它们过去被标只读的理由。
+// 现在把刷新收进命令层，键表和 UI 共用一条写路径（FULL-COVERAGE §10.1）。
+static bool AffectsStatusBar(const std::wstring& key) {
+    return key == L"statusbar" || key == L"statusSegs";
 }
 
 void App::NotifyBookmarkSave(bool ok) {
@@ -118,6 +128,32 @@ void App::RegisterMiscCommands() {
     });
     reg(CmdId::OpenTerminalAdmin, [this](const Args&) {
         RunTerminal(hwnd_, ActivePath(), true);
+        return true;
+    });
+    // 面包屑右键「在此打开终端」此前直接调 RunTerminal —— 键盘/面板/AI 都够不到。
+    // 现在与 ext.terminal 共用同一函数，区别只在目录来自参数还是当前标签。
+    reg(CmdId::ExtTerminalAt, [this](const Args& args) {
+        const std::wstring path = args.Str(L"path");
+        if (path.empty()) {
+            CommandBus::Get().NoteFailure(L"缺少必填参数：path");
+            return false;
+        }
+        RunTerminal(hwnd_, path, false);
+        return true;
+    });
+    // 任意文本写剪贴板：书签「复制路径」与面包屑「复制此路径」的共同后端。
+    // 路径类复制命令（path.copy.*）作用于选中项；这条由参数点名文本，适合机器调用。
+    regR(CmdId::ClipboardCopy, [this](const Args& args, json::Value* out) -> bool {
+        const std::wstring text = args.Str(L"text");
+        if (!SetClipboardText(hwnd_, text)) {
+            CommandBus::Get().NoteFailure(L"写入剪贴板失败（被其它程序占用？）");
+            return false;
+        }
+        if (out) {
+            json::Value root = json::Value::MakeObject();
+            root.Set(L"text", json::Value::MakeStr(text));
+            *out = std::move(root);
+        }
         return true;
     });
 
@@ -504,6 +540,84 @@ void App::RegisterMiscCommands() {
         return true;
     });
 
+    // 书签文件 IO 三条（全量覆盖 Batch 2）：
+    // 人侧空参数 → 文件对话框/模式弹层（Bmk*Html 适配器）；
+    // 机器侧带参数 → 确定式后端（Bmk*HtmlFromFile/To），两边共用同一份读写实现。
+    regR(CmdId::BmkImport, [this](const Args& args, json::Value* out) -> bool {
+        int n = -1;
+        if (IsHumanCall(args)) {
+            n = BmkImportHtml(hwnd_, theme_);
+            if (n == -1) {
+                CommandBus::Get().NoteFailure(L"用户取消导入", FailKind::CanceledByUser);
+                return false;
+            }
+        } else {
+            const std::wstring path = args.Str(L"path");
+            if (path.empty()) {
+                CommandBus::Get().NoteFailure(L"缺少必填参数：path");
+                return false;
+            }
+            const int mode = args.Int(L"mode", -1);
+            if (mode != 0 && mode != 1) {
+                CommandBus::Get().NoteFailure(L"mode 只能是 0（追加）或 1（覆盖）");
+                return false;
+            }
+            n = BmkImportHtmlFromFile(path, mode);
+        }
+        if (n < 0) {
+            if (n == -2) CommandBus::Get().NoteFailure(L"文件无效或没有可导入的书签");
+            else if (n == -3) CommandBus::Get().NoteFailure(
+                L"书签文件已被其它程序修改，请先重新载入再导入", FailKind::LockConflict);
+            else CommandBus::Get().NoteFailure(L"无法打开导入文件");
+            return false;
+        }
+        bookmarkBar_.ReloadExternal();
+        if (out) {
+            json::Value root = json::Value::MakeObject();
+            root.Set(L"imported", json::Value::MakeInt(n));
+            *out = std::move(root);
+        }
+        return true;
+    });
+
+    regR(CmdId::BmkExport, [this](const Args& args, json::Value* out) -> bool {
+        int n = -1;
+        if (IsHumanCall(args)) {
+            n = BmkExportHtml(hwnd_, theme_);
+        } else {
+            const std::wstring path = args.Str(L"path");
+            if (path.empty()) {
+                CommandBus::Get().NoteFailure(L"缺少必填参数：path");
+                return false;
+            }
+            n = BmkExportHtmlTo(path);
+        }
+        if (n < 0) {
+            if (n == -1) {
+                CommandBus::Get().NoteFailure(L"用户取消导出", FailKind::CanceledByUser);
+            } else {
+                CommandBus::Get().NoteFailure(L"写入文件失败（路径无效或文件被占用？）");
+            }
+            return false;
+        }
+        if (out) {
+            json::Value root = json::Value::MakeObject();
+            root.Set(L"exported", json::Value::MakeInt(n));
+            *out = std::move(root);
+        }
+        return true;
+    });
+
+    reg(CmdId::BmkReload, [this](const Args&) {
+        BookmarkStore& store = BookmarkStore::Get();
+        bookmarkBar_.ReloadFromDisk();
+        if (store.LoadFailed()) {
+            CommandBus::Get().NoteFailure(L"书签文件读取失败，已保留内存中的书签");
+            return false;
+        }
+        return true;
+    });
+
     // ---------------- 设置域 ----------------
     // 这三条是「AI 调试某个设置项」的入口。之前设置是编译期 struct，
     // 机器侧既不知道有哪些项，也没有稳定名字去定位 —— 那条路只能靠人眼看界面。
@@ -559,6 +673,10 @@ void App::RegisterMiscCommands() {
         // 正是"改了看不见效果、重启才发现"那类 bug。套用走启动时同一个
         // ApplyPersistedViewState，不另写一份。
         if (AffectsActiveView(key)) ApplyPersistedViewState(Active() ? Active()->view.get() : nullptr);
+        if (AffectsStatusBar(key)) {
+            statusBar_.SetEnabledSegments(Config::Get().s().statusSegs);
+            Layout();
+        }
         SyncChrome();
         // AI 通道热插拔：设置已落盘，真正启停交给独立的 WM_APP_SYNC_AI。
         // 不能在这里直接 StopServer —— 关闭请求本身可能来自该通道，

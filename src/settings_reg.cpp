@@ -351,11 +351,14 @@ const std::vector<Entry>& Table() {
                      L"关闭历史（只读：用 tab.reopen）"});
 
         // ---- 状态栏段 ----
-        // 段显隐的正确入口是状态栏右键菜单（点一下就重排）；直接写配置不会
-        // 让当前状态栏重建，所以这里只读。
+        // 段显隐的正确入口是 config.set statusSegs（状态栏右键菜单转投它）。
+        // 过去这里只读，理由是"直接写配置不会重建状态栏"——那个理由已经被
+        // config.set 的刷新钩子解决（见 app_commands_misc.cpp 的 ConfigSet）。
+        // IntArraySet 逐元素校验段号上界，与右键菜单的段号来源同一口径。
         v.push_back({L"statusSegs", Kind::IntArray,
-                     [&cfg] { return IntArrayValue(cfg.s().statusSegs); }, nullptr,
-                     L"状态栏显示哪些段（只读：用状态栏右键菜单勾选）"});
+                     [&cfg] { return IntArrayValue(cfg.s().statusSegs); },
+                     IntArraySet(&m.statusSegs, L"statusSegs", 0, Seg_Count),
+                     L"状态栏显示哪些段（0..Seg_Count-1；右键状态栏勾选）"});
 
         // ---- 键位 ----
         v.push_back({L"hotkeys", Kind::Object,
@@ -388,8 +391,23 @@ bool SameValue(const json::Value& a, const json::Value& b) {
     case json::Value::kBool: return a.b == b.b;
     case json::Value::kNumber: return a.num == b.num;
     case json::Value::kString: return a.str == b.str;
-    default: return false;
+    // 数组/对象必须递归比：statusSegs 变成可写后，写后回读若仍只比基本类型，
+    // 任何数组项都会"写成功了却报回读不一致"（SelfCheck 会一条条报红）。
+    case json::Value::kArray:
+        if (a.arr.size() != b.arr.size()) return false;
+        for (size_t i = 0; i < a.arr.size(); ++i)
+            if (!SameValue(a.arr[i], b.arr[i])) return false;
+        return true;
+    case json::Value::kObject:
+        if (a.obj.size() != b.obj.size()) return false;
+        for (const auto& kv : a.obj) {
+            const json::Value* other = b.Find(kv.first.c_str());
+            if (!other || !SameValue(kv.second, *other)) return false;
+        }
+        return true;
+    case json::Value::kNull: return true;
     }
+    return false;
 }
 
 // 类型名，用于错误信息里说"收到的是什么"。

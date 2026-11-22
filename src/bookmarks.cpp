@@ -591,7 +591,12 @@ size_t BookmarkStore::Merge(BookmarkList&& incoming) {
         };
 
     mergeInto(roots_, incoming);
-    if (added) Touch();
+    // 追加导入同样改整棵树：不拍快照的话 bmk.import(mode=0) 就成了唯一不可撤的
+    // 书签变更，而声明 undoable=1 会变成空承诺（check_ai_meta 第 25 项）。
+    if (added) {
+        PushUndo();
+        Touch();
+    }
     return added;
 }
 

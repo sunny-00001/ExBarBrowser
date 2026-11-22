@@ -170,6 +170,16 @@ HUMAN_PATH = {
                   '点某一项时先调 config.get 读最新值（参数 key 即该行的键名）',
     'config.set': '导航栏右键「设置…」→ 设置面板：布尔项点一下翻转、数值/字符串弹输入框、'
                   '数组填逗号分隔，一律调 config.set（参数 key/value 来自该行与输入框）',
+
+    # 全量覆盖 Batch 2：三条带路径的确定式命令，人侧都由菜单/对话框递参数。
+    'bmk.import': '书签栏右键「导入书签...」→ BmkImport 处理器的人侧分支：文件对话框给 path，'
+                  '自绘菜单给 mode（0 追加 / 1 覆盖），覆盖前明确确认；'
+                  '机器侧直接带 {path, mode} 调同一条命令',
+    'bmk.export': '书签栏右键「导出书签...」→ BmkExport 处理器的人侧分支：'
+                  '文件保存对话框给 path，写出后弹已导出条数；机器侧直接带 path',
+    'clipboard.copy': '书签栏右键「复制路径」/ 面包屑段右键「复制此路径」→ '
+                      'clipboard.copy（参数 text 来自该项/该段路径）',
+    'ext.terminal.at': '面包屑段右键「在此打开终端」→ ext.terminal.at（参数 path 来自该段路径）',
 }
 
 # 机器专用查询：人能通过命令面板触发，但拿到的是 JSON（写进审计日志），
@@ -250,6 +260,8 @@ UNDO_MECHANISM = {
     'bmk.add.tabs': 'BookmarkStore::undo_（快照栈 ≤20）',
     'bmk.copy': 'BookmarkStore::undo_（快照栈 ≤20）',
     'bmk.move': 'BookmarkStore::undo_（快照栈 ≤20）',
+    # 导入两种模式都进快照：覆盖走 ReplaceAll，追加走 Merge（Batch 2 补了 PushUndo）。
+    'bmk.import': 'BookmarkStore::undo_（快照栈 ≤20；import=0 追加 / 1 覆盖）',
     # 标签：core::TabSet 的关闭历史（tab.reopen 就是还原路径）
     'tab.close': 'core::TabSet 关闭历史（tab.reopen 还原）',
     'tab.close.duplicates': 'core::TabSet 关闭历史（tab.reopen 还原）',
@@ -336,6 +348,10 @@ MENU_ACTIONS = {
     # 排序/分组二级菜单：文案带方向与当前维度后缀，按前缀归一到同一命令。
     '视图·排序方式': 'view.sort',
     '视图·分组依据': 'view.group',
+    '视图·设置…': 'win.preferences',
+    '视图·在新标签页打开': 'tab.new',
+    '视图·在新窗口打开': 'fs.open.window',
+    '视图·属性': 'fs.properties',
     # ---- 书签右键菜单（bookmark_bar.cpp 的 ShowItemMenu）----
     '书签·添加当前目录为书签': 'bmk.add.current',
     '书签·新建分类': 'bmk.newfolder',
@@ -346,6 +362,25 @@ MENU_ACTIONS = {
     '书签·隐藏书签栏': 'bmk.hide',
     '书签·编辑': 'bmk.edit',
     '书签·删除': 'bmk.remove',
+    # ---- 全量覆盖 Batch 2：菜单直接调命令（不再是 UI 私有动作）----
+    # 「打开」用现成的 fs.open：书签项拿到的是路径，机器侧也从 bmk.list 拿路径。
+    '书签·打开': 'fs.open',
+    '书签·复制路径': 'clipboard.copy',
+    '书签·重新载入书签文件': 'bmk.reload',
+    '书签·导出书签': 'bmk.export',
+    '书签·导入书签': 'bmk.import',
+    '视图·复制此路径': 'clipboard.copy',
+    '视图·在此打开终端': 'ext.terminal.at',
+    # 导入模式弹层里的两行也归到同一条命令（mode 值不同）。
+    '书签导入·追加到现有书签（推荐）': 'bmk.import',
+    '书签导入·覆盖全部书签（现有书签将被替换）': 'bmk.import',
+    # ---- 以下四条是"命令已存在、菜单也调了命令，但过去漏登记"的项 ----
+    '书签·复制书签': 'bmk.copy',
+    '书签·收藏所有标签页': 'bmk.add.tabs',
+    '书签·添加当前目录': 'bmk.add.current',
+    '视图·清除历史记录': 'nav.history.clear',
+    '状态栏·复制当前路径': 'path.copy.dir',
+    '状态栏·隐藏状态栏': 'config.set',
 }
 
 
@@ -1497,17 +1532,34 @@ def main():
     # 只靠上面那张手工表时，新增一个菜单项却忘了登记，检查会静默通过 ——
     # 那正是「菜单里写了就完事」再次长出来的方式。这里反查源码：
     # 菜单文案是字符串字面量，抽得出来；抽得到就必须在表里有交代。
+    # 【2026-11-22 补盲】旧版正则只认 kXxxMenuYyy 符号动作号，且只扫两个文件。
+    # 书签栏/状态栏/面包屑/导入弹层全用数字动作号（1/2/900/3000），
+    # 一个都扫不到 —— 于是"全部通过"只覆盖了标签右键。现在：
+    #   · 正则放宽到任意动作号（符号或数字），只要求文案有交代；
+    #   · 扫描面扩到全部含 ui::Menu 链的文件。
+    # AddPath/AddChecked 用变量文案（如 kSegNames[i]、sortHint），
+    # 抽不出静态文案，不进入本项——它们的覆盖由第 15 项与命令表保证。
     scan_sources = [
         ('标签', 'src/tab_strip_actions.cpp'),
         ('书签', 'src/bookmark_bar.cpp'),
+        ('视图', 'src/nav_bar_actions.cpp'),
+        ('状态栏', 'src/app_commands.cpp'),
+        ('书签导入', 'src/bookmark_io.cpp'),
+        ('详情列', 'src/app_commands_files.cpp'),
     ]
+    # 「完成」是弹层关闭行、「最近关闭」是禁用标题行，都不是独立操作。
+    MENU_SCAN_IGNORE = {'完成', '最近关闭'}
     registered = set(MENU_ACTIONS.keys())
     unregistered = []
+    all_menu_src = []
     for area, rel in scan_sources:
         src = (ROOT / rel).read_text(encoding='utf-8', errors='replace')
-        # 只认「.Add(L"文案", kXxxMenuYyy)」这种「菜单项 + action」的写法。
-        for m in re.finditer(r'\.Add\(\s*L"([^"]+)"\s*,\s*(k\w+Menu\w+)', src):
+        all_menu_src.append(src)
+        for m in re.finditer(
+                r'\.Add(?:Checked)?\(\s*L"([^"]+)"\s*,\s*([^,)\s]+)', src):
             label = m.group(1).replace('...', '').strip()
+            if label in MENU_SCAN_IGNORE:
+                continue
             # 锁定项文案随状态变（锁定/解锁），归一到同一登记名。
             if '锁定标签' in label or '解锁标签' in label:
                 label = '锁定'
@@ -1521,6 +1573,22 @@ def main():
                  '要么是已知缺口（登记 None）' % (lab, act))
     else:
         print('  ok     源码里的菜单项全部已在 MENU_ACTIONS 有交代')
+
+    # 16c. 登记表反向校验：表里的每项都必须在扫描源码里真有对应文案。
+    # 这条防的是"表腐烂"——改名/删菜单后登记项留着，
+    # 检查照样绿，但那张表已经不描述现实了。
+    stale = []
+    all_text = '\n'.join(all_menu_src)
+    for human in MENU_ACTIONS:
+        _, _, label = human.partition('·')
+        probe = '锁定标签' if label == '锁定' else label
+        if f'L"{probe}' not in all_text and f'L"{label}' not in all_text:
+            stale.append(human)
+    if stale:
+        for h in stale:
+            fail(f'MENU_ACTIONS 登记「{h}」在扫描源码里找不到对应文案 —— 表已腐烂')
+    else:
+        print(f'  ok     {len(MENU_ACTIONS)} 项登记全部能在源码找到对应文案')
 
 
     # ---------------------------------------------------------------- 17
@@ -1914,6 +1982,53 @@ def main():
     if not bad:
         ok('%d 条声明可撤销的命令都指向真实撤销机制；%d 条操作无撤销栈已如实标 0'
            % (len(claimed), len(cmds) - len(claimed)))
+
+    # ---------------------------------------------------------------- 26
+    # 第 2 档 序 7（C2b + C1 + C2 + C3）：接受器是 archive 的前置。
+    # 没有它，"分数涨了就留"会让 archive 越滚越脏 —— PACE 实测贪心接受
+    # 30–42% 虚假提交、10–33% 有害。这里钉的是**机制**，不是中文注释：
+    #   ① 配对比较而非单次总分：输入是成对的 candidate/baseline；
+    #   ② 符号下注 e-process，因子 1+λX，阈值 1/α —— 不是 if (score>base)；
+    #   ③ 不可用配对 fail-closed（不许把超时当平局丢掉）；
+    #   ④ archive 存源码 + 分数 + **原始**轨迹（不预摘要，哈希可核对）；
+    #   ⑤ funnel 五级齐全，评估面改动进不了 archive；
+    #   ⑥ 蒙特卡洛检验 H0 假接受率 ≤ α —— 没这条，"接受器"可能只是假绿。
+    print('\n26. 自我迭代必须有真接受器（配对 + e-process，不许分数涨了就留）')
+    arc_h = (ROOT / 'src/dev_archive.h').read_text(encoding='utf-8', errors='replace')
+    arc_eval = (ROOT / 'src/dev_archive_eval.cpp').read_text(encoding='utf-8', errors='replace')
+    arc_cpp = (ROOT / 'src/dev_archive.cpp').read_text(encoding='utf-8', errors='replace')
+    arc_handlers = (ROOT / 'src/app_commands_archive.cpp').read_text(encoding='utf-8', errors='replace')
+    arc_test = (ROOT / 'tests/dev_archive_test.cpp').read_text(encoding='utf-8', errors='replace')
+    arc_missing = []
+    for label, cond in [
+        ('三条 archive 命令齐全',
+         all(('L"dev.archive.' + n + '"') in table for n in ('decide', 'record', 'list'))),
+        ('接受器用常量 α/λ，调用方不能运行时调小',
+         'constexpr double kAlpha' in arc_h and 'constexpr double kLambda' in arc_h),
+        ('配对试验带 candidate 与 baseline 两侧',
+         'double candidate' in arc_h and 'double baseline' in arc_h),
+        ('e-process 用符号下注因子 1+λX（不是单次分数比较）',
+         '1.0 + kLambda' in arc_eval and 'r.eProcess *=' in arc_eval),
+        ('阈值是 1/α 而非自报分数',
+         'r.eProcess >= r.threshold' in arc_eval and 'kThreshold = 20.0' in arc_h),
+        ('不可用配对 fail-closed', 'r.invalid > 0' in arc_eval and '拒绝接受' in arc_eval),
+        ('archive 逐字保存原始轨迹并记 SHA-256',
+         'trajectory/raw.txt' in arc_cpp and 'Sha256Of' in arc_cpp and '不摘要' in arc_cpp),
+        ('funnel 五级齐全（parse/prescan/compile/checks/stable）',
+         all(('L"' + st + '"') in arc_eval
+             for st in ('parse', 'prescan', 'compile', 'checks', 'stable'))),
+        ('评估面改动进不了 archive',
+         'protectedChanged.empty()' in arc_eval and 'evalsurface::Check()' in arc_handlers),
+        ('有蒙特卡洛检验 H0 假接受率 ≤ α',
+         'H0 假接受率' in arc_test and 'rate <= devarchive::kAlpha' in arc_test),
+        ('有 archive 落盘往返单测',
+         'ReadTrajectory' in arc_test and 'cand-test' in arc_test),
+    ]:
+        if not cond: arc_missing.append(label)
+    if arc_missing:
+        for label in arc_missing: fail('自我迭代接受器缺：' + label)
+    else:
+        ok('配对 e-process（E ≥ 1/α）+ 原始轨迹 archive + 五级 funnel，且有假接受率实测')
 
     print()
     if g_fail:

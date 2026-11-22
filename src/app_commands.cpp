@@ -362,6 +362,7 @@ void App::RegisterCommands() {
     RegisterJobCommands();
     RegisterMiscCommands();
     RegisterDevCommands();
+    RegisterArchiveCommands();
 }
 
 // ---------------------------------------------------------------- 菜单
@@ -484,14 +485,21 @@ void App::ShowStatusMenu(POINT screen) {
         return;
     }
     if (data == kHideStatusBar) {
-        Config::Get().mutableSettings().showStatus = false;
-        Config::Get().Save();
-        Layout();
+        // 走 config.set 而不是直接改 Settings：键表校验 + 写盘 + 状态栏重建
+        // + 审计都收在一条路径。过去这里直接 mutableSettings()+Save()+Layout()，
+        // 机器侧既看不见也调不到（FULL-COVERAGE §10.1 的一个写路径）。
+        json::Value a = json::Value::MakeObject();
+        a.Set(L"key", json::Value::MakeStr(L"statusbar"));
+        a.Set(L"value", json::Value::MakeBool(false));
+        CommandBus::Get().Invoke(CmdId::ConfigSet, Args::FromJson(a), Actor::Ui());
         return;
     }
     if (data < 0 || data >= Seg_Count) return;  // 只剩段下标；越界一律不当段处理
 
-    auto& segs = Config::Get().mutableSettings().statusSegs;
+    // 段勾选同样转投 config.set statusSegs：值由这里算好（整段数组），
+    // 命令层只负责校验/落盘/重建。过去这段直接 push_back/erase + Save，
+    // 是"人工可达但无结构化入口"的又一处。
+    auto segs = Config::Get().s().statusSegs;
     auto it = std::find(segs.begin(), segs.end(), data);
     if (it == segs.end())
         segs.push_back(data);
@@ -500,9 +508,12 @@ void App::ShowStatusMenu(POINT screen) {
     // 状态栏右对齐依赖 layout_ 中「左段在前、右段在后」的稳定顺序；
     // push_back 会把重新开启的段追加到末尾，导致段错位并持久化到配置。
     std::sort(segs.begin(), segs.end());
-    Config::Get().Save();
-    statusBar_.SetEnabledSegments(segs);
-    Layout();
+    json::Value args = json::Value::MakeObject();
+    args.Set(L"key", json::Value::MakeStr(L"statusSegs"));
+    json::Value arr = json::Value::MakeArray();
+    for (int n : segs) arr.arr.push_back(json::Value::MakeInt(n));
+    args.Set(L"value", std::move(arr));
+    CommandBus::Get().Invoke(CmdId::ConfigSet, Args::FromJson(args), Actor::Ui());
 }
 
 void App::ShowCommandPalette() {
