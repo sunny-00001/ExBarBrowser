@@ -14,325 +14,19 @@
 
 #include "json.h"
 
-enum class CmdId : int {
-    None = 0,
-    // Tab
-    TabNew, TabClose, TabCloseOther, TabCloseLeft, TabCloseRight, TabClone,
-    TabReopenClosed, TabMoveLeft, TabMoveRight, TabMoveFirst, TabMoveLast,
-    TabPrevTab, TabLast, CloseLeftOne, CloseRightOne,
-    TabActivate,  // arg = 0-based index
-    GoTab1, GoTab2, GoTab3, GoTab4, GoTab5, GoTab6, GoTab7, GoTab8, GoTab9,
-    TabNext, TabPrev, TabMergeAll,
-    // Go
-    GoHome, GoDesktop, GoDownloads, GoDocuments, GoConfigPath, GoLocalAppData,
-    GoControlPanel, GoStartFolder, GoThisPC, GoPowerShell,
-    // Nav
-    NavBack, NavForward, NavUp, NavRefresh, NavHome, NavViewMenu,
-    // Path
-    PathCopy, PathCopyName, PathCopyDir, PathCopyUnc, PathCopyExt, PathCopyTab, PathCopyLink,
-    // File
-    CmdNewTextFile, CmdOpenWith, CmdNewFolder, CmdCopy, CmdCut, CmdPaste, CmdDelete,
-    CmdRename, CmdProps, CmdUndo, CmdSelectAll, CmdOpen, CmdOpenInNewTab,
-    CmdOpenInNewWindow, SelectInvert, SelectFiles, SelectFolders, SelectByType,
-    CopyToFolder, MoveToFolder, BatchRename, SelectByPattern,
-    FileFocusTop, FileFocusBottom, CmdRefresh,
-    // ---- 确定式文件操作（P5：交互与确定分离）----
-    // 上面那批 Cmd* 是"交互式"：要么弹输入框/对话框，要么作用于"用户碰巧选中"的项。
-    // 下面这批是同一个业务的**确定式**版本：目标由参数点名，绝不弹框、绝不读选中。
-    // 两者共用 shell_ops 里的同一份实现（唯一实现原则），只是入口不同。
-    FsRename,    // {target, newName}  —— 对应 CmdRename 的确定式版本
-    FsDelete,    // {targets[]}        —— 对应 CmdDelete
-    FsCopyTo,    // {targets[], to}    —— 对应 CopyToFolder
-    FsMoveTo,    // {targets[], to}    —— 对应 MoveToFolder
-    FsOpen,      // {path}             —— 对应 CmdOpen
-    // FsOpen 的语义与 CmdOpen 完全一致：文件夹在当前标签内进入，文件交给 shell。
-    // 不设 mode 参数是刻意的 —— VS Code 把"打开"拆成 open / openWith / revealInExplorer
-    // 三条独立命令，而不是一条带 mode 的命令。带 mode 会让 schema 变成枚举，
-    // 调用方要先查"有哪些 mode"，而它们其实是三种不同的意图，值得各占一个名字。
-    FsOpenInNewTab,     // {path}         —— 对应 CmdOpenInNewTab
-    FsOpenInNewWindow,  // {path}         —— 对应 CmdOpenInNewWindow
-    FsCopy,             // {targets[]}    —— 对应 CmdCopy（写剪贴板，不产生副本）
-    FsCut,              // {targets[]}    —— 对应 CmdCut（写剪贴板 + 标记移动）
-    FsProperties,       // {target}       —— 对应 CmdProps
-    // View
-    ViewMode,  // arg = 0..7（超大/大/中/小/列表/详细信息/平铺/内容）
-    ViewSort,  // arg = 0..3（名称/日期/类型/大小）
-    ViewGroup, // arg = 0..3（无/类型/日期/大小）
-    ToggleHidden, ToggleSystemFiles, ToggleExtensions, CycleHiddenSeg,
-    TogglePreviewPane, ToggleNavPane, ToggleCheckboxes, ViewNext, ViewPrev,
-    // Window
-    // 注：QuitExplorer 是 mod 期的名字（那时行为是"重启 explorer.exe"）。本工程里
-    // 它的行为是"退出本程序"，点分名 win.quit 才是准确描述。枚举名保留是因为
-    // 规则 C1（CmdId 值一经分配不再改，废弃则保留占位）—— 改枚举名会打断
-    // keymap.json / 审计日志 / 脚本里的引用。表里的 name 已改为 win.quit。
-    NewWindow, QuitExplorer, FolderOptions, MapDrive, UnmapDrive,
-    CommandPalette, HotkeyManager, FocusAddress, FocusSearch, Preferences,
-    // External
-    OpenTerminal, OpenTerminalAdmin, RunCommand, SendKeys,
-    // Bookmark
-    BmkAddCurrent, BmkShowBar, BmkHideBar, BmkToggleBar,
-    // Session
-    SessionSave, SessionRestore, SessionDelete, SessionList,
-    // 目录占位（部分已实现）。以下 Op* 六项已废弃：
-    // 它们从未有 handler，且是 fs.open / tool.list 的语义重复。命令表条目已删除
-    // （见 commands.cpp），但**枚举项必须保留** —— C1b：enum class 无显式赋值，
-    // 删中间项会让后续所有 id 位移；legacy 名也必须留（C2：用户 keymap 只增不减）。
-    DupFinder, FileHash, FolderCompare, SearchEverything, OpListDir, OpStat,
-    OpTopN, OpDiskUsage, OpSearch,
-    // 废弃，勿用（仅占位维持 id 顺序）：
-    OpReadText, OpNavigate, OpReveal, OpSelect, OpOpen, OpListCurrentView,
-    AiTogglePanel, AiStop,
-    // ---- 标签个性化（只允许追加在末尾，见 C1 与 commands-baseline.json）----
-    // 这三条原本只是右键菜单项；登记成命令是为了满足 R20（人机等价）：
-    // 右键弹出来的每个动作都必须有键盘/面板可达路径，否则只有鼠标能做。
-    TabRename,         // {name}     改名（空 = 取消改名）
-    TabSetColor,       // {color}    0..7（0 = 无颜色）
-    TabCloseDuplicates,// 关掉当前标签同路径的其他标签
-    TabLock,           // {locked}   锁定/解锁（锁定后关标签族会跳过它）
-    TabCopyTitle,      // 复制当前显示名（含改名后的别名）到剪贴板
+#include "commands_args.h"
+#include "commands_actor.h"
+#include "commands_ids.h"
+#include "commands_state.h"
 
-    // ---- 书签编辑族（只有右键菜单能做 → 补成命令，满足 R20 反向要求）----
-    // 这几条原先是书签栏右键菜单里的动作，但是**没有对应命令**：
-    //   · 检查器把它们报成"人工可达但无结构化入口"；
-    //   · 也就意味着只有鼠标能做 —— 键盘用户、命令面板、AI 都没有等价路径。
-    // 语义与菜单项一一对应，参数用书签 id（不是下标：重排后下标会变）。
-    BmkEdit,           // {id, name, path}  改名称/路径（path 空 = 变成纯分类）
-    BmkRemove,         // {id}              删除一条（可撤销）
-    BmkNewFolder,      // {name, parentId?} 新建分类
-    BmkUndo,           // 撤销上一次删除/移动/排序
-    BmkClearAll,       // 清除全部（可撤销）
-    BmkSort,           // {recursive?}   按名称排序
-    BmkDedupe,         // 清理重复路径书签
-    BmkAdd,            // {path, name?, parentId?} 添加一条（拖放/脚本/AI 的共同入口）
-    BmkMove,           // {id, toId} 或 {id, toIndex}  移动（拖拽重排的结构化版本）
-    BmkList,           // {parentId?}  返回书签树（**读**：其余 bmk.* 要的 id 从这里来）
-    // ---- 设置域（操作软件自身：可枚举 / 可读 / 可写 / 可回读）----
-    // 这三条是「AI 调试某个设置项」那条路的入口。没有它们，设置只能是
-    // 编译期 struct，机器侧既不知道有哪些项，也没有稳定名字去定位。
-    ConfigList,        // 列出全部设置项（key/类型/范围/当前值）
-    ConfigGet,         // {key}        读一项
-    ConfigSet,         // {key, value} 写一项（带类型与范围校验）
-    BmkFocus,          // 焦点进入书签栏（->/<- 选，Enter 开，Shift+F10 菜单，Esc 退回视图）
-    // ---- 开发面（操作代码本身：快照/编译/测试/回滚）----
-    // 与配置域同一范式：可枚举、可调用、可回读。build/test 异步跑完发事件，
-    // 不占着 UI 线程等；rollback 是破坏性写，必须 approve。
-    DevSnapshot, DevBuild, DevTest, DevJob, DevRollback,
-    // 新增命令一律加在**枚举末尾**（check_commands.py 的 C1b 规则）：
-    // enum class 无显式赋值，往中间插会让后面所有 id 整体位移，
-    // 基线（data/commands-baseline.json）与既有持久化引用全部失配。
-    BmkAddSelection,   // 无参，needsSelection：收藏文件视图当前选中的文件夹（可多选）
-    BmkAddTabs,        // 无参：收藏当前所有打开标签页的目录（已收藏/空路径跳过），返回 added/skipped/ids
-    BmkCopy,           // {id}：复制书签条目（分类连子树深拷贝），插到原条目后，返回新 id
-    // ---- 标签关闭历史（P0：关闭栈已有 20 条，但过去只能"重开最近一个"）----
-    TabClosedList,     // 无参，只读：列出关闭历史（0 = 最近关闭）
-    TabReopenAt,       // {index}：重开第 index 条关闭记录（先建后弹栈）
-    TabPin,            // {index?, pinned?}：固定/取消固定（省略 pinned = 切换）
-    // ---- 导航栏历史（能力缺口补齐）----
-    // 下拉历史、"跳到第 N 条"、"清除历史" 过去只有鼠标一条路：快捷键绑不上、
-    // 命令面板里也没有，AI 更是连"后退会退到哪"都看不见。
-    NavHistoryList,    // {backward?}        只读：列出可后退/可前进的条目（最近的在前）
-    NavHistoryJump,    // {depth, backward?} 跳到第 depth 条（0 = 最近一条）
-    NavHistoryClear,   // 无参，破坏性：清空当前标签历史 + 全局""最近访问"
-    NavRecentList,     // 无参，只读：列出地址栏下拉里的"最近访问"
-    TabSwitcher,       // 无参：打开标签切换器（可键入前缀定位）。UI 模态，不暴露给 AI
-    TabCycleNext,      // 无参：按 MRU 循环到下一个（Ctrl+Tab）
-    TabCyclePrev,      // 无参：按 MRU 循环到上一个（Ctrl+Shift+Tab）
-    TabMoveNewWindow,  // {index?}：在新窗口打开该标签路径并关闭源标签（不迁移历史）
-    NamedSessionSave,    // {name}：把当前标签组存成命名会话（同名覆盖）
-    NamedSessionList,    // 无参，只读：列出全部命名会话
-    NamedSessionRestore, // {name}：整组重开一个命名会话（追加开新标签）
-    NamedSessionDelete,  // {name}：删除一个命名会话
+// Args / Risk / Effects / Actor / FailKind / CommandState 分别住在 commands_args.h、
+// commands_actor.h、commands_state.h。本文件保留 facade：调用点继续 include 这里，
+// 不因为内部拆头而改一行调用代码。
 
-    // ---- Explorer 键位补齐（只允许追加在末尾，见 C1b）----
-    CmdDeletePermanent,  // 无参，needsSelection：Shift+Delete，永久删除（不经回收站、不进撤销栈）
-    NavTreeExpandAll,    // 无参：Ctrl+Shift+E，展开导航窗格整棵树
-    // ---- 长任务作业域（只允许追加在末尾，见 C1b）----
-    ToolJobGet,     // {id}：查作业状态与结果（完成后带 result）
-    ToolJobCancel,  // {id}：请求取消一个还在跑的作业
-    ToolJobList,    // 无参：列出全部作业（新的在前，只给摘要）
-
-    // ---- 详细信息列（P3：能力缺口）----
-    ViewColumnsList,     // 无参，只读：列出详细信息视图可用列及可见性
-    ViewColumnsSet,      // {visible[]}：设置可见详情列（列 id 来自 view.columns.list）
-    ViewColumnsChoose,   // 无参，UI：打开“选择详细信息”菜单
-    ViewZoom,            // {delta}：Ctrl+滚轮步进缩放图标（delta = ±1）
-    ViewZoomSet,         // {iconPx}：设置精确图标像素（16..256）
-    ViewZoomChoose,      // 无参，UI：打开图标大小档位菜单
-    // ---- P0-9：改写可见性（只读观测，不落盘）----
-    DevDiff,             // 无参，只读：返回工作树的结构化 diff（文件+SHA-256+mtime+patch），供审阅"agent 改了什么"
-    // ---- P3-4：任意属性排序/分组（只允许追加在末尾，见 C1b）----
-    ViewSortByKey,       // {key[,ascending]}：按任意 PROPERTYKEY 排序
-    ViewGroupByKey,      // {key}：按任意 PROPERTYKEY 分组
-    ViewPropsList,       // 无参，只读：列出可排序/分组的常用属性键（id 可直接给 bykey）
-
-    // ---- 全量覆盖 Batch 2：补齐菜单里有、命令表里没有的带参入口 ----
-    // 前三条是书签文件 IO 的确定式后端：AI 给完整路径，人走文件对话框；
-    // 后者只是前者的 UI 适配器，两条路共用同一份 Bmk*HtmlFrom/To 实现。
-    BmkImport,         // {path, mode}  mode=0 追加 / 1 覆盖（破坏性、可撤销）
-    BmkExport,         // {path}        导出到指定文件
-    BmkReload,         // 无参：从 bookmarks.html 重新载入并重建书签栏
-    // 任意文本写剪贴板与"在指定目录开终端"：面包屑/书签右键此前直接调底层函数。
-    ClipboardCopy,     // {text}  写剪贴板（与 fs.copy.toclip 同源，但内容是文本而非路径集）
-    ExtTerminalAt,     // {path}  在指定目录启动终端（ext.terminal 的带参版）
-    // ---- 第 2 档 序 7：接受器 + archive + funnel（只允许追加在末尾，见 C1b）----
-    DevArchiveDecide,  // {trials[]}：纯计算，配对比较 + e-process 判定（只读）
-    DevArchiveRecord,  // {trajectory, repeats[]?, baselineId?, ...}：落盘候选 + 判定
-    DevArchiveList,    // {limit?}：只读列出 archive 候选
-};
-
-// 命令的风险等级（与 mod 的 risk / 架构规则 R18 对齐）。
-// AI 侧据此决定"直接执行 / 必须人工批准 / 一律拒绝"。
-enum class Risk {
-    Read,     // 只读：不改磁盘、不改视图/选区/焦点
-    Write,    // 改状态：切标签、导航、排序、打开面板（可回退，但有副作用）
-    Danger,   // 破坏性：删除、覆盖、批量改名（不可轻易回退）
-};
-
-// ---------------------------------------------------------------- 参数对象
-//
-// 命令参数从"一个需要自己拼的字符串"改成"具名对象"（业界共识 P2）。
-// 理由不是好看，而是把四件事一次性解决：
-//   · 多参数 / 可选参数（字符串做不到）
-//   · 类型校验（字符串只能靠 handler 里 _wtoi 猜）
-//   · 自动生成 UI 与 MCP inputSchema
-//   · 向后兼容地加参数
-//
-// 内部用 json::Value 存，避免为每种命令定义结构体（127 条命令 → 127 个 struct
-// 是过度设计）。取用走具名访问器，拼错键名得到默认值而不是崩溃。
-class Args {
-public:
-    Args() = default;
-
-    static Args FromJson(const json::Value& v) {
-        Args a;
-        a.v_ = v;
-        return a;
-    }
-    // 空对象：无参数命令、以及"没给参数"的情形。
-    static Args Empty() { return Args(); }
-
-    bool IsEmpty() const { return !v_.IsObject() || v_.obj.empty(); }
-    const json::Value& raw() const { return v_; }
-
-    bool Has(const wchar_t* key) const { return v_.Find(key) != nullptr; }
-
-    std::wstring Str(const wchar_t* key, const std::wstring& def = std::wstring()) const {
-        return Has(key) ? v_.GetStr(key, def) : def;
-    }
-    int Int(const wchar_t* key, int def = 0) const {
-        return Has(key) ? v_.GetInt(key, def) : def;
-    }
-    bool Bool(const wchar_t* key, bool def = false) const {
-        return Has(key) ? v_.GetBool(key, def) : def;
-    }
-
-    // 字符串数组参数（如 targets）。没有该键、或不是数组时返回空。
-    // 单个元素不是字符串时跳过 —— 宁可少一个目标，也不要塞进去一个坏路径。
-    std::vector<std::wstring> StrArray(const wchar_t* key) const {
-        std::vector<std::wstring> out;
-        const json::Value* a = v_.Find(key);
-        if (a && a->IsArray())
-            for (const auto& e : a->arr)
-                if (e.IsString() && !e.str.empty()) out.push_back(e.str);
-        return out;
-    }
-
-    // 原样取一个参数（不转型）。给"值类型由数据决定"的命令用 ——
-    // 典型是 config.set：value 是布尔还是整数取决于 key，用 Bool/Int 取
-    // 会把"给了字符串"静默变成 0/false。返回 nullptr = 没传这个键，
-    // 与"传了空值"必须区分（前者该报参数缺失，后者该被注册表校验拒绝）。
-    const json::Value* Any(const wchar_t* key) const { return v_.Find(key); }
-
-private:
-    json::Value v_;
-};
-
-// ---------------------------------------------------------------- 效果描述
-//
-// 从"单轴风险等级"改成"多个正交特性"（业界共识 P3）。
-//
-// 为什么单轴不够：`CmdPaste`（写、不可撤销）、`NavRefresh`（写、幂等）、
-// `OpenTerminal`（写、作用于进程外）全归到一个 Risk::Write，但安全策略完全不同：
-//   · 幂等的操作失败可以安全重试；
-//   · 不可撤销的操作必须先确认；
-//   · 作用于进程外的操作不能靠"读只读"简单放行。
-// 一个枚举表达不了三件事，硬塞进去就只能是"都算危险"或"都算安全"。
-//
-// 这些是 **hint（声明）而非保证**。MCP 规范明确要求调用方把 annotations
-// 视为不可信 —— 所以真正的权限判定还要叠加调用方身份、设置开关与审批，
-// 不能只看这里。
-
-// 影响范围：决定"需不需要点名目标"。
-enum class Scope {
-    CurrentTab,   // 作用于当前标签（导航、排序、视图）
-    App,          // 作用于整个窗口（切标签、显隐栏、命令面板）
-    System,       // 作用于进程外（启动终端、写注册表、弹系统对话框）
-};
-
-struct Effects {
-    bool readOnly = false;     // 不改任何状态（不改磁盘、视图、选区、焦点、剪贴板）
-    bool destructive = false;  // 可能不可逆：删除、覆盖、批量改名
-    bool idempotent = false;   // 同参数重复调用等价（刷新、排序= 是；粘贴、新建= 否）
-    bool openWorld = false;    // 作用于进程外：启动程序、访问网络、系统对话框
-    bool undoable = false;     // 进撤销栈（我们能撤销的很少：书签、标签关闭）
-    Scope scope = Scope::CurrentTab;
-
-    // 由上面几项推导出来的"是否只是读"。不单独存，避免两处真相不一致。
-    bool IsPureRead() const { return readOnly && !destructive && !openWorld; }
-};
-
-// ---------------------------------------------------------------- 前置条件
-//
-// "此刻能不能执行"的判定 + 人可读原因（业界共识 P4；Blender 的 poll + disabled hint）。
-//
-// 为什么必须是**声明式枚举**而不是回调：
-//   · UI 要能直接读来灰显按钮并显示 tooltip 原因；
-//   · 静态检查脚本要能校验"声明了 needsSelection 就必须有 HasSelection 前置"；
-//   · 回调形式没法被枚举、没法被工具化，最后又会变成"每个命令自己写一段 if"。
-//
-// 组合语义：Requirements 里的项是 **AND** 关系；空集 = 无条件（总能执行）。
-// 原因文案按第一个不满足的项给出 —— 同时说三条不满足对用户是噪音。
-enum class Req {
-    None = 0,
-    HasHistoryBack,     // 有可后退的历史
-    HasHistoryForward,  // 有可前进的历史
-    HasSelection,       // 当前有选中项
-    HasTabs,            // 至少有一个标签
-    HasClipboard,       // 剪贴板有可粘贴内容
-    CanGoUp,            // 上一级有去处（盘符根算有：去此电脑；命名空间/UNC 根没有）
-    // 内部用：状态探测还没注册（App 未初始化完），此时不能声称任何命令可执行。
-    // 单独一项是为了给出准确原因 —— 借用 HasTabs 会说"没有打开的标签"，
-    // 那是误导（标签可能好端端地开着，只是我们还没拿到状态）。
-    StateUnavailable,
-
-    // ---- 以下按"边界处必须拒绝"补的（第 8 步）----
-    //
-    // 为什么需要：这些命令的实现里都有 `if (i > 0) ...` 这类静默防御，
-    // 结果是"在边界上按了没反应、也不说为什么"。VS Code 把这种前置条件
-    // 声明成 when 子句，菜单项据此灰掉并给出原因（enablement）。
-    // 我们照做：声明出来就能在 UI 灰掉、在审计里留下可读原因。
-    CanMoveTabLeft,     // 当前标签不在最左
-    CanMoveTabRight,    // 当前标签不在最右
-    HasClosedTabs,      // 有可重新打开的已关闭标签
-    HasMultipleTabs,    // 至少 2 个标签（才谈得上"上一个/下一个/关左侧"）
-    HasSelectionSingle, // 恰好一个选中项（属性、打开方式这类只接受单个）
-};
-
-struct Requirements {
-    // 用固定上限的数组而不是 vector：这是编译期常量表，不需要堆分配，
-    // 也让 CommandDef 保持可聚合初始化（constexpr 友好）。
-    Req items[4] = {Req::None, Req::None, Req::None, Req::None};
-
-    constexpr bool Empty() const { return items[0] == Req::None; }
-
-    constexpr Requirements() = default;
-    constexpr Requirements(Req a) : items{a, Req::None, Req::None, Req::None} {}
-    constexpr Requirements(Req a, Req b) : items{a, b, Req::None, Req::None} {}
-    constexpr Requirements(Req a, Req b, Req c) : items{a, b, c, Req::None} {}
-};
-
-// 人能读懂的原因文案（灰按钮的 tooltip / 机器返回的 error 共用同一份）。
-const wchar_t* ReqReason(Req r);
+// 前置条件（Req / Requirements / ReqReason）单独成文件：
+// 见 cmd_req.h 的说明 —— 它是一块自成一体的东西（枚举 + 容器 + 原因文案），
+// 与"命令表里有哪些命令"是两件事。
+#include "cmd_req.h"
 
 struct CommandDef {
     CmdId id;
@@ -364,7 +58,7 @@ struct CommandDef {
     // 【为什么需要】`ok=true` 只说明"handler 返回了 true"，不说明"效果对吗"。
     // 典型事故：改了内存但没落盘、改了 A 却以为改了 B、被前置条件静默跳过
     // 后仍返回成功。这些都不会让 ok 变 false —— 调用方以为成了，实际没成，
-    // 而错误要到很久以后才暴露（那时现场已丢）。
+    // 而且错误要到很久以后才暴露（那时现场已丢）。
     //
     // 【形态】声明式，不是回调。理由与 Requirements 相同：
     //   · 静态检查能核对"声明了就真能求值"，回调核不了；
@@ -431,33 +125,20 @@ bool SplitCommandSpec(const std::wstring& spec, std::wstring* name, std::wstring
 // schema 解析失败或无参数时返回空对象。
 Args ArgsFromLegacyArg(const CommandDef& def, const std::wstring& legacyArg);
 
-// ---------------------------------------------------------------- 可否执行
+// 这条命令是否有**必填参数**（argsSchema 的 required 非空）。
 //
-// 判定一个命令此刻能不能执行，并给出**人可读原因**。
-//
-// 状态从哪来：App 在启动时注册一个 StateProbe，commands 层不去反向依赖 App。
-// 这样判定逻辑可独立单测（喂假状态即可），也不会把窗口句柄带进命令表。
-struct CommandState {
-    int historyBack = 0;      // 可后退的条数
-    int historyForward = 0;   // 可前进的条数
-    bool hasSelection = false;
-    int selectionCount = 0;   // 选中项个数（HasSelectionSingle 用）
-    int tabCount = 0;
-    int activeTabIndex = 0;   // 当前标签的位置（判断能不能左右移）
-    bool hasClipboard = false;
-    bool canGoUp = false;
-    bool hasClosedTabs = false;   // 有可重新打开的已关闭标签
-};
-
-using StateProbe = std::function<CommandState()>;
-
-// 注册状态探测（App 启动时调一次）。未注册时视为"一切前置都不满足"——
-// 失败关闭，宁可不执行也不误判为可执行。
-void SetStateProbe(StateProbe fn);
-
-// 返回 true = 可执行。false 时若 reason 非空则填入人可读原因。
-// 这是 UI 灰按钮与机器调用前检查的**唯一**入口。
-bool CanExecute(const CommandDef& def, std::wstring* reason = nullptr);
+// 【为什么要有这个公开判定】"能不能只靠参数为空的一条命令规格触发它"是个
+// 跨模块都要用的判据，而它只能从 schema 读（命令表是唯一真源）：
+//   · 命令面板：有必填参数就必须追问，**绝不空参调用** —— 否则 clipboard.copy
+//     会把**空串**写进剪贴板（静默毁掉用户上一条复制内容，比失败更坏），
+//     tab.rename 会变成"清空别名"；
+//   · 菜单右端的快捷键列：键位表里的键按下后走的是**空参**路径
+//     （InvokeByNameLegacy(cmd, L"")），对 `fs.open` / `clipboard.copy` 这类
+//     命令来说，键根本按不出那一行的效果。给这种行标键 = 显示了一个
+//     "按下去不是这个动作"的键。
+// 两处必须共用同一份判定，否则"面板追问、菜单却照标键"就是两套自相矛盾的真相。
+// 解析失败视为无必填参数（与 ArgsFromLegacyArg 的宽松口径一致）。
+bool HasRequiredArgs(const CommandDef& def);
 
 // ---------------------------------------------------------------- 返回值
 //
@@ -471,76 +152,6 @@ bool CanExecute(const CommandDef& def, std::wstring* reason = nullptr);
 //
 // 结果统一是 JSON 对象：便于以后直接序列化成 MCP 的 structuredContent，
 // 不需要为每种命令定义 C++ 结构体（那又会变成"只有 C++ 能读懂"的私有格式）。
-// ---------------------------------------------------------------- 调用来源
-//
-// 【为什么 actor 必须是类型，不能是字符串】
-//
-// 以前 actor 是 `const wchar_t*`，"是不是机器"只认 `actor != L"ui"`。
-// 于是「系统菜单点的」「快捷键触发的」「拖进来的」「命令面板选的」
-// 全被判成**机器** —— 而 fromMachine() 是四件事的共同前提：
-//   ① 撤销边界（AI 的撤销只该退到自己那一步，不穿透用户的手工操作）
-//   ② 审计归类（这条命令是人点的还是机器发的）
-//   ③ 审批强度（机器侧不得自我批准破坏性操作）
-//   ④ 人工改写率（人改写了机器的产出 vs 机器自己改）
-//
-// 前提答错，后面四件事全部错，而且**错得毫无征兆**：
-// 用户按 Ctrl+Z 想撤自己刚才的操作，却因为"键盘算机器"被
-// "只撤到机器那一步"的规则拦住 —— 用户看到的是"撤销坏了"。
-//
-// 判据本身必须是**闭集**：枚举 + 编译期检查，
-// 而不是"约定大家只写这几个字符串"（约定守不住，下一个人加个 L"touch" 就漏了）。
-enum class ActorKind {
-    Human,  // 人点的（UI 控件 / 快捷键 / 鼠标 / 系统菜单 / 命令面板 / 拖拽 / 设置面板）
-    Ai,     // 机器（AI 命名管道）
-};
-
-// 一次调用的来源。
-//
-// kind 决定"是不是机器"（唯一判定点）；source 只是人类来源的细分标签，
-// 用来回答"人是从哪儿点的" —— 它**不参与**判定，只进审计与日志。
-struct Actor {
-    ActorKind kind = ActorKind::Human;
-    const wchar_t* source = L"ui";
-
-    // 人类来源的固定标签。集中在这里而不是散在各调用点，
-    // 是为了让"新增一种人类来源"变成一次显式的登记，
-    // 而不是又一次在调用点随手写个字符串。
-    static Actor Ui()       { return {ActorKind::Human, L"ui"}; }
-    static Actor Key()      { return {ActorKind::Human, L"key"}; }
-    static Actor Mouse()    { return {ActorKind::Human, L"mouse"}; }
-    static Actor SysMenu()  { return {ActorKind::Human, L"sysmenu"}; }
-    static Actor Palette()  { return {ActorKind::Human, L"palette"}; }
-    static Actor Seq()      { return {ActorKind::Human, L"seq"}; }
-    static Actor Drop()     { return {ActorKind::Human, L"drop"}; }
-    static Actor Settings() { return {ActorKind::Human, L"ui.settings"}; }
-    static Actor Ai()       { return {ActorKind::Ai, L"ai"}; }
-};
-
-// 失败的**机器可判读类别**。
-//
-// 【为什么不能只有一个 "blocked"】
-// agent 拿到 "blocked" 无法决定下一步，因为"被拦住"有四种，下一步完全不同：
-//   · PreconditionUnmet（前置不满足）→ 换目标 / 先做前置动作，**重试有用**
-//   · LockConflict（锁冲突）        → 稍后重试，或换一个对象
-//   · CanceledByUser（被用户取消）  → **停下来问人**，重试只是骚扰
-//   · NotSupported（能力不存在）    → 换一条路，**重试永远没用**
-// 一锅端成 "blocked" 等于让调用方去猜 —— 而"猜"正是 agent 最容易做错的地方：
-// 它要么一直重试到超时，要么直接放弃，两种都是错的。
-//
-// 枚举值与对外的 errorCode 一一对应，映射只在 FailKindCode 一处（唯一真源）。
-enum class FailKind {
-    None = 0,           // 没有失败（不是一种错误，只是"没有错误"）
-    PreconditionUnmet,  // 声明的前置条件不满足（没选中、目标不在视图、参数缺失…）
-    LockConflict,       // 目标被占用 / 被锁（剪贴板被占、目标已存在…）
-    CanceledByUser,     // 用户主动取消（拒绝批准、在进度窗口上点了取消…）
-    NotSupported,       // 该环境 / 该对象不支持这件事（视图模式不对、能力不存在…）
-    TimedOut,           // 等时限到了（后台作业仍在跑，该去查它而不是重试）
-};
-
-// FailKind → errorCode（唯一映射处）。
-// None 返回空串：它不是一种错误，只是"没有错误"。
-const wchar_t* FailKindCode(FailKind k);
-
 class CommandBus {
 public:
     // handler 收具名参数对象。不再有"字符串 arg"。
@@ -558,7 +169,7 @@ public:
     // 新入口：具名参数。所有新代码都该用它。
     // 返回值仍是"成功/失败"；要拿结构化结果请用 InvokeResult。
     //
-    // actor 必须传 Actor::Xxx()（见上面的 Actor）。传字符串字面量会被
+    // actor 必须传 Actor::Xxx()（见 commands_actor.h 的 Actor）。传字符串字面量会被
     // check_components.py 判红 —— 那样才能保证"新增调用点不会漏掉分类"。
     bool Invoke(CmdId id, const Args& args, Actor actor = Actor::Ui());
     bool InvokeByName(const std::wstring& name, const Args& args, Actor actor = Actor::Ui());
@@ -580,6 +191,20 @@ public:
     bool InvokeLegacy(CmdId id, const std::wstring& arg, Actor actor = Actor::Ui());
     bool InvokeByNameLegacy(const std::wstring& name, const std::wstring& arg,
                             Actor actor = Actor::Ui());
+
+    // 破坏性命令的**人工确认**（实现见 src/commands_confirm.cpp）。
+    //
+    // 为什么是回调而不是总线自己弹框：CommandBus 不持有窗口引用
+    // （与 CanExecute 同一口径），所以"问用户"必须由 App 提供实现。
+    // 口径：只在**人工**调用时问 —— AI 侧走危险双门（aiAllowDanger + approve）。
+    using ConfirmFn = std::function<bool(const CommandDef& def)>;
+    void SetConfirmFn(ConfirmFn fn) { confirmFn_ = std::move(fn); }
+    // 本次调用是否已经确认过（handler 用它避免重复弹框：总线已问过就别再问）。
+    bool IsCallConfirmed() const { return callConfirmed_; }
+    // 这条命令执行前**是否需要人工确认**（破坏性 && 不可撤销 && 不在日常豁免表里）。
+    bool NeedsConfirm(const CommandDef& def) const;
+    // 确认收口：返回 false = 用户取消/通道未就绪，调用方必须中止本次执行。
+    bool ConfirmIfDestructive(const CommandDef& def, const Args& args, Actor actor);
 
     // 最近一条命令（状态栏/日志用）
     std::wstring lastCommand() const { return last_; }
@@ -622,6 +247,21 @@ public:
     // 与 lastBlockReason() 同源：原因非空时它才有意义。
     FailKind lastFailKind() const { return lastFailKind_; }
 
+    // 由 handler 主动给出"我做成了，但有件事得说"。
+    //
+    // 【为什么需要第三条通道】以前只有两种结果：成功（什么都不说）与失败
+    // （NoteFailure）。可有一类结果既不是失败也不能沉默 —— 最典型的是
+    // "设置已在本次运行中生效，但没能写盘"（数据目录只读）：报成失败是撒谎
+    // （值真的改了），报成成功也是撒谎（下次启动就变回去）。
+    // 用 NoteFailure 表达它会让调用方以为改动没生效、去重试或回滚。
+    //
+    // 【口径】只有 handler 确实完成了它的主要动作时才用。它不影响 ok，
+    // 只被搬进 lastWarning() 与审计的 reason 字段（成功记录也要留下痕迹）。
+    void NoteWarning(const std::wstring& text) { pendingWarning_ = text; }
+
+    // 本次调用的告警（空 = 没有）。成功但"有代价"时非空。
+    const std::wstring& lastWarning() const { return lastWarning_; }
+
     // 本次调用的来源是"机器"（AI / 脚本）还是"人"。
     //
     // 【为什么 handler 需要它】双入口命令（人有界面路径、机器有参数路径）原来只靠
@@ -662,7 +302,7 @@ private:
 
     // 记一条"执行了"的审计。参数为什么传 Args、verdict 为什么要结构化，
     // 见 src/audit_log.h 与 src/commands_audit.cpp。
-    // errorCode 是**机器可判读**的分类（见 commands.h 的 FailKind），
+    // errorCode 是**机器可判读**的分类（见 commands_actor.h 的 FailKind），
     // reason 是**人可读**的原因。两者分开是有意的：机器码不能塞中文，
     // 而中文原因也不该被机器码的位置挤掉。
     void Audit(const CommandDef& def, const Args& args, Actor actor, bool ok,
@@ -676,7 +316,11 @@ private:
     FailKind lastFailKind_ = FailKind::None;  // 本次失败/阻断的类别
     std::wstring pendingReason_;   // handler 报的原因，本次 Dispatch 内消费
     FailKind pendingKind_ = FailKind::None;  // handler 报的类别，本次 Dispatch 内消费
+    std::wstring lastWarning_;     // 本次调用的告警（成功但有代价）
+    std::wstring pendingWarning_;  // handler 报的告警，本次 Dispatch 内消费
     Actor actor_;                  // 本次 Dispatch 的调用来源（handler 经 fromMachine 读）
+    ConfirmFn confirmFn_;          // 破坏性命令的人工确认（App 注入）
+    bool callConfirmed_ = false;   // 本次 Dispatch 内是否已确认过（handler 经 IsCallConfirmed 读）
 };
 
 // 双入口命令的统一判据："这次是人点的吗"。

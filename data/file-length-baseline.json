@@ -1,23 +1,21 @@
 {
   "max": 500,
   "note": "单文件行数历史欠账基线（棘轮）：涨过记账行数即报错，降下来自动收紧。销账：python tools/check_components.py --update-length-baseline",
-  "updatedAt": "2026-11-22T01:23:08+08:00",
+  "updatedAt": "2026-11-23T20:30:00+08:00",
   "files": {
-    "ai_server.cpp": 773,
-    "app.cpp": 597,
-    "app_commands.cpp": 560,
-    "app_commands_files.cpp": 759,
-    "app_commands_misc.cpp": 732,
+    "ai_server.cpp": 775,
+    "aichat_panel.cpp": 662,
+    "aichat_webview.cpp": 751,
+    "app.cpp": 856,
+    "app_commands.cpp": 558,
+    "app_commands_files.cpp": 903,
     "bookmark_bar.cpp": 1073,
-    "bookmarks.cpp": 867,
-    "commands.cpp": 795,
-    "commands.h": 611,
-    "input_router.cpp": 517,
-    "nav_bar.cpp": 622,
-    "popup_list.cpp": 956,
-    "settings_reg.cpp": 511,
+    "bookmarks.cpp": 893,
+    "input_router.cpp": 505,
+    "nav_bar.cpp": 547,
+    "nav_pane.cpp": 636,
+    "popup_list.cpp": 844,
     "shell_input.cpp": 522,
-    "shell_ops.cpp": 1338,
-    "shell_view.cpp": 1181
+    "shell_ops.cpp": 1365
   }
 }

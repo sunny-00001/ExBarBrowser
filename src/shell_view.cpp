@@ -2,11 +2,10 @@
 
 #include "path_util.h"
 #include "shell_ops.h"
-#include "str.h"
 
 #include "config.h"
 #include "platform_win.h"
-#include "shell_input.h"
+#include "shell_view_helpers.h"
 
 #include <propkey.h>
 #include <uiautomation.h>
@@ -29,8 +28,12 @@ LRESULT CALLBACK ViewProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     // 容器拿到焦点时，必须转交给内部 Shell 视图并 UIActivate，否则列表一直是
     // "未激活"态：选中项画成淡灰、type-ahead/方向键/右键上下文都失效。
+    // 同时通知 App"本视图被激活"：双栏下活动窗格由此跟随焦点，而不是固定左栏。
     if (m == WM_SETFOCUS) {
-        if (self) self->ActivateFocus();
+        if (self) {
+            self->ActivateFocus();
+            self->NotifyActivated();
+        }
         return 0;
     }
     if (m == WM_TIMER && w == ShellView::kNavReplayTimer) {
@@ -41,113 +44,19 @@ LRESULT CALLBACK ViewProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (self) self->ReapplyPreviewPane();
         return 0;
     }
+    if (m == WM_TIMER && w == ShellView::kSearchViewTimer) {
+        if (self) self->OnSearchViewTimer();
+        return 0;
+    }
+    if (m == WM_TIMER && w == ShellView::kThemeRestoreTimer) {
+        if (self) self->RestoreThemeState();
+        return 0;
+    }
     if (m == WM_APP_NAV_REPLAY) {  // 兼容旧的直接投递
         if (self) self->ReplayQueued();
         return 0;
     }
     return DefWindowProcW(h, m, w, l);
-}
-
-
-
-// ---------------------------------------------------------------- 主题
-//
-// 【重要】不要对 shell 内部窗口调用 SetWindowTheme！
-//
-// DirectUI（Win11 文件列表就是 DirectUIHWND + UIFILE 样式表）把"当前解析到的
-// 视觉样式字典"缓存起来，SetWindowTheme 会让它改用另一套 SubAppName 的字典重新
-// 解析样式表。实测：只要给视图子树里的子窗口设过主题，选中项就不再绘制高亮底色
-// （选中集本身是存在的，状态栏"已选 N"也正常，只是不画背景块）。
-//
-// 离屏实验（tools/probe_highlight.cpp，像素差分判据）实测结果：
-//   基线                            changed=4784 peakCount=174  有高亮
-//   只对顶层 ExplorerBrowserControl   changed=4784 peakCount=174  有高亮
-//   对全子树 SetWindowTheme          changed=1224 peakCount=14   无高亮
-//   先画坏再 SetWindowTheme(NULL)    changed=4784 peakCount=174  恢复
-//
-// 同类项目的做法一致：只对 ExplorerBrowserControl 这一层设主题，交给 shell 自己
-// 把深色传递给内部 DirectUI；内部窗口一律不碰。
-bool ClassIsName(HWND h, const wchar_t* name) {
-    if (!h) return false;
-    wchar_t cls[64] = L"";
-    if (!GetClassNameW(h, cls, _countof(cls))) return false;
-    return wcscmp(cls, name) == 0;
-}
-
-// 找 parent 子树里第一个类名为 name 的窗口（深度优先，命中即停）。
-HWND FindChildByClass(HWND parent, const wchar_t* name) {
-    struct Ctx {
-        const wchar_t* name = nullptr;
-        HWND found = nullptr;
-    } ctx;
-    if (!parent) return nullptr;
-    ctx.name = name;
-    EnumChildWindows(
-        parent,
-        [](HWND h, LPARAM lp) -> BOOL {
-            auto* c = reinterpret_cast<Ctx*>(lp);
-            if (ClassIsName(h, c->name)) {
-                c->found = h;
-                return FALSE;
-            }
-            return TRUE;
-        },
-        reinterpret_cast<LPARAM>(&ctx));
-    return ctx.found;
-}
-
-void ApplyShellTheme(HWND container, bool dark) {
-    if (!container) return;
-    // 只戳 IExplorerBrowser 自己的宿主窗口（container 直接子窗口中的那一个）。
-    if (HWND ebw = FindChildByClass(container, L"ExplorerBrowserControl")) {
-        AllowDarkForWindow(ebw, dark);
-        // 这里刻意不走 win::ThemeControl：那是个"给我们的原生控件套主题"的入口，
-        // 而这个窗口是 Shell 的 DirectUI 宿主，套法有额外约束（见文件顶部的实测记录）。
-        // 行为上两者等价，分开是为了让"哪些窗口归我们管"一眼可辨。
-        SetWindowTheme(ebw, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
-        // SetWindowTheme 内部已经会发 WM_THEMECHANGED，不要再手动广播：
-        // 对 DirectUI 反复广播会让它重建内部状态，实测会丢选中绘制。
-    }
-}
-
-// 深色滚动条等"小而独立"的控件才是需要逐窗设主题的目标；这类窗口在 shell 视图里
-// 只有滚动条，其余全部交给 shell 自己处理。
-BOOL CALLBACK ThemeScrollbarOnly(HWND h, LPARAM lp) {
-    const bool dark = *reinterpret_cast<const bool*>(lp);
-    wchar_t cls[64] = L"";
-    GetClassNameW(h, cls, _countof(cls));
-    if (wcscmp(cls, L"ScrollBar") == 0) {
-        AllowDarkForWindow(h, dark);
-        SetWindowTheme(h, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
-    }
-    return TRUE;
-}
-
-// 预览窗格意图是**每实例**状态（成员 previewPaneWanted_），不能用文件级全局量：
-// GetPaneState 是每实例的 COM 方法，全局量会让"标签 A 关了预览窗格"波及所有标签。
-// FOLDERFLAGS 里没有"显示预览窗格"这一位（0x400 是 FWF_NOSCROLL，几乎所有视图都置位），
-// 真正决定窗格是否创建的是 IExplorerPaneVisibility::GetPaneState。
-
-// 预览窗格宿主窗口：窗格隐藏时窗口对象仍然存在（被 resize 成 0 宽并 SW_HIDE），
-// 所以必须同时看"可见 + 有实际宽度"，只按类名存在性判断会永远为真。
-BOOL CALLBACK FindPreviewHostProc(HWND h, LPARAM lp) {
-    wchar_t cls[64] = L"";
-    GetClassNameW(h, cls, _countof(cls));
-    if (wcscmp(cls, L"Shell Preview Extension Host") == 0) {
-        RECT rc{};
-        GetWindowRect(h, &rc);
-        if (IsWindowVisible(h) && rc.right - rc.left > 0) {
-            *reinterpret_cast<bool*>(lp) = true;
-            return FALSE;
-        }
-    }
-    return TRUE;
-}
-
-bool PreviewPaneVisibleNow(HWND container) {
-    bool found = false;
-    if (container) EnumChildWindows(container, FindPreviewHostProc, reinterpret_cast<LPARAM>(&found));
-    return found;
 }
 
 }  // namespace
@@ -198,6 +107,48 @@ HRESULT STDMETHODCALLTYPE ShellView::QueryService(REFGUID guidService, REFIID ri
 HRESULT STDMETHODCALLTYPE ShellView::GetPaneState(REFEXPLORERPANE ep,
                                                   EXPLORERPANESTATE* peps) {
     if (!peps) return E_POINTER;
+    // 临时诊断：把壳层询问过的每个窗格 GUID 打出来（用于认领 EP_Content 等
+    // mingw 头文件里缺失的常量）。
+    {
+        const GUID* g = &ep;
+        LogDbg(L"[pane-diag] ep={%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+               (unsigned long)g->Data1, g->Data2, g->Data3, g->Data4[0], g->Data4[1], g->Data4[2],
+               g->Data4[3], g->Data4[4], g->Data4[5], g->Data4[6], g->Data4[7]);
+    }
+    // 命令栏（ribbon）整组强制关：只要导航树 + 文件列表。
+    //
+    // 这是**官方途径**，不是隐藏窗口。IExplorerPaneVisibility::GetPaneState 的
+    // 窗格清单里本来就含命令栏 —— EP_Commands（命令栏本体）、
+    // EP_Commands_Organize / EP_Commands_View（组织/视图两组）、EP_Ribbon（整个 ribbon）。
+    // 对它们回 EPS_DEFAULT_OFF | EPS_FORCE，框架就不再创建命令栏，而不是"创建了再
+    // ShowWindow(SW_HIDE)"。这也是其他托管系统视图的项目去掉命令栏的做法。
+    //
+    // 为什么必须 EPS_FORCE：EPS_DEFAULT_OFF 只是"默认值"，shell 会用**每个目录自己
+    // 保存的窗格状态**把它盖回去（EP_PreviewPane 就是踩过这个坑，见下）。用户意图是
+    // "这个宿主不要命令栏"，不该被目录历史状态推翻。
+    //
+    // 与 EP_PreviewPane 的差别：预览窗格是用户可切换的（previewPaneWanted_），命令栏
+    // 是本宿主的固定设计（本工程用自绘导航栏/命令面板替代它），所以无条件关。
+    if (ep == EP_Commands || ep == EP_Commands_Organize || ep == EP_Commands_View ||
+        ep == EP_Ribbon) {
+        *peps = (EXPLORERPANESTATE)(EPS_DEFAULT_OFF | EPS_INITIALSTATE | EPS_FORCE);
+        return S_OK;
+    }
+    // 导航窗格同理走官方开关，而不是"建好树再 SW_HIDE"。
+    //
+    // 双栏下只有活动窗格该有导航树（app 的共享侧栏语义）。旧做法是隐藏内层
+    // SysTreeView32：树看不见了，但外层 NamespaceTreeControl 占的那 187px 列宽
+    // 还留着 —— 非活动窗格左侧凭空多出一条空白，文件列表被挤到右边（实测
+    // 空白 x 差 196px）。SetOptions/SetRect 都改不动已建好的窗格布局。
+    //
+    // 按 EPS_FORCE 回"关"时，框架**根本不创建** EP_NavPane，宽度自然是文件列表的。
+    // 这是与 EP_PreviewPane 同一条已验证的路径。
+    if (ep == EP_NavPane) {
+        *peps = navPaneWanted_
+                    ? (EXPLORERPANESTATE)(EPS_DEFAULT_ON | EPS_INITIALSTATE | EPS_FORCE)
+                    : (EXPLORERPANESTATE)(EPS_DEFAULT_OFF | EPS_INITIALSTATE | EPS_FORCE);
+        return S_OK;
+    }
     if (ep == EP_PreviewPane) {
         // **开与关都必须是 EPS_FORCE**（2026-11-20 修正）。
         //
@@ -208,7 +159,7 @@ HRESULT STDMETHODCALLTYPE ShellView::GetPaneState(REFEXPLORERPANE ep,
         // 一直是 0x0、SW_HIDE）。
         //
         // 语义上这也说不通：本工程的预览窗格偏好是**每实例**状态（previewPaneWanted_，
-        // 见上面 122 行的注释），由命令 view.toggle.preview 显式控制并写回配置。
+        // 见 shell_view.h 的注释），由命令 view.toggle.preview 显式控制并写回配置。
         // 既然用户意图明确，"按目录的历史状态"就不该有权覆盖它。
         //
         // 代价：shell 自带的"预览窗格"菜单项不再能单独改变这一项（会被本值压回）。
@@ -222,92 +173,32 @@ HRESULT STDMETHODCALLTYPE ShellView::GetPaneState(REFEXPLORERPANE ep,
     return S_OK;
 }
 
-// ---------------------------------------------------------------- 事件接收器
-// 注意：Windows 实际用 4 个参数调用 OnNavigationComplete(pidl, IDataObject*, UINT)，
-// mingw 头只声明了 1 个。多出的参数走寄存器、被忽略即可，不影响 vtable 布局。
-class ShellView::Sink : public IExplorerBrowserEvents {
-public:
-    explicit Sink(ShellView* owner) : owner_(owner) {}
-    virtual ~Sink() = default;
-
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
-        if (!ppv) return E_POINTER;
-        if (riid == IID_IUnknown || riid == IID_IExplorerBrowserEvents) {
-            *ppv = static_cast<IExplorerBrowserEvents*>(this);
-            AddRef();
-            return S_OK;
-        }
-        *ppv = nullptr;
-        return E_NOINTERFACE;
-    }
-    // InterlockedIncrement/Decrement 返回 LONG，COM 的 AddRef/Release 要 ULONG。
-    // 引用计数不可能为负（多减一次就是 bug，届时 0xFFFFFFFF 也是"极大"，
-    // 与 LONG 的解释无关），所以这里的位模式转换是安全的。
-    ULONG STDMETHODCALLTYPE AddRef() override {
-        return static_cast<ULONG>(InterlockedIncrement(&ref_));
-    }
-    ULONG STDMETHODCALLTYPE Release() override {
-        const ULONG r = static_cast<ULONG>(InterlockedDecrement(&ref_));
-        if (r == 0) delete this;
-        return r;
-    }
-
-    HRESULT STDMETHODCALLTYPE OnNavigationPending(PCIDLIST_ABSOLUTE) override {
-        // 双击文件夹等 shell 内部导航不会走 ShellView::Navigate()/DoNavigate()，
-        // 必须在这里采样当前目录的真实状态，否则只能拿到上一次的旧意图。
-        if (owner_) owner_->CapturePreviewPaneBeforeNavigation();
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE OnViewCreated(IShellView* view) override {
-        if (owner_) owner_->OnViewCreated(view);
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE OnNavigationComplete(PCIDLIST_ABSOLUTE pidl) override {
-        if (owner_) owner_->OnNavigated(pidl);
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE OnNavigationFailed(PCIDLIST_ABSOLUTE) override {
-        if (owner_) owner_->OnNavigationFailed();
-        return S_OK;
-    }
-
-    // 销毁前断开反向指针：Unadvise 期间可能还有回调进来，不能摸已析构的 ShellView。
-    void Detach() { owner_ = nullptr; }
-
-private:
-    LONG ref_ = 1;
-    ShellView* owner_;
-};
-
 // ---------------------------------------------------------------- ShellView
 bool ShellView::Create(HWND parent, const std::wstring& path) {
     win::RegisterClassOnce(kTabViewClass, ViewProc);
-
-    container_ = CreateWindowExW(0, kTabViewClass, L"", WS_CHILD | WS_CLIPCHILDREN,
+    // WS_CLIPSIBLINGS：双栏分隔条是兄弟窗口，本容器不得覆盖它（HWND_TOP 也挡不住）。
+    container_ = CreateWindowExW(0, kTabViewClass, L"", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
                                  0, 0, 10, 10, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!container_) return false;
     SetThis(container_, this);
 
+    // 容器先放行深浅色，再建 EBC：IExplorerBrowser 在 Initialize 时会按父窗口
+    // 当前的 dark allowance 决定 DirectUI 用哪套样式。只在 OnViewCreated 补
+    // ApplyShellTheme 已经晚了（实测强制深色启动时文件区仍是浅色）。
+    const bool dark = theme_.dark;
+    AllowDarkForWindow(container_, dark);
+    SetWindowTheme(container_, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+
     // 窗格偏好必须在首次导航前就位：EBO_SHOWFRAMES / IExplorerPaneVisibility 只在
     // 建窗格时被消费，晚一步就要等下一次导航才生效（表现为"第一次打开时窗格还在"）。
     const Settings& s = Config::Get().s();
-    navPaneWanted_ = s.showNavPane;
+    // navPaneWanted_ 若已被调用方预置（双栏右窗格），保留那个值，不拿全局偏好盖掉。
+    if (!navPanePreset_) navPaneWanted_ = s.showNavPane;
     previewPaneWanted_ = s.showPreviewPane;
     previewPaneWantedKnown_ = true;
 
     if (!InitBrowser()) return false;
-
-    // 引用计数：new 得 1（我们的），Advise 让浏览器 AddRef 到 2，
-    // 再 Release 交出自己的那份 → 只剩浏览器的 1 份。
-    // （原来这里多了一次 AddRef，销毁时只 Unadvise 不减我们那份，Sink 永久泄漏。）
-    sink_ = new Sink(this);
-    if (FAILED(browser_->Advise(sink_, &cookie_))) {
-        cookie_ = 0;
-        sink_->Release();
-        sink_ = nullptr;
-        return false;
-    }
-    sink_->Release();  // 交给浏览器持有
+    if (!AdviseBrowser()) return false;
 
     if (!path.empty()) Navigate(path);
     return true;
@@ -348,22 +239,16 @@ bool ShellView::InitBrowser() {
 }
 
 void ShellView::Destroy() {
-    if (container_) shellinput::Uninstall(container_);
-    if (browser_) {
-        // 先断开站点链，避免销毁过程中框架仍回调 GetPaneState 摸到将死对象。
-        IUnknown_SetSite(browser_, nullptr);
-        if (sink_) {
-            // 顺序关键：Unadvise 会释放浏览器持有的最后一份引用并 delete Sink，
-            // 必须先 Detach 断开 owner_，否则 Detach 落在已释放对象上（use-after-free）。
-            sink_->Detach();
-            if (cookie_ && browser_) browser_->Unadvise(cookie_);
-            cookie_ = 0;
-            sink_ = nullptr;
-        }
-        browser_->Destroy();
-        browser_->Release();
-        browser_ = nullptr;
+    // 只拆浏览器，不拆容器：重建 IExplorerBrowser 时容器窗口及其类名、坐标、
+    // 子类上下文都要原样留住（DestroyBrowser 见 shell_view_theme.cpp）。
+    DestroyBrowser();
+    // 主题两阶段切换若在中途被销毁，清掉尚未消费的搜索 PIDL。
+    if (themePendingSearchPidl_) {
+        CoTaskMemFree(themePendingSearchPidl_);
+        themePendingSearchPidl_ = nullptr;
     }
+    ClearThemeRestorePidls();
+    themeSuspended_ = false;
     if (container_) {
         DestroyWindow(container_);
         container_ = nullptr;
@@ -376,7 +261,22 @@ void ShellView::Resize(const RECT& rc) {
     int h = rc.bottom - rc.top;
     if (w < 0) w = 0;
     if (h < 0) h = 0;
-    SetWindowPos(container_, nullptr, rc.left, rc.top, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    // 【几何没变就不动窗口】SetWindowPos 同一个位置同一尺寸也会触发 WM_SIZE ->
+    // shell 视图整块重绘。双栏下 Layout() 会被调用多次（切窗格、显隐、比例），
+    // 每次都无条件 SetWindowPos 就是"切到右栏时闪烁"的直接成因。
+    // 这里比一次缓存的矩形，相同就整体跳过（SetRect 同理：它内部按"矩形变了没有"
+    // 决定要不要重排，传一样的值本来就会被忽略）。
+    // 比的是**整个矩形**（含位置）：位置变了尺寸没变时也必须移动窗口。
+    if (lastW_ == w && lastH_ == h && lastX_ == rc.left && lastY_ == rc.top) return;
+    lastW_ = w;
+    lastH_ = h;
+    lastX_ = rc.left;
+    lastY_ = rc.top;
+    // 【SWP_NOCOPYBITS：拖动分割条时不残留】缺了它，SetWindowPos 会把原有客户区
+    // 像素**拷贝**到新位置（默认优化），于是拖动每走一步旧内容就贴一份；缩小时
+    // 缩掉的那一条会留在屏幕上。加上它改为直接重排、由窗口自己重绘，不留副本。
+    SetWindowPos(container_, nullptr, rc.left, rc.top, w, h,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
     if (browser_) {
         RECT inner{0, 0, w, h};
         browser_->SetRect(nullptr, inner);
@@ -407,24 +307,23 @@ bool ShellView::DoNavigate(const std::wstring& path) {
     // 覆盖 shell 内部导航；这里保留一份，确保程序发起的导航在回调前已经锁定意图。
     CapturePreviewPaneBeforeNavigation();
 
-    // 正斜杠在 SHCreateItemFromParsingName 里是 E_INVALIDARG（实测），
-    // 而用户/命令行经常给 C:/x/y 形式 —— 统一走 pathutil::ToShellPath
-    // （正斜杠→反斜杠、折叠连续分隔符、去尾分隔符；命名空间路径原样）。
-    //
-    // 【为什么收口到 pathutil】这条规则以前只写在这里（导航路径），
-    // fs.* 那一组命令**没有**对应的收口，于是同一类输入：
-    //   导航 "C:/x"      → 正常
-    //   fs.rename "C:/x" → E_INVALIDARG(0x80070057)，报"无法定位源文件"
-    // 同一件事两种表现，是 bug 不是特性。现在唯一实现是 pathutil::ToShellPath。
-    const std::wstring p = pathutil::ToShellPath(path);
+    // 【两个归一化，各管一维】正斜杠会让 SHCreateItemFromParsingName 返回
+    // E_INVALIDARG（实测），所以外部路径一律过 ToShellPath；而命名空间
+    // （裸 `::{GUID}`）不吃分隔符规则，主页只认 `shell:::` 前缀 —— 会话恢复
+    // 把裸 ::{679F85CB-…} 直接喂进来时解析失败，右窗格一次都导航不成功，
+    // 用户看到"右栏空白"。ToParsingName 补前缀，谁都不能替另一个。
+    const std::wstring p = pathutil::ToParsingName(pathutil::ToShellPath(path));
 
     // search-ms: 是**协议处理器 URL**，不是可浏览的 folder。IExplorerBrowser 没有
     // 搜索带（search band），BrowseToObject 对它返回 S_OK 却把视图留在原地 ——
     // 于是"搜索成功"变成一句假话（实测：零结果查询后 itemCount 一个不少）。
-    // 在这里明确拒绝，让调用方拿到失败而不是假成功；真做搜索需要换宿主或接
-    // 搜索 API（IExplorerBrowser 不支持 search-ms），记在文档的已知缺口里。
+    // 在这里明确拒绝，让调用方拿到失败而不是假成功。
+    //
+    // 【真搜索怎么走】同一个搜索结果文件夹以 **PIDL** 形式交给 BrowseToObject 就
+    // 能导航（原生搜索文件夹，见 src/search_folder.h 与 ShellView::NavigatePid）：
+    // 那条拒绝判的是字符串前缀，不是文件夹类型。
     if (p.rfind(L"search-ms:", 0) == 0) {
-        LogDbg(L"[nav] 宿主不支持 search-ms（无搜索带）：%s", p.c_str());
+        LogDbg(L"[nav] 宿主不支持 search-ms URL（无搜索带）：%s", p.c_str());
         return false;
     }
 
@@ -473,73 +372,7 @@ void ShellView::SetViewMode(int fvm, int iconPx) {
             if (SUCCEEDED(fv2->GetViewModeAndIconSize(&gotMode, &gotIcon)))
                 LogDbg(L"[view] set %d/%d -> %d/%d", fvm, iconPx, static_cast<int>(gotMode),
                         gotIcon);
-            // 临时诊断：列管理器里到底有哪些列，Size 是否可见。
-            IColumnManager* cm = nullptr;
-            if (SUCCEEDED(fv2->QueryInterface(IID_IColumnManager,
-                                             reinterpret_cast<void**>(&cm))) &&
-                cm) {
-                UINT all = 0, visible = 0;
-                cm->GetColumnCount(CM_ENUM_ALL, &all);
-                cm->GetColumnCount(CM_ENUM_VISIBLE, &visible);
-                LogDbg(L"[cols] all=%u visible=%u", all, visible);
-                std::vector<PROPERTYKEY> keys(all > 0 ? all : 1);
-                if (all > 0 && SUCCEEDED(cm->GetColumns(CM_ENUM_ALL, keys.data(), all))) {
-                    for (UINT i = 0; i < all; ++i) {
-                        CM_COLUMNINFO ci{};
-                        ci.cbSize = sizeof(ci);
-                        ci.dwMask = static_cast<DWORD>(CM_MASK_NAME | CM_MASK_STATE |
-                                                       CM_MASK_WIDTH);
-                        HRESULT hci = cm->GetColumnInfo(keys[i], &ci);
-                        LogDbg(L"[cols] %u fmt=%08X pid=%u name=%s state=%u width=%u hr=0x%08X",
-                                i, keys[i].fmtid.Data1, keys[i].pid,
-                                hci == S_OK ? ci.wszName : L"?", ci.dwState, ci.uWidth,
-                                static_cast<unsigned long>(hci));
-                    }
-                }
-                cm->Release();
-                // 临时诊断：当前视图前 12 项的 PKEY_Size（含文件夹）。
-                ComPtr<IShellItemArray> items;
-                HRESULT hrItems = fv2->Items(SVGIO_ALLVIEW, IID_IShellItemArray,
-                                             reinterpret_cast<void**>(&items));
-                LogDbg(L"[cols] Items hr=0x%08X array=%d", static_cast<unsigned long>(hrItems),
-                        items ? 1 : 0);
-                int itemCount = 0;
-                fv2->ItemCount(SVGIO_ALLVIEW, &itemCount);
-                LogDbg(L"[cols] ItemCount=%d", itemCount);
-                for (int i = 0; i < itemCount && i < 12; ++i) {
-                    PITEMID_CHILD pidl = nullptr;
-                    HRESULT hrp = fv2->Item(i, &pidl);
-                    if (FAILED(hrp) || !pidl) {
-                        LogDbg(L"[cols] item %d Item hr=0x%08X", i,
-                                static_cast<unsigned long>(hrp));
-                        continue;
-                    }
-                    ComPtr<IShellItem> item;
-                    HRESULT hrs = SHCreateItemFromIDList(pidl, IID_IShellItem,
-                                                         reinterpret_cast<void**>(&item));
-                    CoTaskMemFree(pidl);
-                    if (FAILED(hrs) || !item) {
-                        LogDbg(L"[cols] item %d shell hr=0x%08X", i,
-                                static_cast<unsigned long>(hrs));
-                        continue;
-                    }
-                    PWSTR name = nullptr;
-                    item->GetDisplayName(SIGDN_NORMALDISPLAY, &name);
-                    SFGAOF attr = 0;
-                    item->GetAttributes(SFGAO_FOLDER, &attr);
-                    ComPtr<IShellItem2> i2;
-                    UINT64 size = 0;
-                    HRESULT hs = E_FAIL;
-                    if (SUCCEEDED(item->QueryInterface(IID_IShellItem2,
-                                                       reinterpret_cast<void**>(&i2))) &&
-                        i2)
-                        hs = i2->GetUInt64(PKEY_Size, &size);
-                    LogDbg(L"[cols] item %d folder=%d size=%llu hr=0x%08X name=%s", i,
-                            (attr & SFGAO_FOLDER) ? 1 : 0, size,
-                            static_cast<unsigned long>(hs), name ? name : L"?");
-                    if (name) CoTaskMemFree(name);
-                }
-            }
+            // 列枚举/逐项取大小诊断已移到 EXBAR_DIAG_PREVIEW 路径；启动期不再跑。
         }
         view->Release();
     }
@@ -552,117 +385,6 @@ void ShellView::Refresh() {
         view->Refresh();
         view->Release();
     }
-}
-
-unsigned ShellView::SelectedCount() {
-    if (!browser_) return 0;
-    IShellView* view = nullptr;
-    if (FAILED(browser_->GetCurrentView(IID_IShellView, reinterpret_cast<void**>(&view))) || !view)
-        return 0;
-
-    unsigned count = 0;
-    IFolderView* fv = nullptr;
-    if (SUCCEEDED(view->QueryInterface(IID_IFolderView, reinterpret_cast<void**>(&fv))) && fv) {
-        // SVGIO_SELECTION 只数选中项。与 view_stats 用 IDataObject 的做法相比，
-        // 这条路径不构造数据对象，代价更低，适合"每次判前置都调一次"。
-        int n = 0;
-        if (SUCCEEDED(fv->ItemCount(SVGIO_SELECTION, &n)) && n > 0)
-            count = static_cast<unsigned>(n);
-        fv->Release();
-    }
-    view->Release();
-    return count;
-}
-
-unsigned ShellView::SelectionPaths(unsigned cap, std::vector<SelectionItem>& out) {
-    out.clear();
-    unsigned total = SelectedCount();   // 总数同源，用于截断判定
-    if (total == 0 || cap == 0) return total;
-
-    IShellView* view = CurrentView();   // 返回已 AddRef，本函数负责 Release
-    if (!view) return 0;
-    IFolderView* fv = nullptr;
-    if (SUCCEEDED(view->QueryInterface(IID_IFolderView, reinterpret_cast<void**>(&fv))) && fv) {
-        // Items() 交出的是**相对当前 folder 的子 PIDL**。以前用
-        // SHCreateItemFromIDList 解析，等于按桌面根拼接：在 E:\x 里选中 a 会被
-        // 读成 C:\Users\<me>\Desktop\a —— 文件名对、父目录错，且错得不容易看出来。
-        // 必须带上父 folder 解析（与 StatItem 同一条口径）。
-        IShellFolder* folder = nullptr;
-        fv->GetFolder(IID_IShellFolder, reinterpret_cast<void**>(&folder));
-        IEnumIDList* en = nullptr;
-        if (SUCCEEDED(fv->Items(SVGIO_SELECTION, IID_IEnumIDList,
-                                reinterpret_cast<void**>(&en))) && en) {
-            out.reserve(total < cap ? total : cap);
-            for (unsigned taken = 0; taken < cap; ++taken) {
-                PITEMID_CHILD pidl = nullptr;
-                if (en->Next(1, &pidl, nullptr) != S_OK || !pidl) break;
-                IShellItem* item = nullptr;
-                if (folder &&
-                    SUCCEEDED(SHCreateItemWithParent(nullptr, folder, pidl, IID_IShellItem,
-                                                     reinterpret_cast<void**>(&item))) && item) {
-                    SelectionItem si;
-                    PWSTR name = nullptr;
-                    // DESKTOPABSOLUTEEDITING：文件系统给完整路径（C:\a\b），
-                    // 命名空间给解析名（::{GUID}\子项）；比 PARSING 少一层显示转义。
-                    if (SUCCEEDED(item->GetDisplayName(SIGDN_DESKTOPABSOLUTEEDITING, &name)) && name) {
-                        si.path = name;
-                        CoTaskMemFree(name);
-                    }
-                    SFGAOF attr = 0;
-                    item->GetAttributes(SFGAO_FOLDER, &attr);
-                    si.isFolder = (attr & SFGAO_FOLDER) != 0;
-                    if (!si.path.empty()) out.push_back(std::move(si));
-                    item->Release();
-                }
-                CoTaskMemFree(pidl);
-            }
-            en->Release();
-        }
-        if (folder) folder->Release();
-        fv->Release();
-    }
-    view->Release();
-    return total;
-}
-
-void ShellView::SelectPaths(const std::vector<std::wstring>& paths) {
-    if (paths.empty() || !browser_) return;
-    IShellView* view = CurrentView();
-    if (!view) return;
-    IFolderView* fv = nullptr;
-    if (FAILED(view->QueryInterface(IID_IFolderView, reinterpret_cast<void**>(&fv))) || !fv) {
-        view->Release();
-        return;
-    }
-    // SelectItem 要**相对当前 folder 的子 pidl**；SHParseDisplayName 给绝对 pidl。
-    // 由 IPersistFolder2::GetCurPIDL 拿 folder 绝对 pidl，再 ILFindChild 切出子段
-    // （返回值指向 abs 内部，不单独释放）。条目不存在/目录已变 → 解析失败静默跳过。
-    IPersistFolder2* pf = nullptr;
-    PIDLIST_ABSOLUTE folder = nullptr;
-    if (SUCCEEDED(fv->GetFolder(IID_IPersistFolder2, reinterpret_cast<void**>(&pf))) && pf) {
-        pf->GetCurFolder(&folder);   // MinGW 的 IPersistFolder2 方法名（SDK 叫 GetCurPIDL）
-        pf->Release();
-    }
-    if (!folder) {
-        fv->Release();
-        view->Release();
-        return;
-    }
-    for (size_t i = 0; i < paths.size(); ++i) {
-        PIDLIST_ABSOLUTE abs = nullptr;
-        if (FAILED(SHParseDisplayName(paths[i].c_str(), nullptr, &abs, 0, nullptr)) || !abs)
-            continue;
-        const PCUITEMID_CHILD child = ILFindChild(folder, abs);
-        if (child) {
-            // 首条清掉旧选中；后续追加。失败静默：恢复是尽力语义。
-            const UINT flags = (i == 0) ? (SVSI_SELECT | SVSI_DESELECTOTHERS) : SVSI_SELECT;
-            view->SelectItem(child, flags);
-        }
-        ILFree(abs);
-    }
-    ILFree(folder);
-    fv->Release();
-    view->Release();
 }
 
 bool ShellView::GetViewMode(int* fvm, int* iconPx) {
@@ -682,7 +404,8 @@ bool ShellView::GetViewMode(int* fvm, int* iconPx) {
 }
 
 unsigned ShellView::ItemCount() {
-    if (!browser_) return 0;    IShellView* view = nullptr;
+    if (!browser_) return 0;
+    IShellView* view = nullptr;
     if (FAILED(browser_->GetCurrentView(IID_IShellView, reinterpret_cast<void**>(&view))) || !view)
         return 0;
 
@@ -736,470 +459,9 @@ void ShellView::ActivateFocus() {
     activating_ = false;
 }
 
-void ShellView::CapturePreviewPaneState(IShellView*) {
-    // 不能读 FOLDERFLAGS：其中没有"显示预览窗格"位（0x400 是 FWF_NOSCROLL，几乎总是置位，
-    // 早先按它采样会把"已隐藏"误判成"已打开"，于是每次导航都被强制打开）。
-    // 唯一可靠的观测是窗格宿主窗口是否真的可见。
-    const bool visible = PreviewPaneVisibleNow(container_);
-    previewPaneWanted_ = visible;
-    previewPaneWantedKnown_ = true;
-    LogDbg(L"[preview] capture visible=%d", visible ? 1 : 0);
-}
-
-void ShellView::ApplyPreviewPaneState(IShellView*) {
-    // 窗格是否创建由 IExplorerPaneVisibility::GetPaneState 决定（见上面 Force 返回），
-    // 框架每次建窗格都会来问，所以这里不再重导航去"抢修" —— 那会和 shell 自己的
-    // 重建流程互相触发，表现为目录反复刷新。只做观测与日志，便于排查。
-    if (!previewPaneWantedKnown_) return;
-    const bool visible = PreviewPaneVisibleNow(container_);
-    if (visible != previewPaneWanted_) {
-        LogDbg(L"[preview] mismatch visible=%d wanted=%d（下一次建窗格按 GetPaneState 纠正）",
-                visible ? 1 : 0, previewPaneWanted_ ? 1 : 0);
-    }
-}
-
-void ShellView::CapturePreviewPaneBeforeNavigation() {
-    IShellView* view = CurrentView();
-    CapturePreviewPaneState(view);
-    if (view) view->Release();
-}
-
-void ShellView::SchedulePreviewReapply() {
-    if (!container_) return;
-    KillTimer(container_, kPreviewReapplyTimer);
-    SetTimer(container_, kPreviewReapplyTimer, 120, nullptr);
-}
-
-void ShellView::ReapplyPreviewPane() {
-    // 真正的功能只有两行：停掉重试定时器、把预览窗格状态再套一次。
-    // 原先这个函数里还塞着 ~160 行诊断（列枚举/逐项取大小/SetColumns 强制重建/UIA 树遍历）
-    // —— 而它由 120ms 定时器反复调用，等于每次悬停预览都做一遍跨进程 UIA 与列重建。
-    // 已抽到 DiagnosePreviewPaneState()，由 -DEXBAR_DIAG_PREVIEW 控制。
-    if (container_) KillTimer(container_, kPreviewReapplyTimer);
-    IShellView* view = CurrentView();
-    ApplyPreviewPaneState(view);
-    if (view) view->Release();
-#if defined(EXBAR_DIAG_PREVIEW)
-    DiagnosePreviewPaneState();
-#endif
-}
-
-#if defined(EXBAR_DIAG_PREVIEW)
-// 【诊断：预览窗格/文件夹大小】2026-11 排查"详细信息视图里 Size 列不显示"时写的。
-//
-// 为什么必须默认关闭：它原本直接长在 ReapplyPreviewPane 里，而后者由 120ms 定时器
-// 反复调用。这段代码会做四件重活 ——
-//   ① 在最多 40 个列里逐个 GetDetailsOf + StrRetToBufW 找 Size 列；
-//   ② 对前 4 项取 PKEY_Size（网络路径/大文件夹 = 真实 I/O）；
-//   ③ 用 IColumnManager 把 Size 列**移除再加回**（强制重建可见列，视图会闪）；
-//   ④ UIA 全后代遍历（TreeScope_Descendants + 逐元素取名字，跨进程调用）。
-// 留在生产路径上，用户每次把鼠标移过文件列表都要付一遍这个代价。
-//
-// 需要时加 -DEXBAR_DIAG_PREVIEW 重新启用。不要退化成注释 —— 注释掉的代码会腐烂，
-// 活着但默认跑着的诊断更糟。
-void ShellView::DiagnosePreviewPaneState() {
-    IShellView* view = CurrentView();
-    if (!view) return;
-    ComPtr<IFolderView2> fv2 = shellops::FolderView2(view);
-    if (!fv2) {
-        view->Release();
-        return;
-    }
-    int n = 0;
-    fv2->ItemCount(SVGIO_ALLVIEW, &n);
-    LogDbg(L"[late] items=%d", n);
-
-    // 【判空】GetFolder(IID_IShellFolder2) 在虚拟目录（搜索结果 / 库 / 第三方 NSE）
-    // 上会失败。以前这里只把 hr 写进日志就继续用 sf2 —— 是必崩的空指针解引用，
-    // 而本函数原来挂在 120ms 定时器上，等于"导航到某类目录就崩"。
-    ComPtr<IShellFolder2> sf2;
-    const HRESULT hsf = fv2->GetFolder(IID_IShellFolder2, reinterpret_cast<void**>(&sf2));
-    LogDbg(L"[late] GetFolder(IShellFolder2) hr=0x%08X", static_cast<unsigned long>(hsf));
-    if (FAILED(hsf) || !sf2) {
-        view->Release();
-        return;
-    }
-
-    int sizeCol = -1;
-    for (int c = 0; c < 40; ++c) {
-        SHELLDETAILS sd{};
-        if (FAILED(sf2->GetDetailsOf(nullptr, c, &sd))) continue;
-        wchar_t buf[128] = L"";
-        if (SUCCEEDED(StrRetToBufW(&sd.str, nullptr, buf, _countof(buf))) &&
-            (str::IEquals(buf, L"大小") || str::IEquals(buf, L"Size"))) {
-            sizeCol = c;
-            LogDbg(L"[late] Size column index=%d", c);
-            break;
-        }
-    }
-    for (int i = 0; i < n && i < 4; ++i) {
-        PITEMID_CHILD pidl = nullptr;
-        if (FAILED(fv2->Item(i, &pidl)) || !pidl) continue;
-        VARIANT var{};
-        HRESULT hdet = sf2->GetDetailsEx(pidl, &PKEY_Size, &var);
-        unsigned long long v = 0;
-        if (SUCCEEDED(hdet) && var.vt == VT_UI8) v = var.ullVal;
-        if (SUCCEEDED(hdet)) VariantClear(&var);
-        wchar_t detText[128] = L"";
-        HRESULT hdetText = E_FAIL;
-        if (sizeCol >= 0) {
-            SHELLDETAILS sdItem{};
-            hdetText = sf2->GetDetailsOf(pidl, sizeCol, &sdItem);
-            if (SUCCEEDED(hdetText))
-                StrRetToBufW(&sdItem.str, nullptr, detText, _countof(detText));
-        }
-        ComPtr<IShellItem> item;
-        HRESULT hrs = SHCreateItemFromIDList(pidl, IID_IShellItem,
-                                             reinterpret_cast<void**>(&item));
-        CoTaskMemFree(pidl);
-        if (FAILED(hrs) || !item) continue;
-        PWSTR name = nullptr;
-        item->GetDisplayName(SIGDN_NORMALDISPLAY, &name);
-        SFGAOF attr = 0;
-        item->GetAttributes(SFGAO_FOLDER, &attr);
-        LogDbg(L"[late] item %d folder=%d details=%llu hr=0x%08X text=%s hrText=0x%08X name=%s", i,
-               (attr & SFGAO_FOLDER) ? 1 : 0, v, static_cast<unsigned long>(hdet), detText,
-               static_cast<unsigned long>(hdetText), name ? name : L"?");
-        if (name) CoTaskMemFree(name);
-    }
-
-    // IColumnManager：把 Size 列移除再加回，强制 shell 重建可见列。
-    ComPtr<IColumnManager> cm2;
-    if (SUCCEEDED(fv2->QueryInterface(IID_IColumnManager, reinterpret_cast<void**>(&cm2))) && cm2) {
-        UINT vc = 64;
-        std::vector<PROPERTYKEY> vk(vc);
-        HRESULT hget = cm2->GetColumns(CM_ENUM_VISIBLE, vk.data(), vc);
-        int sizeIdx = -1;
-        for (UINT k = 0; k < vc; ++k)
-            if (IsEqualPropertyKey(vk[k], PKEY_Size)) sizeIdx = static_cast<int>(k);
-        LogDbg(L"[late] toggle cols vc=%u get=0x%08X sizeIdx=%d", vc,
-               static_cast<unsigned long>(hget), sizeIdx);
-        if (sizeIdx >= 0 && vc > 1) {
-            std::vector<PROPERTYKEY> without;
-            for (UINT k = 0; k < vc; ++k)
-                if (static_cast<int>(k) != sizeIdx) without.push_back(vk[k]);
-            HRESULT h1 = cm2->SetColumns(without.data(), static_cast<UINT>(without.size()));
-            HRESULT h2 = cm2->SetColumns(vk.data(), vc);
-            LogDbg(L"[late] toggle hr1=0x%08X hr2=0x%08X", static_cast<unsigned long>(h1),
-                   static_cast<unsigned long>(h2));
-        }
-    }
-
-    HWND vh = nullptr;
-    if (SUCCEEDED(view->GetWindow(&vh)) && vh) {
-        ComPtr<IUIAutomation> uia;
-        if (SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
-                                       IID_IUIAutomation, reinterpret_cast<void**>(&uia))) &&
-            uia) {
-            ComPtr<IUIAutomationElement> root;
-            if (SUCCEEDED(uia->ElementFromHandle(vh, &root)) && root) {
-                VARIANT var{};
-                var.vt = VT_I4;
-                var.lVal = UIA_ListItemControlTypeId;
-                ComPtr<IUIAutomationCondition> cond;
-                if (SUCCEEDED(
-                        uia->CreatePropertyCondition(UIA_ControlTypePropertyId, var, &cond)) &&
-                    cond) {
-                    ComPtr<IUIAutomationElementArray> arr;
-                    if (SUCCEEDED(root->FindAll(TreeScope_Descendants, cond.get(), &arr)) &&
-                        arr) {
-                        int kc = 0;
-                        arr->get_Length(&kc);
-                        LogDbg(L"[uia] listitems=%d", kc);
-                        for (int k = 0; k < kc; ++k) {
-                            ComPtr<IUIAutomationElement> kid;
-                            if (FAILED(arr->GetElement(k, &kid)) || !kid) continue;
-                            BSTR kn = nullptr;
-                            kid->get_CurrentName(&kn);
-                            RECT kr{};
-                            kid->get_CurrentBoundingRectangle(&kr);
-                            LogDbg(L"[uia]   child %d name=%s rect=%d,%d,%d,%d", k,
-                                   kn ? kn : L"?", kr.left, kr.top, kr.right, kr.bottom);
-                            if (kn) SysFreeString(kn);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    view->Release();   // fv2 由 ComPtr 自动释放
-}
-#endif  // EXBAR_DIAG_PREVIEW
-
-
-void ShellView::TogglePreviewPane() {
-    // 【状态源】用"意图"而不是"此刻可见"。
-    //
-    // 原先以 PreviewPaneVisibleNow 为准取反，理由是 FOLDERFLAGS 没有预览窗格位。
-    // 但预览窗格宿主在某些视图下**根本不会显示**（见上面 206 行记录的现象：
-    // 配置为 true、宿主窗口已创建，实际仍不可见）。此时"可见"恒为 false，
-    // 取反后永远是 true —— 表现为按 Alt+P / 调用命令毫无反应，且配置也不变，
-    // 而命令照样返回成功（2026-11-21 结构化全量测试实测）。
-    //
-    // 现在的判据：真的可见 → 关；不可见 → 跟随上次意图（未知则用配置值）。
-    // 这样"开→关→开"可靠，同时仍然尊重用户从 shell 自己的界面把窗格打开的情形。
-    const bool visibleNow = PreviewPaneVisibleNow(container_);
-    const bool current = visibleNow ||
-                         (previewPaneWantedKnown_ ? previewPaneWanted_
-                                                  : Config::Get().s().showPreviewPane);
-    previewPaneWanted_ = !current;
-    previewPaneWantedKnown_ = true;
-    LogDbg(L"[preview] toggle visible=%d current=%d -> wanted=%d", visibleNow ? 1 : 0,
-            current ? 1 : 0, previewPaneWanted_ ? 1 : 0);
-
-    IShellView* view = CurrentView();
-    ApplyPreviewPaneState(view);
-    if (view) view->Release();
-    SchedulePreviewReapply();
-
-    // 用户显式切换 = 改变偏好：写回配置，下次启动/新标签沿用。
-    Settings& s = Config::Get().mutableSettings();
-    if (s.showPreviewPane != previewPaneWanted_) {
-        s.showPreviewPane = previewPaneWanted_;
-        Config::Get().Save();
-    }
-}
-
-namespace {
-
-// 导航窗格是宿主画的子窗口（ShellView 的同级/子级 NamespaceTreeControl），
-// 用 EnumChildWindows 递归找，不用 FindWindowEx 逐层拼类名（NSE 视图形状不一）。
-BOOL CALLBACK FindTreeProc(HWND h, LPARAM p) {
-    wchar_t cls[64] = L"";
-    GetClassNameW(h, cls, 64);
-    if (str::IEquals(cls, L"NamespaceTreeControl")) {
-        *reinterpret_cast<HWND*>(p) = h;
-        return FALSE;
-    }
-    return TRUE;
-}
-
-HWND FindNavTree(HWND container) {
-    HWND found = nullptr;
-    if (container) EnumChildWindows(container, FindTreeProc, reinterpret_cast<LPARAM>(&found));
-    return found;
-}
-
-// 真正的 SysTreeView32 藏在 NamespaceTreeControl 里面；先在该控件内找，
-// 找不到再退回整个容器（兼容不同 Win11 构建上 DirectUI 层级差异）。
-BOOL CALLBACK FindSysTreeProc(HWND h, LPARAM p) {
-    wchar_t cls[64] = L"";
-    GetClassNameW(h, cls, 64);
-    if (str::IEquals(cls, L"SysTreeView32")) {
-        *reinterpret_cast<HWND*>(p) = h;
-        return FALSE;
-    }
-    return TRUE;
-}
-
-HWND FindNavSysTree(HWND container) {
-    HWND found = nullptr;
-    HWND host = FindNavTree(container);
-    if (host) EnumChildWindows(host, FindSysTreeProc, reinterpret_cast<LPARAM>(&found));
-    if (!found && container)
-        EnumChildWindows(container, FindSysTreeProc, reinterpret_cast<LPARAM>(&found));
-    return found;
-}
-
-struct TreeWalk {
-    int visited = 0;
-    int expanded = 0;
-};
-
-// 逐节点展开，并递归进入刚展开出来的子节点。
-// 上限是护栏：文件系统里有循环链接/超大树时不能把 UI 线程卡死。
-constexpr int kMaxNavTreeNodes = 10000;
-void ExpandTreeBranch(HWND tree, HTREEITEM item, TreeWalk* walk) {
-    for (HTREEITEM cur = item;
-         cur && walk->visited < kMaxNavTreeNodes;
-         cur = reinterpret_cast<HTREEITEM>(
-             SendMessageW(tree, TVM_GETNEXTITEM, TVGN_NEXT, reinterpret_cast<LPARAM>(cur)))) {
-        ++walk->visited;
-        if (SendMessageW(tree, TVM_EXPAND, TVE_EXPAND, reinterpret_cast<LPARAM>(cur)))
-            ++walk->expanded;
-        HTREEITEM child = reinterpret_cast<HTREEITEM>(
-            SendMessageW(tree, TVM_GETNEXTITEM, TVGN_CHILD, reinterpret_cast<LPARAM>(cur)));
-        if (child) ExpandTreeBranch(tree, child, walk);
-    }
-}
-
-}  // namespace
-
-void ShellView::ToggleNavPane() {
-    if (!browser_) return;
-    // EBO_SHOWFRAMES 只在下次导航被消费：导航后置位要再导航一次才出现，清零永不消失。
-    // 所以真实显隐直接操作窗格子窗口，并自己记账。
-    navPaneWanted_ = !navPaneWanted_;
-    ApplyNavPaneWanted();
-    // 用户显式切换 = 改变偏好：写回配置，下次启动/新标签沿用。
-    Settings& s = Config::Get().mutableSettings();
-    if (s.showNavPane != navPaneWanted_) {
-        s.showNavPane = navPaneWanted_;
-        Config::Get().Save();
-    }
-}
-
-// 按"当前记账值"把导航窗格真实显隐落地（不写配置）。
-void ShellView::ApplyNavPaneWanted() {
-    if (!browser_) return;
-    HWND tree = FindNavTree(container_);
-    if (tree) ShowWindow(tree, navPaneWanted_ ? SW_SHOW : SW_HIDE);
-    // 同步 IExplorerBrowser 的意图值，避免下次导航又把窗格画回来。
-    EXPLORER_BROWSER_OPTIONS opts = EBO_NONE;
-    if (SUCCEEDED(browser_->GetOptions(&opts))) {
-        if (navPaneWanted_)
-            opts = static_cast<EXPLORER_BROWSER_OPTIONS>(opts | EBO_SHOWFRAMES);
-        else
-            opts = static_cast<EXPLORER_BROWSER_OPTIONS>(opts & ~EBO_SHOWFRAMES);
-        browser_->SetOptions(opts);
-    }
-    // 窗格占位变了，必须让 shell **重新算布局**，不是只重画：
-    // 单纯 InvalidateRect 只重画像素，导航树隐藏后留下的空位还在（D4）。
-    // 用当前尺寸重设一次 browser 矩形，IExplorerBrowser 会重新排框架子窗口，
-    // 把内容区扩展到原导航窗格的位置。尺寸不变 => 不会闪烁/不改外部布局。
-    if (container_) {
-        RECT rc{};
-        if (GetClientRect(container_, &rc)) {
-            InvalidateRect(container_, nullptr, TRUE);
-            if (browser_) browser_->SetRect(nullptr, rc);
-        }
-    }
-}
-
-bool ShellView::NavPaneVisible() const {
-    // 读我们自己的状态，不读 GetOptions：那是"意图"，关过一次后永远和真实状态相反。
-    return navPaneWanted_;
-}
-
-bool ShellView::ExpandNavTree() {
-    if (!browser_ || !navPaneWanted_) return false;
-    HWND tree = FindNavSysTree(container_);
-    if (!tree) return false;
-
-    TreeWalk walk;
-    for (HTREEITEM root = reinterpret_cast<HTREEITEM>(
-             SendMessageW(tree, TVM_GETNEXTITEM, TVGN_ROOT, 0));
-         root && walk.visited < kMaxNavTreeNodes;
-         root = reinterpret_cast<HTREEITEM>(
-             SendMessageW(tree, TVM_GETNEXTITEM, TVGN_NEXT, reinterpret_cast<LPARAM>(root)))) {
-        ExpandTreeBranch(tree, root, &walk);
-    }
-    if (!walk.visited) return false;
-    RedrawWindow(tree, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
-    LogDbg(L"[nav] 导航树已展开：访问 %d 项，展开 %d 项", walk.visited, walk.expanded);
-    return true;
-}
-
-void ShellView::ApplyTheme() {
-    if (!container_) return;
-    const bool dark = theme_.dark;
-    AllowDarkForWindow(container_, dark);
-    SetWindowTheme(container_, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
-    // 只深色化滚动条这类独立小控件；shell 内部窗口（DirectUI/DefView）一概不碰，
-    // 否则选中高亮会被破坏（见 ApplyShellTheme 的实测数据）。
-    EnumChildWindows(container_, ThemeScrollbarOnly, reinterpret_cast<LPARAM>(&dark));
-    ApplyShellTheme(container_, dark);
-    RedrawWindow(container_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE);
-}
-
-void ShellView::EraseBackground(HDC dc, const RECT& rc) {
-    FillRect(dc, &rc, theme_.brBg ? theme_.brBg : reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
-}
-
-void ShellView::OnViewCreated(IShellView* view) {
-    viewReady_ = true;
-    if (!view) return;
-    HWND h = nullptr;
-    if (SUCCEEDED(view->GetWindow(&h)) && h) {
-        // 主题只作用于 ExplorerBrowserControl 这一层（见 ApplyShellTheme 注释）：
-        // 给 shell 内部子窗口 SetWindowTheme 会让 DirectUI 丢掉选中高亮绘制。
-        // 这里再补一步：滚动条是独立小控件，可以单独深色化。
-        AllowDarkForWindow(h, theme_.dark);
-        EnumChildWindows(h, ThemeScrollbarOnly, reinterpret_cast<LPARAM>(&theme_.dark));
-        // Shell 视图每次导航都可能重建；把鼠标子类重新挂到新的 DefView/ListView 上。
-        shellinput::Install(h, container_, path_, mouseSink_);
-    }
-    // ExplorerBrowserControl 层：这是唯一应该设主题的地方
-    ApplyShellTheme(container_, theme_.dark);
-    RedrawWindow(container_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE);
-    // 新目录/新视图的 folder flags 会恢复默认值；把用户期望的预览窗格状态追回去。
-    ApplyPreviewPaneState(view);
-    SchedulePreviewReapply();
-    // 导航会重建 shell 视图，重建后选中态/焦点回到未激活态；若本标签仍是活动标签
-    // （焦点在容器或其子窗口内），立即重新激活，避免"选中项变淡灰"。
-    HWND focus = GetFocus();
-    if (container_ && (focus == container_ || IsChild(container_, focus))) ActivateFocus();
-}
-
-void ShellView::OnNavigationFailed() {
-    LogDbg(L"[nav] failed path=%s", path_.c_str());
-    if (failFn_) failFn_();
-}
-
-void ShellView::ReplayQueued() {
-    KillTimer(container_, kNavReplayTimer);
-    if (queued_.empty() || !browser_) return;
-    std::wstring p = queued_;
-    queued_.clear();
-    if (p == path_) {
-        replayTries_ = 0;  // 已经到位
-        return;
-    }
-    // 兜底：慢/远程文件系统（WebDAV / 离线 OneDrive / 慢网络共享）的 BUSY 可能持续数十秒，
-    // 退避 20 次仍失败 → 回滚 + 记日志，避免 pending 悬着变成"地址栏 A / 视图 B"。
-    // 本地磁盘几乎走不到这里：WM_TIMER 在消息队列里排在 shell 的完成消息之后，
-    // 重放执行时浏览器通常已不忙。
-    if (++replayTries_ > 20) {
-        replayTries_ = 0;
-        abandonedPath_ = p;
-        LogDbg(L"[nav] abandon %s", p.c_str());
-        OnNavigationFailed();  // 回滚，保证 App 立刻可用
-        return;
-    }
-    LogDbg(L"[nav] replay #%d %s", replayTries_, p.c_str());
-    Navigate(p);  // 若再 BUSY 会按当前 replayTries_ 重新 SetTimer
-}
-
-void ShellView::OnNavigated(PCIDLIST_ABSOLUTE pidl) {
-    std::wstring p = PidlName(pidl);
-    LogDbg(L"[nav] complete pidl=%s", p.c_str());
-    if (!p.empty()) {
-        path_ = p;
-        shellinput::UpdateDir(container_, p);
-    }
-
-    // 命名空间（::{GUID}）的 parsing name 不适合当标题，另取 NORMALDISPLAY
-    std::wstring display;
-    PWSTR disp = nullptr;
-    if (SUCCEEDED(SHGetNameFromIDList(pidl, SIGDN_NORMALDISPLAY, &disp)) && disp) {
-        display = disp;
-        CoTaskMemFree(disp);
-    }
-    if (display.empty()) display = LeafOf(p);
-    display_ = display;
-
-    if (!abandonedPath_.empty() && p == abandonedPath_) {
-        LogDbg(L"[nav] late-complete after abandon %s", p.c_str());
-        abandonedPath_.clear();
-    }
-    replayTries_ = 0;
-
-    // OnViewCreated 通常已经回写过；这里兜住"同一视图内换目录、没有重建 IShellView"
-    // 的情况。即使此刻拿到的是旧视图，也只是把同一个期望值再写一次，无副作用。
-    {
-        IShellView* view = CurrentView();
-        ApplyPreviewPaneState(view);
-        if (view) view->Release();
-    }
-    SchedulePreviewReapply();
-
-    // 目录切换后 shell 会按 EBO_SHOWFRAMES 重建窗格：按用户意图再校正一次，
-    // 否则"关掉窗格"在换目录后又会回来。
-    if (!navPaneWanted_) {
-        if (HWND tree = FindNavTree(container_)) ShowWindow(tree, SW_HIDE);
-    }
-
-    // 不要在 OnNavigationComplete 里调 ItemCount()：此刻 GetCurrentView 还没指向
-    // 新视图，实测恒为 0。计数交给状态栏的取数（RefreshStats）填。
-    if (navFn_) navFn_(path_, display, 0);
+void ShellView::NotifyActivated() {
+    // 焦点真正进入本视图（容器 WM_SETFOCUS）时通知 App。双栏下 App 据此把
+    // 活动窗格改成本视图，使命令/导航/状态栏跟随焦点。仅在回调存在时触发，
+    // 避免无 App 的场景（理论上不会发生，但保持与 navFn_/failFn_ 一致的惰性判空）。
+    if (activateFn_) activateFn_();
 }

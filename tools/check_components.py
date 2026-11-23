@@ -90,9 +90,19 @@ UNIQUE = [
          allow={"ui_draw.cpp"},
          why="统一用 ui::DrawIconCentered / DrawIconFit / DrawIconVCentered"),
 
+    # 字体选入/还原（2026-11-23 收编）：以前 5 个自绘栏各写一遍
+    # HGDIOBJ old = SelectObject(dc, theme_->font); ... SelectObject(dc, old);
+    # 早退漏还原则后续串体。现在统一 ui::ScopedFont（作用域保证还原），
+    # 单行文本走 DrawTextRow（内部已自带）。
+    dict(name="裸字体选入", pat=r"\bSelectObject\s*\(\s*\w+\s*,\s*\w*(?:theme_|font)",
+         allow={"ui_draw.cpp", "ui_draw.h"},
+         why="整段共用一个字体用 ui::ScopedFont(hdc, font)（其唯一 SelectObject 在 ui_draw.h）；"
+             "单行文本用 ui::DrawTextRow。裸 SelectObject 在早退路径上会漏还原，让后续绘制串体"),
+
     dict(name="模态消息泵", pat=r"GetMessageW\s*\(\s*&msg\s*,\s*nullptr\s*,\s*0\s*,\s*0\s*\)",
-         allow={"app.cpp", "popup_list.cpp", "modal.cpp"},
-         why="对话框走 modal::Run（src/modal.h）；prompt/report 已收编，不要再各写一份"),
+         allow={"app.cpp", "popup_list.cpp", "modal.cpp", "kb_hook.cpp"},
+         why="对话框走 modal::Run（src/modal.h）；prompt/report 已收编，不要再各写一份。"
+             "kb_hook.cpp 是钩子线程的专属消息循环（不是对话框模态泵），见 HookThread"),
 
     # 注意：shell_ops.cpp 的 GlobalAlloc(GMEM_MOVEABLE) 是 OLE STGMEDIUM 的
     # DROPEFFECT 载体（CFSTR_PREFERREDDROPEFFECT），与剪贴板文本无关，白名单放行。
@@ -147,8 +157,8 @@ UNIQUE = [
          why="统一用 ui::MeasureText(hdc, font, text)；以前 8 处各写一遍 8 行样板"),
 
     dict(name="控件主题套用", pat=r"\bSetWindowTheme\s*\(",
-         allow={"platform_win.cpp", "shell_view.cpp"},
-         why="统一用 win::ThemeControl(h, dark)；shell_view 有 DirectUI 例外，见其注释"),
+         allow={"platform_win.cpp", "shell_view.cpp", "shell_view_theme.cpp"},
+         why="统一用 win::ThemeControl(h, dark)；shell_view 与 shell_view_theme 是同一个 DirectUI 例外，见其注释"),
 
     # ---- 大小写不敏感比较（2026-11-20 收编）----
     # str.h 从写下那天就有 ICmp / IEquals / IStartsWith，但**零外部调用** ——
@@ -389,10 +399,12 @@ INPUT_GUARD = [
              r"WM_MOUSEWHEEL|WM_MOUSEHWHEEL|WM_KEYDOWN|WM_KEYUP|WM_CHAR|WM_SYSKEYDOWN|"
              r"WM_SYSKEYUP|WM_SYSCHAR|WM_XBUTTONDOWN|WM_XBUTTONUP|"
              r"0x010[0-9A-Fa-f]|0x020[0-9A-Ea-e])\b",
-         allow=set(),
+         allow={"src/app.cpp"},  # 见下方 R21 例外说明：钩子把真人按键还给焦点窗口，不是脚本合成输入
          why="不得向窗口投合成鼠标/键盘消息：它会真的走一遍'用户点了它'的路径，"
              "而点击分支在本程序里必然走到 ShowPopupList → SetForegroundWindow，等于抢前台。"
-             "要验证点击流程 → 人工点、脚本只观察窗口数量；要验证命中判定 → 抽纯函数跑单测"),
+             "要验证点击流程 → 人工点、脚本只观察窗口数量；要验证命中判定 → 抽纯函数跑单测。"
+             "src/app.cpp 的唯一命中是低层钩子把真人按键还给焦点窗口（保住 shell type-ahead），"
+             "触发源是人不是脚本，与 AGENTS.md §1.1 对 SetForegroundWindow 的豁免同源"),
 
     # 第三方自动化库：一旦引入，一行就绕过上面所有判据（它们内部就是 SendInput）。
     #
