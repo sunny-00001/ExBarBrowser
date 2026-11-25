@@ -171,7 +171,7 @@ bash build.sh          # 或 build.bat（cmd）
   只验证能否编过用 `bash build.sh --out /tmp/x.exe`。
 - 应用图标与版本信息：`resources/app.ico`（8 档 16–256px）+ `resources/app.rc` 经
   `D:\MinGW\bin\windres.exe` 编成 `obj/app.res.obj` 并链进 exe。版本号来自仓库根 `VERSION`
-  （当前 `0.3.0`），构建时生成 `obj/version.h` 注入 `VS_VERSION_INFO`；改版本只改 `VERSION`，
+  （当前 `0.3.1`），构建时生成 `obj/version.h` 注入 `VS_VERSION_INFO`；改版本只改 `VERSION`，
   改 ico/rc/VERSION 都会自动触发资源重编。未找到 windres 时跳过资源、exe 回退到系统默认图标。
   设计见 `resources/icon_preview.png`。
 - 清单（源文件/库）唯一真相源在 `build_fast.py` 顶部，新增文件只改这一处。详见 `docs/DEVELOPMENT.md`。

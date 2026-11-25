@@ -1,12 +1,14 @@
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-25 · 发布流程完善
+
 ### 发布流程：完整便携包 + exe 内嵌版本号
 
 原先 GitHub Release 只挂一个 `ExBarBrowser.release.exe`。它能跑主浏览器，但 AI 面板
 还缺 `WebView2Loader.dll` 与 `aichat/`；而 `data/` 里有开发机的真实设置、书签与 API key，
 又绝不能整目录发出去。这一轮把"怎么发"变成可重复的脚本：
 
-- 新增 `VERSION`（当前 `0.3.0`）作为**唯一版本号真相源**。构建器生成 `obj/version.h`，
+- 新增 `VERSION`（当前 `0.3.1`）作为**唯一版本号真相源**。构建器生成 `obj/version.h`，
   经 `windres` 注入 `resources/app.rc` 的 `VS_VERSION_INFO`；资源管理器 / PowerShell 里
   能看到 FileVersion、ProductVersion、ProductName。zip 名、manifest 与 Release tag 也读同一处。
   踩过的坑：这套 `windres` 会把 `VS_VERSION_INFO VERSIONINFO` 编成 RT_VERSION 下的
