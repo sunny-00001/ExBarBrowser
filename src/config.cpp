@@ -91,27 +91,40 @@ Config& Config::Get() {
     return c;
 }
 
-// 便携模式：所有用户数据都在 exe\data 下，整个程序目录可整体拷走。
+// 便携模式：所有用户数据都在程序根目录下，按用途分层（见 config.h 文件头）。
 // 不再使用 %APPDATA%\ExBar —— 那是 ExBar mod 的目录，两边共写同一份
 // bookmarks.html 会互相覆盖。
-std::wstring Config::Dir() const {
-    if (!dir_.empty()) return dir_;
-    dir_ = tf::Join(tf::ExeDir(), L"data");
-    return dir_;
+//
+// 【rootDir_ 语义】默认 = exe 目录；Profile 模式下 = 用户给的 profile 根。
+// 所有子目录从它派生，所以换 profile 时六类数据整体一起切，不会 A 的会话
+// 写进 B 的日志。dir_ 不再缓存 —— 它以前既是"根"又是"配置目录"，现在
+// 根与配置目录（<root>\data）是两个概念，缓存前者、派生后者即可。
+std::wstring Config::RootDir() const {
+    return rootDir_.empty() ? tf::ExeDir() : rootDir_;
 }
 
 void Config::SetProfileDir(const std::wstring& dir) {
-    if (dir.empty() || dir_ == dir) return;
-    dir_ = dir;
+    if (dir.empty() || rootDir_ == dir) return;
+    rootDir_ = dir;
     // 目录换了却留着旧的内存配置，会把 A profile 的会话/热键写进 B profile。
     s_ = Settings{};
     loaded_ = false;
     parseFailed_ = false;
 }
 
+std::wstring Config::Dir() const { return tf::Join(RootDir(), L"data"); }
+std::wstring Config::StateDir() const { return tf::Join(RootDir(), L"state"); }
+std::wstring Config::LogsDir() const { return tf::Join(RootDir(), L"logs"); }
+std::wstring Config::CacheDir() const { return tf::Join(RootDir(), L"cache"); }
+std::wstring Config::RuntimeDir() const { return tf::Join(RootDir(), L"runtime"); }
+
 std::wstring Config::DataDir() const { return Dir(); }
 std::wstring Config::SettingsPath() const { return tf::Join(Dir(), L"settings.json"); }
 std::wstring Config::BookmarksPath() const { return tf::Join(Dir(), L"bookmarks.html"); }
+std::wstring Config::SessionPath() const { return tf::Join(StateDir(), L"session.json"); }
+std::wstring Config::HistoryPath() const { return tf::Join(StateDir(), L"history.json"); }
+std::wstring Config::TabsPath() const { return tf::Join(StateDir(), L"tabs.json"); }
+std::wstring Config::WindowPath() const { return tf::Join(StateDir(), L"window.json"); }
 
 // 键位与鼠标规则各只有一个文件，直接就是用户文件。
 //

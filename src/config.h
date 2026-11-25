@@ -1,11 +1,30 @@
 // 配置与状态：路径解析 + 读写 + 最近访问 + 会话 + 窗口几何 + 输入覆盖。
 //
-// 【存储位置：便携模式】所有用户数据写在 exe 同目录的 data\ 下：
-//   data\settings.json          本工程设置（栏显隐/视图/窗格/几何/会话/最近访问/键位覆盖）
-//   data\bookmarks.html         书签（Netscape + EXBAR_*）—— 用户数据
-//   data\keymap.json            键位（直接编辑；缺失时回落到编译期内置默认）
-//   data\mouse.json             鼠标规则（同上）
-//   data\audit.log              命令审计
+// 【存储位置：便携模式】所有用户数据写在程序根目录下，按"变更多快 / 谁能改"分层：
+//   data\settings.json     宿主偏好与策略（栏/视图/窗格/主题/AI 开关/超时…）
+//   data\aichat.json       AI 服务行为配置（端口/温度/白名单…）—— Node 服务独占
+//   data\models.json       模型目录 + apiKey —— Node 服务独占
+//   data\mcp.json          外部 MCP server 清单（骨架，暂不连接）
+//   data\bookmarks.html    书签（Netscape + EXBAR_*）
+//   data\keymap.json       键位（缺失时回落到编译期内置默认）
+//   data\mouse.json        鼠标规则（同上）
+//   state\session.json     标签/活动项/选中/双栏/每标签历史栈/命名会话
+//   state\history.json     最近访问 / 搜索历史 / 关闭标签 / 搜索域
+//   state\tabs.json        锁定 / 固定 / 标签别名颜色 / 状态栏段 / 搜索域 / 热键覆盖
+//   state\window.json      窗口几何（崩溃前最多丢 sessionSaveDelayMs）
+//   logs\audit.jsonl       命令审计（规范格式）+ audit.log（legacy 镜像）
+//   logs\events.jsonl      事件流（与审计同一 trace）
+//   logs\sessions\         AI 对话历史
+//   cache\webview2\        WebView2 用户数据（可整体删，重建无损失）
+//   runtime\ai-*.txt       AI 通道发现文件（进程退出即删）
+//
+// 【为什么分开】settings.json 是低频改、人工可读的偏好；state\* 是高频写、
+// 程序接管的状态。混在一个文件里时，改一个栏显隐会把整份会话/历史重写一遍，
+// 一处解析失败就要禁止整份写盘（连带历史全丢）。分层后两者互不拖累。
+//
+// 【根与 profile】RootDir() 默认是 exe 目录；EXBARBROWSER_PROFILE 显式指定时
+// 是用户给的 profile 根。所有子目录都在根下复刻，多实例全套隔离。
+// data/ 保持扁平（不放子目录），其余四类与 data/ 平级。
 //
 // 取舍说明：
 //   · 整个程序目录可整体拷走，不写注册表、不写 %APPDATA%，便于随身/绿色部署；
@@ -248,7 +267,7 @@ struct Settings {
 
     // ---- AI 操作通道 ----
     // 默认开启：这是"让外部程序驱动本窗口"的能力，人机等价（命令表是唯一真源）。
-    // 开启后监听一个本地命名管道（名与令牌见 data\ai-pipe.txt / ai-token.txt，
+    // 开启后监听一个本地命名管道（名与令牌见 runtime\ai-pipe.txt / ai-token.txt，
     // 停服即删）。**支持热插拔**：config.set aiEnabled 会立即启停服务，无需重启
     // （见 App::SyncAiChannel）；关闭后不再监听任何连接。
     bool aiEnabled = true;
@@ -294,7 +313,13 @@ public:
     // 目录只读 → 写不进去）以前都只留在日志里，界面一个字都不说。
     // 调用方可以不理返回值（多数调用点是这个情形），但凡有用户界面在跟前的
     // 地方都应该读 lastSaveError() 把它说出来。
+    // 写 data\settings.json（仅偏好）+ state\*.json（四份状态）。
     bool Save();
+    // state\*.json 的读写入口（实现在 config_state_io.cpp，由 Load/Save 调用）。
+    // 读：文件存在才覆盖 s_ 的状态字段；损坏则保留内存值并记日志（状态可丢，
+    // 但不能因为一个坏文件把偏好也一起拖垮）。
+    void LoadStateFiles();
+    bool SaveStateFiles() const;
     // 最近一次 Save() 失败的原因（空 = 成功）。每次 Save() 开头清空。
     const std::wstring& lastSaveError() const { return saveError_; }
     // settings.json 存在但解析失败（内存里只有默认值，且已禁止写盘）。
@@ -314,12 +339,22 @@ public:
     bool AiChannelEnabled() const { return aiForceEnabled_ || s_.aiEnabled; }
 
     // 路径
-    std::wstring Dir() const;          // exe\data（便携模式，见文件头说明）
-    std::wstring SettingsPath() const;
-    std::wstring BookmarksPath() const;
-    std::wstring KeymapPath() const;
-    std::wstring MousePath() const;
-    std::wstring DataDir() const;      // 与 Dir() 相同：数据就放在 data\ 里
+    std::wstring RootDir() const;       // profile 根（默认 = exe 目录，见文件头）
+    std::wstring Dir() const;           // 配置目录 = RootDir()\data
+    std::wstring StateDir() const;      // = RootDir()\state（会话/历史状态）
+    std::wstring LogsDir() const;       // = RootDir()\logs（审计/事件/对话）
+    std::wstring CacheDir() const;      // = RootDir()\cache（WebView2）
+    std::wstring RuntimeDir() const;    // = RootDir()\runtime（AI 发现文件）
+    std::wstring SettingsPath() const;  // data\settings.json
+    std::wstring BookmarksPath() const; // data\bookmarks.html
+    std::wstring KeymapPath() const;    // data\keymap.json
+    std::wstring MousePath() const;     // data\mouse.json
+    std::wstring DataDir() const;       // 与 Dir() 相同：配置就放在 data\ 里
+    // state\* 下四份状态文件的完整路径（供 config_io.cpp 的 Load/Save 使用）。
+    std::wstring SessionPath() const;   // state\session.json
+    std::wstring HistoryPath() const;   // state\history.json
+    std::wstring TabsPath() const;      // state\tabs.json
+    std::wstring WindowPath() const;    // state\window.json
 
     void AddRecent(const std::wstring& path);
     // 记一条搜索历史：去重、提到最前、超上限截断（最近的在前）。
@@ -342,7 +377,8 @@ public:
 
 private:
     Config() = default;
-    mutable std::wstring dir_;
+    // profile 根（默认 = exe 目录）。各类子目录由它派生，换 profile 时整体切换。
+    mutable std::wstring rootDir_;
     Settings s_;
     bool loaded_ = false;
     // 进程内启动开关，不随 SetProfileDir 重置（它在 main 每次启动只设一次），也不落盘。

@@ -1,5 +1,27 @@
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-25 · 配置分层收尾 + 发布治理
+
+### 配置分层迁移代码清理：一次性过渡代码不再留在主流程
+
+单文件 `settings.json` → `data/` 偏好 + `state/` 四份状态的分层改造，迁移逻辑本身是
+**一次性过渡手段**。核实旧配置的状态键已完整落进 `state\*.json`（差异项只是迁移后程序
+继续运行的正常演进）后，把迁移代码与旧配置备份彻底删除，主读写流程只留干净的新格式：
+
+- 删除 `Config::Load()` 里的旧格式检测（`HasLegacyStateKeys`）、迁移前备份
+  （`BackupLegacySettings`）、旧状态键兼容读、一次性拆分迁移分支；删 `config.cpp` 的
+  `MigrateLegacyLayout()`、`config.h`/`config_state_io.cpp` 的 `StateFilesMissing()`，以及
+  `config_io_internal.h` 里仅服务旧格式的 4 个死 helper。
+- 删除 `data/settings.json.legacy-*` 旧配置备份。
+- 改动前文件备份在 `backup/20261125-2115/`（被 gitignore，不入库）。
+
+**版本号管理**：仓库根 `VERSION` 是唯一真相源（`0.3.1` → `0.3.2`），exe 的 `VS_VERSION_INFO`、
+发布包目录名、`RELEASE-MANIFEST` 的 `version`/`tag`、`verify_release.py` 的对齐校验全部
+从它派生；README 不再硬编码具体版本号，只写"以 `VERSION` 为准"，消除文档漂移点。
+
+**验证**：主构建 182 TU 零错误；改动的配置 TU 单独 `-fsyntax-only` 通过；迁移符号全仓
+零引用。本轮未重发 Release（0.3.1 资产仍是上一轮产物），0.3.2 版本段待下次发布打包。
+
 ### 发布治理：最小权限 + draft 发布 + 可复现验证门禁
 
 按对标优秀开源项目的优化清单收口本轮（此前 GitHub Release 只有裸 exe、仓库 private、
