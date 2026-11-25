@@ -129,6 +129,14 @@ struct PopupReorder {
     // 再弹一层 = 两个模态循环嵌套（捕获、焦点、Esc 全乱）。所以约定是
     // "弹层交回行号并关闭，宿主在自己的循环里处理"。
     std::function<void(int row)> onRowRightClick;
+    // 拖出弹层（可选）：宿主自行把屏幕点映射到自己的落点并给反馈。
+    // 弹层只负责在"拖拽中且光标离开列表"时把 row/屏幕点交回来：
+    //   · onDragOutPreview：每次移动到弹层外调用；收到 {-1,-1} 表示回到列表内/拖拽取消，
+    //     宿主应清掉自己的预览。
+    //   · onDragOut：在弹层外松手时调用一次，宿主提交动作；弹层随后关闭。
+    // 为什么不给弹层加"书签栏"概念：它是通用组件，只认行号与屏幕坐标。
+    std::function<void(int row, POINT screen)> onDragOutPreview;
+    std::function<void(int row, POINT screen)> onDragOut;
 };
 
 // 拖拽落点：光标压在第 row 行上时，插入线落在哪一行之前。

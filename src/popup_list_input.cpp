@@ -52,6 +52,42 @@ static int ComputeDropIndex(PopupState* st, HWND h, int x, int y) {
     return PopupDropIndex(row, lower, n);
 }
 
+// 拖出列表时，弹层不再画自己的插入线；预览/提交都交给宿主的 onDragOut*。
+// 收到 {-1,-1} 的约定见 popup_list.h 的 PopupReorder 注释。
+static void ClearDragOutPreview(PopupState* st) {
+    if (st->dragOutside && st->reorder.onDragOutPreview)
+        st->reorder.onDragOutPreview(st->dragFrom, POINT{-1, -1});
+    st->dragOutside = false;
+}
+
+static void UpdateDragPosition(PopupState* st, HWND h, int x, int y) {
+    if (!st->dragging) return;
+    RECT rc;
+    GetClientRect(h, &rc);
+    POINT cl{x, y};
+    if (!PtInRect(&rc, cl)) {
+        st->dragOutside = true;
+        st->dropIndex = -1;
+        if (st->reorder.onDragOutPreview) {
+            POINT screen = cl;
+            ClientToScreen(h, &screen);
+            st->reorder.onDragOutPreview(st->dragFrom, screen);
+        }
+        InvalidateRect(h, nullptr, FALSE);
+        return;
+    }
+    if (st->dragOutside) {
+        st->dragOutside = false;
+        if (st->reorder.onDragOutPreview)
+            st->reorder.onDragOutPreview(st->dragFrom, POINT{-1, -1});
+    }
+    const int drop = ComputeDropIndex(st, h, x, y);
+    if (drop != st->dropIndex) {
+        st->dropIndex = drop;
+        InvalidateRect(h, nullptr, FALSE);
+    }
+}
+
 // 重建 ListBox 的行内容（平铺模式）。重排后行序变了，不重建的话用户看到的
 // 还是旧顺序 —— 表现为"拖了没反应"。
 static void RebuildListRows(PopupState* st) {
@@ -151,11 +187,7 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
         // 拖拽中：只算落点。hover 高亮此时会让位给插入线 ——
         // 两个"当前位置"提示同时出现，用户不知道看哪个。
         if (st->dragging) {
-            const int drop = ComputeDropIndex(st, h, mx, my);
-            if (drop != st->dropIndex) {
-                st->dropIndex = drop;
-                InvalidateRect(h, nullptr, FALSE);
-            }
+            UpdateDragPosition(st, h, mx, my);
             return 0;
         }
         // 按下后移动超阈值 = 起拖。阈值同书签栏顶层（6px），防手抖误判。
@@ -164,8 +196,7 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
             const int dy = my - st->dragStart.y;
             if (dx * dx + dy * dy > kDragThreshold * kDragThreshold) {
                 st->dragging = true;
-                st->dropIndex = ComputeDropIndex(st, h, mx, my);
-                InvalidateRect(h, nullptr, FALSE);
+                UpdateDragPosition(st, h, mx, my);
                 return 0;
             }
         }
@@ -208,6 +239,7 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
         // 主动关闭的路径（点在列表外、Esc、选中行）都是**先**置 done 再
         // ReleaseCapture，所以这里看到 done=true 不会重复 Post。
         if (reinterpret_cast<HWND>(l) == h) return 0;
+        ClearDragOutPreview(st);
         st->dragArm = st->dragging = false;
         st->dragFrom = st->dropIndex = -1;
         if (!st->done) {
@@ -276,6 +308,23 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
         if (st->dragging) {
             const int from = st->dragFrom;
             const int drop = st->dropIndex;
+            const bool outside = st->dragOutside;
+            if (outside && st->reorder.onDragOut) {
+                POINT screen = pt;
+                ClientToScreen(h, &screen);
+                st->reorder.onDragOut(from, screen);
+                ClearDragOutPreview(st);
+                st->dragging = false;
+                st->dragArm = false;
+                st->dragFrom = -1;
+                st->dropIndex = -1;
+                st->done = true;
+                if (GetCapture() == h) ReleaseCapture();
+                PostMessageW(st->self, WM_CLOSE, 0, 0);
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
+            if (outside) ClearDragOutPreview(st);
             st->dragging = false;
             st->dragArm = false;
             st->dragFrom = -1;
@@ -356,6 +405,7 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
     case WM_KEYDOWN: {
         int count = RowCount(st);
         if (w == VK_ESCAPE) {
+            ClearDragOutPreview(st);
             st->done = true;
             st->dragArm = st->dragging = false;
             st->dragFrom = st->dropIndex = -1;

@@ -64,6 +64,7 @@ struct PopupState {
     bool dragging = false;     // 已超阈值，正在拖
     int dragFrom = -1;         // 起始行号
     int dropIndex = -1;        // 插入线位置（行号；-1 = 不画线）
+    bool dragOutside = false;  // 已拖出列表：落点交给宿主的 onDragOut* 通道
     POINT dragStart{};
 };
 

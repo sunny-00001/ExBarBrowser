@@ -111,6 +111,33 @@ void BookmarkBar::ShowFolderContents(const std::wstring& folderId, POINT screen)
         //（右键菜单本身是模态的，不能在弹层的模态循环里再弹一层）。
         opt.reorder.onRowRightClick = [&](int row) { rightClicked = row; };
 
+        // 拖出弹层：只允许**文件夹行**落到书签栏（叶子仍有"移到书签栏"菜单项）。
+        // 预览直接复用 BookmarkBar 的外部拖放落点/绘制，不在这里另画一套线。
+        opt.reorder.onDragOutPreview = [&](int row, POINT screen) {
+            if (screen.x < 0 || screen.y < 0 || row < 0 ||
+                row >= static_cast<int>(folders.size()) || !folders[static_cast<size_t>(row)]) {
+                ClearDropPreview();
+                return;
+            }
+            PreviewDrop(DropSpotAt(screen));
+        };
+        opt.reorder.onDragOut = [&](int row, POINT screen) {
+            ClearDropPreview();
+            if (row < 0 || row >= static_cast<int>(ids.size()) ||
+                !folders[static_cast<size_t>(row)])
+                return;
+            const BookmarkDropSpot spot = DropSpotAt(screen);
+            if (!spot.valid) return;   // 松手不在书签栏上 = 取消拖出
+            json::Value a = json::Value::MakeObject();
+            a.Set(L"id", json::Value::MakeStr(ids[static_cast<size_t>(row)]));
+            if (!spot.folderId.empty()) {
+                a.Set(L"toId", json::Value::MakeStr(spot.folderId));
+            } else {
+                a.Set(L"toIndex", json::Value::MakeInt(spot.index));
+            }
+            CommandBus::Get().Invoke(CmdId::BmkMove, Args::FromJson(a), Actor::Ui());
+        };
+
         const int pick = data.menu.Show(hwnd_, *theme_, screen, opt);
 
         if (rightClicked >= 0 && rightClicked < static_cast<int>(ids.size())) {

@@ -290,7 +290,7 @@ python tools/intents.py bookmark.move-to-end name=坚果云  # 一个意图：�
 | 参数 schema | ✅ 全部合法，且与 handler 取用对齐 | 保持 |
 | 前置条件 | ✅ 43 条声明 | 扩展 |
 | 双向覆盖判据 | ✅ 第 15/16/16b/19/20/21 项（能真失败） | 保持 |
-| **设置数据化** | ✅ `config.list/get/set` + 键表 39 项（25 可写 / 14 只读）+ 设置对话框（三栏） | 保持（新增项只加一行） |
+| **设置数据化** | ✅ `config.list/get/set` + 键表 80 项（60 可写 / 20 只读）+ 设置对话框（三栏） | 保持（新增项只加一行） |
 | **事件流** | ✅ `events/subscribe` 保持连接推送 + `events/since` 补历史 | 保持 |
 | **断言元数据** | ✅ 命令表第十字段 `assertion`，6 条已带 | 扩到高频写命令 |
 | **测试隔离** | ✅ `EXBARBROWSER_PROFILE` / `MULTI=1` 落到独立目录 | 保持 |
@@ -317,7 +317,7 @@ python tools/intents.py bookmark.move-to-end name=坚果云  # 一个意图：�
 1. ✅ **`assertions` 字段**：命令表第十个字段，选中高频写命令先补；
    检查器第 18 项校验「有断言就必须能求值」（左值在状态里、`$arg:` 在 schema 里）。
 2. ✅ **设置数据化**：`config.list` / `config.get` / `config.set` 三条命令 + 键表
-   `settings_reg`（39 项）+ 设置对话框（左栏分类 / 中栏表单 / 右栏说明）。
+   `settings_reg`（80 项）+ 设置对话框（左栏分类 / 中栏表单 / 右栏说明）。
    契约见 §10.1。
 3. ✅ **事件流**：`events/subscribe` 推 `command` / `state.changed`，`events/since` 补历史。契约见 §10.2。
 4. ✅ **测试隔离**：`EXBARBROWSER_PROFILE` 指定目录，`MULTI=1` 默认 `data\profile-multi`。契约见 §10.3。

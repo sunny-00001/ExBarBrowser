@@ -97,6 +97,12 @@ int main() {
     CHECK(Names() == L"C|D|E|", "move D between C,E -> C,D,E");
     store.Undo();
 
+    // 外部拖入的插入线：AddPath(index=1) 插到 C 前，而不是追加到末尾。
+    CHECK(!store.AddPath(L"F", L"file:///F:/", L"", 1).empty(), "add F at index 1");
+    CHECK(Names() == L"D|F|C|E|", "AddPath honors insertion index");
+    CHECK(store.Undo(), "undo indexed add");
+    CHECK(Names() == L"D|C|E|", "undo restores order after indexed add");
+
     // Undo 上限 20：种 30 项、连续删 30 次后只能回 20 步
     {
         std::wstring seed = L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n";

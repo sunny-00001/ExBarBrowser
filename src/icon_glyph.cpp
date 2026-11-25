@@ -75,7 +75,8 @@ constexpr Entry kEntries[] = {
     // 【四条栏各占一个导航项】设置左栏里"每个栏一个入口"，所以这四个字形是
     // 按栏分配的：E72A 前进箭头（导航栏）· E8EC 标签牌（标签栏）
     // · E718 图钉（书签栏）· E762 分段（状态栏）。
-    // 同一形状被两处用是允许的（形状一样、语义不同），与上面 Bars/Menu 同一口径。
+    // 同一形状被两处用是允许的（形状一样、语义不同），与上面 ViewMenu/ChevronDown
+    // 同一口径。
     {IconId::NavBar, L"nav_bar", 0xE72A},
     {IconId::TabBar, L"tab_bar", 0xE8EC},
     {IconId::Bookmark, L"bookmark", 0xE718},

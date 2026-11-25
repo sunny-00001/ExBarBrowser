@@ -156,23 +156,18 @@ std::wstring BookmarkStore::AddPath(const std::wstring& name, const std::wstring
                                     const std::wstring& parentId, int index) {
     BookmarkList* list = ParentList(parentId);
     if (!list || path.empty()) return std::wstring();
-    // 【必须先压撤销快照，再改树】bmk.add.path / bmk.add.current / bmk.add.selection /
-    // bmk.add.tabs / 拖放 全走这里，而它们全部声明 undoable=1。
-    // 2026-11-23 实测：这一族**一条都撤不掉** —— PushUndo 只写在 Remove/Copy/MoveTo/
-    // Sort/Dedup/ReplaceAll/Merge 里，新增路径与新增分类两条路漏了。
-    // 声明了 undoable 却没有栈，等于对调用方（尤其 AI）说谎：它据此敢试错，
-    // 试完发现退不回来。快照必须在修改**之前**拍（PushUndo 存的是当前 roots_）。
+    // 必须先压快照：bmk.add.* / 拖放全走这里且都声明 undoable=1。
+    // 2026-11-23 实测漏过 PushUndo，声明了却撤不掉等于对 AI 说谎。
+    // 快照要在改树之前拍（PushUndo 存当前 roots_）。
     PushUndo();
     BookmarkNode n;
     n.id = NewId(false);
     n.name = name.empty() ? path : name;
     n.path = path;
     n.icon = L"shell:folder";
-    // 拖入书签栏要尊重插入线，不能永远 push_back。越界按"追加"处理：
-    // 拖放期间书签可能被别处改过，越界时静默丢一条比落到末尾更糟。
+    // 拖入书签栏要尊重插入线；越界按"追加"处理（拖放期间树可能已变）。
     auto at = list->end();
-    if (index >= 0 && index <= static_cast<int>(list->size()))
-        at = list->begin() + index;
+    if (index >= 0 && index <= static_cast<int>(list->size())) at = list->begin() + index;
     at = list->insert(at, std::move(n));
     Touch();
     return at->id;

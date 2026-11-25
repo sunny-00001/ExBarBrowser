@@ -42,11 +42,11 @@ enum class IconId {
     NavBar,    // 导航栏：前进箭头（与 Forward 同形）
     TabBar,    // 标签栏：标签牌（与 Tag 同形）
     Bookmark,  // 书签栏：图钉（与 Pin 同形）
-    StatusBar, // 状态栏：带勾选的分段（与 Segments 同形）
-    Window,   // 窗口几何：窗框
-    History,  // 会话状态：时钟回转
-    Bolt,     // 序列键：闪电
-    Channel,  // AI 通道：信号波
+    StatusBar, // 状态栏：带勾选的分段列表
+    Window,    // 窗口几何：窗框
+    History,   // 会话状态：时钟回转
+    Bolt,      // 序列键：闪电
+    Channel,   // AI 通道：信号波
 };
 
 // id -> 字形（码位）。未登记的 id 返回兜底字形（放大镜，必然存在）。

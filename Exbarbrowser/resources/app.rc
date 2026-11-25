@@ -1,4 +1,0 @@
-// ExBarBrowser 应用图标资源
-// ID 1 对应 src/app.cpp 的 kAppIconId，被窗口类 hIcon 与 WM_SETICON 加载。
-// 图标文件由 tools/gen_icon.py 生成，包含 16/20/24/32/48/64/128/256 多尺寸。
-1 ICON "resources/app.ico"

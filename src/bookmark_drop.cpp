@@ -114,10 +114,14 @@ public:
         // Drop 的落点才是最终容器；不依赖 DragOver 的最后一次坐标。
         BookmarkDropSpot spot;
         if (owner_) {
-            POINT p{pt.x, pt.y};
-            if (hwnd_) ClientToScreen(hwnd_, &p);
+            // 原生 IDropTarget 的 pt 已经是**屏幕坐标**（MFC 包装类才会转成客户区）。
+            // 以前这里再 ClientToScreen 一次，落点被推到书签栏外，预览永远不出现，
+            // 提交时 spot.valid=false，于是只剩“追加到末尾”的旧行为。
+            POINT p{static_cast<LONG>(pt.x), static_cast<LONG>(pt.y)};
             spot = owner_->DropSpotAt(p);
             owner_->ClearDropPreview();
+            LogDbg(L"[bmk] OLE drop screen=%ld,%ld spot=%d idx=%d into=%d", p.x, p.y,
+                   spot.valid ? 1 : 0, spot.index, spot.folderIndex);
         }
         const std::vector<std::wstring> paths = ExtractPaths(pdo);
         const int added = owner_ ? owner_->ApplyDroppedPaths(paths, spot) : 0;
@@ -134,8 +138,8 @@ public:
 private:
     void UpdatePreview(POINTL pt) {
         if (!owner_) return;
-        POINT p{pt.x, pt.y};
-        if (hwnd_) ClientToScreen(hwnd_, &p);
+        // 同 Drop：这里的 pt 已经是屏幕坐标，不能再 ClientToScreen。
+        POINT p{static_cast<LONG>(pt.x), static_cast<LONG>(pt.y)};
         owner_->PreviewDrop(owner_->DropSpotAt(p));
     }
 
