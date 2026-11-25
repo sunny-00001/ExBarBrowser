@@ -1,5 +1,31 @@
 ## [Unreleased]
 
+### 发布治理：最小权限 + draft 发布 + 可复现验证门禁
+
+按对标优秀开源项目的优化清单收口本轮（此前 GitHub Release 只有裸 exe、仓库 private、
+无社区入口、发布流程无人工确认点）：
+
+- **社区与法律入口**：新增 MIT `LICENSE`、`SECURITY.md`、`CODE_OF_CONDUCT.md`、
+  `THIRD-PARTY-NOTICES.md`（WebView2Loader.dll）、issue/PR 模板；仓库转 public，
+  开 Discussions，设 topics，`main` 开分支保护（必需 `static-gates`、禁强推/删除），
+  启用私密漏洞报告。
+- **文档口径对齐**：`CONTRIBUTING.md` / README / CI 注释里的测试数、Node/WebView2
+  依赖、配置分层（`data/` `state/` `logs/` `cache/` `runtime/`）、超限文件数全部
+  按实测收敛；打包器生成的 `START-HERE.txt` / `data/README.md` 同步新口径。
+- **发布工作流加固**：release job 拆成 `build`（只读权限，构建+打包+验证+抽取 notes）
+  与 `publish`（仅此 job 提 `contents: write`）；Release 先建 **draft** 供人工复核，
+  notes 从 CHANGELOG 对应版本段抽取而非 GitHub 自动生成；顶层 `permissions: read-all`。
+- **可复现发布**：manifest schema 升 2，`git_commit` 改完整 40 位 SHA，新增 `tag` /
+  `source_date_epoch` / `toolchain` 指纹；`created_utc` 取 commit time 而非墙钟；
+  打包时把 exe 的 PE COFF `TimeDateStamp` 归一化为 commit time。实测同一 commit
+  连续两次打包 zip SHA256 完全一致。
+- **`scripts/verify_release.py`**：把发布核验固化成门禁（zip 完整、必需文件、
+  逐文件哈希、版本/tag/commit 对齐、确定性时间、密钥扫描、Node 依赖闭合、
+  VERSIONINFO）；本地实测 15/15 PASS。
+
+**验证**：两个脚本 `py_compile` 通过；重新打包后 verify 15/15 PASS；两次打包 hash
+一致；release.yml 关键字段（draft / read-all / 双 job）核对通过。
+
 ## [0.3.1] - 2026-11-25 · 发布流程完善
 
 ### 发布流程：完整便携包 + exe 内嵌版本号

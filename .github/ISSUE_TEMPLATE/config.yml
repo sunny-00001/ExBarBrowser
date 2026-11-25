@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全问题
+    url: https://github.com/sunny-00001/ExBarBrowser/security/advisories/new
+    about: 漏洞请私密报告，不要公开 issue
+  - name: 使用与开发文档
+    url: https://github.com/sunny-00001/ExBarBrowser#readme
+    about: 先查 README / CONTRIBUTING / docs

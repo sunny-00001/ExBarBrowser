@@ -1,0 +1,51 @@
+name: Bug 报告
+description: 报告可复现的缺陷
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请**不要**粘贴真实 `model.json`、`apiKey`、书签或个人文件路径。安全漏洞走 [SECURITY.md](../../SECURITY.md) 的私密渠道。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: GitHub Release 版本号或 commit SHA
+      placeholder: "v0.3.1 / 484f64c"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows 11
+        - Windows 10 1903+
+        - Windows 10 1809-1902
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 越具体越好；如涉及 AI 面板，请附 Node.js 与 WebView2 Runtime 版本
+      placeholder: |
+        1. 打开 ...
+        2. 按 ...
+        3. 观察到 ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据
+      description: 日志片段 / 截图 / `exbar/state` 输出；请脱敏
+      render: shell

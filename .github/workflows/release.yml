@@ -2,11 +2,16 @@
 #
 # 与 ci.yml 的分工：
 #   ci.yml       —— 每次 push/PR 的强门（静态检查 + 原生编译 + 单测）
-#   release.yml  —— 只在 tag vX.Y.Z 推送时打发布包并上传资产
+#   release.yml  —— 只在 tag vX.Y.Z 推送时打发布包，产出 draft Release 供人工复核
 #
 # 版本号只允许一个真相源：仓库根 VERSION。tag 必须与 v$(cat VERSION) 一致，
 # 否则直接失败，避免"tag 是 v0.3.0、exe 里是 0.2.2"这种发布事故。
-# 发布资产由 scripts/package_release.py 生成，和本地手动打包完全一致。
+#
+# 权限与人工确认点（借鉴成熟项目的发布流水线）：
+#   - 顶层 permissions: read-all —— 构建/验证 job 只读；只有 publish job 提 contents: write。
+#   - build 与 publish 分离：publish 只消费 build 已验证过的 artifact，不重新构建。
+#   - Release 先建 draft；人工核对 version / commit / assets / notes 后再点 Publish。
+#     这样 tag 推错、打包漏文件、notes 抓错段都还有最后一次拦截机会。
 #
 # 本工程的编译需要 Windhawk clang + MinGW windres，托管 runner 没有，
 # 因此复用 ci.yml 的 self-hosted native-build runner；runner 不在线时
@@ -18,16 +23,19 @@ on:
   push:
     tags: [ 'v*' ]
 
-permissions:
-  contents: write
+permissions: read-all
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  package:
+  build:
     runs-on: [self-hosted, windows, native-build]
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -36,6 +44,7 @@ jobs:
           python-version: '3.11'
 
       - name: 校验 tag 与 VERSION 一致
+        id: version
         shell: bash
         run: |
           want="v$(tr -d '\r\n' < VERSION)"
@@ -43,6 +52,7 @@ jobs:
             echo "tag=${GITHUB_REF_NAME}  VERSION=${want}（不一致，拒绝发布）"
             exit 2
           }
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: 发布构建（-O2 / strip / VERSIONINFO）
         shell: bash
@@ -52,12 +62,69 @@ jobs:
         shell: bash
         run: python scripts/package_release.py
 
-      - name: 上传 Release 资产
-        uses: softprops/action-gh-release@v2
+      - name: 验证发布产物（哈希 / 密钥 / 依赖 / 版本 / 确定性）
+        shell: bash
+        run: python scripts/verify_release.py
+
+      - name: 从 CHANGELOG 抽取 Release Notes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          ver = Path("VERSION").read_text(encoding="utf-8").strip()
+          text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          # 匹配 "## [0.3.1] ..." 到下一个 "## [" 之前的内容
+          pat = re.compile(rf"^## \[{re.escape(ver)}\][^\n]*\n(.*?)(?=^## \[|\Z)",
+                           re.M | re.S)
+          m = pat.search(text)
+          body = (m.group(1).strip() if m else
+                  f"> CHANGELOG.md 暂无 [{ver}] 条目，发布前请人工补充说明。")
+          Path("dist").mkdir(exist_ok=True)
+          Path("dist", f"RELEASE-NOTES-v{ver}.md").write_text(body + "\n", encoding="utf-8")
+          print(f"[notes] {len(body)} 字符" + ("" if m else "（使用兜底文案）"))
+          PY
+          test -s "dist/RELEASE-NOTES-v${{ steps.version.outputs.version }}.md"
+
+      - name: 上传已验证的发布资产
+        uses: actions/upload-artifact@v4
         with:
-          files: |
+          name: release-assets-${{ github.ref_name }}
+          retention-days: 14
+          path: |
             dist/*.zip
             dist/*.sha256
             dist/RELEASE-MANIFEST-*.json
-          generate_release_notes: true
+            dist/RELEASE-NOTES-*.md
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    environment:
+      name: release
+      url: https://github.com/${{ github.repository }}/releases
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载 build job 已验证的资产
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-${{ github.ref_name }}
+          path: release-assets
+
+      - name: 创建 draft Release（人工复核后再发布）
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
           fail_on_unmatched_files: true
+          body_path: release-assets/RELEASE-NOTES-${{ github.ref_name }}.md
+          files: |
+            release-assets/*.zip
+            release-assets/*.sha256
+            release-assets/RELEASE-MANIFEST-*.json
+          # 不从 GitHub 自动生成 notes —— 本项目有手写 CHANGELOG，自动生成会把
+          # 合并提交与无关 PR 混进发布说明；上面的 body_path 才是权威来源。
+          generate_release_notes: false

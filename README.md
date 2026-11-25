@@ -11,9 +11,9 @@ ExBar mod 分片，可并存、可整体拷走、可单独卸载。
 | 规模 | `src/` 约 6.10 万行（181 个 `.cpp` + 125 个 `.h`）；`tests/` 71 个单测、1217 项断言（2026-11-25 实测；仓库在活跃并行开发，**行数每几分钟就变**，要看当前值见下方口径命令） |
 | 产物 | 调试 exe 59.7 MB（含 `-g`）；`--release` 发布 exe **3.0 MB**（-O2 + `-s` strip，无调试符号，内嵌 `VS_VERSION_INFO`），静态链接 libstdc++/libgcc。两个文件名并存、互不覆盖；正式分发用 `scripts/package_release.py` 打成的 zip（含 WebView2Loader.dll 与 aichat/） |
 | 命令 | `check_commands.py` 首行给出：命令表 219 条 / 已实现 211 / 处理器 211 / keymap 引用 237 条；`check_ai_meta.py` 给出对 AI 暴露 174 条。**这些数每加一条命令就变，本文不写死，以脚本输出为准** |
-| 配置 | 便携模式，全部在 `<exe>\data`：`settings.json` / `bookmarks.html` / `keymap.json` / `mouse.json` / `audit.log` |
+| 配置 | 便携模式，profile 根下分层：`data/`（settings/bookmarks/keymap/mouse/aichat/models/mcp）、`state/`（会话/历史/标签/窗口）、`logs/`（审计/事件）、`cache/`（WebView2）、`runtime/`（AI 发现文件） |
 | 验证 | clang++ 20.1.3 零警告；调试全量约 20s（181 TU，自适应并行；带跨会话 obj 缓存），发布 `--release --clean` 首次全量约 21min（-O2、独立 obj 目录、无缓存命中）；冒烟为**人工操作 + 只读证据**（日志 / `exbar/state` / 截图），不注入键鼠（`docs/MIGRATION-PLAN.md` §8.2、规则 R21） |
-| 检查 | `check_ai_meta`（28 组，含 R20 人机等价）与 `check_commands`（三方对账，含 CmdId 顺序与 legacy 名基线）通过；`check_components` 因并行开发中 11 个超限文件记在欠账里（未再新增长度），评估面已随本轮发布改动重签。CI 强门见 `.github/workflows/ci.yml`、发布门见 `.github/workflows/release.yml` |
+| 检查 | `check_ai_meta`（28 组，含 R20 人机等价）与 `check_commands`（三方对账，含 CmdId 顺序与 legacy 名基线）通过；`check_components` 因并行开发中 4 个超限文件（`aichat_panel.cpp` / `aichat_webview.cpp` / `app.h` / `nav_pane.cpp`）记在欠账里（未再新增长度），评估面已随本轮发布改动重签。CI 强门见 `.github/workflows/ci.yml`、发布门见 `.github/workflows/release.yml` |
 | 版本控制 | **独立仓库**（`E:\ExBarBrowser`，分支 `main`）：源码/脚本/文档/生成头入库，构建与运行产物由 `.gitignore` 排除 |
 
 > 本文所有路径均相对仓库根。文档基线：**2026-11-25**（代码仍在快速演进，
@@ -117,7 +117,7 @@ ExBarBrowser.exe（本进程）
 | 磁盘统计 | `src/disk_scan.cpp` | `OpTopN`（谁最占空间）/ `OpDiskUsage`（这目录多大）；带 deadline、`truncated`/`timedOut`、不跟随重解析点 |
 | AI 操作接口 | `src/ai_api.cpp`、`src/ai_server.cpp` | JSON-RPC 2.0 over 命名管道：`initialize`/`tools/list`/`tools/call`/`exbar/state`；令牌 + 危险命令双门；见 `docs/AI-INTERFACE.md` |
 | 命令面板 | `src/app_commands.cpp` | 列出全部已实现命令，选中即执行（与快捷键同一条 `CommandBus`） |
-| 配置与状态 | `src/config.cpp`、`src/json.cpp`、`src/text_file.cpp` | 便携模式写 `<exe>\data\settings.json`；窗口几何、会话、锁定标签、最近访问、状态栏段、视图/排序/分组、窗格偏好 |
+| 配置与状态 | `src/config.cpp`、`src/json.cpp`、`src/text_file.cpp` | 便携模式：`data/` 放配置、`state/` 放会话/历史/窗口、`logs/` 放审计与事件、`cache/` 放 WebView2、`runtime/` 放 AI 发现文件；窗口几何、会话、锁定标签、最近访问、状态栏段、视图/排序/分组、窗格偏好均在 profile 根下 |
 | 会话 | `src/app_commands_misc.cpp`、`src/config.cpp` | 启动恢复上次标签组与关闭历史；`SessionSave` / `SessionRestore` |
 | 深浅色 / 高 DPI | `src/theme.cpp`、`src/main.cpp` | 跟随系统；Per-Monitor V2；`WM_DPICHANGED` 重建令牌与字体 |
 | 激活优先启动 | `src/main.cpp`、`src/identity.h` | 有窗口则 `WM_COPYDATA` 转发 + 激活（magic `0xEBB1`，见 `id::kCopyDataMagic`）；`--new-window` / `EXBARBROWSER_MULTI` 直接新开 |
@@ -191,8 +191,8 @@ bash build.sh --release --clean  # 首次全量（-O2，约 21 min）；之后�
 - 配置签名含标志差异，调试与发布各自命中独立缓存；`--clean` 只清自己那套 obj。
 
 **发布包**：单独一个 exe 不是完整交付物 —— AI 面板运行时还要 `WebView2Loader.dll`
-（必须与 exe 同目录）和 `aichat/`（Node 服务 + Web UI）；`data/` 是首次启动自动生成的
-**用户私有数据**，不能带开发机的设置/书签/密钥。打包器把这些约束固化下来：
+（必须与 exe 同目录）和 `aichat/`（Node 服务 + Web UI）；`data/`、`state/`、`logs/`、
+`cache/`、`runtime/` 都是首次启动自动生成的**用户私有数据**，不能带开发机的设置/书签/密钥。打包器把这些约束固化下来：
 
 ```bash
 python scripts/package_release.py
@@ -203,8 +203,8 @@ python scripts/package_release.py
 
 - 版本号来自仓库根 `VERSION`，同时供 exe 版本资源、manifest、zip 文件名与 GitHub tag
   使用；tag 必须是 `v$(cat VERSION)`。打包器会扫描 JSON 里的 `apiKey`，发现非占位符立即失败。
-- 包内 `aichat/service/{config,model}.example.json` 是**脱敏模板**：首次用 AI 面板时复制成
-  `config.json` / `model.json` 并填自己的密钥；填好的文件是私密数据，不要外发。
+- 包内不再带 `config.example.json` / `model.example.json`：AI 行为配置在 `data/aichat.json`，
+  模型与密钥在 `data/models.json`，由服务首次启动/保存时生成；填好的 `models.json` 是私密数据，不要外发。
 - 系统前置条件只有两个，且**只在打开 AI 面板时需要**：WebView2 Runtime（Evergreen）、
   Node.js >= 18（PATH 或 `EXBAR_NODE`）。没有它们，主浏览器照常可用。
 - 打 tag 推送会触发 `.github/workflows/release.yml`：复用同一套发布构建 + 打包脚本，
@@ -249,7 +249,7 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
   `scripts/`、`docs/`、`resources/`、构建入口（`build.sh` / `build.bat` / `build_fast.py`）、
   `README.md` / `CHANGELOG.md` / `CONTRIBUTING.md`、`.editorconfig` 与 `.gitignore`。
 - **不入库**：`*.exe` / `*.obj` / `*.d` / `*.gch` / `*.log` / `shot*.png` / `out*.png`、
-  `obj*/`、`backup/` / `.old/`、`*.bak` 类编辑备份，以及**整个 `data/` 下的运行期配置**
+  `obj*/`、`backup/` / `.old/`、`*.bak` 类编辑备份，以及**整个 `data/`、`state/`、`logs/`、`cache/`、`runtime/` 下的运行期数据**
   （书签、最近访问、窗口几何、键位习惯因人而异）。清单见 [.gitignore](.gitignore)。
 - **提交**：约定式提交（中文正文，`feat|fix|docs|refactor|build|test|...` + scope），
   见 [CONTRIBUTING.md](CONTRIBUTING.md) §2.3。
@@ -271,7 +271,7 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
 - **首次提交前的机器相关项**：`src/keymap.gen.h` 由 `data/keymap.json` 生成，
   已入库，改键后记得 `python tools/gen_keymap.py` 再提交（`check_commands.py` 会拦不一致）。
 
-`data/` 不入库意味着**新克隆的仓库首次启动没有配置文件** —— 这是预期行为：
+`data/`、`state/`、`logs/`、`cache/`、`runtime/` 不入库意味着**新克隆的仓库首次启动没有配置文件** —— 这是预期行为：
 `keymap` 走 `src/keymap.gen.h` 的内置默认表，书签为空树，`settings.json` 首次保存时自动创建。
 
 **换行符目前是混的**（`.editorconfig` 声明 CRLF，仓库里 66 个文件纯 CRLF、89 个纯 LF）。
@@ -476,14 +476,18 @@ ExBarBrowser/                       独立 git 仓库（main）
 ├─ tools/                           check_commands / check_ai_meta / check_components / gen_keymap / gen_icon / objcache / reclaim / probe_* …
 ├─ scripts/                         shot.py / install.ps1 / uninstall.ps1
 ├─ docs/                            见下表（23 篇）
-├─ aichat/                          AI 面板前端 + Node 服务（代码入库；model.json/config.json/logs 不入库）
+├─ aichat/                          AI 面板前端 + Node 服务（代码入库；data/aichat.json、models.json、mcp.json 与 logs 不入库）
 ├─ resources/                       app.ico / app.rc / icon_preview.png
-├─ data/                            运行期配置（**不入库**，首次启动自动生成）
+├─ data/                            配置（**不入库**，首次启动自动生成：settings/bookmarks/keymap/mouse/aichat/models/mcp）
+├─ state/                           会话/历史/标签/窗口状态（**不入库**，首次启动自动生成）
+├─ logs/                            审计与事件日志（**不入库**，首次启动自动生成）
+├─ cache/                           WebView2 用户数据（**不入库**，可整体删除）
+├─ runtime/                         AI 通道发现文件（**不入库**，进程退出即删）
 ├─ build.sh / build.bat             构建入口（薄包装，透传参数；`--release` 发布构建）
 ├─ build_fast.py                    增量构建实现 + 清单唯一真相源（含 RELEASE_COMPILE_FLAGS）
 ├─ ExBarBrowser.exe                 调试产物（带 -g，不入库）
 ├─ ExBarBrowser.release.exe         发布产物（strip，3.0 MB，不入库；`bash build.sh --release` 生成）
-└─ README.md / CHANGELOG.md / CONTRIBUTING.md / AGENTS.md
+└─ README.md / CHANGELOG.md / CONTRIBUTING.md / LICENSE / SECURITY.md / AGENTS.md
 ```
 
 ## 7. 文档索引

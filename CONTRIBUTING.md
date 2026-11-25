@@ -26,9 +26,10 @@
 | 编译器 | Windhawk 自带 `C:\Program Files\Windhawk\Compiler\bin\clang++.exe`（20.1.3，`x86_64-w64-mingw32`） |
 | 构建 | `bash build.sh`（Git Bash）或 `build.bat`（cmd） |
 | 调试辅助 | Python 3（仅 `scripts/shot.py` 用，标准库即可，无需 pip 安装） |
-| 不需要 | Visual Studio、CMake、vcpkg、.NET SDK、Node.js |
+| 可选 | Node.js >= 18（仅 AI 面板需要，PATH 或 `EXBAR_NODE`）；WebView2 Runtime（仅 AI 面板需要） |
+| 不需要 | Visual Studio、CMake、vcpkg、.NET SDK |
 
-**不要引入第三方库**。目标产物是"单 exe、零运行时依赖"，任何新依赖都要先证明它不能自己写 200 行解决。
+**不要引入第三方库**。主程序目标仍是“单 exe、主流程零运行时依赖”；AI 面板是可选能力，发布包会带 Microsoft 的 `WebView2Loader.dll` 与 `aichat/`。任何**新的**依赖都要先证明它不能自己写 200 行解决。
 
 ---
 
@@ -51,7 +52,7 @@ bash build.sh
 bash build.sh --out /tmp/ebb_check.exe
 ```
 
-**不要手写 `clang++ src/a.cpp src/b.cpp ...` 长命令**：源文件已 60 个，手抄清单必然与
+**不要手写 `clang++ src/a.cpp src/b.cpp ...` 长命令**：源文件已 180+ 个，手抄清单必然与
 `build_fast.py` 的自动扫描脱节（早期文档里的示例只列了 9 个 TU，照抄会链接失败）。
 需要绕过构建脚本时请用 `python build_fast.py --out <path>`。
 
@@ -72,7 +73,7 @@ bash build.sh --out /tmp/ebb_check.exe
 - [ ] 多标签连续开 10 个后切标签不闪、不残留
 - [ ] 截图留档：`python scripts\shot.py out.png`（视觉改动必做）
 - [ ] 三个静态检查全绿：`python tools/check_commands.py`、`tools/check_ai_meta.py`、`tools/check_components.py`
-- [ ] 动到命令表/输入端/AI 元数据时，**跑过全量单测**：`bash tests/run_all.sh`（32 个，应 32/32）
+- [ ] 动到命令表/输入端/AI 元数据时，**跑过全量单测**：`bash tests/run_all.sh`（数量以末行输出为准，当前 71 个）
 - [ ] `CHANGELOG.md` 的 `[Unreleased]` 补了对应条目
 
 ### 2.3 提交
@@ -99,7 +100,7 @@ refactor(app): 把历史栈操作收敛到 Tab 的成员函数
 
 | 规则 | 判据 |
 |---|---|
-| 单文件 ≤500 行 | `wc -l src/*.cpp`；超了就按职责拆（`nav_bar.cpp` → `nav_bar_draw.cpp` / `nav_bar_actions.cpp` 就是这么来的）。当前超 500 的有 **10 个**：`shell_ops` / `shell_view` / `popup_list` / `bookmark_bar` / `bookmarks` / `commands` / `app_commands_files` / `shell_input` / `input_router` / `nav_bar`。**不要在这里记具体行数** —— 它们每天都在涨（记下的值第二天就错）。要看当前值就跑 `wc -l src/*.cpp | sort -rn | head -12`。下次动它们先拆，别再往上加 |
+| 单文件 ≤500 行 | `wc -l src/*.cpp`；超了就按职责拆（`nav_bar.cpp` → `nav_bar_draw.cpp` / `nav_bar_actions.cpp` 就是这么来的）。当前超 500 的以 `python tools/check_components.py` 输出为准（2026-11-25 为 4 个：`aichat_panel.cpp` / `aichat_webview.cpp` / `app.h` / `nav_pane.cpp`）。**不要在这里记具体行数** —— 它们每天都在涨。下次动它们先拆，别再往上加 |
 | 一文件一职责 | 文件名能一句话说清它干什么；说不清就是两个文件 |
 | 一个共享头 | 只有 `common.h` 被所有 TU 包含，且它只放类型/常量/纯内联工具，**不放业务** |
 | 依赖单向 | `app` → `nav_bar`/`tab_strip`/`status_bar`/`shell_view` → `nav_model`/`theme` → `common`。下层不许反向包含上层头 |
@@ -179,10 +180,10 @@ refactor(app): 把历史栈操作收敛到 Tab 的成员函数
 | 自动化脚本里 `SetForegroundWindow` 改用户前台窗口 | 同上（R21），脚本零例外：需要前台才能测的场景改成"没前台就 SKIP"，不要自己抢过来 |
 | 引入 `pyautogui` / `pynput` / `AutoIt` 一类自动化库 | 它们底层就是 `SendInput`/钩子，一行就绕过 R21 全部判据 |
 | 未经确认修改系统默认打开方式 | `install.ps1 -Takeover` 已做备份与标记，其他脚本一律不许写 `HKCR`/`HKLM` |
-| 引入第三方库或包管理器 | 破坏"单 exe 零依赖" |
+| 引入第三方库或包管理器 | 破坏主程序“单 exe、主流程零依赖”的定位 |
 | 在 `WM_PAINT` 里 `CreateSolidBrush` 之外的资源泄漏 | 双缓冲路径高频调用，任何 GDI 泄漏都会被放大 |
 | 在 UI 线程做同步 IO | 卡界面；用户感知为"程序挂了" |
-| 把配置/状态写进 exe 同目录 | 用户目录可能只读（Program Files）；P2 统一走 `%APPDATA%\ExBar` |
+| 把配置/状态写到注册表或 `%APPDATA%` | 便携模式要求数据在 profile 根下：`data/`（配置）、`state/`（会话/历史）、`logs/`（审计/事件）、`cache/`（WebView2）、`runtime/`（AI 发现文件）。安装到 Program Files 等只读目录时，用 `EXBARBROWSER_PROFILE` 指向用户可写根 |
 | 提交 `*.exe` / `*.png` / `*.log` / `backup/` | 已在 `.gitignore` 排除 |
 | 只改代码不改 `CHANGELOG.md` | 变更记录是发布依据 |
 

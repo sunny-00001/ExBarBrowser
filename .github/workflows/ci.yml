@@ -75,7 +75,7 @@ jobs:
           test -f "/c/Program Files/Windhawk/Compiler/bin/clang++.exe" \
             || { echo "缺少 Windhawk clang，runner 标签 native-build 配错了"; exit 2; }
 
-      - name: 全量单测（含编译，56 个测试；77=环境不满足单列）
+      - name: 全量单测（含编译；数量以末行输出为准，77=环境不满足单列）
         shell: bash
         run: bash tests/run_all.sh
 

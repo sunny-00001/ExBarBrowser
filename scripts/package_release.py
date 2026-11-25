@@ -7,7 +7,8 @@ ExBarBrowser 发布打包器（可移植版）
 
 为什么要单独做这一步：
   主程序不是完全零依赖 —— AI 面板运行时需要 WebView2Loader.dll（与 exe 同目录）、
-  aichat/ 下的 Node 服务与 Web UI；而 data/ 是首次启动自动生成的**用户私有数据**，
+  aichat/ 下的 Node 服务与 Web UI；而 data/ 是首次启动自动生成的**用户私有配置**，
+  state/、logs/、cache/、runtime/ 则分别是状态、日志、缓存与运行期文件。
   绝不能把开发机上的 settings.json / 书签 / API key 打进去。
   发布一个光秃秃的 exe 会把这些约束全部丢给用户，正是这次要修的问题。
 
@@ -39,8 +40,9 @@ LOADER_DLL = ROOT / "WebView2Loader.dll"
 AICHAT = ROOT / "aichat"
 OUT_DIR = ROOT / "dist"
 
-# 只复制 AI 面板真正会跑到的文件：测试、临时脚本、备份一律不进包。
-SERVICE_EXTRA = ("exbar-bridge.ps1", "config.example.json", "model.example.json")
+# 只复制 AI 面板真正会跑到的文件：测试、临时脚本一律不进包。
+# 配置模板已取消 —— aichat.json / models.json / mcp.json 由服务首次启动生成。
+SERVICE_EXTRA = ("exbar-bridge.ps1",)
 
 
 def sha256(path: Path) -> str:
@@ -59,13 +61,74 @@ def read_version(override: str | None) -> str:
     return raw
 
 
-def git_commit() -> str:
+def _git_output(args: list[str], default: str = "") -> str:
     try:
-        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
-                           capture_output=True, text=True, timeout=10)
-        return r.stdout.strip() if r.returncode == 0 else "unknown"
+        r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True,
+                           text=True, timeout=10)
+        return r.stdout.strip() if r.returncode == 0 else default
     except Exception:                                       # noqa: BLE001 —— git 不是打包的硬依赖
-        return "unknown"
+        return default
+
+
+def git_commit() -> str:
+    """完整 40 位 commit SHA —— 短 SHA 有歧义，manifest 里不够用来溯源。"""
+    return _git_output(["rev-parse", "HEAD"], "unknown")
+
+
+def source_date_epoch() -> tuple[int, str]:
+    """提交时间作为可复现构建的唯一时间戳：返回 (epoch, ISO8601 UTC)。
+
+    墙钟时间会让同一份源码两次构建出不同 hash，别人无法核对"GitHub 二进制
+    确实来自这个 commit"。commit time 是源码自带的、确定的值。
+    """
+    raw = _git_output(["show", "-s", "--format=%ct", "HEAD"])
+    try:
+        epoch = int(raw)
+    except ValueError:
+        return 0, "unknown"
+    iso = datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return epoch, iso
+
+
+def toolchain_info() -> dict:
+    """审计用工具链指纹：只记录、不参与 hash，便于别人复现同一构建环境。"""
+
+    def version_or_unknown(exe_path: str) -> str:
+        try:
+            r = subprocess.run([exe_path, "--version"], capture_output=True,
+                               text=True, timeout=10)
+            line = next((x for x in (r.stdout + r.stderr).splitlines() if x.strip()), "")
+            return line.strip()[:160] if line else "unknown"
+        except Exception:                                   # noqa: BLE001
+            return "unknown"
+
+    return {
+        "python": sys.version.split()[0],
+        "clang": version_or_unknown(r"C:/Program Files/Windhawk/Compiler/bin/clang++.exe"),
+        "windres": version_or_unknown(r"D:/MinGW/bin/windres.exe"),
+        "release_flags": ["-O2", "-DNDEBUG", "-s", "-target x86_64-w64-mingw32"],
+    }
+
+
+def normalize_pe_timestamp(path: Path, epoch: int) -> None:
+    """把 exe 的 PE COFF 头时间戳改成确定值（commit time）。
+
+    链接器默认写入当前墙钟时间，导致同一份源码两次构建的 exe hash 不同。
+    本程序未做 Authenticode 签名，改这个 4 字节不影响任何运行期行为。
+    """
+    if epoch <= 0:
+        return
+    data = bytearray(path.read_bytes())
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        raise RuntimeError(f"不是有效的 PE 文件：{path}")
+    pe_off = int.from_bytes(data[0x3C:0x40], "little")
+    if data[pe_off:pe_off + 4] != b"PE\0\0":
+        raise RuntimeError(f"PE 签名错误：{path}")
+    # COFF File Header: Machine(2) + NumberOfSections(2) + TimeDateStamp(4) ...
+    # TimeDateStamp 在 COFF 起始 +4；+8 是 PointerToSymbolTable，别写错。
+    coff = pe_off + 4
+    data[coff + 4:coff + 8] = epoch.to_bytes(4, "little")
+    path.write_bytes(data)
 
 
 def copy_file(src: Path, dst: Path) -> None:
@@ -76,7 +139,7 @@ def copy_file(src: Path, dst: Path) -> None:
 
 
 def stage_aichat(stage: Path) -> None:
-    """AI 面板运行时：Node 服务 + Web UI + 脱敏配置模板。"""
+    """AI 面板运行时：Node 服务 + Web UI（不携带任何示例配置）。"""
     service_src = AICHAT / "service"
     service_dst = stage / "aichat" / "service"
     if not service_src.is_dir():
@@ -99,13 +162,25 @@ def stage_aichat(stage: Path) -> None:
 
 
 def assert_no_secrets(stage: Path) -> None:
-    """发布包里不能出现用户真实 API key。模板允许 YOUR_ 开头的占位符。"""
-    for p in sorted(stage.rglob("*.json")):
-        text = p.read_text(encoding="utf-8", errors="replace")
-        for m in re.finditer(r'"apiKey"\s*:\s*"([^"]*)"', text):
-            value = m.group(1).strip()
-            if value and not value.startswith("YOUR_"):
-                raise RuntimeError(f"疑似真实 API key 被打进发布包：{p.relative_to(stage)}")
+    """发布包里不能出现真实密钥或凭据 token。
+
+    apiKey 只查 JSON —— 真实配置只在 data/*.json 里；JS 源码注释里的
+    `"apiKey": "sk-…"` 是文档示例，不是密钥。token 则扫全部文本文件。
+    """
+    for p in sorted(stage.rglob("*")):
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:                                   # noqa: BLE001 —— 二进制跳过
+            continue
+        if p.suffix.lower() == ".json":
+            for m in re.finditer(r'"apiKey"\s*:\s*"([^"]*)"', text):
+                value = m.group(1).strip()
+                if value and not value.startswith("YOUR_"):
+                    raise RuntimeError(f"疑似真实 API key 被打进发布包：{p.relative_to(stage)}")
+        if re.search(r"gh[pousr]_[A-Za-z0-9]{20,}", text):
+            raise RuntimeError(f"疑似 GitHub token 被打进发布包：{p.relative_to(stage)}")
 
 
 def write_text(path: Path, text: str) -> None:
@@ -113,20 +188,24 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
-def build_manifest(stage: Path, version: str) -> dict:
+def build_manifest(stage: Path, version: str, epoch: int, created_utc: str) -> dict:
     files = {}
     for p in sorted(stage.rglob("*")):
         if p.is_file():
             rel = p.relative_to(stage).as_posix()
             files[rel] = {"sha256": sha256(p), "size": p.stat().st_size}
     return {
-        "schema": 1,
+        "schema": 2,
         "product": "ExBarBrowser",
         "version": version,
+        "tag": f"v{version}",
         "target": "win-x64",
         "channel": "stable",
-        "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        # 确定性字段：同一 commit 的任何一次打包都得到同一个值。
+        "source_date_epoch": epoch,
+        "created_utc": created_utc,
         "git_commit": git_commit(),
+        "toolchain": toolchain_info(),
         "entry": "ExBarBrowser.exe",
         "runtime_requirements": {
             "os": "Windows 10 1809+ / Windows 11",
@@ -134,9 +213,10 @@ def build_manifest(stage: Path, version: str) -> dict:
             "node": ">=18，PATH 或 EXBAR_NODE；仅 AI 面板需要",
         },
         "notes": [
-            "data/ 首次启动自动生成，不携带开发者配置、书签或密钥。",
-            "AI 面板需要自行把 config.example.json / model.example.json 复制为正式文件并填密钥。",
+            "data/ state/ logs/ cache/ runtime/ 首次启动自动生成，不携带开发者配置、书签或密钥。",
+            "aichat.json / models.json / mcp.json 由 AI 服务首次启动写入 data/。",
             "WebView2Loader.dll 必须与 ExBarBrowser.exe 同目录。",
+            "exe 的 PE 时间戳已归一化为 commit time，便于复核构件来源。",
         ],
         "files": files,
     }
@@ -165,6 +245,7 @@ def main() -> int:
     args = ap.parse_args()
 
     version = read_version(args.version)
+    epoch, created_utc = source_date_epoch()
     exe = args.exe.resolve()
     if not exe.is_file():
         raise RuntimeError(f"找不到发布 exe：{exe}\n先执行 bash build.sh --release")
@@ -178,22 +259,24 @@ def main() -> int:
         shutil.rmtree(stage)              # 只删本脚本生成的同名暂存目录
     stage.mkdir(parents=True)
 
-    copy_file(exe, stage / "ExBarBrowser.exe")
+    staged_exe = stage / "ExBarBrowser.exe"
+    copy_file(exe, staged_exe)
+    normalize_pe_timestamp(staged_exe, epoch)
     copy_file(LOADER_DLL, stage / "WebView2Loader.dll")
     stage_aichat(stage)
 
-    write_text(stage / "data" / "README.md", f"""data/ — 用户数据目录（首次启动自动生成）
+    write_text(stage / "data" / "README.md", """data/ — 配置目录（首次启动自动生成）
 
-本目录在发布包里只有一个说明文件。ExBarBrowser 首次启动时会在这里创建：
-  settings.json     设置
-  bookmarks.html    书签
-  keymap.json / mouse.json  键位与鼠标配置
-  ai-pipe.txt / ai-token.txt   AI 通道发现文件
-  webview2/         WebView2 用户数据（AI 面板）
-  audit.jsonl / events.jsonl  审计与事件日志
+发布包里本目录只有一个说明文件。profile 根下按职责分层：
+  data/       settings.json / bookmarks.html / keymap.json / mouse.json
+              aichat.json（AI 行为）/ models.json（模型与密钥）/ mcp.json
+  state/      会话、历史、标签、窗口状态
+  logs/       审计与事件日志（audit.jsonl / events.jsonl）
+  cache/      WebView2 用户数据
+  runtime/    AI 通道发现文件（进程退出即删）
 
 这里放的是**用户私有数据**，所以发布包不带开发机的真实内容。
-可以用命令 `GoConfigPath` 直接打开这个目录。
+可以用命令 `GoConfigPath` 直接打开配置目录。
 """)
 
     write_text(stage / "START-HERE.txt", f"""ExBarBrowser v{version} — Windows x64 便携版
@@ -209,24 +292,27 @@ def main() -> int:
   - Node.js >= 18：仅 AI 面板需要。可在 PATH 中，或用环境变量 EXBAR_NODE 指向 node.exe。
 
 【首次使用 AI 面板】
-  1. 复制 aichat/service/config.example.json -> aichat/service/config.json
-  2. 复制 aichat/service/model.example.json  -> aichat/service/model.json
-  3. 在 model.json 里填入自己的 baseUrl / apiKey / 模型 id。
-  4. 填好密钥的 model.json 是私密文件，不要连同日志一起发出去。
+  1. 首次启动后 AI 服务会在 data/ 下自动生成 aichat.json（行为配置）与
+     models.json（模型目录）；在设置里填好自己的 baseUrl / apiKey / 模型 id。
+  2. 填好密钥的 data/models.json 是私密文件，不要连同日志一起发出去。
   不填也能启动主浏览器；AI 面板会因为没有模型配置而无法调用。
 
 【目录说明】
   ExBarBrowser.exe      主程序（资源里已嵌入版本号 {version}）
   WebView2Loader.dll    WebView2 加载器，必须与 exe 同目录
   aichat/               AI 面板的 Node 服务与 Web UI（无第三方 npm 依赖）
-  data/                 首次启动生成的用户数据目录
+  data/                 配置（首次启动生成，含模型与密钥）
+  state/                会话/历史/标签/窗口状态（首次启动生成）
+  logs/                 审计与事件日志（首次启动生成）
+  cache/                WebView2 用户数据（可整体删除）
+  runtime/              AI 通道发现文件（进程退出即删）
   RELEASE-MANIFEST.json 文件清单与 SHA-256，便于校验完整性
 
 WebView2Loader.dll 版权归 Microsoft Corporation，随包分发遵循 Microsoft WebView2 SDK 许可。
 """)
 
     assert_no_secrets(stage)
-    manifest = build_manifest(stage, version)
+    manifest = build_manifest(stage, version, epoch, created_utc)
     write_text(stage / "RELEASE-MANIFEST.json",
                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
 
@@ -237,7 +323,7 @@ WebView2Loader.dll 版权归 Microsoft Corporation，随包分发遵循 Microsof
     manifest_out = out / f"RELEASE-MANIFEST-v{version}.json"
     shutil.copy2(stage / "RELEASE-MANIFEST.json", manifest_out)
 
-    print(f"[打包] 版本 {version} | git {manifest['git_commit']}")
+    print(f"[打包] 版本 {version} | git {manifest['git_commit']} | epoch {epoch}")
     print(f"[打包] 暂存目录 {stage}（{len(manifest['files'])} 个文件）")
     print(f"[打包] 压缩包   {zip_path}（{zip_path.stat().st_size:,} bytes）")
     print(f"[打包] 校验文件 {sha_path}")

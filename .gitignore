@@ -75,8 +75,11 @@ obj*/
 #   书签          data\bookmarks.html
 #   键位          data\keymap.json
 #   鼠标规则      data\mouse.json
-#   审计日志      data\audit.log   （旧文本格式）
-#                 data\audit.jsonl （规范格式，R18/C6 要求的那份）
+#   AI 行为配置   data\aichat.json（无密钥）
+#   模型与密钥    data\models.json（含明文 apiKey，绝不入库）
+#   MCP 清单      data\mcp.json
+#   审计日志      logs\audit.jsonl（规范格式，R18/C6 要求的那份）
+#                 logs\audit.log（旧文本格式）
 # ---------------------------------------------------------------------------
 data/settings.json
 data/settings.json.tmp
@@ -84,6 +87,11 @@ data/settings.json.bak
 data/bookmarks.html
 data/keymap.json
 data/mouse.json
+data/aichat.json
+data/aichat.json.bak-*
+data/models.json
+data/models.json.bak-*
+data/mcp.json
 data/audit.log
 data/audit.log.1
 data/audit.jsonl
@@ -121,6 +129,22 @@ snapshots/
 archive/
 # 程序自动生成的书签备份（含用户数据，绝不入库）
 data/*.backup-*.html
+
+# ---------------------------------------------------------------------------
+# 分层运行期目录（profile 根下，与 data/ 平级）
+#
+#   state/    会话/历史/标签/窗口几何
+#   logs/     审计/事件/会话日志
+#   cache/    WebView2 用户数据
+#   runtime/  AI 通道发现文件（进程退出即删）
+#
+# 这些目录全部由程序生成，且含用户数据或本机状态，绝不入库。
+# 用前导 / 限定在仓库根，避免误伤 aichat/logs 等嵌套目录。
+# ---------------------------------------------------------------------------
+/state/
+/logs/
+/cache/
+/runtime/
 
 # 已废弃的旧命名（曾用 browser- 前缀，已合并进 keymap.json / mouse.json）
 data/browser.json
