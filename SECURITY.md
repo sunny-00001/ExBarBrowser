@@ -28,8 +28,8 @@ https://github.com/sunny-00001/ExBarBrowser/security/advisories/new
 
 ## 敏感数据处理
 
-- `aichat/service/model.json` 中的 `apiKey` 是用户私密数据，仓库和发布包都不携带真实 key；发布包只含 `*.example.json` 模板。
-- 不要把真实 `model.json`、`data/settings.json`、书签或日志贴到 issue / PR 中。
+- `data\models.json` 中的 `apiKey` 是用户私密数据，仓库和发布包都不携带真实 key；服务首次启动生成默认骨架，不提供 `*.example.json` 模板。
+- 不要把真实 `data\models.json`、`data\settings.json`、`state\*.json`、书签或日志贴到 issue / PR 中。
 - 如不慎泄露 key，请立即在服务商处吊销并轮换；本项目无法撤回已发布的第三方密钥。
 
 ## 安全设计边界

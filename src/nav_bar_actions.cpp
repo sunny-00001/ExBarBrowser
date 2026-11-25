@@ -333,6 +333,11 @@ void NavBar::ShowDropMenu(POINT screen) {
 
     // 底部固定一条“清除历史记录”：它是作用于整个列表的动作，不与路径条目混排。
     // 快捷键由键位表自动推出（NavHistoryClear 无必填参数，键就是这一行的动作）。
+    //
+    // 【这一行现在走命令总线】App 侧绑定的是 CommandBus::Invoke(NavHistoryClear)，
+    // 不是直调 ClearHistory()。这条命令是破坏性的（清历史 + 清最近访问），
+    // 按项目政策执行前要问一次 —— 以前菜单这一路不确认、快捷键那一路确认，
+    // 同一动作确认强度差一半。现在两路同源。
     menu.Separator().Add(L"清除历史记录", 3000, ico::IconId::Close)
         .Cmd(CmdId::NavHistoryClear);
 

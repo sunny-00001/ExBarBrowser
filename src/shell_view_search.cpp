@@ -2,7 +2,7 @@
 //
 // 【为什么单独成文件】这两件事只服务"搜索结果视图"这一条路，与目录导航、视图
 // 模式、预览窗格都不是一回事；混在 shell_view.cpp 里会让那个文件继续涨
-// （行数棘轮只许降不许涨，见 data/file-length-baseline.json）。
+// （行数棘轮只许降不许涨，见 tests/baselines/file-length-baseline.json）。
 //
 // 【搜索结果视图怎么来的】原生搜索文件夹（ISearchFolderItemFactory 造的 PIDL，
 // 见 src/search_folder.h）是**真的文件夹**，但它的字符串形式是 search-ms: URL，

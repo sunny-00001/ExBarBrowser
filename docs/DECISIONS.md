@@ -237,7 +237,7 @@ document/DOM 模型给不了这个保证（进程被杀、渲染线程卡住、�
 - **默认启动 = 激活优先**：找得到已有主窗口就把路径经 `WM_COPYDATA`（魔数 `0xEBB1` 保持不变，理由见 D9）
   转发过去开新标签并还原/前置该窗口，随后新进程退出——保留 360 式"一个程序、多个标签"的直觉。
 - **显式多开 = 新起进程**：`--new-window`（"在新窗口打开"命令启动子进程时自动带上，共享同一份用户数据）
-  或 `EXBARBROWSER_MULTI`（同时落到独立 `data\profile-multi`，用于与正跑着的实例隔离测试）。
+  或 `EXBARBROWSER_MULTI`（同时落到 profile 根 `profiles\multi`，用于与正跑着的实例隔离测试）。
 - 转发用 `SendMessageTimeout(SMTO_ABORTIFHUNG, 2s)`，窗口卡死时不拖死新进程；找不到窗口（最多等 400ms
   吃掉双击竞态）就当没有实例，直接新开。
 
@@ -937,7 +937,7 @@ CompletedHandler::Invoke kind=1 hr=0x00000000
 OnControllerReady 进入：ctrl=00004C5800130308
 导航到 http://127.0.0.1:7399/ -> hr=0x00000000
 WebView2 已就绪
-msedgewebview2 子进程 6 → 12 ；data\webview2\EBWebView 已生成
+msedgewebview2 子进程 6 → 12 ；cache\webview2\EBWebView 已生成
 Web UI: HTTP 200, title=「AI 助手」, 引用 app.js
 ```
 

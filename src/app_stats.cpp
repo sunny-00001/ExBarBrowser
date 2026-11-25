@@ -16,6 +16,12 @@ void App::RefreshStats() {
     Pane* p = ActivePane();
     if (!p) return;
 
+    // 滑块跟着视图的真实图标尺寸走。这里每拍问一次（读一次 GetViewModeAndIconSize，
+    // 没变就不重画），是为了**兜住所有改尺寸的路径** —— 视图菜单、Ctrl+滚轮、
+    // 新标签页套用偏好，都不一定经过专门的同步点。少一条路径，滑块就停在旧值上，
+    // 看着像"滑块坏了"。
+    SyncZoomSlider();
+
     unsigned& tick = statsTick_;
     ++tick;
 

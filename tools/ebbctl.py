@@ -13,13 +13,17 @@
 #   python tools/ebbctl.py call bmk.move '{"id":"b-14"}' --approve
 #   python tools/ebbctl.py events --after 5          补历史事件（一次性）
 #   python tools/ebbctl.py subscribe --after 5 --count 3   订阅并收 N 条推送
-#   python tools/ebbctl.py --data-dir <dir> ...      指定 profile 数据目录
+#   python tools/ebbctl.py --profile <dir> ...  指定 profile 根（旧 --data-dir 仍可用）
 #
 # 作为模块：
 #   from ebbctl import Client
-#   c = Client()                     # 自动从 exe\data 发现 pipe/token
+#   c = Client()                     # 自动从 exe 根的 runtime\ 发现 pipe/token
 #   r = c.call('bmk.list', {})       # 返回已解析的 dict（含 ok / structuredContent）
 #   c.call('fs.delete', {...}, approve=True)
+#
+# 发现文件已从 data\ 迁到 runtime\。传入的目录既可以是新语义的 profile 根，
+# 也可以是旧布局里直接放 ai-pipe.txt 的 data 目录 —— 两种都认，避免升级期
+# 连不上正在运行的旧实例。
 #
 # 传输纪律（R21）：只走命名管道，不发任何输入消息、不动光标、不抢焦点。
 import argparse
@@ -30,9 +34,28 @@ import json
 import os
 import sys
 
-# 默认数据目录 = 本仓库的 data\（脚本在 tools\ 下）。profile 测试可显式指定。
+# 默认 profile 根 = 本仓库根（脚本在 tools\ 下）。发现文件在其 runtime\ 子目录。
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_DATA = os.path.join(os.path.dirname(_HERE), "data")
+_DEFAULT_ROOT = os.path.dirname(_HERE)
+
+
+def runtime_dir_of(profile=None):
+    """把 profile 根（或旧数据目录）解析成真正放发现文件的 runtime 目录。
+
+    优先级：显式 EXBAR_RUNTIME_DIR > 传入目录本身就是 runtime > 传入目录直接
+    放着 ai-pipe.txt（旧布局）> <profile>/runtime（新布局）。最后一项即使目录
+    还不存在也返回，让错误信息指出正确的位置，而不是误导用户去 data\\ 找。
+    """
+    explicit = os.environ.get("EXBAR_RUNTIME_DIR")
+    if explicit:
+        return os.path.abspath(explicit)
+    p = os.path.abspath(profile or _DEFAULT_ROOT)
+    if os.path.basename(p).lower() == "runtime" or os.path.isfile(os.path.join(p, "ai-pipe.txt")):
+        return p
+    legacy = os.path.join(p, "data")
+    if os.path.isfile(os.path.join(legacy, "ai-pipe.txt")):
+        return legacy
+    return os.path.join(p, "runtime")
 
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _k32.CreateFileW.restype = ctypes.c_void_p
@@ -59,10 +82,14 @@ class ChannelError(RuntimeError):
 class Client:
     """一个到 ExBarBrowser AI 通道的客户端。每条 call 独立建连接（与服务端单连接模型匹配）。"""
 
-    def __init__(self, data_dir=None):
-        self.data_dir = os.path.abspath(data_dir or _DEFAULT_DATA)
-        self._pipe_file = os.path.join(self.data_dir, "ai-pipe.txt")
-        self._token_file = os.path.join(self.data_dir, "ai-token.txt")
+    def __init__(self, profile=None):
+        self.profile_dir = os.path.abspath(profile or _DEFAULT_ROOT)
+        self.runtime_dir = runtime_dir_of(self.profile_dir)
+        # data_dir 保留为兼容别名：调用方大量把它继续传给 Client()，而 Client
+        # 现在会自己解析 runtime。真正的文件路径只看 runtime_dir。
+        self.data_dir = self.profile_dir
+        self._pipe_file = os.path.join(self.runtime_dir, "ai-pipe.txt")
+        self._token_file = os.path.join(self.runtime_dir, "ai-token.txt")
 
     def _discover(self):
         if not (os.path.isfile(self._pipe_file) and os.path.isfile(self._token_file)):
@@ -209,7 +236,8 @@ def _payload(r):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="ExBarBrowser 结构化通道客户端")
-    ap.add_argument("--data-dir", help="profile 数据目录（默认 exe 旁的 data）")
+    ap.add_argument("--profile", "--data-dir", dest="profile",
+                    help="profile 根（旧 --data-dir 兼容；默认 exe 旁）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("list", help="列出全部工具")
@@ -233,7 +261,7 @@ def main(argv=None):
     s.add_argument("--timeout", type=float, default=30)
 
     a = ap.parse_args(argv)
-    cli = Client(a.data_dir)
+    cli = Client(a.profile)
     try:
         if a.cmd == "list":
             r = cli.list_tools()

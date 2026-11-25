@@ -11,8 +11,8 @@
 #      \\.\pipe\ExBarBrowser_ai_<hash>_<pid> → <pid>。
 #
 # 用法：
-#   python tools/ai_call.py <profile 目录>            # 默认跑一轮 状态/能力/热切换
-#   python tools/ai_call.py <profile 目录> --pid      # 只打印本实例 PID
+#   python tools/ai_call.py <profile 根>            # 默认跑一轮 状态/能力/热切换
+#   python tools/ai_call.py <profile 根> --pid      # 只打印本实例 PID
 import json
 import os
 import re
@@ -20,8 +20,12 @@ import sys
 import time
 
 profile = sys.argv[1] if len(sys.argv) > 1 else "."
-pipe_file = os.path.join(profile, "ai-pipe.txt")
-token_file = os.path.join(profile, "ai-token.txt")
+runtime = os.path.join(profile, "runtime")
+if (not os.path.isfile(os.path.join(runtime, "ai-pipe.txt"))
+        and os.path.isfile(os.path.join(profile, "ai-pipe.txt"))):
+    runtime = profile  # 旧布局回退
+pipe_file = os.path.join(runtime, "ai-pipe.txt")
+token_file = os.path.join(runtime, "ai-token.txt")
 
 
 def read_text(p):

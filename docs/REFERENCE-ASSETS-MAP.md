@@ -71,8 +71,8 @@ method: 本仓现状取自实跑（agentctl tools 173 条、commands_table*.cpp 
 |---|---|
 | `HEU_KMS_Activator_63.3.4` / 各类 `Setup.exe` / `RunningCheeseFirefox.7z` / `QQPCDownload*.exe` | 激活工具与安装包，非文件浏览器技术面 |
 | `agent2api-*` / `workbuddy2api-*` / `qoder2api-*` / `trae2api*` / `credits.rs` / `official_usage.rs` / `usage_history.rs` / `*_accounts*.json` / `workbuddy-accounts-*.json` | API 中转与积分 / 账号体系（`credits.rs` 头注释自证是 WorkBuddy 积分域），与 Shell 视图无关 |
-| `settings.json`（下载根那份） | **不是本仓的** —— 本仓配置在 `<exe>\data\settings.json`，键为窗口几何 / 会话 / 最近访问 / 视图偏好；这份含 `language` / `accent` / `favorites` / `sidebar_width`，属别的面板项目 |
-| `exbar-session-1795078005875.txt` | 内容是"ExBar 助手 - 会话导出（空会话）"，**不是本仓格式** —— 本仓会话走 `<exe>\data` 与 `session.named.*` 命令，无此文件名 / 文案 |
+| `settings.json`（下载根那份） | **不是本仓的** —— 本仓偏好在 `<exe>\data\settings.json`，高频状态在 `<exe>\state\*.json`（会话/最近访问/标签/窗口几何）；这份含 `language` / `accent` / `favorites` / `sidebar_width`，属别的面板项目 |
+| `exbar-session-1795078005875.txt` | 内容是"ExBar 助手 - 会话导出（空会话）"，**不是本仓格式** —— 本仓会话走 `<exe>\state` 与 `session.named.*` 命令，无此文件名 / 文案 |
 | `_probe_db.py` / `dav自动映射.txt` / `maintenance-mode.bat` / `portable.flag` / 滴滴发票 PDF | 一次性探针、WebDAV 备忘、便携标记、生活文件 |
 | `go/` / `Everything/`（1.5.0.1423b.x64 独立包，非 SDK） / `nextcloud/` / `rclone-v1.75.0` / `cyberduck-master` / `EasySFTP-main` | 语言工具链 / 成品客户端 / 远程协议实现；对应 M5 远程缺口但均需引第三方，非即时参考 |
 

@@ -548,7 +548,7 @@ def main():
     # 极难排查。所以现在就把顺序锁住：插新命令只能加在末尾。
     #
     # 记的不是数值而是**顺序**，因为顺序才是真正的契约（显式赋值后数值可任意）。
-    baseline = ROOT / "data" / "commands-baseline.json"
+    baseline = ROOT / "tests" / "baselines" / "commands-baseline.json"
     cur = {
         # 顺序 = **枚举声明顺序**，不是表行顺序。
         # 这两者不是一回事：表行顺序只影响菜单分组展示（可以随分组调整挪动），

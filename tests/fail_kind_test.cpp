@@ -61,7 +61,9 @@ int main() {
     const std::wstring dir = tf::Join(TempDir(), L"ebb_fail_kind_test");
     CreateDirectoryW(dir.c_str(), nullptr);
     Config::Get().SetProfileDir(dir);
-    const std::wstring jsonlPath = tf::Join(dir, L"audit.jsonl");
+    const std::wstring logs = tf::Join(dir, L"logs");
+    tf::EnsureDir(logs);
+    const std::wstring jsonlPath = tf::Join(logs, L"audit.jsonl");
     DeleteFileW(jsonlPath.c_str());
     // ---------------------------------------------------------------
     std::printf("FailKind → errorCode 的映射\n");

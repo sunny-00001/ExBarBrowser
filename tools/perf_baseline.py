@@ -2,7 +2,7 @@
 # 响应速度基线采集：不发合成输入，只读；不动光标、不抢焦点。
 # 启动独立实例 → 等首帧 → 从日志 [+N ms] 打点解析启动各阶段 → WM_CLOSE 触发关闭 → 记录关闭耗时。
 # 用法：
-#   python tools/perf_baseline.py --runs 3 --label "优化前" --save data/perf-baseline-before.json
+#   python tools/perf_baseline.py --runs 3 --label "优化前" --save tests/baselines/perf-baseline-before.json
 #   python tools/perf_baseline.py --runs 3 --label "优化后" --save data/perf-baseline-after.json
 #   python tools/perf_baseline.py --exe ExBarBrowser.new.exe   # 主 exe 被占用时测新产物
 import ctypes

@@ -352,6 +352,9 @@ void App::OnPaneActivated(ShellView* view) {
     int paneIndex = -1;
     if (!FindPane(view, &t, &paneIndex) || !t) return;
     if (paneIndex < 0 || paneIndex > 1) return;
+    // 后台新标签的视图在创建时会自报激活：它只是被 Shell 初始化了，用户并没有点它。
+    // 放行会把当前标签/窗格切走，那就不是"后台"了。
+    if (t == backgroundTab_) return;
     // 这个视图报告自己被激活了。但它的自报不等于真相 —— 焦点此刻可能已经在别处
     // （例如点击那一瞬间 shell 又把焦点搬走了）。以 GetFocus 的实际结果为准；
     // 只有当焦点确实落在某个视图里时才采纳，否则退回本视图的自报。

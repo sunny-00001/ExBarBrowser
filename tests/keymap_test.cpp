@@ -48,8 +48,20 @@
 // 它是 WebView2 不可用时的退路，与 Ctrl+J 是一对（内嵌 / 外置）。
 // 这两条都是**新增能力**而不是改数字：命令表里有条目、有 handler、有状态回读
 // （aiPanelVisible），`check_commands.py` 的三方一致仍是绿的。
+// 105 → 106（2026-11-25）：新增 Ctrl+Y 重做（file.redo / CmdRedo）。
+// 它走的是与 Ctrl+Z 完全相同的形态：键位表里 key 留空（空串 = 用系统原生键，
+// 不占组合键），真正的 Ctrl+Y 写在 src/keymap.cpp 的 kSysKeys 里，
+// 由 key_binding.cpp 的 ResolveKey → SystemKeyFor 兜底（hotkeyCmdUndo/Ctrl+Z
+// 也是这么走的，共 19 条）。所以这里加的是**一条键位表条目**，不是一个新的组合键。
+// 命令表里有 file.redo 条目、有 handler、有 redo 栈的单测覆盖，
+// `check_commands.py` 的三方一致仍是绿的。
+// 106 → 107（2026-11-25）：新增 Backspace 上跳（hotkeyNavUpBackspace）。
+// 它把 Backspace 绑到 NavUp —— 空白搜索框里 Backspace 的原生语义是"删字符"，
+// 但在文件视图里 Backspace 上跳是 Explorer 的既有习惯，用「仅当输入框无内容时」
+// 的方式接管。key 字段写 Backspace（非空串 = 真的占这个键），
+// 与 hotkeyCmdRedo 那种"key 留空、走 kSysKeys 兜底"是两种形态。
 // 保持这里的数字与 data/keymap.json 同步；src/keymap.gen.h 是所有人的兜底表。
-constexpr size_t kExpectedHotkeys = 105;
+constexpr size_t kExpectedHotkeys = 107;
 // 207 序列（38 默认 + 169 命令覆盖，见 data/keymap.json）：
 // 前缀按命令组分配（b=书签 c=配置 d=开发 e=外部 f=文件 g=前往 n=导航 p=路径
 // q=搜索 s=会话 t=标签 v=视图 w=窗口 x=关闭族 y=复制族 z=工具）。

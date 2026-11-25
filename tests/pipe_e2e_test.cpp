@@ -92,7 +92,7 @@ int main() {
     // ---- 客户端：按"外部程序该怎么做"来读发现文件 ----
     std::wstring token, pipe;
     Check(tf::ReadText(ai::TokenPath(), &token), "读到令牌文件");
-    Check(tf::ReadText(tf::Join(Config::Get().Dir(), L"ai-pipe.txt"), &pipe), "读到管道名文件");
+    Check(tf::ReadText(tf::Join(Config::Get().RuntimeDir(), L"ai-pipe.txt"), &pipe), "读到管道名文件");
     Check(!token.empty(), "令牌非空");
     Check(!pipe.empty(), "管道名非空");
     // 管道名必须带本进程 pid：无窗口的 headless 实例原来共用 "..._default"，
@@ -227,7 +227,7 @@ int main() {
     std::printf("\n停止后清理发现文件\n");
     Check(GetFileAttributesW(ai::TokenPath().c_str()) == INVALID_FILE_ATTRIBUTES,
           "令牌文件已删除");
-    Check(GetFileAttributesW(tf::Join(Config::Get().Dir(), L"ai-pipe.txt").c_str()) ==
+    Check(GetFileAttributesW(tf::Join(Config::Get().RuntimeDir(), L"ai-pipe.txt").c_str()) ==
               INVALID_FILE_ATTRIBUTES,
           "管道名文件已删除");
 

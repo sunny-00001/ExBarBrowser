@@ -32,6 +32,7 @@ void RunTerminal(HWND owner, const std::wstring& dir, bool admin) {
 // 写盘成功、书签栏仍 visible=True）。抽成纯函数之后，单测能拿**全部可写键**
 // 逐个问"它被哪个落地类别覆盖"，漏项就从"运行期玄学"变成"编译期用例红"。
 
+
 void App::NotifyBookmarkSave(bool ok) {
     if (ok) return;
     BookmarkStore& store = BookmarkStore::Get();
@@ -119,128 +120,6 @@ void App::RegisterMiscCommands() {
     // 书签这一族（收藏夹增删改查、拖放/重排的结构化入口）自成一体，
     // 注册实现见 app_commands_misc_bookmarks.cpp。
     RegisterBookmarkCommands();
-
-    // ---------------- 设置域 ----------------
-    // 这三条是「AI 调试某个设置项」的入口。之前设置是编译期 struct，
-    // 机器侧既不知道有哪些项，也没有稳定名字去定位 —— 那条路只能靠人眼看界面。
-    //
-    // 读写都走 settings_reg 的同一份表，不在这里另存副本：
-    // 两份副本一旦分叉，"命令改了 A、界面显示 B"就只有用户能发现。
-    regR(CmdId::ConfigList, [](const Args&, json::Value* out) -> bool {
-        if (!out) return false;
-        json::Value items = settings_reg::DumpAll();
-        json::Value root = json::Value::MakeObject();
-        root.Set(L"items", std::move(items));
-        *out = std::move(root);
-        return true;
-    });
-    regR(CmdId::ConfigGet, [](const Args& args, json::Value* out) -> bool {
-        const std::wstring key = args.Str(L"key");
-        if (key.empty() || !out) return false;
-        json::Value value;
-        if (!settings_reg::Get(key, &value)) {
-            return false;   // key 不存在：如实报失败，不返回空值（那会像"值是空"）
-        }
-        json::Value root = json::Value::MakeObject();
-        root.Set(L"key", json::Value::MakeStr(key));
-        root.Set(L"value", std::move(value));
-        *out = std::move(root);
-        return true;
-    });
-    // config.set 之后必须写盘：改内存不落盘的话，重启就回退了 ——
-    // 而"改了看不见效果、下次启动才暴露"正是设置类 bug 最难查的形态。
-    reg(CmdId::ConfigSet, [this](const Args& args) {
-        const std::wstring key = args.Str(L"key");
-        if (key.empty()) {
-            CommandBus::Get().NoteFailure(L"缺少 key：设置项的点分名（见 config.list）");
-            return false;
-        }
-        // value 是任意 JSON（bool / int / string），类型由注册表按 key 校验。
-        // 这里不用 args.Bool/Int —— 那会把"传了字符串给布尔项"变成静默的 false。
-        const json::Value* value = args.Any(L"value");
-        if (!value) {
-            CommandBus::Get().NoteFailure(L"缺少 value：要设成什么");
-            return false;
-        }
-        std::wstring err;
-        if (!settings_reg::Set(key, *value, &err)) {
-            CommandBus::Get().NoteFailure(err);   // 原因直达 UI / AI / 审计
-            return false;
-        }
-        // 写盘失败不是"命令失败"：值**已经**改了、也已经生效了，只是下次启动会
-        // 变回去。所以走告警通道（NoteWarning）而不是 NoteFailure —— 报成失败会
-        // 让调用方以为改动没生效、去重试或回滚，那是另一种撒谎。
-        if (!Config::Get().Save())
-            CommandBus::Get().NoteWarning(L"已在本次运行中生效，但没能写盘：" +
-                                          Config::Get().lastSaveError());
-        // 刷新放在命令层：只有这里同时知道设置项和窗口。
-        //
-        // 【两条分支，不是一串 else if】"套用"分两类：
-        //   · 有副作用的（SetDualPane 要建右视图、ApplyTheme 要重建字体画刷）——
-        //     这些必须先做，且各自不能漏；
-        //   · 只改布局的（栏显隐 / 宽度 / 分栏比例）—— 统一收在 AffectsLayout，
-        //     最后一次性 Layout()。
-        // 以前全是 else if 链，两条以上的键同时相关时只有第一条会跑，
-        // 而漏掉的那项表现为"命令 ok=true、界面没变"（见 AffectsLayout 的实测记录）。
-        // 栏高：先推给 Theme，后面的 SyncChrome/Layout 才会按新高度算。
-        // 与启动时走同一个 App::ApplyBarHeights，避免两条路各写一次。
-        if (cfgapply::AffectsLayout(key)) ApplyBarHeights();
-        // 导航栏内宽与导航栏搜索框由 NavBar::Layout 现读配置；ReloadTheme 会
-        // 重排它（顺带刷新 tooltip 宽度），不需要重建整条栏。
-        if (key == L"navBarSearchWidth" || key == L"navBarAddressMinWidth") navBar_.ReloadTheme();
-        // 导航树行距/缩进：TVM_* 可直接改，不必重建树。
-        if (key == L"navPaneItemHeight" || key == L"navPaneIndent") navPane_.RefreshTreeMetrics();
-        // 两条栏的提示窗最大宽：tooltip 在 ReloadTheme 里按配置重建。
-        if (key == L"bookmarkBarTooltipWidth") bookmarkBar_.ReloadTheme();
-        if (key == L"statusBarTooltipWidth") statusBar_.ReloadTheme();
-        if (cfgapply::AffectsActiveView(key)) {
-            ApplyPersistedViewState(ActiveShellViewHost());
-            ApplyPaneChrome();
-        }
-        // 有副作用的套用（互不排斥，所以不是 else if 链）。
-        // 双栏/分栏：SetDualPane 与 SetPaneSplit 内部各自 Save+Layout，按值设定幂等。
-        if (key == L"dualPane") SetDualPane(Config::Get().s().dualPane);
-        if (key == L"paneSplit") SetPaneSplit(Config::Get().s().paneSplit);
-        // 方向：SetPaneVertical 是翻转语义（同值就短路），而这里新值**已经**写进
-        // Settings 了 —— 调它等于什么都不做，所以走"按当前值落地"那个入口。
-        if (key == L"paneVertical") ApplyPaneVertical();
-        // 全局导航树的显隐只有一个开关（showNavPane）：它不再挂在任何窗格上，
-        // 所以必须在这里落地 —— 否则改了设置要重启才看见。
-        if (key == L"showNavPane") ApplyNavPane();
-        // 深浅色档位：改完立刻重套主题（字体/画刷/四条栏配色全换）。
-        // 与"系统切了深浅色"走同一条 ApplyTheme —— 两条路各写一份重建逻辑，
-        // 迟早出现"跟随系统能换、强制档换不了"这种半截效果。
-        if (cfgapply::AffectsTheme(key)) ApplyTheme();
-        // 历史上限：三个上限都要推到各自的持有者（recent/search 在 Config，
-        // closedTab 在 TabSet），并顺手把已有条目裁到新上限。
-        // 以前 closedTabLimit 是一条独立分支，与另两条各写一遍 —— 收进判据表后
-        // 只有一处，”新加第四种历史“只会漏在明面上。
-        if (cfgapply::AffectsHistoryLimits(key)) ApplyHistoryLimits();
-        // 状态栏段显隐：段集变了要重新喂给栏（Layout 由下面统一做）。
-        if (cfgapply::AffectsStatusBar(key)) statusBar_.SetEnabledSegments(Config::Get().s().statusSegs);
-
-        SyncChrome();
-        // 布局最后做：它读的是 Settings 的**最终值**（上面的分支可能又改了字段，
-        // 比如 SetDualPane 会再写一次 dualPane），早做一次就白排、还可能排错。
-        if (cfgapply::AffectsLayout(key)) Layout();
-        // AI 通道热插拔：设置已落盘，真正启停交给独立的 WM_APP_SYNC_AI。
-        // 不能在这里直接 StopServer —— 关闭请求本身可能来自该通道，
-        // 同步 join 监听线程会让响应写不回去。人的显式设置优先于 --ai 强制开关。
-        if (key == L"aiEnabled") {
-            Config::Get().SetAiForceEnabled(false);
-            PostMessageW(hwnd_, WM_APP_SYNC_AI, 0, 0);
-        }
-        // 设置面板回灌：外部（AI / 命令面板 / 状态栏右键菜单 / 快捷键）改了配置，
-        // 已经打开的面板必须跟上 —— 否则它显示的是**上一轮**的值，用户看到的
-        // 下拉写着 system、实际已经是 dark。
-        //
-        // 【面板自己的写入也会走到这里，那没关系】OnConfigChangedExternally 只做
-        // 三件事：重读值、Layout()（只 MoveWindow 行内编辑框，不碰它的文字与焦点）、
-        // 重绘。所以它不会打断"输到一半的数字"—— 面板自己 RefreshValues 之后
-        // 再走一遍是幂等的。不必为此加"跳过自己"的判据。
-        settingsDialog_.OnConfigChangedExternally();
-        return true;
-    });
 
     // ---------------- 命名会话 ----------------
     // 与 session.* 的差别：多条并存、按名字定位。保存 = 同名覆盖（幂等），

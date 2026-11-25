@@ -1,7 +1,7 @@
 // 命令的前置条件（requirements）—— 单独成文件的原因见下。
 //
 // 【为什么从 commands.h 拆出来】commands.h 已经 700 行（行数棘轮记在
-// data/file-length-baseline.json），而"前置条件"是一块**自成一体**的东西：
+// tests/baselines/file-length-baseline.json），而"前置条件"是一块**自成一体**的东西：
 // 一个枚举 + 一个定长数组容器 + 一句人可读的原因文案。它被 CommandDef 只用
 // 一个字段（requires_）引用，其余读者（app_commands*.cpp 的 Requirements{...}）
 // 只是用它。两个文件讲同一件事反而更清楚：命令表讲"有哪些命令"，

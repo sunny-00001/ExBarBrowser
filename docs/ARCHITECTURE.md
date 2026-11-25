@@ -476,7 +476,7 @@ struct Tab {
   只有后进者为"首实例还没建好窗口"等最多 400ms，首实例用 0 超时，冷启动不空等。
   句柄随进程退出关闭，因此对象不会跨会话残留。
 - **显式多开**：`--new-window`（"在新窗口打开"命令启动子进程时自动带上，共享同一份用户数据）
-  或 `EXBARBROWSER_MULTI`（同时落到独立 `data\profile-multi`，用于与正跑着的实例隔离测试）。
+  或 `EXBARBROWSER_MULTI`（同时落到 profile 根 `profiles\multi`，用于与正跑着的实例隔离测试）。
 - **转发用 `SendMessageTimeout(SMTO_ABORTIFHUNG, 2s)`**：目标卡在模态框时不拖死新进程；
   处理结果必须校验（返回 FALSE = 没转成 → 按"没有实例"处理，继续往下新开）。
 - **payload 校验**：`dwData == kCopyDataMagic` + `payload->magic == kCopyDataMagic`，

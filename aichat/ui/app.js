@@ -117,7 +117,7 @@ const state = {
   // 用户点了"编辑重试"后暂存的旧回合；下一次 send 作为 retryOf 发出。
   pendingEditOf: 0,
   // Composer controls. `mode` is a session-level permission gate the service
-  // enforces; it is not written into config.json. Higher data-prio chips are
+  // enforces; it is not written into aichat.json. Higher data-prio chips are
   // hidden first when the docked window gets narrow.
   mode: ["confirm", "auto", "readonly"].includes(localStorage.getItem("ac.mode"))
     ? localStorage.getItem("ac.mode") : "confirm",
@@ -171,7 +171,7 @@ const state = {
     validation: { status: "idle", signature: "", detail: "" },
     validating: false,
     selectedProvider: null,
-    // The stable model.json key of the provider being edited. It is the ONLY
+    // The stable models.json key of the provider being edited. It is the ONLY
     // identity we send to the server: unlike the display name or the endpoint,
     // it pins exactly one entry even when the URL is changed. null = "add".
     editKey: null,
@@ -1936,7 +1936,7 @@ function savedKeyForForm() {
   }
   const f = currentForm();
   const c = state.config || {};
-  // The active endpoint may have a key in config.json even before any provider
+  // The active endpoint may have a key in aichat.json even before any provider
   // is saved; keyForProvider() on the server falls back to it as well.
   if (c.hasApiKey && normBase(c.baseUrl) === normBase(f.baseUrl) &&
       (c.protocol || "openai") === f.protocol) {
@@ -2254,7 +2254,7 @@ function applySaved(p) {
   clearFound();
   // Switching to a saved provider immediately validates with the saved key.
   // The key is never sent back to the UI: useSavedKey makes the server reuse
-  // the real value from config.json.
+  // the real value from aichat.json.
   scheduleAutoValidate();
 }
 
@@ -2694,7 +2694,7 @@ async function openModelModal() {
   } else {
     state.models.editKey = null;
     state.models.mode = "add";
-    // The active endpoint may have a key in config.json even before any
+    // The active endpoint may have a key in aichat.json even before any
     // provider is saved. Let the user validate it without re-typing.
     state.models.selectedProvider = c.hasApiKey ? {
       vendor: c.vendor || "", baseUrl: c.baseUrl || "",
@@ -3626,7 +3626,7 @@ function wireEvents() {
     quickSwitchFavorite(n - 1);
   }, true);
 
-  // The service re-reads config.json on every request, so refresh the model
+  // The service re-reads aichat.json on every request, so refresh the model
   // chip whenever the window is refocused. Editing the file no longer needs a
   // service restart or even a window reopen.
   window.addEventListener("focus", () => loadConfig());

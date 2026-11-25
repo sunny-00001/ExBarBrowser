@@ -12,7 +12,7 @@
 // "应该**测量**边界，而不是假设它守得住"。本文件就是那个测量。
 //
 // 【怎么防】
-// 维护一份**清单**（data/eval-surface.json），列出构成评估面的文件及其 SHA-256：
+// 维护一份**清单**（tests/baselines/eval-surface.json），列出构成评估面的文件及其 SHA-256：
 //   · 构建器与测试入口（build_fast.py / build.sh / tests/run_all.sh）
 //   · 全部测试源（tests/*.cpp）—— 少一个、弱一个都算削弱
 //   · 全部静态校验器（tools/*.py）—— 它们判的是"命令表与实现是否一致"

@@ -57,7 +57,7 @@ method: 实跑核对——CHANGELOG 修复记录 + tools/check_commands.py + src
   均非本会话改动。按 `AGENTS.md §8.4`：此时改代码会把对方半成品编进验证结论，
   并与对方抢改同一批文件 —— **报告并让出**。
 - **评估面 fail-closed**：`check_components.py` 因并行会话改了 `tests/` / `tools/` 且未重签
-  `data/eval-surface.json` 而拒绝放行；此时任何"测试通过"都不具信任基础。
+  `tests/baselines/eval-surface.json` 而拒绝放行；此时任何"测试通过"都不具信任基础。
 - **处理方式**：等并行会话收工（`git status` 稳定 + 评估面重签）后，从 §2 序号 1 开始逐项改，
   每改一项跑 `check_commands` / `check_ai_meta` / `check_components` + `tests/run_all.sh`，
   并留 `CHANGELOG.md` `[Unreleased]` 条目。

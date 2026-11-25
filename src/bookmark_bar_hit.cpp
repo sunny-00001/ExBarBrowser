@@ -5,8 +5,13 @@
 
 int BookmarkBar::HitItem(int x, int y) const {
     POINT pt{x, y};
+    // 裁切线右侧是 » 按钮，不属于任何书签。判据必须按**点**判，不能只过滤
+    // 项自己的矩形 —— 跨过裁切线的那一项仍然会盖在 » 按钮下面，于是点 »
+    // 变成点它，溢出菜单永远打不开（标签栏踩过同一个坑，见 tab_strip.h 的
+    // TabHitInView）。
+    if (!BmkHitInView(x, viewRight_)) return -1;
     for (size_t i = 0; i < items_.size(); ++i) {
-        if (items_[i].rc.right <= items_[i].rc.left) continue;
+        if (!BmkInView(items_[i].rc, viewRight_)) continue;  // 滚出视野的项不命中
         if (PtInRect(&items_[i].rc, pt)) return static_cast<int>(i);
     }
     return -1;
@@ -14,8 +19,9 @@ int BookmarkBar::HitItem(int x, int y) const {
 
 int BookmarkBar::HitIcon(int x, int y) const {
     POINT pt{x, y};
+    if (!BmkHitInView(x, viewRight_)) return -1;
     for (size_t i = 0; i < items_.size(); ++i) {
-        if (items_[i].iconRc.right <= items_[i].iconRc.left) continue;
+        if (!BmkInView(items_[i].iconRc, viewRight_)) continue;
         if (PtInRect(&items_[i].iconRc, pt)) return static_cast<int>(i);
     }
     return -1;
@@ -32,18 +38,21 @@ BookmarkDropSpot BookmarkBar::DropSpotAtClient(int x, int y) const {
     if (!hwnd_ || !theme_) return spot;
     RECT rc;
     GetClientRect(hwnd_, &rc);
-    // 溢出按钮右侧不是书签落点；与内部拖动原来的判定完全一致。
-    const int margin = theme_->S(6);
-    const int viewRight = overflow_
-                              ? (rc.right - margin - ovfRc_.right + ovfRc_.left - theme_->S(4))
-                              : rc.right;
-    if (x < margin || x > viewRight || y < 0 || y >= rc.bottom) return spot;
+    // 裁切线（» 按钮的左邻）之外不是书签落点。
+    if (x < 0 || x > viewRight_ || y < 0 || y >= rc.bottom) return spot;
 
     spot.valid = true;
     spot.index = 0;
+    bool firstVisible = true;
     for (size_t i = 0; i < items_.size(); ++i) {
         const RECT& r = items_[i].rc;
-        if (r.right <= r.left) continue;  // 被溢出折叠的项没有可见位置
+        if (!BmkInView(r, viewRight_)) continue;  // 滚出视野的项没有可见位置
+        // 可见项可能只是**中间一段**（滚过去之后）。插入线的基准必须是
+        // 第一个可见项的下标，不是 0 —— 否则落在中间也会插到最前面去。
+        if (firstVisible) {
+            spot.index = static_cast<int>(i);
+            firstVisible = false;
+        }
         const int w = r.right - r.left;
         const int side = w / 4;
         if (items_[i].folder && x > r.left + side && x < r.right - side) {

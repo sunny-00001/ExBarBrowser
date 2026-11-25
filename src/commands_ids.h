@@ -7,7 +7,7 @@
 // 而**读编号表的人**（命令表生成、检查器、AI 通道）根本不需要契约那一大堆。
 //
 // 【顺序纪律，只加不删】enum class 无显式赋值 —— 在中间插一项会让后面所有 id 整体位移，
-// 而 id 已经写进了 data/commands-baseline.json、keymap.json 与用户的脚本。
+// 而 id 已经写进了 tests/baselines/commands-baseline.json、keymap.json 与用户的脚本。
 // 所以：**只能在末尾追加**（见末尾注释与 C1b 规则）。删掉的命令要留占位。
 #pragma once
 
@@ -116,7 +116,7 @@ enum class CmdId : int {
     DevSnapshot, DevBuild, DevTest, DevJob, DevRollback,
     // 新增命令一律加在**枚举末尾**（check_commands.py 的 C1b 规则）：
     // enum class 无显式赋值，往中间插会让后面所有 id 整体位移，
-    // 基线（data/commands-baseline.json）与既有持久化引用全部失配。
+    // 基线（tests/baselines/commands-baseline.json）与既有持久化引用全部失配。
     BmkAddSelection,   // 无参，needsSelection：收藏文件视图当前选中的文件夹（可多选）
     BmkAddTabs,        // 无参：收藏当前所有打开标签页的目录（已收藏/空路径跳过），返回 added/skipped/ids
     BmkCopy,           // {id}：复制书签条目（分类连子树深拷贝），插到原条目后，返回新 id
@@ -210,4 +210,19 @@ enum class CmdId : int {
     AiPanelWeb,        // 无参：用系统浏览器打开面板服务（WebView2 不可用时的退路）
     // ---- 书签层级重组（只允许追加在末尾，见 C1b）----
     BmkDissolve,       // {id}：解散分类（子项提到上一层，分类本身消失）
+    // ---- 运行期命令自省（只允许追加在末尾，见 C1b）----
+    CmdHelp,           // 无参，只读：运行期列出全部命令的用法（schema/risk/必填参数/断言）
+    // ---- 书签右键「打开」族（只允许追加在末尾，见 C1b）----
+    FsOpenInPane,      // {path}：在另一窗格打开（单栏时先自动开双栏）
+    // ---- 文件操作重做（只允许追加在末尾，见 C1b）----
+    CmdRedo,           // 无参：重做一步被撤销的文件操作（与 file.undo 对称）
+    // ---- 属性写入（只允许追加在末尾，见 C1b）----
+    FileAttrSet,       // {attrs}：改当前选中项的属性位（未传的位保持原值）
+    FsAttrSet,         // {targets, attrs}：改指定路径的属性位
+    // ---- 撤销历史浏览（只允许追加在末尾，见 C1b）----
+    FileUndoList,      // 无参，只读：列出撤销/重做栈里每一步的标签
+    FileUndoTo,        // {index}：一次撤到指定那一步（0 = 栈顶）
+    // ---- 配置导出/还原（只允许追加在末尾，见 C1b）----
+    ConfigExport,      // {path?}：导出全部可写设置（省略 path 只回显，不落盘）
+    ConfigImport,      // {path}：从导出文件还原设置（逐项报告成败）
 };

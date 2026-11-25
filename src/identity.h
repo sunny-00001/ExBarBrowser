@@ -32,6 +32,10 @@ constexpr wchar_t kTabViewClass[] = L"ExBarBrowser_TabView";
 constexpr wchar_t kTabStripClass[] = L"ExBarBrowser_TabStrip";
 constexpr wchar_t kNavBarClass[] = L"ExBarBrowser_NavBar";
 constexpr wchar_t kStatusBarClass[] = L"ExBarBrowser_StatusBar";
+// 状态栏右端的「图标大小」滑块（自绘，见 status_zoom_slider.h）。
+// 独立于状态栏本体：状态栏的段模型是"文字 + 图标 + 气泡"，滑块要的是"按住拖"，
+// 塞进段模型要给排版/命中/气泡三处开特例。
+constexpr wchar_t kZoomSliderClass[] = L"ExBarBrowser_ZoomSlider";
 constexpr wchar_t kBookmarkBarClass[] = L"ExBarBrowser_BookmarkBar";
 // 布局边界条：夹在两块内容之间、可拖动改宽窄的真窗口（导航|文件、文件|AI、窗格|窗格）。
 // 双栏那条沿用旧类名（外部脚本按它找窗口，是契约的一部分）；两条侧栏用新类名，
@@ -84,12 +88,14 @@ constexpr wchar_t kPipePrefix[] = L"\\\\.\\pipe\\ExBarBrowser_ai_";
 constexpr wchar_t kAiServiceName[] = L"exbarbrowser";
 
 // 显式多开：设非空即跳过"转发给已有窗口"，直接新起一个实例；
-// 同时把数据目录切到 data\profile-multi，避免两个实例抢同一份 settings.json。
+// 同时把 profile 根切到 profiles\multi（其下复刻 data/state/logs/cache/runtime，
+// 见 config.h），避免两个实例抢同一份用户数据。
 constexpr wchar_t kMultiInstanceEnv[] = L"EXBARBROWSER_MULTI";
 // 显式多开的命令行形式（"在新窗口打开"命令用它启动子进程）。
 // 与上面的环境变量不同：共享同一份用户数据（书签/设置），只是多一个窗口。
 constexpr wchar_t kNewWindowArg[] = L"--new-window";
-// 显式指定用户数据目录（相对/绝对均可）。测试用独立 profile，避免污染用户数据。
+// 显式指定 profile 根（相对/绝对均可）。测试用独立 profile，避免污染用户数据；
+// 其下复刻 data/state/logs/cache/runtime 整套。
 constexpr wchar_t kProfileEnv[] = L"EXBARBROWSER_PROFILE";
 // 启动时强制开启 AI 通道（覆盖 settings.json 的 aiEnabled，但不写回）。
 // 值为 "0"/空 = 不强制；其它非空值 = 强制开启。配合 EXBARBROWSER_PROFILE 做隔离测试。

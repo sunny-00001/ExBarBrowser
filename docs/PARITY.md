@@ -370,7 +370,7 @@ Explorer 顶部有 15px 留白、我们没有。
 拖放照旧可用）。同一套做法见 `D:\Windhawk\exbar.cpp:26215 RunSystemSearchFolder`。
 结果视图默认**详细信息**（原生搜索文件夹的视图是异步创建的，所以定时等它就位再补设）。
 
-实测（`data/profile-multi` 通道）：
+实测（`profiles/multi` 通道）：
 
 ```
 call search.find '{"query":"a"}' → ok=true      断言 searchQuery=$arg:query.trim 通过

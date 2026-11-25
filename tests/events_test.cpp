@@ -159,11 +159,15 @@ int main() {
     Expect(CurrentTraceIdOr(L"fallback") == L"fallback", "离开请求边界后上下文恢复");
 
     // ---- B8：落盘 + 跨重启恢复 ----
-    // 用独立 profile，免得测试把真实 data/events.jsonl 当成自己的草稿纸。
-    const std::wstring originalDir = Config::Get().Dir();
-    const std::wstring tmpDir = tf::Join(originalDir, L"events-test");
-    tf::EnsureDir(tmpDir);
-    Config::Get().SetProfileDir(tmpDir);
+    // 用独立 profile 根，免得测试把真实 logs/events.jsonl 当成自己的草稿纸。
+    const std::wstring originalRoot = Config::Get().RootDir();
+    wchar_t tmp[MAX_PATH] = L"";
+    GetTempPathW(MAX_PATH, tmp);
+    const std::wstring tmpRoot =
+        tf::Join(std::wstring(tmp), L"exbar-events-test_" + std::to_wstring(GetCurrentProcessId()));
+    tf::EnsureDir(tmpRoot);
+    tf::EnsureDir(tf::Join(tmpRoot, L"logs"));  // 临时验证：logs 子目录是否存在是唯一变量
+    Config::Get().SetProfileDir(tmpRoot);
     const std::wstring path = EventsPath();
     DeleteFileW(tf::ToExtended(path).c_str());
     DeleteFileW(tf::ToExtended(path + L".1").c_str());
@@ -174,7 +178,7 @@ int main() {
         RequestScope scope(req);
         Publish(L"command", d);
     }
-    Expect(tf::Exists(path), "事件写到 data/events.jsonl");
+    Expect(tf::Exists(path), "事件写到 logs/events.jsonl");
     std::wstring disk;
     Expect(tf::ReadText(path, &disk) &&
                disk.find(L"\"traceId\"") != std::wstring::npos &&
@@ -188,7 +192,7 @@ int main() {
     const auto& rev = revived.Find(L"events")->arr;
     Expect(rev.size() == 1 && rev[0].GetStr(L"traceId") == tc.traceId,
            "重启后补回历史且三级轨迹不丢");
-    Config::Get().SetProfileDir(originalDir);
+    Config::Get().SetProfileDir(originalRoot);
 
     std::printf("  通过 %d / 失败 %d\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

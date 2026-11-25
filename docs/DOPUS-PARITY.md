@@ -143,7 +143,7 @@ Opus 的 `Set` 是 157 参数的最大命令，含筛选、输出、双栏、树
 | `Clipboard`(25) | `path.copy.*` | 无复制队列（`COPYQUEUE`） |
 | `Recent`(17) | `nav.recent.list` | 只读，无管理 |
 | `Split`(7) / `Join`(4) | — | 无文件拆分 / 合并 |
-| `ContextMenu`(14) | 右键菜单 | 有 UI，无**结构化调用入口** |
+| `ContextMenu`(14) | 右键菜单 + `cmd.help`（2026-11-25 补） | ~~无结构化调用入口~~ **缺口已不存在**：菜单行普遍以 `.Cmd(CmdId)` 逐行绑定命令总线，AI 直接调对应命令即等价；`tools/check_ai_meta.py` 第 15 项的 `MENU_ACTIONS` 登记 73 项中 72 项有命令别名（唯一 None 是「搜索·（暂无搜索历史）」占位文案），逐项反查确认无遗漏。`cmd.help` 再补运行期"按名查用法"，AI 不必猜命令参数。Opus 那种"在指定文件上弹菜单"的形态本仓刻意不做——弹模态菜单会把 AI 管道卡到超时（同 `win.activate` 不暴露的理由） |
 | `CreateFolder`(14) | `file.new.folder` | 无 `FROMFILES` / `UNDORENAME` |
 | `Delete`(20) | `fs.delete` | 无 `SECURE` / `EMPTYRECYCLE` |
 | `CLI`(26) | — | 无命令行模式（Opus 的 `dopusrt.exe /cmd` 走这条路） |

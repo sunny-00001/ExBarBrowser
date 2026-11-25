@@ -30,4 +30,8 @@ void SetStateProbe(StateProbe fn);
 
 // 返回 true = 可执行。false 时若 reason 非空则填入人可读原因。
 // 这是 UI 灰按钮与机器调用前检查的**唯一**入口。
-bool CanExecute(const CommandDef& def, std::wstring* reason = nullptr);
+//
+// targetTab：作用于"某个标签"的命令可传目标下标（0 起）；默认 -1 = 用活动标签。
+// 右键菜单作用于被右键的标签（可能不是活动标签），移动/关闭类前置必须按目标
+// 而非活动标签判断，否则"右键第一个标签左移"会被活动标签的前置误拒。
+bool CanExecute(const CommandDef& def, std::wstring* reason = nullptr, int targetTab = -1);

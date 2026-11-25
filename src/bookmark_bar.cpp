@@ -161,28 +161,23 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         }
         if (w == VK_LEFT || w == VK_RIGHT) {
-            // 只在**可见项**之间走：被溢出折叠的项在栏上没有位置，跳上去会让
-            // 焦点框停在空处。要看被折叠的项请用 » （或 End 跳到 »）。
-            int cur = kbdIdx_ >= 0 ? kbdIdx_ : (w == VK_RIGHT ? -1 : n);
+            // 走遍**全部**项。以前放不下的项被折叠、栏上没有位置，
+            // 键盘只能停在折叠项之前，看它们得用 » 菜单 —— 键盘用户等于摸不到。
+            // 现在项都有位置，方向键走过去时顺手把栏滚到那一项（EnsureVisible），
+            // 焦点框不会停在看不见的地方。
             const int step = (w == VK_RIGHT) ? 1 : -1;
-            for (int i = cur + step; i >= 0 && i < n; i += step) {
-                if (items_[static_cast<size_t>(i)].rc.right > items_[static_cast<size_t>(i)].rc.left) {
-                    kbdIdx_ = i;
-                    break;
-                }
-            }
+            const int cur = kbdIdx_ >= 0 ? kbdIdx_ : (step > 0 ? -1 : n);
+            int next = cur + step;
+            if (next < 0) next = 0;
+            if (next >= n) next = n - 1;
+            kbdIdx_ = next;
+            EnsureVisible(next);
             InvalidateRect(h, nullptr, FALSE);
             return 0;
         }
         if (w == VK_HOME || w == VK_END) {
-            const int step = (w == VK_HOME) ? 1 : -1;
-            const int start = (w == VK_HOME) ? 0 : n - 1;
-            for (int i = start; i >= 0 && i < n; i += step) {
-                if (items_[static_cast<size_t>(i)].rc.right > items_[static_cast<size_t>(i)].rc.left) {
-                    kbdIdx_ = i;
-                    break;
-                }
-            }
+            kbdIdx_ = (w == VK_HOME) ? 0 : n - 1;
+            EnsureVisible(kbdIdx_);
             InvalidateRect(h, nullptr, FALSE);
             return 0;
         }
@@ -308,6 +303,12 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         UpdateHover(h, GET_X_LPARAM(l), GET_Y_LPARAM(l));
         return 0;
     }
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
+        // 滚轮：先问鼠标规则（用户可能把"书签栏上滚滚轮"绑成别的动作），
+        // 规则没接管才走默认的横向滚动（把后面的书签带进视野）。
+        if (OnWheel(m, w, l)) return 0;
+        break;
     case WM_CAPTURECHANGED:
         // 捕获被系统抢走（弹出层/切窗口）：拖动状态必须复位，否则残留到下一次点击。
         dragArm_ = dragging_ = false;
@@ -426,14 +427,16 @@ void BookmarkBar::FocusBar() {
         if (!IsWindowVisible(hwnd_)) return;
     }
     SetFocus(hwnd_);
-    // 落在第一个**可见**项（被溢出折叠的项在栏上没有位置）。
+    // 落在第一个**可见**项（滚出视野的项焦点框会停在看不见的地方）。
     kbdIdx_ = -1;
     for (size_t i = 0; i < items_.size(); ++i) {
-        if (items_[i].rc.right > items_[i].rc.left) {
+        if (BmkInView(items_[i].rc, viewRight_)) {
             kbdIdx_ = static_cast<int>(i);
             break;
         }
     }
+    if (kbdIdx_ < 0 && !items_.empty()) kbdIdx_ = 0;
+    EnsureVisible(kbdIdx_);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 

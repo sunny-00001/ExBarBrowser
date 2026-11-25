@@ -163,7 +163,7 @@ python tests/e2e/bookmark_move_e2e.py 坚果云    # E2E 闭环验收（落盘/�
 
 | 规则 | 判据 / 做法 |
 |---|---|
-| 单文件 ≤500 行 | `wc -l src/*.cpp` 按行数倒序看头部；超了按职责拆（`nav_bar` → `nav_bar_draw` / `nav_bar_actions`）。棘轮在 `data/file-length-baseline.json`：涨过记账行数即报错，降下来自动收紧 |
+| 单文件 ≤500 行 | `wc -l src/*.cpp` 按行数倒序看头部；超了按职责拆（`nav_bar` → `nav_bar_draw` / `nav_bar_actions`）。棘轮在 `tests/baselines/file-length-baseline.json`：涨过记账行数即报错，降下来自动收紧 |
 | 一文件一职责 | 文件名能一句话说清它干什么；说不清就是两个文件 |
 | **按作用域拆，不按行数拆** | `shell_ops.cpp` 的"视图作用域"与 `shell_ops_path.cpp` 的"路径作用域"是两种语义；`app_commands_files.cpp` 的 `file.*`（选中集）与 `app_commands_fs.cpp` 的 `fs.*`（点名路径）入参就不同。混在一起时读的人要翻到文件末尾才发现还有另一套语义 |
 | **共用机制只有一份** | `IFileOperation` 的执行与判败只有 `shellopexec::Run()`（`src/shell_op_exec.{h,cpp}`）一处 —— 抄一半就会漏 `GetAnyOperationsAborted` |
@@ -195,7 +195,7 @@ python tests/e2e/bookmark_move_e2e.py 坚果云    # E2E 闭环验收（落盘/�
   驼峰旧名进 `legacyName`，**永不删**。所有读命令名的地方必须走 `FindCommand`（双向都认），
   不得直接字符串比较。
 - **`CmdId` 枚举值一经分配不改**，删除命令保留枚举项标废弃，不得重排。
-  基线在 `data/commands-baseline.json`，`check_commands.py` 比对（前缀判据，能抓中间插入）。
+  基线在 `tests/baselines/commands-baseline.json`，`check_commands.py` 比对（前缀判据，能抓中间插入）。
 - 窗口类名/管道名/日志名/环境变量全部从 `identity.h` 派生；**窗口类名是外部契约**
   （`scripts/shot.py` 按 `ExBarBrowser_Main` 找窗口），改名要同批改脚本与文档。
 - 跨软件契约永不改名：`EXBAR_ID` / `EXBAR_ICON` / `EXBAR_FLAGS` 书签属性、
@@ -300,7 +300,7 @@ Windows 里是完全合法的路径写法（`CreateFile` 也接受），AI 也�
 | 高 DPI 文字被裁 | 某处写死像素 | 全量搜裸数字改 `theme_.S()` |
 | 编过但行为没变 | 跑的是旧 exe，或启动被转发给已有窗口 | 看构建时间戳；要独立实例用 `--new-window` |
 | 在 `WM_PAINT` 里写日志/弹层/建画刷 | 重绘风暴、卡死、GDI 泄漏被放大 | 日志只在事件里写；弹层只在鼠标/键盘事件里弹 |
-| `EXBARBROWSER_MULTI=1` 后连不上通道 | 发现文件被写到 `data\profile-multi\`，不是 `data\` | 用 `agentctl`（自动在两个目录找活的端点），不要写死 `data\ai-pipe.txt` |
+| `EXBARBROWSER_MULTI=1` 后连不上通道 | 发现文件被写到 `profiles\multi\runtime\`，不是程序根的 `runtime\` | 用 `agentctl`（自动在 profile 根与旧 `data\` 布局里找活的端点），不要写死某一层 |
 | 启动成功但下一次调用 `channel_down` | 命令结束时子进程被连带回收 | 用后台任务跑 `agentctl serve`，不要用一次性 `up` |
 | `--help` 打不出用法就以为脚本坏了 | `tools/check_components.py` 没有 `--help`，任何参数都会直接跑检查 | 看脚本头注释；查规则用 `--list` |
 | 给 shell 的路径忘了转义分隔符 | `SHCreateItemFromParsingName` 对 `C:/x` 返回 `E_INVALIDARG(0x80070057)`，报错却是"无法定位源文件" | 外部路径一律 `pathutil::ToShellPath()`；见 §4.1 ① |
@@ -318,7 +318,7 @@ Windows 里是完全合法的路径写法（`CreateFile` 也接受），AI 也�
 - [ ] `bash tests/run_all.sh` 全绿（动到命令表 / 输入端 / AI 元数据时必跑）
 - [ ] `check_commands.py` / `check_ai_meta.py` / `check_components.py` 三个全绿
 - [ ] **动过 `tests/` 或 `tools/` 的话**：`python tools/gen_eval_baseline.py --human-confirm`
-      重新签发评估面，**并把 `data/eval-surface.json` 提交** ——
+      重新签发评估面，**并把 `tests/baselines/eval-surface.json` 提交** ——
       清单的信任锚就是"已被 git 跟踪 + 工作树干净"，没提交的话
       `dev.build` / `dev.test` 会 fail-closed 拒绝启动（这是对的，不是 bug）
 - [ ] 没有新增模拟输入；新脚本头注释写了"不发合成输入，只读；不动光标、不抢焦点"
@@ -364,8 +364,9 @@ python tools/agentctl.py tools --grep bmk   # 通道可用后，一切以 tools/
   下一次调用只会得到 `channel_down`。`serve` 靠父进程常驻把实例按住；`up` 会在 2 秒后自检并在
   `launch_not_persistent` 里说清这一点。
 - **`serve` 用 `EXBARBROWSER_MULTI=1` + `--ai`**：MULTI 才不会被"路径转发"给用户已开的窗口
-  （否则你测的是用户的实例，不是本次构建的产物）；同时 profile 切到 `data\profile-multi`，
-  发现文件也在那里，不会改用户的 `settings.json`。`agentctl` 会在两个目录里找活的那份。
+  （否则你测的是用户的实例，不是本次构建的产物）；同时 profile 根切到 `profiles\multi`，
+  六类数据（data/state/logs/cache/runtime）整套隔离，不会改用户的 `settings.json`。
+  `agentctl` 会在新 profile 根和旧 `data\` 布局里找活的那份。
 - **先 `tools --grep` 再动手**：命令名是点分名，猜错就是一次无谓的失败往返。
 
 ### 8.2 六步循环

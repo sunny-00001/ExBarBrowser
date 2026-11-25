@@ -27,7 +27,7 @@ int main() {
     GetTempPathW(MAX_PATH, tmp);
     const std::wstring dir = tf::Join(std::wstring(tmp), L"exbar-ai-force-test");
     tf::EnsureDir(dir);
-    const std::wstring sp = tf::Join(dir, L"settings.json");
+    const std::wstring sp = tf::Join(dir, L"data\\settings.json");
     DeleteFileW(tf::ToExtended(sp).c_str());
 
     Config& cfg = Config::Get();

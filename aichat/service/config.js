@@ -1,11 +1,20 @@
-// config.js - service configuration, split across two files with two lifetimes.
+// config.js - service configuration. Two files, two lifetimes, both now in data/.
 //
-//   config.json   行为配置：端口、超时、安全边界、allowedRoots……低频变更、无密钥、
-//                 可以放心进版本库。
-//   model.json    模型目录：providers、apiKey、模型清单、默认模型。高频变更、含
-//                 密钥、.gitignore 掉。
+//   aichat.json  行为配置：端口、超时、安全边界、allowedRoots……低频变更、无密钥、
+//                可以放心进版本库。
+//   models.json  模型目录：providers、apiKey、模型清单、默认模型。高频变更、含
+//                密钥、.gitignore 掉。
 //
-// model.json 的结构照抄其它 agent 工具的通行做法（不是自创）：
+// 目录分层（2026-11-25）：配置文件统一放在 <profile 根>\data\，扁平不嵌套；
+// 日志/会话放 <profile 根>\logs\，发现文件放 <profile 根>\runtime\。C++ 启动器把
+// 这三类目录经 EXBAR_DATA_DIR / EXBAR_LOGS_DIR / EXBAR_RUNTIME_DIR 传给本服务
+// （见 aichat_service.cpp），所以 profile 隔离在两侧是同一套根，不会 C++ 读 A、Node 读 B。
+//
+// 旧布局迁移：早期这两个文件在 aichat/service/config.json / model.json，
+// 会话日志在 aichat/logs/。启动时若新位置不存在、旧位置存在，就复制一份到
+// 新位置（旧文件保留不删，可回退），之后一律读新位置。迁移只做一次。
+//
+// models.json 的结构照抄其它 agent 工具的通行做法（不是自创）：
 //   - Pi Agent      ~/.pi/agent/models.json  providers{} -> models[{id,name,…}]
 //   - OpenClaw      models.json              providers{} -> models[{id,name}]
 //   - OpenCode      opencode.json            provider{}  -> models{id:{name,limit}}
@@ -31,25 +40,41 @@
 // 启用状态挂在条目上（`enabled: false`），没有第二份 disabled 数组；协议用
 // `api` 枚举（其它工具的名字），旧的 `protocol: "openai"` 继续可读。
 //
-// 优先级：环境变量 > model.json > config.json > 内置默认值。环境变量只影响运行期，
+// 优先级：环境变量 > models.json > aichat.json > 内置默认值。环境变量只影响运行期，
 // 不回写文件。
 //
 // 向后兼容：v1 文件（active 快照 + providers 数组 + disabled 数组）、以及老
-// config.json 里的 baseUrl / apiKey / model / protocol / vendor / providers，都在
+// aichat.json 里的 baseUrl / apiKey / model / protocol / vendor / providers，都在
 // 读取时归一化成 v2，在下次写盘时升级成 v2 结构，无需手工迁移。
 
 const fs = require("fs");
 const path = require("path");
 
-// AGENTCHAT_CONFIG lets tests point the service at a throwaway file so the
-// model-management endpoints never touch the user's real config.json.
-// model.json always lives next to it, so a test can never write into service/.
+// EXBAR_DATA_DIR lets tests point the service at a throwaway data dir, and the
+// C++ launcher passes the profile-aware <root>\data (see aichat_service.cpp).
+// The two config files are always flat in that dir; no nested subfolder.
+const DATA_DIR = process.env.EXBAR_DATA_DIR
+  ? path.resolve(process.env.EXBAR_DATA_DIR)
+  : path.join(__dirname, "..", "..", "data");
+const LOGS_DIR = process.env.EXBAR_LOGS_DIR
+  ? path.resolve(process.env.EXBAR_LOGS_DIR)
+  : path.join(__dirname, "..", "..", "logs");
+
+// 新文件名（与业界通行名一致，见文件头）。AGENTCHAT_CONFIG / AGENTCHAT_MODEL_CONFIG
+// 是测试用的显式覆盖： pinpoint 到具体文件，model 文件与它同目录。
 const CONFIG_PATH = process.env.AGENTCHAT_CONFIG
   ? path.resolve(process.env.AGENTCHAT_CONFIG)
-  : path.join(__dirname, "config.json");
+  : path.join(DATA_DIR, "aichat.json");
 const MODEL_PATH = process.env.AGENTCHAT_MODEL_CONFIG
   ? path.resolve(process.env.AGENTCHAT_MODEL_CONFIG)
-  : path.join(path.dirname(CONFIG_PATH), "model.json");
+  : path.join(DATA_DIR, "models.json");
+
+// 旧布局（迁移源）：aichat/service/config.json + model.json。只有在新文件不存在时读。
+const LEGACY_CONFIG_PATH = path.join(__dirname, "config.json");
+const LEGACY_MODEL_PATH = path.join(__dirname, "model.json");
+
+// MCP server 清单骨架：data\mcp.json，首次启动写成空清单（暂不连接外部 server）。
+const MCP_PATH = path.join(DATA_DIR, "mcp.json");
 
 // Bumped only when the on-disk shape changes in a way that needs code to migrate.
 // 1 = {version, active:{…}, providers:[…]};  2 = {version, default, providers:{…}}
@@ -59,12 +84,12 @@ const MODEL_VERSION = 2;
 // no longer stored as a snapshot in v2 (the `default` reference replaces them),
 // but they are still the flat view every caller works with.
 const ACTIVE_KEYS = ["vendor", "baseUrl", "apiKey", "model", "protocol"];
-// Everything that belongs to model.json -- never written to config.json.
+// Everything that belongs to models.json -- never written to aichat.json.
 const MODEL_KEYS = new Set([...ACTIVE_KEYS, "providers", "default"]);
 // resolveActive() also returns `ref` (the resolved "key/id" pointer) and
 // callers may carry `defaultRef`. They are in-memory bookkeeping, not config
 // fields: they must be stripped on write but must NOT count as "legacy model
-// keys" and trigger a config.json migration.
+// keys" and trigger a aichat.json migration.
 const INTERNAL_KEYS = new Set([...MODEL_KEYS, "ref", "defaultRef"]);
 
 // Wire-protocol names: config files written by other agent tools use the long
@@ -90,7 +115,7 @@ const DEFAULTS = {
   port: 8792,
 
   // --- model ---------------------------------------------------------------
-  // Only fallbacks: the live triple normally resolves from model.json#default.
+  // Only fallbacks: the live triple normally resolves from models.json#default.
   // Works with OpenAI, DeepSeek, Moonshot, Zhipu, SiliconFlow, Ollama, vLLM,
   // LM Studio, one-api/new-api gateways -- anything that speaks
   // POST {baseUrl}/chat/completions with tools/function calling.
@@ -131,7 +156,7 @@ const DEFAULTS = {
   // setup.
   dryRun: false,
 
-  // In-memory view of model.json#providers; never read from config.json.
+  // In-memory view of models.json#providers; never read from aichat.json.
   providers: [],
 
   // 工具可触碰的绝对路径白名单（含子目录）。空数组 = 不限制。
@@ -140,7 +165,7 @@ const DEFAULTS = {
   allowedRoots: [],
 
   // --- misc ----------------------------------------------------------------
-  logDir: path.join(__dirname, "..", "logs"),
+  logDir: LOGS_DIR,
   verbose: false
 };
 
@@ -175,6 +200,41 @@ function writeJsonAtomic(file, obj) {
   fs.renameSync(tmp, file);
 }
 
+// 一次性布局迁移：旧文件在 aichat/service/{config,model}.json，新位置在 data\。
+// 只在新文件不存在、旧文件存在时复制过去；旧文件保留（回退用）。
+// 用显式路径覆盖（测试给了 AGENTCHAT_CONFIG）时只跳过这两份配置的迁移 ——
+// 测试的自建文件不该被开发机上的真实旧配置污染；mcp.json 骨架仍按 DATA_DIR 建。
+function migrateLegacyLayout() {
+  const explicitConfig = process.env.AGENTCHAT_CONFIG || process.env.AGENTCHAT_MODEL_CONFIG;
+  if (!explicitConfig) {
+    const pairs = [
+      [LEGACY_CONFIG_PATH, CONFIG_PATH, "aichat.json"],
+      [LEGACY_MODEL_PATH, MODEL_PATH, "models.json"]
+    ];
+    for (const [from, to, label] of pairs) {
+      try {
+        if (!fs.existsSync(to) && fs.existsSync(from)) {
+          fs.mkdirSync(path.dirname(to), { recursive: true });
+          fs.copyFileSync(from, to);
+          logLine(`[config] migrated ${path.basename(from)} -> ${label} (legacy kept)`);
+        }
+      } catch (e) {
+        logLine(`[config] could not migrate ${label}: ${e.message}`);
+      }
+    }
+  }
+  // mcp.json 骨架：空清单。存在就不动（用户可能已经填了 server）。
+  try {
+    if (!fs.existsSync(MCP_PATH)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      writeJsonAtomic(MCP_PATH, { mcpServers: {} });
+    }
+  } catch (e) {
+    logLine(`[config] could not create mcp.json skeleton: ${e.message}`);
+  }
+}
+migrateLegacyLayout();
+
 function stampOf(file) {
   try {
     const st = fs.statSync(file);
@@ -196,7 +256,7 @@ function stampOf(file) {
 }
 
 // ---------------------------------------------------------------------------
-// model.json shape: v1 / v2 / flat hand-written -> one canonical view
+// models.json shape: v1 / v2 / flat hand-written -> one canonical view
 // ---------------------------------------------------------------------------
 
 function apiForProtocol(protocol) {
@@ -417,23 +477,23 @@ function modelToDisk(state) {
 }
 
 // ---------------------------------------------------------------------------
-// one-time migration out of config.json
+// one-time migration out of aichat.json
 // ---------------------------------------------------------------------------
 
-// Move legacy model keys out of config.json. Runs at startup and again whenever
-// config.json actually changes, so a hand edit / a restored .bak that still
+// Move legacy model keys out of aichat.json. Runs at startup and again whenever
+// aichat.json actually changes, so a hand edit / a restored .bak that still
 // carries baseUrl+apiKey+models keeps working instead of becoming a dead copy.
 // Idempotent: after the first pass the keys are gone and this is one scan over
 // six property names.
 //
-// Precedence when both files carry model data: model.json wins, because it is
-// the file the dialog writes and therefore the newest truth; config.json's copy
-// is a leftover from the single-file era and only fills fields model.json does
+// Precedence when both files carry model data: models.json wins, because it is
+// the file the dialog writes and therefore the newest truth; aichat.json's copy
+// is a leftover from the single-file era and only fills fields models.json does
 // not have (a truly fresh install, or a hand-authored behaviour file). Getting
 // this backwards would silently roll the user back to whatever model happened
-// to be in config.json when the split happened.
-// config.json is rewritten *without* those keys and the previous version is
-// kept as config.json.bak-<timestamp>.
+// to be in aichat.json when the split happened.
+// aichat.json is rewritten *without* those keys and the previous version is
+// kept as aichat.json.bak-<timestamp>.
 // Returns true when it wrote something.
 function migrateLegacyModelKeys() {
   const cfgRaw = readJsonAt(CONFIG_PATH, "config");
@@ -449,10 +509,10 @@ function migrateLegacyModelKeys() {
     providers: existing.providers.slice()
   };
 
-  // Which file is authoritative turns on whether model.json actually has a
+  // Which file is authoritative turns on whether models.json actually has a
   // catalogue: if it does, it is the file the dialog writes and therefore the
-  // newest truth (config.json's copy is a leftover and must not roll the user
-  // back to an older model); if it does not, config.json is the only source
+  // newest truth (aichat.json's copy is a leftover and must not roll the user
+  // back to an older model); if it does not, aichat.json is the only source
   // left and wins outright.
   const modelHasCatalogue = existing.providers.length > 0;
   for (const k of ACTIVE_KEYS) {
@@ -462,8 +522,8 @@ function migrateLegacyModelKeys() {
   if (!target.providers.length && Array.isArray(cfgRaw.providers) && cfgRaw.providers.length) {
     target.providers = normalizeModel({ providers: cfgRaw.providers }).providers;
   }
-  // Re-derive the reference: keep model.json's own pointer if it had one (v2),
-  // otherwise fall back to the active triple (v1 / config.json keys), otherwise
+  // Re-derive the reference: keep models.json's own pointer if it had one (v2),
+  // otherwise fall back to the active triple (v1 / aichat.json keys), otherwise
   // whatever the catalogue can offer.
   const rebased = normalizeModel({
     providers: target.providers,
@@ -481,12 +541,12 @@ function migrateLegacyModelKeys() {
   try {
     fs.copyFileSync(CONFIG_PATH, `${CONFIG_PATH}.bak-${stamp}`);
   } catch (e) {
-    logLine(`[config] could not back up config.json: ${e.message}`);
+    logLine(`[config] could not back up aichat.json: ${e.message}`);
   }
   writeJsonAtomic(MODEL_PATH, modelToDisk(target));
   writeJsonAtomic(CONFIG_PATH, nextCfg);
 
-  logLine(`[config] moved ${legacy.join(", ")} from config.json to model.json` +
+  logLine(`[config] moved ${legacy.join(", ")} from aichat.json to models.json` +
     `; backup: ${path.basename(CONFIG_PATH)}.bak-${stamp}`);
   return true;
 }
@@ -496,7 +556,7 @@ migrateLegacyModelKeys();
 // A v1 file keeps working forever, but the point of this change is the file on
 // disk, not just the in-memory view -- so the first start after the upgrade
 // rewrites it in the v2 layout. The previous version is kept beside it
-// (model.json.bak-<timestamp>), so downgrading is a copy away. Writes only when
+// (models.json.bak-<timestamp>), so downgrading is a copy away. Writes only when
 // the normalised form actually differs, so a hand-formatted v2 file is left
 // exactly as the user typed it.
 function upgradeModelFile() {
@@ -511,11 +571,11 @@ function upgradeModelFile() {
   try {
     fs.copyFileSync(MODEL_PATH, `${MODEL_PATH}.bak-${stamp}`);
   } catch (e) {
-    logLine(`[config] could not back up model.json: ${e.message}`);
+    logLine(`[config] could not back up models.json: ${e.message}`);
   }
   writeJsonAtomic(MODEL_PATH, next);
-  logLine(`[config] model.json upgraded to the v2 layout (${Object.keys(next.providers).length} provider(s), ` +
-    `default=${next.default || "none"}); backup: model.json.bak-${stamp}`);
+  logLine(`[config] models.json upgraded to the v2 layout (${Object.keys(next.providers).length} provider(s), ` +
+    `default=${next.default || "none"}); backup: models.json.bak-${stamp}`);
   return true;
 }
 
@@ -619,8 +679,8 @@ function resolveActive(state) {
   return snap;
 }
 
-// config.json supplies behaviour fields; model.json supplies the live triple and
-// the provider catalogue. model.json wins for its own keys, but a config.json
+// aichat.json supplies behaviour fields; models.json supplies the live triple and
+// the provider catalogue. models.json wins for its own keys, but a aichat.json
 // that still carries them (pre-migration file, restored .bak, hand edit) is read
 // as a fallback rather than ignored -- migration is a file-cleanup step, not the
 // thing that makes the values work.
@@ -639,7 +699,7 @@ function buildEffective(cfgFile, modelFile) {
   }
   if (live.ref) merged.defaultRef = live.ref;
   // Top up the few model keys that have a meaningful default, so a brand-new
-  // install with no model.json still reports "deepseek-chat" like before.
+  // install with no models.json still reports "deepseek-chat" like before.
   for (const k of ACTIVE_KEYS) {
     if (typeof merged[k] !== "string" || merged[k] === "") merged[k] = DEFAULTS[k] || "";
   }
@@ -685,7 +745,7 @@ function reloadConfig() {
   let modelStamp = stampOf(MODEL_PATH);
   if (cfgStamp === lastCfgStamp && modelStamp === lastModelStamp) return false;
 
-  // A config.json edit may still carry model keys (old backup, hand edit).
+  // A aichat.json edit may still carry model keys (old backup, hand edit).
   // Migrating here keeps that path working instead of silently ignoring it.
   if (cfgStamp !== lastCfgStamp && migrateLegacyModelKeys()) {
     cfgStamp = stampOf(CONFIG_PATH);
@@ -695,13 +755,13 @@ function reloadConfig() {
   const cfgFile = readJsonAt(CONFIG_PATH, "config");
   const modelFile = readModelFile();
   if (cfgFile === null) {
-    configError = "config.json is not a valid JSON object; keeping previous values";
+    configError = "aichat.json is not a valid JSON object; keeping previous values";
     lastCfgStamp = cfgStamp;              // do not retry until it changes again
     lastModelStamp = modelStamp;
     return false;
   }
   if (modelFile === null) {
-    configError = "model.json is not a valid JSON object; keeping previous values";
+    configError = "models.json is not a valid JSON object; keeping previous values";
     lastCfgStamp = cfgStamp;
     lastModelStamp = modelStamp;
     return false;
@@ -712,7 +772,7 @@ function reloadConfig() {
   return true;
 }
 
-// Behaviour fields only (kept for callers that predate model.json). Model edits
+// Behaviour fields only (kept for callers that predate models.json). Model edits
 // must go through saveAll, otherwise the two files drift apart.
 function saveConfig(mutate) {
   const raw = readJsonAt(CONFIG_PATH, "config") || {};
@@ -730,7 +790,7 @@ function saveConfig(mutate) {
 // Single write path for anything that touches the live triple or the provider
 // catalogue. The caller mutates one flat object (behaviour fields + active keys
 // + providers[]); this function splits it back into the two files, so callers
-// never need to know which file a key lives in -- or that model.json is keyed.
+// never need to know which file a key lives in -- or that models.json is keyed.
 function saveAll(mutate) {
   const cfgRaw = readJsonAt(CONFIG_PATH, "config") || {};
   const state = readModelFile() || normalizeModel({});
@@ -823,7 +883,7 @@ function saveAll(mutate) {
   }
   const nextModel = modelToDisk({ ...probe, active: snapshot });
   // Adding/removing a model must not rewrite the behaviour file: that was the
-  // whole point of splitting the two. Write config.json only when its content
+  // whole point of splitting the two. Write aichat.json only when its content
   // really changed (a behaviour edit, or stripping stale model keys / an old
   // leaked `ref` off a legacy file).
   if (JSON.stringify(nextCfg) !== JSON.stringify(cfgRaw)) {
@@ -864,7 +924,7 @@ function modelReadiness() {
     };
   }
   if (!config.baseUrl || !config.model) {
-    return { ok: false, reason: "baseUrl and model must both be set (model.json: providers + default)" };
+    return { ok: false, reason: "baseUrl and model must both be set (models.json: providers + default)" };
   }
   return { ok: true, reason: "" };
 }

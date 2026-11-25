@@ -12,6 +12,7 @@
 #include "shell_ops.h"
 #include "view_modes.h"     // 图标尺寸步进与边界
 #include "file_tools.h"
+#include "file_attr.h"
 #include "file_rename_plan.h"   // filetools::PlanBatchRename —— 批量改名计划（纯函数）
 #include "text_file.h"
 
@@ -312,6 +313,29 @@ void App::RegisterFileCommands() {
                    shellops::InvokeFolderVerb(v, hwnd_, "properties");
         }, L"属性");
     });
+    // 属性框只能"看"，这条把写入也补上：只改显式传了的位，没传的保持原值。
+    regR(CmdId::FileAttrSet, [this](const Args& args, json::Value* out) {
+        const json::Value* a = args.Any(L"attrs");
+        fileattr::Delta delta;
+        if (!a || !fileattr::ParseDelta(*a, &delta)) {
+            CommandBus::Get().NoteFailure(L"请给出要改的属性：readonly/hidden/system/archive 至少一项");
+            return false;
+        }
+        return WithView([this, &delta, out](IShellView* v) -> bool {
+            const std::vector<std::wstring> targets = shellops::SelectedPaths(v);
+            if (targets.empty()) {
+                CommandBus::Get().NoteFailure(L"没有选中项");
+                return false;
+            }
+            std::vector<DWORD> bits;
+            if (!fileattr::Apply(targets, delta, &bits)) {
+                CommandBus::Get().NoteFailure(L"属性写入失败（路径、权限或回读校验不通过）");
+                return false;
+            }
+            fileattr::WriteResult(bits, out);
+            return true;
+        }, L"设置属性");
+    });
 
     // fs.* 这一组按路径操作，单独成文件（app_commands_fs.cpp）：
     // 作用域不同（路径 vs 选中集），混在一起会让两组命令的入参语义对不上号。
@@ -398,6 +422,90 @@ void App::RegisterFileCommands() {
                 L"没有可撤销的操作（应用内撤销栈为空，系统的撤销栈里也没有可撤的项）");
         }
         return ok;
+    });
+
+    // 重做（Ctrl+Y）：只重做自己那一步栈。shell 没有可拿到的 redo 谓词
+    //（与 undo 同样受 IExplorerBrowser 背景菜单限制，见 file_undo.h），
+    // 所以这里不落 shell —— 没有可重做的就明说，不假装做了。
+    // 边界同撤销：机器的重做不穿透人工操作（见 Stack::Redo）。
+    // 撤销历史：栈里每条都带 label，列出来才知道"下一步会撤掉什么"。
+    regR(CmdId::FileUndoList, [this](const Args&, json::Value* out) {
+        auto pack = [](const std::vector<fileundo::Entry>& src) {
+            json::Value arr = json::Value::MakeArray();
+            for (size_t i = 0; i < src.size(); ++i) {
+                const auto& e = src[i];
+                const wchar_t* op = e.op == fileundo::Op::Rename ? L"rename" :
+                                    e.op == fileundo::Op::Move   ? L"move" : L"copy";
+                json::Value row = json::Value::MakeObject();
+                row.Set(L"index", json::Value::MakeInt(static_cast<int>(i)));
+                row.Set(L"label", json::Value::MakeStr(e.label));
+                row.Set(L"op", json::Value::MakeStr(op));
+                row.Set(L"machine", json::Value::MakeBool(e.byMachine));
+                row.Set(L"items", json::Value::MakeInt(static_cast<int>(e.items.size())));
+                arr.arr.push_back(std::move(row));
+            }
+            return arr;
+        };
+        out->Set(L"undo", pack(fileUndo_.Entries()));
+        out->Set(L"redo", pack(fileUndo_.RedoEntries()));
+        out->Set(L"undoCount", json::Value::MakeInt(static_cast<int>(fileUndo_.Size())));
+        out->Set(L"redoCount", json::Value::MakeInt(static_cast<int>(fileUndo_.RedoSize())));
+        return true;
+    });
+    // 跳到指定步：0 = 栈顶，N = 连续撤 N+1 步。中途失败如实报告撤了几步，
+    // 不把"撤了一半"包装成成功；已撤掉的那几步不会回到栈里。
+    regR(CmdId::FileUndoTo, [this](const Args& args, json::Value* out) {
+        const int index = args.Int(L"index", -1);
+        if (index < 0 || static_cast<size_t>(index) >= fileUndo_.Size()) {
+            CommandBus::Get().NoteFailure(L"撤销历史里没有第 " +
+                                          std::to_wstring(index) + L" 步");
+            return false;
+        }
+        const bool machine = CommandBus::Get().fromMachine();
+        // 循环与"中途失败怎么算"都在 Stack::UndoTo 里（纯逻辑、可单测）——
+        // 这里只负责把结果如实地报出去。
+        std::wstring why;
+        size_t undone = 0;
+        fileUndo_.UndoTo(static_cast<size_t>(index), machine,
+                        [this](fileundo::Entry& e, std::wstring* w) {
+                            return ApplyFileUndo(e, w);
+                        },
+                        &why, &undone);
+        const size_t want = static_cast<size_t>(index) + 1;
+        const bool full = (undone == want);
+        if (!full) {
+            CommandBus::Get().NoteFailure(
+                L"只撤回了 " + std::to_wstring(undone) + L" 步，第 " +
+                std::to_wstring(undone) + L" 步失败：" +
+                (why.empty() ? L"原因未知" : why));
+        }
+        // 刷新：**撤了哪怕一步**都要刷（部分失败时已经有文件被改回去了）。
+        // 只在完全成功才刷，会让"撤了一半"的视图停在旧状态。
+        if (undone > 0) RefreshActive();
+        if (out) {
+            out->Set(L"undone", json::Value::MakeInt(static_cast<int>(undone)));
+            out->Set(L"remaining", json::Value::MakeInt(static_cast<int>(fileUndo_.Size())));
+        }
+        return full;
+    });
+
+    reg(CmdId::CmdRedo, [this](const Args&) {
+        const bool machine = CommandBus::Get().fromMachine();
+        if (!fileUndo_.CanRedo()) {
+            CommandBus::Get().NoteFailure(L"没有可重做的文件操作");
+            return false;
+        }
+        std::wstring why;
+        const bool ok = fileUndo_.Redo(
+            machine,
+            [this](fileundo::Entry& e, std::wstring* w) { return ApplyFileRedo(e, w); },
+            &why);
+        if (ok) {
+            RefreshActive();
+            return true;
+        }
+        CommandBus::Get().NoteFailure(why.empty() ? L"重做失败" : why);
+        return false;
     });
 
     // ---- 选择族（Ctrl+I 反选 / 只选文件 / 只选文件夹 / 按模式选）----
@@ -816,6 +924,7 @@ void App::RegisterFileCommands() {
             return false;
         }
         host->SetViewMode(fvm, viewmode::ZoomIconPx(icon, steps));
+        SyncZoomSlider();
         return true;
     });
     reg(CmdId::ViewZoomSet, [this](const Args& args) {
@@ -832,6 +941,7 @@ void App::RegisterFileCommands() {
             return false;
         }
         host->SetViewMode(fvm, px);
+        SyncZoomSlider();
         return true;
     });
     reg(CmdId::ViewZoomChoose, [this](const Args&) {
@@ -900,4 +1010,18 @@ void App::RegisterFileCommands() {
     // app_commands_scan.cpp 与 app_commands_compare.cpp：
     // 那些活可能跑很久，必须在工作线程上跑（进度 + 取消 + async），
     // 而并发约定只该有一份。搬走之后本文件回到行数上限以内。
+}
+
+// 把视图里**真实**的图标像素回灌给状态栏滑块。
+//
+// 【为什么读回来而不是自己记一份】滑块拖到 32px 只是"请求"，shell 可能落到
+// 30 或 34（它自己会归整）。滑块显示的必须是**实际**值，否则它会长期显示一个
+// 与界面不符的数字 —— 而"数字对不上"正是滑块最招人烦的毛病。真源只有一个：
+// 视图里的 (FVM, iconPx)。
+void App::SyncZoomSlider() {
+    ShellView* host = ActiveShellViewHost();
+    if (!host) return;
+    int fvm = 0, icon = 0;
+    if (!host->GetViewMode(&fvm, &icon)) return;
+    zoomSlider_.SetIconPx(icon);
 }

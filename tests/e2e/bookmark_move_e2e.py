@@ -10,7 +10,7 @@
 #   1. intent.bookmark.move-to-end 返回 verdict=true，且验收 passed
 #   2. 回读确认目标确实在顶层末位
 #   3. 磁盘 bookmarks.html 末条是目标（落盘）
-#   4. 审计记录了 bmk.move
+#   4. 审计记录了 bmk.move（logs/audit.log）
 #   5. settings.json 的 aiEnabled 未被改动（P0 核心承诺）
 import io
 import json
@@ -22,7 +22,9 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 from ebbctl import Client
 from intents import run as run_intent
 
-DATA = os.path.join(ROOT, "data")
+PROFILE = ROOT                       # profile 根；Client 自己去 runtime\ 找发现文件
+DATA = os.path.join(ROOT, "data")    # 低频配置仍平铺在 data\
+LOGS = os.path.join(ROOT, "logs")    # 审计已迁到 logs\
 fails = []
 
 
@@ -34,7 +36,7 @@ def check(cond, what):
 
 def main():
     target = sys.argv[1] if len(sys.argv) > 1 else "坚果云"
-    client = Client(DATA)
+    client = Client(PROFILE)
 
     # 记录 aiEnabled 原值（P0：意图执行不应改它）
     sp = os.path.join(DATA, "settings.json")
@@ -62,7 +64,7 @@ def main():
     check(target in last, "磁盘末条是目标（已落盘）")
 
     # 审计
-    audit = io.open(os.path.join(DATA, "audit.log"), encoding="utf-8", errors="replace").read()
+    audit = io.open(os.path.join(LOGS, "audit.log"), encoding="utf-8", errors="replace").read()
     check("bmk.move" in audit[-4000:], "审计记录了 bmk.move")
 
     # P0 承诺：执行意图不改 aiEnabled

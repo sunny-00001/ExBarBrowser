@@ -211,6 +211,16 @@ void App::OnCreate() {
     navBar_.Create(hwnd_, theme_);
     bookmarkBar_.Create(hwnd_, theme_);
     statusBar_.Create(hwnd_, theme_);
+    // 图标大小滑块：状态栏行右端，独立子窗口（见 status_zoom_slider.h）。
+    zoomSlider_.Create(hwnd_, theme_, id::kZoomSliderClass);
+    // 拖动 → 走命令总线（view.zoom.set），与 Ctrl+滚轮、视图菜单同一路径：
+    // 审计、前置检查、界面落地都只有一处。
+    zoomSlider_.SetOnChange([this](int iconPx) {
+        json::Value a = json::Value::MakeObject();
+        a.Set(L"iconPx", json::Value::MakeInt(iconPx));
+        CommandBus::Get().Invoke(CmdId::ViewZoomSet, Args::FromJson(a), Actor::Ui());
+        SyncZoomSlider();
+    });
     LogDbg(L"[boot] 四条栏已创建");
 
     // 三条可拖的布局边界（窗格间 / 导航|文件 / 文件|AI 面板）：
@@ -240,14 +250,22 @@ void App::OnCreate() {
             CommandBus::Get().InvokeLegacy(CmdId::ViewMode, std::to_wstring(preset), Actor::Ui());
     });
     navBar_.SetHistoryFn([this](bool back) { return HistoryList(back); },
-                         [this](int depth, bool back) { JumpHistory(depth, back); });
+                         [this](int depth, bool back) { JumpHistoryViaCommand(depth, back); });
     // 设置走独立窗口（不是弹出菜单）：锚点对独立窗口没有意义 ——
     // 它有自己的位置，而且是非模态的，改设置时主窗口还能用。
-    navBar_.SetSettingsFn([this](POINT) { ShowSettingsDialog(); });
-    navBar_.SetColumnsFn([this](POINT at) { ShowColumnMenu(at); });
-    navBar_.SetZoomFn([this](POINT at) { ShowZoomMenu(at); });
+    // 三条 UI 命令都走总线（与快捷键/命令面板同源，菜单有审计、有事件）：
+    // .Cmd(CmdId::X) 只是快捷键显示锚点，UI 回调必须自己 Invoke 才真正成命令。
+    navBar_.SetSettingsFn([this](POINT) {
+        (void)CommandBus::Get().Invoke(CmdId::Preferences, Args::Empty(), Actor::Ui());
+    });
+    navBar_.SetColumnsFn([this](POINT) {
+        (void)CommandBus::Get().Invoke(CmdId::ViewColumnsChoose, Args::Empty(), Actor::Ui());
+    });
+    navBar_.SetZoomFn([this](POINT) {
+        (void)CommandBus::Get().Invoke(CmdId::ViewZoomChoose, Args::Empty(), Actor::Ui());
+    });
     navBar_.SetRecentFn([] { return Config::Get().s().recentPaths; });
-    navBar_.SetClearHistoryFn([this] { (void)ClearHistory(); });
+    navBar_.SetClearHistoryFn([this] { (void)CommandBus::Get().Invoke(CmdId::NavHistoryClear, Args::Empty(), Actor::Ui()); });
     // 视图菜单打勾用：档位/排序/分组/方向**全部**从 shell 视图现读（D2）。
     // 以前 mode 抄 viewMode_（用户意图）、group/sort 抄 Config（上次落盘），
     // 于是用户在 shell 里点列头、改分组、换视图档位后，菜单打勾停在旧值 ——
@@ -324,7 +342,7 @@ void App::OnCreate() {
     // 结果就在同一个 IShellView 里呈现 —— 排序、右键、拖放全部照旧可用。
     //
     // 空串 = 取消搜索：回到原目录（搜索视图没有"上一级"，只能记住来源）。
-    navBar_.SetSearchFn([this](const std::wstring& query) { RunSearch(query, nullptr); });
+    navBar_.SetSearchFn([this](const std::wstring& query) { RunSearchViaCommand(query); });
     // 搜索框的两条带：左带弹「搜索范围」、右带弹「搜索历史」。
     // 菜单内容在 App 侧组装（范围的真相在 Config::Settings 里，导航栏不持有副本），
     // 导航栏只算锚点并转过来 —— 与"设置…""选择详细信息…"同一套路。
@@ -633,6 +651,9 @@ int App::Run(HINSTANCE hInst, const std::wstring& initialPath,
             // 滚轮：光标在序列弹窗上时归弹窗（派发之前截住，否则滚的是
             // 弹窗背后的文件视图）。其余情况不消费，走各自的控件。
             if (input_.HandleWheel(msg.message, msg.wParam, msg.lParam)) continue;
+            // 书签栏同理：滚轮只发给焦点窗口，光标悬在书签栏上时它收不到 ——
+            // 宿主在派发之前按光标位置转交（与上面序列弹层同一手法）。
+            if (bookmarkBar_.HandleWheelAt(msg.message, msg.wParam, msg.lParam)) continue;
         }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
@@ -860,7 +881,8 @@ void App::InitAiPanel() {
     aiPeek_.SetOpenFn([this]() {
         ConsumeAiUnread();
         HideAiPeek();
-        if (!aiPanel_.visible()) ToggleAiPanel();
+        if (!aiPanel_.visible())
+            (void)CommandBus::Get().Invoke(CmdId::AiPanelToggle, Args::Empty(), Actor::Ui());
     });
     aiPeek_.SetDismissFn([this]() { ConsumeAiUnread(); });
     aiPeek_.SetUndoFn([this](const std::wstring& domain) {
@@ -874,26 +896,13 @@ void App::InitAiPanel() {
         ConsumeAiUnread();
         HideAiPeek();
     });
-    // AI 页里的自定义标题栏按钮走 WebMessage 到这里。只做安全、窄口径的
-    // 窗口动作：close 是收起面板（不是退出程序），pin 改主窗口 TOPMOST。
+    // AI 页里的自定义标题栏按钮走 WebMessage 到这里。窗口动作一律转投命令
+    // 总线（ai.panel.toggle / win.minimize / win.maximize / win.restore /
+    // win.topmost），与系统菜单、快捷键同源：以前这里直接调 ShowWindow /
+    // SetWindowPos，那一路既没有审计也没有事件。
     // 所有调用都带 NOACTIVATE / 不动光标，符合 R21 输入纪律。
-    aiPanel_.SetWindowActionCallback([this](const std::wstring& action) {
-        if (action == L"close") {
-            if (aiPanel_.visible()) ToggleAiPanel();   // 同时触发 Layout 重排
-            return;
-        }
-        if (!hwnd_ || !IsWindow(hwnd_)) return;
-        if (action == L"minimize") {
-            ShowWindow(hwnd_, SW_MINIMIZE);
-        } else if (action == L"maximize") {
-            ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
-        } else if (action == L"pin" || action == L"unpin") {
-            SetWindowPos(hwnd_, action == L"pin" ? HWND_TOPMOST : HWND_NOTOPMOST,
-                         0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        } else {
-            LogDbg(L"[aiui] 忽略未知页面窗口动作：%s", action.c_str());
-        }
-    });
+    aiPanel_.SetWindowActionCallback(
+        [this](const std::wstring& action) { DispatchAiPanelWindowAction(action); });
     // 页面状态不依赖面板可见：隐藏 WebView2 后 SSE 仍会跑完，done/error
     // 会经这里落到状态栏 chip + peek（ROADMAP 的"收起不是消失"）。
     aiPanel_.SetStatusCallback([this](const aiui::AiWebStatus& st) {

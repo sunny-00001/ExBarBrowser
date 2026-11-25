@@ -8,6 +8,7 @@
 
 #include "aichat_service.h"
 
+#include "config.h"      // Config::Dir / LogsDir：把新分层目录告诉 Node 服务
 #include "log.h"
 #include "text_file.h"   // tf::ToExtended（长路径前缀）
 
@@ -229,6 +230,12 @@ bool Start(const std::wstring& scriptPath, const std::wstring& exeDir,
     addEnv(L"EXBAR_TOKEN=" + token);
     addEnv(L"EXBAR_HTTP_TOKEN=" + g_httpToken);
     addEnv(L"AGENTCHAT_PORT=" + std::wstring(portStr));
+    // 数据目录分层（见 config.h）：Node 服务据此找到 data\aichat.json /
+    // models.json / mcp.json 和 logs\sessions\。显式传入而非让 Node 猜 exe 目录，
+    // 这样 profile 隔离对 C++ 与 Node 两侧是同一套根。
+    addEnv(L"EXBAR_DATA_DIR=" + Config::Get().Dir());
+    addEnv(L"EXBAR_LOGS_DIR=" + Config::Get().LogsDir());
+    addEnv(L"EXBAR_RUNTIME_DIR=" + Config::Get().RuntimeDir());
     // 让服务在父进程消失时自己退出（Job Object 之外的第三重保险）。
     addEnv(L"EXBAR_PARENT_PID=" + std::to_wstring(GetCurrentProcessId()));
     envBlock.push_back(L'\0');   // 双重结尾

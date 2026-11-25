@@ -21,6 +21,7 @@
 #include "platform_win.h"
 #include "prompt.h"
 #include "str.h"
+#include "text_file.h"
 #include "ui_draw.h"
 
 namespace {
@@ -30,8 +31,19 @@ struct FolderRows {
     ui::Menu menu;
     std::vector<std::wstring> ids;
     std::vector<bool> folders;
+    // 能否拖到书签栏：纯分类节点 + 指向目录/命名空间的书签。
+    // 不能只看 isFolder —— 用户口中的“分类里的文件夹”多数是普通书签，
+    // 只是 HREF 指向一个目录；旧实现只认 H3，于是这些行始终拖不动。
+    std::vector<bool> dragOutable;
     std::vector<std::wstring> paths;
 };
+
+bool IsDragOutable(const BookmarkNode& n) {
+    if (n.isFolder) return true;
+    if (n.path.empty()) return false;
+    if (nav::IsNamespace(n.path)) return true;
+    return tf::IsDirectory(n.path);
+}
 
 // 从 store 读某个分类的直接子项，组装成菜单。
 //
@@ -45,6 +57,7 @@ FolderRows BuildFolderRows(const std::wstring& folderId) {
         d.menu.AddPath(n.name, n.path, action, n.isFolder);
         d.ids.push_back(n.id);
         d.folders.push_back(n.isFolder);
+        d.dragOutable.push_back(IsDragOutable(n));
         d.paths.push_back(n.path);
     }
     return d;
@@ -76,6 +89,7 @@ void BookmarkBar::ShowFolderContents(const std::wstring& folderId, POINT screen)
         // 行号 ↔ id 的映射必须在重排后仍然对得上，所以拖放一提交就重建。
         std::vector<std::wstring> ids = data.ids;
         std::vector<bool> folders = data.folders;
+        std::vector<bool> dragOutable = data.dragOutable;
         std::vector<std::wstring> paths = data.paths;
         int rightClicked = -1;
 
@@ -102,6 +116,7 @@ void BookmarkBar::ShowFolderContents(const std::wstring& folderId, POINT screen)
             if (fresh.menu.Empty()) return false;
             ids = fresh.ids;
             folders = fresh.folders;
+            dragOutable = fresh.dragOutable;
             paths = fresh.paths;
             *out = fresh.menu.rows();
             fresh.menu.FillShortcuts(out);
@@ -111,11 +126,13 @@ void BookmarkBar::ShowFolderContents(const std::wstring& folderId, POINT screen)
         //（右键菜单本身是模态的，不能在弹层的模态循环里再弹一层）。
         opt.reorder.onRowRightClick = [&](int row) { rightClicked = row; };
 
-        // 拖出弹层：只允许**文件夹行**落到书签栏（叶子仍有"移到书签栏"菜单项）。
+        // 拖出弹层：纯分类节点、指向目录的普通书签、命名空间项都能落到书签栏；
+        // 普通文件书签仍走右键“移到书签栏”（dragOutable 为 false）。
         // 预览直接复用 BookmarkBar 的外部拖放落点/绘制，不在这里另画一套线。
         opt.reorder.onDragOutPreview = [&](int row, POINT screen) {
             if (screen.x < 0 || screen.y < 0 || row < 0 ||
-                row >= static_cast<int>(folders.size()) || !folders[static_cast<size_t>(row)]) {
+                row >= static_cast<int>(dragOutable.size()) ||
+                !dragOutable[static_cast<size_t>(row)]) {
                 ClearDropPreview();
                 return;
             }
@@ -124,10 +141,12 @@ void BookmarkBar::ShowFolderContents(const std::wstring& folderId, POINT screen)
         opt.reorder.onDragOut = [&](int row, POINT screen) {
             ClearDropPreview();
             if (row < 0 || row >= static_cast<int>(ids.size()) ||
-                !folders[static_cast<size_t>(row)])
+                !dragOutable[static_cast<size_t>(row)])
                 return;
             const BookmarkDropSpot spot = DropSpotAt(screen);
             if (!spot.valid) return;   // 松手不在书签栏上 = 取消拖出
+            LogDbg(L"[bmk] 分类拖出 row=%d id=%ls spot=1 idx=%d into=%d", row,
+                   ids[static_cast<size_t>(row)].c_str(), spot.index, spot.folderIndex);
             json::Value a = json::Value::MakeObject();
             a.Set(L"id", json::Value::MakeStr(ids[static_cast<size_t>(row)]));
             if (!spot.folderId.empty()) {

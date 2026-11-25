@@ -14,10 +14,6 @@
 #include "cmd_naming.h"
 #include "str.h"
 
-namespace {
-
-}  // namespace
-
 std::vector<CommandDef> UserCommandRows() {
     return {
     // ---- Tab ----
@@ -27,21 +23,21 @@ std::vector<CommandDef> UserCommandRows() {
     // 理由是"退出程序不该由机器替人决定"。如果 tab.close 只要 HasTabs，
     // AI 就能用 tab.close 达成同一件事，把那条设计整个绕过去。
     // 单标签时关标签没有"关标签"的意义（等于退出），所以拒绝是语义正确的。
-    {CmdId::TabClose, L"tab.close", L"Tab", L"标签栏", L"关闭标签页", true, Effects{0, 0, 0, 0, 1, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs, Req::HasMultipleTabs}, nullptr, "tabCount=$changed"},
-    {CmdId::TabCloseOther, L"tab.close.others", L"Tab", L"标签栏", L"关闭其他标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}, nullptr, "tabCount=$changed"},
-    {CmdId::TabCloseLeft, L"tab.close.left", L"Tab", L"标签栏", L"关闭左侧标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}, nullptr, "tabCount=$changed"},
-    {CmdId::TabCloseRight, L"tab.close.right", L"Tab", L"标签栏", L"关闭右侧标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}, nullptr, "tabCount=$changed"},
-    {CmdId::TabClone, L"tab.clone", L"Tab", L"标签栏", L"复制当前标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}, nullptr, "tabCount=$changed"},
+    {CmdId::TabClose, L"tab.close", L"Tab", L"标签栏", L"关闭标签页", true, Effects{0, 0, 0, 0, 1, Scope::App}, kTabIndexArg, true, false, Requirements{Req::HasTabs, Req::HasMultipleTabs}, nullptr, "tabCount=$changed"},
+    {CmdId::TabCloseOther, L"tab.close.others", L"Tab", L"标签栏", L"关闭其他标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, kTabIndexArg, true, false, Requirements{Req::HasTabs}, nullptr, "tabCount=$changed"},
+    {CmdId::TabCloseLeft, L"tab.close.left", L"Tab", L"标签栏", L"关闭左侧标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, kTabIndexArg, true, false, Requirements{Req::HasTabs}, nullptr, "tabCount=$changed"},
+    {CmdId::TabCloseRight, L"tab.close.right", L"Tab", L"标签栏", L"关闭右侧标签", true, Effects{0, 1, 0, 0, 0, Scope::App}, kTabIndexArg, true, false, Requirements{Req::HasTabs}, nullptr, "tabCount=$changed"},
+    {CmdId::TabClone, L"tab.clone", L"Tab", L"标签栏", L"复制当前标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kTabIndexArg, true, false, Requirements{Req::HasTabs}, nullptr, "tabCount=$changed"},
     {CmdId::TabReopenClosed, L"tab.reopen", L"Tab", L"标签栏", L"重新打开关闭的标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasClosedTabs}, nullptr, "tabCount=$changed"},
     // tab.move.* 的 undoable 从 1 改成 0（2026-11-21，P0-3）：
     // core::TabSet 里**没有任何 Undo 符号**（grep 无）—— 标签重排没有撤销栈。
     // 以前声明 undoable=1 是"我们能撤"的承诺，但实际撤不了：
     // AI 据此以为"随便挪，错了能退"，退不了就是骗 AI。
     // 真要可撤销，得给 TabSet 加一份"移动前顺序"快照（与 bmk.* 同口径）。
-    {CmdId::TabMoveLeft, L"tab.move.left", L"Tab", L"标签栏", L"标签左移", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::CanMoveTabLeft}, nullptr, "activeTab=$changed"},
-    {CmdId::TabMoveRight, L"tab.move.right", L"Tab", L"标签栏", L"标签右移", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::CanMoveTabRight}, nullptr, "activeTab=$changed"},
-    {CmdId::TabMoveFirst, L"tab.move.first", L"Tab", L"标签栏", L"标签移到最前", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::CanMoveTabLeft}, nullptr, "activeTab=$changed"},
-    {CmdId::TabMoveLast, L"tab.move.last", L"Tab", L"标签栏", L"标签移到最后", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::CanMoveTabRight}, nullptr, "activeTab=$changed"},
+    {CmdId::TabMoveLeft, L"tab.move.left", L"Tab", L"标签栏", L"标签左移", true, Effects{0, 0, 0, 0, 0, Scope::App}, kTabIndexArg, true, false, Requirements{Req::CanMoveTabLeft}, nullptr, nullptr, kExemptTargetRelative},
+    {CmdId::TabMoveRight, L"tab.move.right", L"Tab", L"标签栏", L"标签右移", true, Effects{0, 0, 0, 0, 0, Scope::App}, kTabIndexArg, true, false, Requirements{Req::CanMoveTabRight}, nullptr, nullptr, kExemptTargetRelative},
+    {CmdId::TabMoveFirst, L"tab.move.first", L"Tab", L"标签栏", L"标签移到最前", true, Effects{0, 0, 0, 0, 0, Scope::App}, kTabIndexArg, true, false, Requirements{Req::CanMoveTabLeft}, nullptr, nullptr, kExemptTargetRelative},
+    {CmdId::TabMoveLast, L"tab.move.last", L"Tab", L"标签栏", L"标签移到最后", true, Effects{0, 0, 0, 0, 0, Scope::App}, kTabIndexArg, true, false, Requirements{Req::CanMoveTabRight}, nullptr, nullptr, kExemptTargetRelative},
     {CmdId::TabPrevTab, L"tab.activate.mru", L"Tab", L"标签栏", L"回到上一个激活的标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}, nullptr, "activeTab=$changed"},
     {CmdId::TabLast, L"tab.activate.last", L"Tab", L"标签栏", L"最后一个标签", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs}, nullptr, "activeTabIsLast=true"},
     {CmdId::CloseLeftOne, L"tab.close.prev", L"Tab", L"标签栏", L"关闭左侧一个", true, Effects{0, 1, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{Req::HasTabs, Req::CanMoveTabLeft}, nullptr, "tabCount=$changed"},
@@ -90,7 +86,13 @@ std::vector<CommandDef> UserCommandRows() {
     {CmdId::PathCopyUnc, L"path.copy.unc", L"Path", L"导航栏", L"复制 UNC 路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, true},
     {CmdId::PathCopyExt, L"path.copy.ext", L"Path", L"导航栏", L"复制扩展名", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, true},
     {CmdId::PathCopyTab, L"path.copy.tab", L"Path", L"导航栏", L"复制所有标签路径", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"实际写入剪贴板的内容（每行一条）\"}},\"required\":[\"text\"]}", nullptr, kExemptNoReadback},
-    {CmdId::PathCopyLink, L"path.copy.link", L"Path", L"导航栏", L"复制为快捷方式", false, Effects{0, 1, 0, 1, 0, Scope::CurrentTab}, kNoArgs, false, false},
+    // 与 path.copy* 家族一致：只写剪贴板，不碰磁盘。用 IShellLinkW 生成 .lnk
+    // 虚拟文件（CFSTR_FILEDESCRIPTOR + CFSTR_FILECONTENTS），粘贴后是真快捷方式。
+    // needsSelection=true：handler 走 SelectedOrFolder()，无选中才退到当前目录 ——
+    // 与 path.copy/path.copy.name 同属"取选中项"家族，不能标成不依赖选中，
+    // 否则第 4 项判据会漏掉它、第 14 项把它错列成无理由的 [待决]。
+    // aiExposed 仍为 false：机器侧没有"用户此刻选中了什么"的语义。
+    {CmdId::PathCopyLink, L"path.copy.link", L"Path", L"导航栏", L"复制为快捷方式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, false, true, Requirements{}, "{\"type\":\"object\",\"properties\":{\"names\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"写入剪贴板的 .lnk 文件名\"},\"count\":{\"type\":\"integer\"}},\"required\":[\"names\",\"count\"]}", nullptr, kExemptNoReadback},
     // ---- File ----
     {CmdId::CmdNewTextFile, L"file.new.text", L"File", L"文件视图", L"新建文本文件", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
     {CmdId::CmdOpenWith, L"file.open.with", L"File", L"文件视图", L"打开方式", true, Effects{0, 0, 0, 1, 0, Scope::System}, kNoArgs, false, true, Requirements{Req::HasSelectionSingle}},
@@ -117,6 +119,9 @@ std::vector<CommandDef> UserCommandRows() {
     // 它的实现在 App::RegisterFileCommands 里：先撤我们自己的文件操作栈
     // （src/file_undo.h），栈空才落 shell 的撤销谓词。
     {CmdId::CmdUndo, L"file.undo", L"File", L"文件操作", L"撤销", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
+    // 重做（Ctrl+Y）：与 file.undo 对称，正向把撤销掉的文件操作再做回去。
+    // 只在自己那一步栈上重做（shell 的 redo 谓词同 undo 一样拿不到，见 file_undo.h）。
+    {CmdId::CmdRedo, L"file.redo", L"File", L"文件操作", L"重做", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
     {CmdId::CmdSelectAll, L"file.select.all", L"File", L"文件操作", L"全选", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{}, nullptr, nullptr, kExemptSetSemantics},
     {CmdId::CmdOpen, L"file.open", L"File", L"文件操作", L"打开", true, kEffectOpen, kNoArgs, false, true},
     {CmdId::CmdOpenInNewTab, L"file.open.tab", L"File", L"文件操作", L"在新标签打开", true, kEffectOpenTab, kNoArgs, false, true},
@@ -146,11 +151,28 @@ std::vector<CommandDef> UserCommandRows() {
     {CmdId::FsCopyTo, L"fs.copy", L"File", L"文件操作", L"复制到（指定目标）", true, kEffectCopyTo, "{\"type\":\"object\",\"properties\":{\"targets\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"to\":{\"type\":\"string\",\"description\":\"目标文件夹完整路径\"}},\"required\":[\"targets\",\"to\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
     {CmdId::FsMoveTo, L"fs.move", L"File", L"文件操作", L"移动到（指定目标）", true, kEffectMoveTo, "{\"type\":\"object\",\"properties\":{\"targets\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"to\":{\"type\":\"string\",\"description\":\"目标文件夹完整路径\"}},\"required\":[\"targets\",\"to\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
     {CmdId::FsOpen, L"fs.open", L"File", L"文件操作", L"打开（指定路径）", true, kEffectOpen, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"要打开的完整路径（文件夹会在当前标签内进入）\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptAsyncNav},
-    {CmdId::FsOpenInNewTab, L"fs.open.tab", L"File", L"文件操作", L"打开（新标签）", true, kEffectOpenTab, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"目标的完整路径\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptAsyncNav},
+    // background：书签右键「在后台新标签中打开」用它建标签但不切走当前视图。
+    // 可选参数（非 required）：默认前台打开，与既有调用/键位完全兼容。
+    {CmdId::FsOpenInNewTab, L"fs.open.tab", L"File", L"文件操作", L"打开（新标签）", true, kEffectOpenTab, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"目标的完整路径\"},\"background\":{\"type\":\"boolean\",\"description\":\"true=建标签但不激活，不切走当前视图（默认 false）\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptAsyncNav},
     {CmdId::FsOpenInNewWindow, L"fs.open.window", L"File", L"文件操作", L"打开（新窗口）", true, kEffectOpenWindow, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"目标的完整路径\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
+    // 书签右键「打开」族的另一窗格去处。进程内导航，但落点不是活动窗格：
+    // state 快照只暴露左右两栏路径、不表达"哪一条是另一栏"，故沿用导航的异步豁免。
+    {CmdId::FsOpenInPane, L"fs.open.pane", L"File", L"文件操作", L"打开（另一窗格）", true, kEffectOpenTab, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"目标的完整路径\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptAsyncNav},
     {CmdId::FsCopy, L"fs.copy.toclip", L"File", L"文件操作", L"复制到剪贴板（指定路径）", true, kEffectCopyToClipboard, "{\"type\":\"object\",\"properties\":{\"targets\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"一组完整路径\"}},\"required\":[\"targets\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
     {CmdId::FsCut, L"fs.cut.toclip", L"File", L"文件操作", L"剪切到剪贴板（指定路径）", true, kEffectCutToClipboard, "{\"type\":\"object\",\"properties\":{\"targets\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"一组完整路径\"}},\"required\":[\"targets\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
     {CmdId::FsProperties, L"fs.properties", L"File", L"文件操作", L"属性（指定路径）", true, kEffectProperties, "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"description\":\"目标的完整路径\"}},\"required\":[\"target\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
+    // 属性写入：只改传了的位（readonly/hidden/system/archive），没传的保持原值。
+    // 属性不在 state 快照里，回读只能由命令自己回报，故按 kExemptNoReadback 处理。
+    {CmdId::FileAttrSet, L"file.attr.set", L"File", L"文件操作", L"设置属性（选中项）", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"attrs\":{\"type\":\"object\",\"properties\":{\"readonly\":{\"type\":\"boolean\"},\"hidden\":{\"type\":\"boolean\"},\"system\":{\"type\":\"boolean\"},\"archive\":{\"type\":\"boolean\"}},\"minProperties\":1,\"additionalProperties\":false,\"description\":\"只改传了的位；未传的保持原值\"}},\"required\":[\"attrs\"],\"additionalProperties\":false}", false, true, Requirements{Req::HasSelection}, "{\"type\":\"object\",\"properties\":{\"attrs\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"},\"description\":\"每项写完后的属性位\"},\"count\":{\"type\":\"integer\"}},\"required\":[\"attrs\",\"count\"]}", nullptr, kExemptNoReadback},
+    {CmdId::FsAttrSet, L"fs.attr.set", L"File", L"文件操作", L"设置属性（指定路径）", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"targets\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"attrs\":{\"type\":\"object\",\"properties\":{\"readonly\":{\"type\":\"boolean\"},\"hidden\":{\"type\":\"boolean\"},\"system\":{\"type\":\"boolean\"},\"archive\":{\"type\":\"boolean\"}},\"minProperties\":1,\"additionalProperties\":false}},\"required\":[\"targets\",\"attrs\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"attrs\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"},\"description\":\"每项写完后的属性位\"},\"count\":{\"type\":\"integer\"}},\"required\":[\"attrs\",\"count\"]}", nullptr, kExemptNoReadback},
+    // 撤销历史：栈里早就有 label（最多 20 条），但此前只能"盲撤一步"——
+    // 用户看不见下一步会撤掉什么。先列再决定撤到第几步。
+    {CmdId::FileUndoList, L"file.undo.list", L"File", L"文件操作", L"撤销历史", true, Effects{1, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"undo\":{\"type\":\"array\"},\"redo\":{\"type\":\"array\"},\"undoCount\":{\"type\":\"integer\"},\"redoCount\":{\"type\":\"integer\"}},\"required\":[\"undo\",\"redo\",\"undoCount\",\"redoCount\"]}", nullptr, kExemptNoReadback},
+    // 撤到第 N 步与单步 file.undo 是**同一件事连做 N 次**：每一层都走同一个
+    // Stack::Undo、同样受"AI 不穿透 UI 快照"的 actor 规则约束。因此它不该比
+    // file.undo 更危险（file.undo 是 aiExposed 且 destructive=0）——
+    // 否则就是"能一步一步撤、却不能一次撤到某一步"这种自相矛盾的能力面。
+    {CmdId::FileUndoTo, L"file.undo.to", L"File", L"文件操作", L"撤销到指定步骤", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"index\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"0=栈顶（下一步要撤的那条），1=再往前一条\"}},\"required\":[\"index\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"undone\":{\"type\":\"integer\"},\"remaining\":{\"type\":\"integer\"}},\"required\":[\"undone\",\"remaining\"]}", nullptr, kExemptUndo},
     // ---- View ----
     {CmdId::ViewMode, L"view.mode", L"View", L"文件视图", L"视图模式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"preset\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":7,\"description\":\"0=超大图标 1=大图标 2=中图标 3=小图标 4=列表 5=详细信息 6=平铺 7=内容\"}},\"required\":[\"preset\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, "viewMode=$arg:preset"},
     {CmdId::ViewSort, L"view.sort", L"View", L"文件视图", L"排序方式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"by\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":3,\"description\":\"0=名称 1=日期 2=类型 3=大小\"}},\"required\":[\"by\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, "sortMode=$arg:by"},
@@ -262,6 +284,13 @@ std::vector<CommandDef> UserCommandRows() {
     // 覆盖了用户原来的值就找不回来了。所以调用方应当先 get 再 set，
     // 并在需要时自行记下旧值 —— 这也是断言要读回来的原因之一。
     {CmdId::ConfigSet, L"config.set", L"Config", L"设置", L"修改设置项", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"设置项的键名（settings.json 里的名字）\"},\"value\":{\"description\":\"新值；类型须与 config.list 里的 kind 一致\"}},\"required\":[\"key\",\"value\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptConfig},
+    // ---- 配置导出/还原（Opus 的 .ocb 等价物）----
+    // 导出/还原走的是 settings_reg 的同一份键表：导出的文件能被 config.import
+    // 原样吃回去，不另建一套"导出格式"（两套格式迟早分叉，那正是"备份还原不回来"的来源）。
+    // 只导**可写**项：只读项是算出来的（路径、大小这类），备下来还原时也用不上，
+    // 反而会在导入时刷出一堆"只读项不能写"的噪音。
+    {CmdId::ConfigExport, L"config.export", L"Config", L"设置", L"导出设置", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"导出文件的路径（相对路径按配置目录解析）；省略则只回显内容不落盘\"},\"overwrite\":{\"type\":\"boolean\",\"description\":\"目标已存在时是否覆盖；默认 false（不覆盖已有备份）\"}},\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"settings\":{\"type\":\"object\",\"description\":\"key -> 值\"},\"count\":{\"type\":\"integer\",\"description\":\"导出的设置项数\"},\"path\":{\"type\":\"string\",\"description\":\"落盘路径（未落盘时为空）\"}},\"required\":[\"settings\",\"count\"]}", nullptr, kExemptNoReadback},
+    {CmdId::ConfigImport, L"config.import", L"Config", L"设置", L"从文件还原设置", true, Effects{0, 0, 1, 0, 0, Scope::App}, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"导出文件（config.export 产出的）的完整路径\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"applied\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"成功还原的键\"},\"failed\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}},\"required\":[\"key\",\"reason\"]}},\"count\":{\"type\":\"integer\",\"description\":\"处理的键总数\"}},\"required\":[\"applied\",\"failed\",\"count\"]}", nullptr, kExemptNoReadback},
     };
 }
 

@@ -24,7 +24,7 @@ void BookmarkBar::Layout() {
     const int iconW = theme_->iconSmall();
     const int gap = theme_->S(6);
     const int ovfW = theme_->S(24);
-    const int avail = rc.right - margin * 2;
+    const int ovfGap = theme_->S(4);
 
     int total = 0;
     std::vector<int> widths(items_.size(), 0);
@@ -38,15 +38,28 @@ void BookmarkBar::Layout() {
         if (i + 1 < items_.size()) total += theme_->S(1);
     }
 
-    overflow_ = total > avail;
-    const int viewRight = overflow_ ? (rc.right - margin - ovfW - theme_->S(4)) : (rc.right - margin);
-    int x = margin;
+    // ---- 可视窗口 ----
+    // 左缘恒为栏的左边界（x<0 的部分窗口自己会裁掉）；右缘是裁切线：
+    // 溢出时 » 按钮画在裁切线右边，点它不该命中任何书签。
+    //
+    // 溢出判据与以前一致（内容宽 > 栏内可放下的宽度），所以 » 按钮出不出、
+    // 什么时候出都不变 —— 变的只是"放不下的项不再被折叠，而是能被滚出来"。
+    const int fullRight = rc.right - margin;
+    const int ovfRight = fullRight - ovfW - ovfGap;
+    overflow_ = total > (fullRight - margin);
+    viewRight_ = overflow_ ? ovfRight : fullRight;
+
+    // 内容末端与滚动无关（= 左边距 + 内容宽），先算出来才能定滚动上限。
+    const int contentEnd = margin + total;
+    maxScroll_ = overflow_ ? std::max(0, contentEnd - viewRight_) : 0;
+    // 夹紧必须发生在排版**之前**：书签增删后内容变窄，滚动量可能已越界。
+    // 先用越界量排完版再夹紧，位置会错一次（要等下一次 Layout 才纠正）。
+    if (scrollX_ < 0) scrollX_ = 0;
+    if (scrollX_ > maxScroll_) scrollX_ = maxScroll_;
+
+    // 排版：内容整体左移 scrollX_，滚动就是把后面的书签带进视野。
+    int x = margin - (overflow_ ? scrollX_ : 0);
     for (size_t i = 0; i < items_.size(); ++i) {
-        if (x + widths[i] > viewRight) {
-            items_[i].rc = RECT{0, 0, 0, 0};
-            items_[i].iconRc = RECT{0, 0, 0, 0};
-            continue;
-        }
         items_[i].rc = RECT{x, theme_->S(2), x + widths[i], rc.bottom - theme_->S(2)};
         // 图标命中区与 Paint 里画图标的槽完全重合（左侧 padX 起、iconW 宽）。
         // 只有这一格内是"列子目录"，右侧文字区仍是打开/分类菜单。
@@ -62,6 +75,22 @@ void BookmarkBar::Layout() {
     RebuildTooltip(hwnd_);
 }
 
+// 横向滚动：滚轮把后面的书签带进视野。滚动量夹在 [0, maxScroll_]。
+void BookmarkBar::ScrollBy(int dx) {
+    const int next = BmkClampScroll(scrollX_, dx, maxScroll_);
+    if (next == scrollX_) return;
+    scrollX_ = next;
+    Layout();                    // 重排 + 挪提示热区（提示文本没变，走的是快路径）
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+// 把第 index 项带进视野（键盘走到看不见的项时用）。
+void BookmarkBar::EnsureVisible(int index) {
+    if (!overflow_ || index < 0 || index >= static_cast<int>(items_.size())) return;
+    const int d = BmkScrollToShow(items_[static_cast<size_t>(index)].rc, viewRight_);
+    if (d != 0) ScrollBy(d);
+}
+
 void BookmarkBar::RebuildTooltip(HWND h) {
     // 工具提示走唯一实现（TooltipHost）：文本复制与 id 管理都在里面，
     // 不再需要"两趟稳定文本"的手工做法。
@@ -72,8 +101,18 @@ void BookmarkBar::RebuildTooltip(HWND h) {
     std::vector<ui::TooltipHost::Item> tips;
     tips.reserve(items_.size());
     for (const auto& it : items_) {
-        if (it.rc.right <= it.rc.left) continue;
-        tips.push_back({it.rc, it.folder ? (it.label + L"（分类）") : it.path});
+        // 提示条目**始终是全部项**，只是矩形随可见性变 —— 文本没变，
+        // TooltipHost 内部据此走"只挪热区"的快路径，滚动时不会反复重建提示
+        // （重建 = 2N 次跨窗口消息，滚起来会闪）。
+        // 滚出视野的项给一个空矩形：鼠标进不去，提示自然不触发。
+        RECT r = it.rc;
+        if (!BmkInView(r, viewRight_)) {
+            r = RECT{0, 0, 0, 0};
+        } else {
+            r = BmkClipRight(r, viewRight_);
+            if (r.left < 0) r.left = 0;
+        }
+        tips.push_back({r, it.folder ? (it.label + L"（分类）") : it.path});
     }
     tooltip_.SetTools(tips);
 }
@@ -97,9 +136,17 @@ void BookmarkBar::Paint(HWND h) {
                             DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
 
+        // 裁切到可视窗口：右缘之外是 » 按钮（不属于任何书签），左缘之外是栏外。
+        // 用 GDI 裁切区而不是逐个改矩形 —— 改矩形会让被切一半的图标"重新居中"，
+        // 画出来的位置和真实位置对不上（标签栏是同一手法，见 tab_strip_paint）。
+        const int savedDc = SaveDC(mem);
+        RECT clip{0, 0, viewRight_, rc.bottom};
+        IntersectClipRect(mem, clip.left, clip.top, clip.right, clip.bottom);
+
         for (size_t i = 0; i < items_.size(); ++i) {
             const Item& it = items_[i];
-            if (it.rc.right <= it.rc.left) continue;
+            // 只画与可视窗口有交集的项（滚出视野的项不画、不命中、不进 » 菜单）。
+            if (!BmkInView(it.rc, viewRight_)) continue;
             const bool draggingThis = dragging_ && dragIdx_ == static_cast<int>(i);
             if (hover_ == static_cast<int>(i) && !draggingThis) FillRect(mem, &it.rc, theme_->brHover);
             // 图标格单独高亮：它是"列子目录"的按钮（等价面包屑分隔符），
@@ -128,15 +175,10 @@ void BookmarkBar::Paint(HWND h) {
             }
         }
 
-        if (overflow_) {
-            if (hotOvf_) FillRect(mem, &ovfRc_, theme_->brHover);
-            ui::DrawGlyph(mem, ico::IconId::More, ovfRc_, theme_->iconGlyph(), theme_->sub);  // More：与标签栏的下箭头区分
-        }
-
         if (dropPreview_ && dropInto_ >= 0 && dropInto_ < static_cast<int>(items_.size())) {            // 拖进分类：整项描边（而不是画插入线）。两种提示必须一眼可分 ——
             // 插入线表示"放到它旁边"，描边表示"放进它里面"。
             RECT r = items_[static_cast<size_t>(dropInto_)].rc;
-            if (r.right > r.left) {
+            if (BmkInView(r, viewRight_)) {
                 ui::FrameRectColor(mem, r, theme_->accent);
                 RECT in = r;
                 InflateRect(&in, -1, -1);
@@ -160,6 +202,13 @@ void BookmarkBar::Paint(HWND h) {
             ui::FillRectColor(mem, bar, theme_->accent);
         }
 
+        RestoreDC(mem, savedDc);   // 解除可视窗口裁切
+
+        if (overflow_) {
+            if (hotOvf_) FillRect(mem, &ovfRc_, theme_->brHover);
+            ui::DrawGlyph(mem, ico::IconId::More, ovfRc_, theme_->iconGlyph(), theme_->sub);  // More：与标签栏的下箭头区分
+        }
+
         RECT hr{0, rc.bottom - 1, rc.right, rc.bottom - 1};
         ui::DrawSeparator(mem, hr, false, theme_->line);
 
@@ -176,8 +225,11 @@ void BookmarkBar::PaintFocusRing(HDC dc) const {
     if (!hwnd_ || GetFocus() != hwnd_) return;
     if (kbdIdx_ < 0 || kbdIdx_ >= static_cast<int>(items_.size())) return;
     const RECT& r = items_[static_cast<size_t>(kbdIdx_)].rc;
-    if (r.right <= r.left) return;
+    // 焦点项滚出视野就不画框（框停在看不见的地方比没有框更糟）。
+    if (!BmkInView(r, viewRight_)) return;
     RECT fr = r;
     InflateRect(&fr, -theme_->S(1), -theme_->S(1));
+    fr = BmkClipRight(fr, viewRight_);   // 焦点框同样不能越到 » 按钮上
+    if (fr.right <= fr.left) return;
     DrawFocusRect(dc, &fr);
 }

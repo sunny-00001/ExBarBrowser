@@ -83,7 +83,7 @@ baseline: 2026-11-21 19:15
 **默认开启**（2026-11-21 起）。`data\settings.json` 的 `"aiEnabled": false` 才关闭。
 **支持热插拔**：设置面板 / `config.set` 改 `aiEnabled` 立即启停监听，无需重启程序。
 
-启动后写发现文件（同目录）：
+启动后在 `<profile 根>\runtime\` 写发现文件（旧布局在 `<profile 根>\data\`，客户端兼容回退）：
 
 | 文件 | 内容 |
 |---|---|
@@ -319,8 +319,8 @@ python tools/check_ai_meta.py
 手工验证通道（PowerShell）：
 
 ```powershell
-$pipe  = Get-Content "$exe\data\ai-pipe.txt"
-$token = Get-Content "$exe\data\ai-token.txt"
+$pipe  = Get-Content "$exe\runtime\ai-pipe.txt"
+$token = Get-Content "$exe\runtime\ai-token.txt"
 $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', ($pipe -replace '^\\\\\.\\pipe\\',''), 'InOut')
 $c.Connect(2000)
 $w = New-Object System.IO.StreamWriter($c); $w.AutoFlush = $true

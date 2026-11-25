@@ -20,7 +20,7 @@
 #   ("TerminatorExpectedAtEndOfString"). Keep every line ASCII-only.
 #
 # Env vars:
-#   EXBAR_DATA_DIR  profile data directory (default E:\ExBarBrowser\data)
+#   EXBAR_RUNTIME_DIR profile runtime directory (default E:\ExBarBrowser\runtime)
 #   EXBAR_PIPE      explicit pipe name   (else read ai-pipe.txt)
 #   EXBAR_TOKEN     explicit token value (else read ai-token.txt)
 
@@ -29,8 +29,8 @@ param()
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$dataDir = $env:EXBAR_DATA_DIR
-if (-not $dataDir) { $dataDir = 'E:\ExBarBrowser\data' }
+$runtimeDir = $env:EXBAR_RUNTIME_DIR
+if (-not $runtimeDir) { $runtimeDir = 'E:\ExBarBrowser\runtime' }
 
 function Write-JsonLine($obj) {
     [Console]::Out.WriteLine(($obj | ConvertTo-Json -Compress -Depth 32))
@@ -46,12 +46,12 @@ $pipePath = $env:EXBAR_PIPE
 $token = $env:EXBAR_TOKEN
 
 if (-not $pipePath) {
-    $f = Join-Path $dataDir 'ai-pipe.txt'
+    $f = Join-Path $runtimeDir 'ai-pipe.txt'
     if (-not (Test-Path $f)) { Fail "missing $f (is ExBarBrowser running?)" }
     $pipePath = (Get-Content $f -Raw).Trim()
 }
 if (-not $token) {
-    $f = Join-Path $dataDir 'ai-token.txt'
+    $f = Join-Path $runtimeDir 'ai-token.txt'
     if (-not (Test-Path $f)) { Fail "missing $f" }
     $token = (Get-Content $f -Raw).Trim()
 }
@@ -136,9 +136,9 @@ for ($i = 0; $i -lt 3; $i++) {
         Start-Sleep -Milliseconds 600
         # Re-read discovery files each retry: the name changes after a restart.
         try {
-            $f = Join-Path $dataDir 'ai-pipe.txt'
+            $f = Join-Path $runtimeDir 'ai-pipe.txt'
             if (Test-Path $f) { $pipeName = ((Get-Content $f -Raw).Trim()) -replace '^\\\\\.\\pipe\\','' }
-            $tf = Join-Path $dataDir 'ai-token.txt'
+            $tf = Join-Path $runtimeDir 'ai-token.txt'
             if (Test-Path $tf) { $token = (Get-Content $tf -Raw).Trim() }
         } catch {}
     }

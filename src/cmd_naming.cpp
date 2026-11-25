@@ -119,6 +119,7 @@ const Alias kAliases[] = {
     {L"CmdRename",         L"file.rename"},
     {L"CmdProps",          L"file.properties"},
     {L"CmdUndo",           L"file.undo"},
+    {L"CmdRedo",           L"file.redo"},
     {L"CmdSelectAll",      L"file.select.all"},
     {L"CmdOpen",           L"file.open"},
     {L"CmdOpenInNewTab",   L"file.open.tab"},
@@ -145,6 +146,10 @@ const Alias kAliases[] = {
     {L"FsCopy",            L"fs.copy.toclip"},
     {L"FsCut",             L"fs.cut.toclip"},
     {L"FsProperties",      L"fs.properties"},
+    {L"FileAttrSet",       L"file.attr.set"},
+    {L"FsAttrSet",         L"fs.attr.set"},
+    {L"FileUndoList",      L"file.undo.list"},
+    {L"FileUndoTo",        L"file.undo.to"},
 
     // --- View（group=View）---
     {L"ViewMode",          L"view.mode"},

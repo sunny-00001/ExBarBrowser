@@ -150,8 +150,8 @@ address_bar / unknown）。在此之前的缺口是致命的：`ShellView::Selec
 
 改代码 → 编译 → 测试 → 保留或回滚。三条硬约束：
 
-1. **已经隔离**：测试实例用 `EXBARBROWSER_PROFILE=<目录>` 指定独立配置目录，
-   只给 `MULTI=1` 时落到 `data\profile-multi`；所有路径派生自 `Config::Dir()`，
+1. **已经隔离**：测试实例用 `EXBARBROWSER_PROFILE=<profile 根>` 指定独立目录，
+   只给 `MULTI=1` 时落到 `profiles\multi`；六类路径都从 `Config::RootDir()` 派生，
    并在任何配置读写之前切换。契约与双实例文件级验证见 §10.3。
 2. **必须可回滚**：改动前有快照（git 提交或 stash），失败能整体丢弃。
 3. **必须最严授权**：开发面默认关闭，需人工批准 + 沙箱，不与文件操作共用通道。
@@ -320,7 +320,7 @@ python tools/intents.py bookmark.move-to-end name=坚果云  # 一个意图：�
    `settings_reg`（80 项）+ 设置对话框（左栏分类 / 中栏表单 / 右栏说明）。
    契约见 §10.1。
 3. ✅ **事件流**：`events/subscribe` 推 `command` / `state.changed`，`events/since` 补历史。契约见 §10.2。
-4. ✅ **测试隔离**：`EXBARBROWSER_PROFILE` 指定目录，`MULTI=1` 默认 `data\profile-multi`。契约见 §10.3。
+4. ✅ **测试隔离**：`EXBARBROWSER_PROFILE` 指定 profile 根，`MULTI=1` 默认 `profiles\multi`。契约见 §10.3。
 5. ✅ **开发面**：快照 + 编译 + 测试 + 作业回读 + 回滚。契约见 §10.4。
 
 > 顺序的理由：前四项都是**让判据成立**，第五项是**让 Agent 自主使用判据**。
@@ -391,23 +391,23 @@ python tools/intents.py bookmark.move-to-end name=坚果云  # 一个意图：�
 
 ### 10.3 测试隔离的契约（第二个实例不能碰用户数据）
 
-`MULTI=1` 让实例落到 `data\profile-multi`（不再与用户数据同目录），
-`EXBARBROWSER_PROFILE=<目录>` 可指定任意独立目录。判据不是"能不能起第二个窗口"，
+`MULTI=1` 让实例落到 `profiles\multi`（profile 根，六类数据整套隔离），
+`EXBARBROWSER_PROFILE=<目录>` 可指定任意独立 profile 根。判据不是"能不能起第二个窗口"，
 而是"用户数据与测试数据的文件是否物理分开"。共享同一份 `settings.json` 的多实例
 之所以安全，是因为写盘走原子写（`<file>.<pid>.tmp` + `MoveFileEx(REPLACE_EXISTING)`），
 后写不会截断前写。
 
 | 契约 | 落地 | 为什么必须这样 |
 |---|---|---|
-| **一个环境变量** | `EXBARBROWSER_PROFILE=<目录>` 显式指定；只给 `MULTI=1` 时落到 `data\profile-multi` | 测试能用固定目录，也能并发开多个不同目录 |
-| **启动最早一步** | `main.cpp` 在读取/写入任何配置之前切换目录 | Config 是懒加载；晚一步就会先把用户配置读进内存 |
-| **所有路径派生** | 设置/书签/键位/鼠标/审计/AI 管道与令牌全部走 `Config::Dir()` | 只要有一处硬编码 `data\`，隔离就是假的 |
+| **一个环境变量** | `EXBARBROWSER_PROFILE=<profile 根>` 显式指定；只给 `MULTI=1` 时落到 `profiles\multi` | 测试能用固定目录，也能并发开多个不同目录 |
+| **启动最早一步** | `main.cpp` 在读取/写入任何配置之前切换 profile 根 | Config 是懒加载；晚一步就会先把用户配置读进内存 |
+| **所有路径派生** | 配置/状态/书签/键位/鼠标/审计/AI 管道与令牌全部从 `Config::RootDir()` 派生 | 只要有一处硬编码程序根，隔离就是假的 |
 | **换目录即清空内存态** | `SetProfileDir` 重置 `Settings` 与 `loaded_` | 否则 B profile 启动时会把 A 的会话/热键写回去 |
 | **文件级验证** | 单测写 a、切 b、再写 b，断言两份文件内容不同 | "路径看起来不同"证明不了没覆盖，要读回文件比对 |
 
 **验收（真实双实例）**：`EXBARBROWSER_MULTI=1 EXBARBROWSER_PROFILE=...\profile-e2e`
 启动的实例从自己的 `settings.json` 读到 `viewMode=2`，`config.set` 改成 3 后只有
-该 profile 的文件变化，用户 `data\settings.json` 的 SHA-256 前后一致。检查器
+该 profile 的文件变化，默认 profile 的 `data\settings.json` 与 `state\*.json` SHA-256 前后一致。检查器
 第 20 项已用「把 profileBuf 换成空串」验证能真失败。
 
 ---

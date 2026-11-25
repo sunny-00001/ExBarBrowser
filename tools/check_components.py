@@ -106,8 +106,11 @@ UNIQUE = [
 
     # 注意：shell_ops.cpp 的 GlobalAlloc(GMEM_MOVEABLE) 是 OLE STGMEDIUM 的
     # DROPEFFECT 载体（CFSTR_PREFERREDDROPEFFECT），与剪贴板文本无关，白名单放行。
+    # shortcut_clipboard.cpp 同理：它是 IDataObject::GetData 的 HGLOBAL 载体
+    # （FILEGROUPDESCRIPTORW 结构体），用来实现"复制为快捷方式"的虚拟文件，
+    # 不是文本内容 —— 文本路径由 clipboard.cpp 的 SetClipboardText 统一负责。
     dict(name="剪贴板复制样板", pat=r"\bGlobalAlloc\s*\(\s*GMEM_MOVEABLE",
-         allow={"clipboard.cpp", "shell_ops.cpp"},
+         allow={"clipboard.cpp", "shell_ops.cpp", "shortcut_clipboard.cpp"},
          why="剪贴板**文本**统一用 SetClipboardText；OLE STGMEDIUM 不受此限"),
 
     # ---- 品牌串唯一性（docs/NAMING.md B1）----
@@ -542,15 +545,15 @@ SKIP = {"common.h.gch", "keymap.gen.h"}
 #     涨过记账行数就报错，降下来就自动收紧（欠账只能变少，不能变多）；
 #   · 不在账里的文件超过 500 行直接报错（新文件从一开始就要达标）。
 #
-# 【基线为什么放在 data/ 而不是脚本里】基线是**账**，账要能被 diff 看见。
+# 【基线为什么放在 tests/baselines/ 而不是脚本里】基线是**账**，账要能被 diff 看见。
 # 写进脚本里，改账和改规则混在同一个文件里，review 时看不出哪次是"改规则"、
-# 哪次是"销账"；放进 data/ 的独立文件（与 data/commands-baseline.json 同一套路），
+# 哪次是"销账"；放进 tests/baselines/ 的独立文件（与 commands-baseline.json 同一套路），
 # 每次销账就是一次独立提交，git diff 里一目了然。
 #
 # 【销账怎么做】确认某文件真的拆干净了，跑：
 #   python tools/check_components.py --update-length-baseline
 FILE_LENGTH_MAX = 500
-LENGTH_BASELINE = ROOT / "data" / "file-length-baseline.json"
+LENGTH_BASELINE = ROOT / "tests" / "baselines" / "file-length-baseline.json"
 
 
 def load_length_baseline():
@@ -803,13 +806,13 @@ def check_eval_surface():
         return [(dict(name="评估面清单缺失",
                       why="构建器/测试/校验器是判据。清单缺失 = 没有设防。"
                           "由人跑：python tools/gen_eval_baseline.py --human-confirm"),
-                 [("data/eval-surface.json", 0)])]
+                 [("tests/baselines/eval-surface.json", 0)])]
     try:
         with open(geb.MANIFEST, "r", encoding="utf-8") as f:
             manifest = json.load(f)
     except Exception as e:
         return [(dict(name="评估面清单解析失败", why=str(e)),
-                 [("data/eval-surface.json", 0)])]
+                 [("tests/baselines/eval-surface.json", 0)])]
 
     # ---- 第 1 道：清单自身未被手改 ----
     seal = manifest.get("selfSeal", "")
@@ -817,12 +820,12 @@ def check_eval_surface():
         return [(dict(name="评估面清单缺少 selfSeal",
                       why="旧版签发或被人删掉了这一项。清单自身不可验 = 前两道关都失效。"
                           "由人重签：python tools/gen_eval_baseline.py --human-confirm"),
-                 [("data/eval-surface.json", 0)])]
+                 [("tests/baselines/eval-surface.json", 0)])]
     if geb.compute_seal(manifest) != seal:
         return [(dict(name="评估面清单被直接改过（selfSeal 不符）",
                       why="没走重签就改了清单正文 —— 这比\"评估面被改\"更可疑。"
-                          "用 git diff data/eval-surface.json 看改了什么。"),
-                 [("data/eval-surface.json", 0)])]
+                          "用 git diff tests/baselines/eval-surface.json 看改了什么。"),
+                 [("tests/baselines/eval-surface.json", 0)])]
 
     # ---- 第 2 道：受保护文件未被改动 ----
     problems = geb.diff(None, manifest)
@@ -837,7 +840,7 @@ def check_eval_surface():
     ok, why = geb.check_git_tracked()
     if not ok:
         return [(dict(name="评估面清单重签不留痕（git 未跟踪或有未提交改动）",
-                      why=why), [("data/eval-surface.json", 0)])]
+                      why=why), [("tests/baselines/eval-surface.json", 0)])]
     return []
 
 

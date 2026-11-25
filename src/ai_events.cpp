@@ -352,7 +352,7 @@ void Clear() {
     g_events.clear();
 }
 
-std::wstring EventsPath() { return tf::Join(Config::Get().Dir(), L"events.jsonl"); }
+std::wstring EventsPath() { return tf::Join(Config::Get().LogsDir(), L"events.jsonl"); }
 
 void LoadFromDisk() {
     // 先读轮转出去的旧文件，再读当前文件；只留末尾 kMaxEvents 条，

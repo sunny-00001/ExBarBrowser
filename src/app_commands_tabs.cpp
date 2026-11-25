@@ -4,6 +4,7 @@
 #include "app.h"
 
 #include "app_commands.h"
+#include "shortcut_clipboard.h"
 #include "text_file.h"   // tf::IsDirectory（go.powershell 的目录存在性判定）
 
 namespace {
@@ -54,40 +55,62 @@ void App::RegisterTabCommands() {
         if (!id) CommandBus::Get().NoteFailure(L"无法打开：" + target);
         return id != 0;
     });
-    reg(CmdId::TabClose, [this](const Args&) {
+    // 目标标签：index 可选，省略 = 活动标签（快捷键/面板口径）；右键菜单传
+    // 被右键那一格的下标。越界如实失败，不就近取一个（与 tab.lock 同纪律）。
+    reg(CmdId::TabClose, [this](const Args& args) {
         // 透传真实结果：锁定标签会拒绝关闭，那时不能报 ok=true。
         // 前置已要求 HasMultipleTabs，所以这里不会走到"关掉最后一个 = 退出程序"。
-        return CloseTab(activeId_);
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        const int id = tabSet_.IdAt(idx);
+        return id ? CloseTab(id) : false;
     });
-    reg(CmdId::TabCloseOther, [this](const Args&) {
+    reg(CmdId::TabCloseOther, [this](const Args& args) {
         // 如实回传：所有其他标签都锁定时一个也没关，不能报 ok=true。
-        return CloseOthers(activeId_) > 0;
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        const int id = tabSet_.IdAt(idx);
+        return id ? CloseOthers(id) > 0 : false;
     });
     // 边界返回 0 条时必须给原因：同族的 close.prev/close.next 会说"已在最左/最右"，
     // 而这里曾经只返回 false —— 调用方只看到"命令执行失败"，分不清是边界
     // 还是真出错（2026-11-21 全量结构化测试实测）。
-    reg(CmdId::TabCloseLeft, [this](const Args&) {
-        if (CloseSide(activeId_, true) > 0) return true;
+    reg(CmdId::TabCloseLeft, [this](const Args& args) {
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        const int id = tabSet_.IdAt(idx);
+        if (id && CloseSide(id, true) > 0) return true;
         CommandBus::Get().NoteFailure(L"左侧没有标签");
         return false;
     });
-    reg(CmdId::TabCloseRight, [this](const Args&) {
-        if (CloseSide(activeId_, false) > 0) return true;
+    reg(CmdId::TabCloseRight, [this](const Args& args) {
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        const int id = tabSet_.IdAt(idx);
+        if (id && CloseSide(id, false) > 0) return true;
         CommandBus::Get().NoteFailure(L"右侧没有标签");
         return false;
     });
-    reg(CmdId::TabClone, [this](const Args&) {
-        const std::wstring p = ActivePath();
+    reg(CmdId::TabClone, [this](const Args& args) {
+        // 复制"被右键的那个"标签的路径；省略 index 才是当前标签。
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        const core::TabRef* ref = tabSet_.Find(tabSet_.IdAt(idx));
+        if (!ref) return false;
+        const std::wstring p = ref->path;
         const int id = NewTab(p, NewTabIndex());
-        if (!id) CommandBus::Get().NoteFailure(L"无法复制当前标签：" + p);
+        if (!id) CommandBus::Get().NoteFailure(L"无法复制标签：" + p);
         return id != 0;
     });
     // ---- 标签个性化：与右键菜单共用同一份实现（R6：动作只有一份）----
     // 菜单路径直接调 RenameTab/SetTabColor；命令路径经这里转一道，
     // 两条路上"改名的落盘口径"完全一致（否则会出现菜单改名能存、面板改名存不住）。
     reg(CmdId::TabRename, [this](const Args& args) {
-        if (!tabSet_.Find(activeId_)) return false;
-        RenameTab(activeId_, args.Str(L"name"));
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        const int id = tabSet_.IdAt(idx);
+        if (!id || !tabSet_.Find(id)) return false;
+        RenameTab(id, args.Str(L"name"));
         return true;
     });
     reg(CmdId::TabSetColor, [this](const Args& args) {
@@ -104,11 +127,14 @@ void App::RegisterTabCommands() {
         SetTabColor(id, color);
         return true;
     });
-    reg(CmdId::TabCloseDuplicates, [this](const Args&) {
-        if (!tabSet_.Find(activeId_)) return false;
+    reg(CmdId::TabCloseDuplicates, [this](const Args& args) {
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        const int id = tabSet_.IdAt(idx);
+        if (!id || !tabSet_.Find(id)) return false;
         // 返回"是否真的关掉了至少一个"：一个重复都没有时应当是 false（ok=0），
         // 否则审计里会记成成功，AI 也以为自己清理过了。
-        return CloseDuplicates(activeId_) > 0;
+        return CloseDuplicates(id) > 0;
     });
 
     // ---- 标签锁定 / 复制标签名 ----
@@ -190,20 +216,31 @@ void App::RegisterTabCommands() {
         // 先建后弹栈，失败时保留关闭历史（见 App::ReopenClosed）。
         return ReopenClosed(0);
     });
-    reg(CmdId::TabMoveLeft, [this](const Args&) {
-        MoveTab(activeId_, ActiveIndex() - 1);
+    // 四条移动命令都以"目标标签"为对象：index 来自右键菜单；省略 = 活动标签。
+    // 前置 CanMoveTabLeft/Right 已按同一 index 判断（见 commands.cpp 的 CanExecute），
+    // 两处口径必须一致，否则会出现"前置放行但 handler 越界"或反之。
+    reg(CmdId::TabMoveLeft, [this](const Args& args) {
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        MoveTab(tabSet_.IdAt(idx), idx - 1);
         return true;
     });
-    reg(CmdId::TabMoveRight, [this](const Args&) {
-        MoveTab(activeId_, ActiveIndex() + 1);
+    reg(CmdId::TabMoveRight, [this](const Args& args) {
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        MoveTab(tabSet_.IdAt(idx), idx + 1);
         return true;
     });
-    reg(CmdId::TabMoveFirst, [this](const Args&) {
-        MoveTab(activeId_, 0);
+    reg(CmdId::TabMoveFirst, [this](const Args& args) {
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        MoveTab(tabSet_.IdAt(idx), 0);
         return true;
     });
-    reg(CmdId::TabMoveLast, [this](const Args&) {
-        MoveTab(activeId_, tabSet_.Count() - 1);
+    reg(CmdId::TabMoveLast, [this](const Args& args) {
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        MoveTab(tabSet_.IdAt(idx), tabSet_.Count() - 1);
         return true;
     });
     reg(CmdId::TabPrevTab, [this](const Args&) {
@@ -382,6 +419,19 @@ void App::RegisterTabCommands() {
         const bool okc = CopyText(all);
         if (okc && out) out->Set(L"text", json::Value::MakeStr(all));
         return okc;
+    });
+    // 剪贴板里放的是 .lnk 虚拟文件而不是路径文本：粘贴到资源管理器得到
+    // 真正的快捷方式。落点只到剪贴板，不改当前目录的任何文件。
+    regR(CmdId::PathCopyLink, [this](const Args&, json::Value* out) {
+        std::vector<std::wstring> names;
+        const bool ok = shortcut_clipboard::CopyAsShortcut(SelectedOrFolder(), &names);
+        if (ok && out) {
+            json::Value arr = json::Value::MakeArray();
+            for (const auto& n : names) arr.arr.push_back(json::Value::MakeStr(n));
+            out->Set(L"names", arr);
+            out->Set(L"count", json::Value::MakeInt(static_cast<int>(names.size())));
+        }
+        return ok;
     });
 
     // ---- 关闭历史 ----

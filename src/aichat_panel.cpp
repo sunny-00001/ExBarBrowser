@@ -270,15 +270,13 @@ void Panel::EnsureWebView() {
     const std::wstring httpToken = aisvc::HttpToken();
     if (!httpToken.empty()) url += L"&exbarHttpToken=" + httpToken;
 
-    // 用户数据目录挂在 Config::Dir() 下（便携模式，见 config.cpp）。
-    // 【为什么不是 exeDir\data\webview2】Config::Dir() 是"当前用户数据目录"的
-    // 唯一来源，且是 profile 感知的：多实例走 data\profile-multi，外部指定
-    // profile 走 data\profile-*。硬编码 exeDir 会让所有 profile/实例共用同一个
-    // WebView2 user-data-dir —— Chromium 的单例锁不允许两个进程共用，第二个
-    // 实例展开面板必然失败；而且各 profile 的 localStorage（会话、确认模式、
-    // 收藏模型）会互相污染。挂在 Config::Dir() 下两者一并解决。
+    // 用户数据目录挂在 Config::CacheDir() 下（见 config.h 的六类分层）。
+    // 【为什么不是 exeDir 硬编码】CacheDir() 从 profile 根派生，是"当前 profile
+    // 的 WebView2 用户数据"唯一来源：不同 profile/实例各有一份，不会共用
+    // Chromium 的单例锁，localStorage（会话、确认模式、收藏模型）也不互相污染。
+    // WebView2 是纯缓存（可整体删、重建无损失），所以挂在 cache\ 而非 data\。
     // 用 tf::Join：目录尾分隔符不保证存在（见 App::InitAiPanel 的说明）。
-    const std::wstring userData = tf::Join(Config::Get().Dir(), L"webview2");
+    const std::wstring userData = tf::Join(Config::Get().CacheDir(), L"webview2");
 
     // 【必须在宿主已有真实尺寸时创建控制器】WebView2 在 0×0 父窗口上创建时，
     // 导航会成功、进程齐全，但不建立可见合成表面 —— 表现为一片空白（实测）。

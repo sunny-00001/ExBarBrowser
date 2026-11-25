@@ -14,15 +14,18 @@ aichat/
 │   ├── pipe-exbar.js       连接到本实例的 AI 命名管道
 │   ├── exbar-bridge.ps1    Node ⇄ Windows 命名管道之间的桥（纯 ASCII）
 │   ├── exbar-context.js    取"用户现在在看什么"（路径 / 条目数 / 选中集）
-│   ├── config.js           配置（data/ 下的 json + 环境变量覆盖）
+│   ├── config.js           配置（<profile 根>\data\ 下的 json + 环境变量覆盖）
 │   └── prompt.js           系统提示词
-├── ui/                     Web UI（原生 JS，无构建步骤）
-└── logs/                   运行日志
+└── ui/                     Web UI（原生 JS，无构建步骤）
+
+运行期目录不在 aichat/ 下，而在 profile 根：data\（配置）、logs\（会话/事件）、
+runtime\（AI 通道发现文件）、cache\webview2\、state\。
 ```
 
-`config.json` 与 `model.json` 是**用户私有文件**（后者含明文 API key），仓库和发布包都不带。
-发布包里放的是 `config.example.json` / `model.example.json`：首次用 AI 面板时复制成正式文件，
-在 `model.json` 里填自己的 `baseUrl` / `apiKey` / 模型 id。填好密钥的文件不要外发。
+`data\aichat.json` 与 `data\models.json` 是**用户私有文件**（后者含明文 API key），
+仓库和发布包都不带；首次启动时由服务生成默认骨架，`data\mcp.json` 只生成空清单。
+在 `data\models.json` 里填自己的 `baseUrl` / `apiKey` / 模型 id，填好密钥的文件不要外发。
+不再提供 `*.example.json` 模板。
 
 ## 启动链路
 
@@ -60,7 +63,7 @@ Windows PowerShell 5.1 按 **ANSI 代码页**（本机是 GBK）读 `.ps1`，UTF
 
 ```bash
 # 先找到运行中实例的管道与令牌
-cat data/ai-pipe.txt data/ai-token.txt
+cat runtime/ai-pipe.txt runtime/ai-token.txt
 
 # 再带上它们启动（端口自选）
 EXBAR_PIPE='\\.\pipe\ExBarBrowser_ai_xxxx_1234' \
@@ -69,7 +72,7 @@ AGENTCHAT_PORT=8792 \
 node aichat/service/server.js
 ```
 
-没有 `EXBAR_PIPE` / `EXBAR_TOKEN` 时会退回到"扫 data 下所有 ai-pipe 文件"的旧发现逻辑
+没有 `EXBAR_PIPE` / `EXBAR_TOKEN` 时会退回到"扫 runtime 下所有 ai-pipe 文件"的旧发现逻辑
 （可用，但慢且容易连到死实例 —— 见 `pipe-exbar.js` 顶部注释）。
 
 ## 相关决策

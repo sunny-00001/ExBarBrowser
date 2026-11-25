@@ -156,11 +156,12 @@ baseline: 2026-11-21 11:00
 
 | 文件 | 用途 |
 |---|---|
-| `data\settings.json` | 栏显隐、序列参数、窗口几何、最近访问、会话、状态栏段、键位覆盖 |
+| `data\settings.json` | 宿主偏好与策略（栏显隐、序列参数、主题、AI 开关、超时…） |
+| `state\*.json` | 程序接管的高频状态（会话/最近访问/标签/窗口几何/搜索历史/热键覆盖） |
 | `data\bookmarks.html` | 书签（Netscape + `EXBAR_*`）；直接编辑该文件 |
 | `data\keymap.json` | 键位（直接编辑该文件） |
 | `data\mouse.json` | 鼠标规则（直接编辑该文件） |
-| `data\audit.log` | 命令审计（actor / 命令 / 参数 / 结果），排障用 |
+| `logs\audit.log` / `logs\audit.jsonl` | 命令审计（actor / 命令 / 参数 / 结果），排障用 |
 
 ---
 

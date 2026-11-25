@@ -213,16 +213,17 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     const bool mcpMode = mcpstdio::Requested();
     const bool forceNew = multi || NewWindowRequested() || mcpMode;
 
-    // 测试隔离（优先级4）：显式 profile 优先；只给 MULTI=1 时落到固定子目录。
+    // 测试隔离（优先级4）：显式 profile 优先；只给 MULTI=1 时落到固定 profile 根。
     // 必须在任何 Config::Get().s()/Load() 之前 —— Config 只在第一次访问时读盘，
     // 晚设目录会把用户的 settings.json 读进测试实例，再写回去就是污染。
+    // 传的是 **profile 根**：其下复刻 data/state/logs/cache/runtime 整套（见 config.h）。
     wchar_t profileBuf[MAX_PATH * 2] = L"";
     const DWORD profileLen = GetEnvironmentVariableW(id::kProfileEnv, profileBuf,
                                                      static_cast<DWORD>(_countof(profileBuf)));
     if (profileLen > 0 && profileLen < _countof(profileBuf)) {
         Config::Get().SetProfileDir(profileBuf);
     } else if (multi) {
-        Config::Get().SetProfileDir(tf::Join(tf::ExeDir(), L"data\\profile-multi"));
+        Config::Get().SetProfileDir(tf::Join(tf::ExeDir(), L"profiles\\multi"));
     }
 
     // 【必须在任何窗口创建之前，且必须在 Config 选定 profile 之后】

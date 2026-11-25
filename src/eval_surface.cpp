@@ -214,7 +214,7 @@ bool ComputeSelfSealOf(const json::Value& manifest, std::wstring* out) {
 }  // namespace
 
 std::wstring ManifestPath() {
-    return tf::Join(tf::Join(RepoRoot(), L"data"), L"eval-surface.json");
+    return tf::Join(tf::Join(RepoRoot(), L"tests"), L"baselines\\eval-surface.json");
 }
 
 Report Check() {
@@ -272,7 +272,7 @@ Report Check() {
             rep.ok = false;
             rep.reason = L"评估面清单正文与 selfSeal 不符 —— **清单被直接改过**（没有走重签）。"
                          L"\n这比\"评估面被改\"更可疑：改清单的人想让哪些检查看起来仍然合法？"
-                         L"\n用 git diff data/eval-surface.json 看改了什么；"
+                         L"\n用 git diff tests/baselines/eval-surface.json 看改了什么；"
                          L"确认后由人重签：python tools/gen_eval_baseline.py --human-confirm";
             return rep;
         }

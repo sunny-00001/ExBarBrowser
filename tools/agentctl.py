@@ -14,7 +14,7 @@
 #                          统计优先读 events.jsonl，旧实例回退 audit.jsonl，不报假零
 #
 # R21：全程只走命名管道，不发任何输入消息、不动光标、不抢焦点。
-# 关闭实例用 WM_CLOSE（非输入消息，允许），且只对 data/.agentctl.pid 记录的自有实例。
+# 关闭实例用 WM_CLOSE（非输入消息，允许），且只对 runtime/.agentctl.pid 记录的自有实例。
 #
 # 两种启动方式的区别（踩过）：
 #   serve  前台常驻，父进程活着就替你把实例按住。**在会回收子进程的环境里（IDE/沙箱命令）
@@ -22,8 +22,9 @@
 #   up     一次性自举，就绪即退；只适合人手动在终端里用，或在能保活的环境里用。
 #          up 会自检"实例是否真的活过了命令结束"，不活就明说 launch_not_persistent。
 #
-# 数据目录：EXBARBROWSER_MULTI=1 会把 profile 切到 data\profile-multi（见 identity.h），
-# 发现文件跟着走。所以本文件在两个候选目录里找"pid 还活着"的那一份，不写死 data\。
+# profile 根：默认程序根；EXBARBROWSER_MULTI=1 切到 profiles\multi（见 identity.h）。
+# 发现文件在 <profile 根>\runtime\，旧布局在 <profile 根>\data\。本文件在候选
+# profile 根里找"pid 还活着"的那一份，不写死某一层。
 #
 # 用法：
 #   python tools/agentctl.py serve [--no-build] [--wait 30]   # 建议：后台任务
@@ -52,12 +53,13 @@ import time
 _HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _HERE)
-from ebbctl import Client, ChannelError  # noqa: E402
+from ebbctl import Client, ChannelError, runtime_dir_of  # noqa: E402
 import experience  # noqa: E402
 
-DATA = os.path.join(ROOT, "data")
+# DATA 保留变量名以兼容大量调用点，语义是 **profile 根**（默认程序根）。
+DATA = ROOT
 EXE = os.path.join(ROOT, "ExBarBrowser.exe")
-PID_FILE = os.path.join(DATA, ".agentctl.pid")
+PID_FILE = os.path.join(ROOT, "runtime", ".agentctl.pid")
 
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _u32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -105,19 +107,23 @@ def post_close(hwnd):
 # --------------------------------------------------- 发现文件（profile 感知）
 
 def profile_dirs(data_dir=None):
-    """候选数据目录。多实例 profile 优先：MULTI 启动的实例把发现文件写在这里。"""
+    """候选 profile 根。多实例 profile 优先：MULTI 启动的实例把发现文件写在
+    <root>\\profiles\\multi\\runtime\\；末尾两个是旧布局回退，升级期仍能连上旧实例。
+    """
     if data_dir:
         return [data_dir]
-    return [os.path.join(DATA, "profile-multi"), DATA]
+    return [os.path.join(ROOT, "profiles", "multi"), ROOT,
+            os.path.join(ROOT, "data", "profile-multi"), os.path.join(ROOT, "data")]
 
 
 def pipe_of(data_dir):
-    """解析 <dir>/ai-pipe.txt -> dict(pipe, hwnd, pid, alive) 或 None。
+    """解析 <profile 根>/runtime/ai-pipe.txt -> dict(...)，找不到返回 None。
 
     管道名里带 hwnd 与 pid 是既有契约（identity.h 的命名派生），这里借它判断
     "还是不是这个进程"，以及优雅关闭时该找哪个窗口。
     """
-    f = os.path.join(data_dir, "ai-pipe.txt")
+    runtime = runtime_dir_of(data_dir)
+    f = os.path.join(runtime, "ai-pipe.txt")
     if not os.path.isfile(f):
         return None
     try:
@@ -128,14 +134,14 @@ def pipe_of(data_dir):
     if not m:
         return None
     pid = int(m.group(2))
-    return {"dir": data_dir, "pipe": pipe, "hwnd": int(m.group(1), 16),
-            "pid": pid, "alive": pid_alive(pid)}
+    return {"dir": data_dir, "runtime": runtime, "pipe": pipe,
+            "hwnd": int(m.group(1), 16), "pid": pid, "alive": pid_alive(pid)}
 
 
 def endpoints(data_dir=None):
     """所有候选目录的规范发现文件，活的排前面（按文件时间）。"""
     eps = [e for e in (pipe_of(d) for d in profile_dirs(data_dir)) if e]
-    eps.sort(key=lambda e: (e["alive"], os.path.getmtime(os.path.join(e["dir"], "ai-pipe.txt"))),
+    eps.sort(key=lambda e: (e["alive"], os.path.getmtime(os.path.join(e["runtime"], "ai-pipe.txt"))),
              reverse=True)
     return eps
 
@@ -310,7 +316,7 @@ def cmd_up(a):
 
     close_own()
     proc = _launch()
-    os.makedirs(DATA, exist_ok=True)
+    os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
     io.open(PID_FILE, "w", encoding="utf-8").write(str(proc.pid))
 
     ep, n = live_endpoint(a.data_dir, timeout_s=a.wait)
@@ -340,7 +346,7 @@ def cmd_serve(a):
         return 2
     close_own()
     proc = _launch()
-    os.makedirs(DATA, exist_ok=True)
+    os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
     io.open(PID_FILE, "w", encoding="utf-8").write(str(proc.pid))
 
     ep, n = live_endpoint(a.data_dir, timeout_s=a.wait)
@@ -771,7 +777,8 @@ def cmd_stats(a):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="ExBarBrowser 闭环自举与缺口诊断")
-    ap.add_argument("--data-dir", help="强制指定 profile 数据目录（默认自动发现）")
+    ap.add_argument("--profile", "--data-dir", dest="data_dir",
+                    help="强制指定 profile 根（旧 --data-dir 兼容；默认自动发现）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("status", help="汇总 exe/源码新鲜度、进程与通道状态")

@@ -188,7 +188,7 @@ contract  ←  core  ←  platform  ←  pipeline  ←  features  ←  app
 | 场景 | 正确入口 | 说明 |
 |---|---|---|
 | 进程内触发一条动作 | `CommandBus::Invoke(id, args, actor)` | 唯一动作入口（R5/R16）；按钮、热键、菜单、AI 共用 |
-| 进程外驱动（脚本 / MCP 客户端） | AI 命名管道 `tools/call` | 见 [AI-INTERFACE.md](AI-INTERFACE.md)；令牌在 `data/ai-token.txt` |
+| 进程外驱动（脚本 / MCP 客户端） | AI 命名管道 `tools/call` | 见 [AI-INTERFACE.md](AI-INTERFACE.md)；令牌在 `runtime/ai-token.txt` |
 | 只需读状态 | 管道 `exbar/state` 或命令 `OpListDir` / `OpStat` | 只读，不改任何可见状态 |
 | 需要验证"某个控件的命中判定" | 抽成**纯函数**跑单测 | 例：`tab_strip_rules_test.cpp` 的 `TabNewButtonX`、`popup_layout_test.cpp` |
 | 需要看界面长什么样 | `python scripts\shot.py out.png` | `PrintWindow` 只读，被遮挡也能抓，不动光标 |

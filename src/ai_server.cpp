@@ -121,7 +121,7 @@ std::wstring PipeName() {
     return std::wstring(kPipePrefix) + buf;
 }
 
-std::wstring PipePath() { return tf::Join(Config::Get().Dir(), L"ai-pipe.txt"); }
+std::wstring PipePath() { return tf::Join(Config::Get().RuntimeDir(), L"ai-pipe.txt"); }
 
 // 每实例一份发现文件（ai-token.<pid>.txt / ai-pipe.<pid>.txt）。
 // 多实例共享同一个 profile 时，规范文件 ai-token.txt 只能指向"最后启动的实例"；
@@ -129,7 +129,7 @@ std::wstring PipePath() { return tf::Join(Config::Get().Dir(), L"ai-pipe.txt"); 
 std::wstring InstanceDiscoveryPath(const wchar_t* stem) {
     wchar_t buf[64];
     swprintf(buf, 64, L"%ls.%lu.txt", stem, static_cast<unsigned long>(GetCurrentProcessId()));
-    return tf::Join(Config::Get().Dir(), buf);
+    return tf::Join(Config::Get().RuntimeDir(), buf);
 }
 
 // 删除内容仍属于自己的发现文件；内容已被别的实例覆盖就不动。
@@ -145,7 +145,7 @@ void DeleteDiscoveryIfOwned(const std::wstring& path, const std::wstring& expect
 void WriteDiscoveryFiles(const std::wstring& token, const std::wstring& pipe) {
     // 客户端从这些文件拿到"连哪里、用什么令牌"。
     // 权限：文件在便携数据目录下，天然按用户隔离；这不是加密，只是护栏。
-    tf::EnsureDir(Config::Get().Dir());
+    tf::EnsureDir(Config::Get().RuntimeDir());
     if (!tf::WriteText(TokenPath(), token))
         LogDbg(L"[ai] 令牌写入失败：%s", TokenPath().c_str());
     if (!tf::WriteText(PipePath(), pipe))
@@ -337,7 +337,7 @@ void ServeLoop() {
 }
 }  // namespace
 
-std::wstring TokenPath() { return tf::Join(Config::Get().Dir(), L"ai-token.txt"); }
+std::wstring TokenPath() { return tf::Join(Config::Get().RuntimeDir(), L"ai-token.txt"); }
 
 std::wstring CurrentPipeName() { return g_pipe_name; }
 

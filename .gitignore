@@ -66,18 +66,19 @@ obj*/
 *bak[0-9]
 
 # ---------------------------------------------------------------------------
-# 便携模式的用户数据：data\ 里全是**真实配置**，没有种子/默认值之分
+# 便携模式的用户数据：配置平铺在 data\，状态/日志/缓存/运行文件与它平级
 #
 # 这些文件因人而异（书签、最近访问、窗口几何、键位习惯），提交会把个人数据带进仓库，
-# 因此整个 data\ 下的运行期文件都不入库。
+# 因此运行期文件都不入库。旧布局留在 data\ 下的审计/发现文件也继续忽略，供升级期回退。
 #
-#   浏览器设置    data\settings.json
+#   浏览器偏好    data\settings.json
 #   书签          data\bookmarks.html
 #   键位          data\keymap.json
 #   鼠标规则      data\mouse.json
 #   AI 行为配置   data\aichat.json（无密钥）
 #   模型与密钥    data\models.json（含明文 apiKey，绝不入库）
 #   MCP 清单      data\mcp.json
+#   运行期状态    state\*.json
 #   审计日志      logs\audit.jsonl（规范格式，R18/C6 要求的那份）
 #                 logs\audit.log（旧文本格式）
 # ---------------------------------------------------------------------------
@@ -98,6 +99,8 @@ data/audit.jsonl
 data/audit.jsonl.1
 # 事件流落盘（B8）：跨重启观测历史，含轮转副本。与审计同理不入库；
 # 被忽略才不会被 dev.diff 当成"未跟踪改动"混进候选源码。
+logs/events.jsonl
+logs/events.jsonl.1
 data/events.jsonl
 data/events.jsonl.1
 data/events-test/
@@ -105,20 +108,21 @@ data/ai-token.txt
 data/ai-pipe.txt
 data/.write-probe
 # AI 面板的 WebView2 用户数据目录：src/aichat_panel.cpp 把 user-data-dir 挂在
-# Config::Dir()\webview2 —— 默认 profile 是 <exe>\data\webview2，多实例/profile
-# 则落在 data\profile-*\webview2（后者已被下面的 data/profile-*/ 覆盖）。
-# 跟配置目录走是为了让 profile 隔离生效：多实例共用同一份 user-data-dir 会撞
-# Chromium 单例锁，且各 profile 的 localStorage 会互相污染。
+# Config::CacheDir()\webview2 —— 默认 profile 是 <exe>\cache\webview2，多实例/profile
+# 则落在 <profile 根>\cache\webview2。缓存可整体删重建，不与低频配置混放。
+# 跟 profile 根走是为了让隔离生效：多实例共用同一份 user-data-dir 会撞 Chromium
+# 单例锁，且各 profile 的 localStorage 会互相污染。
 # 它是运行期 profile —— 缓存、Local State、Cookies 等，不是构建产物。
-data/webview2/
+/cache/webview2/
+# 旧布局回退：发现文件/测试 profile 曾平铺在 data\ 下，升级期仍可能残留。
 # 每实例发现文件（多实例并存时各写一份）与测试 profile：运行期产物，不入库
 data/ai-token.*.txt
 data/ai-pipe.*.txt
 data/profile-multi/
-# 结构化测试用的隔离 profile（EXBARBROWSER_PROFILE=data/profile-*）：
-# 每个 profile 一份 settings.json + 发现文件，都是运行期产物。
+# 结构化测试用的旧隔离 profile（EXBARBROWSER_PROFILE=data\profile-*）：
+# 新布局改用 <exe>\profiles\*，下面两行只为升级期残留留个后路。
 data/profile-*/
-# agentctl 记录的"自己启的实例"（用于只关自己的窗口，不入库）
+# agentctl 记录的"自己启的实例"（新位置 runtime\.agentctl.pid，旧位置也忽略）
 data/.agentctl.pid
 # dev.snapshot 落盘的工作树快照（改动文件的内容副本 + 清单）。
 # 它是**兜底**不是备份：里面存的是工作树里当时的内容，入库等于把
@@ -145,6 +149,7 @@ data/*.backup-*.html
 /logs/
 /cache/
 /runtime/
+/profiles/
 
 # 已废弃的旧命名（曾用 browser- 前缀，已合并进 keymap.json / mouse.json）
 data/browser.json
@@ -160,14 +165,15 @@ data/*.from-appdata
 #
 # 只入库**代码**。下面这些是运行期产物与本机凭据，绝不入库：
 #
-#   model.json / config.json   model.json 里有**明文 API key**（provider 的
-#                              apiKey 字段，见 config.js 的读取路径）。入库
-#                              等于把密钥写进仓库历史，删都删不干净。
-#   *.bak-<时间戳>             config.js 每次保存配置时留的旧副本，同样含 key。
-#   *.opus.bak                 Opus 时代的实现副本，含当时的桥配置。
-#   logs/                      会话历史（用户与 AI 的对话原文）。
+#   aichat/service/{config,model}.json  旧布局遗留，model.json 里有明文 API key
+#                                       （provider 的 apiKey 字段）。入库等于把
+#                                       密钥写进仓库历史，删都删不干净。
+#   *.bak-<时间戳>                      config.js 每次保存配置时留的旧副本，同样含 key。
+#   *.opus.bak                          Opus 时代的实现副本，含当时的桥配置。
+#   logs/                               会话历史（用户与 AI 的对话原文）。
 #
-# 需要分发默认配置时另写 *.example.json，不要把真实文件改个名就提交。
+# 现行配置在 data\aichat.json / data\models.json / data\mcp.json，由代码生成默认值；
+# 不再提供 *.example.json 模板。
 # ---------------------------------------------------------------------------
 aichat/service/model.json
 aichat/service/model.json.bak-*
@@ -181,3 +187,8 @@ aichat/node_modules/
 # 移到这里只为可回溯，不参与构建、不入库 —— 它们里面那份 allowedRoots
 # 执行点曾经是"以为有边界"的错觉来源。
 aichat/_removed_opus/
+
+# 临时探针/复验脚本（并行会话的一次性验证产物，不参与构建、不入库）。
+# 命名约定 tmp_ 前缀 = 临时；src/ 下以 tmp_ 开头的 .cpp 也不参与构建
+# （build_fast.py 排除 tmp_* / _* / *.bak.cpp）。
+tmp_*

@@ -292,8 +292,9 @@ def main() -> int:
   - Node.js >= 18：仅 AI 面板需要。可在 PATH 中，或用环境变量 EXBAR_NODE 指向 node.exe。
 
 【首次使用 AI 面板】
-  1. 首次启动后 AI 服务会在 data/ 下自动生成 aichat.json（行为配置）与
-     models.json（模型目录）；在设置里填好自己的 baseUrl / apiKey / 模型 id。
+  1. 首次启动后 AI 服务会在 data/ 下自动生成 aichat.json（行为配置）、
+     models.json（模型目录）与 mcp.json（空 server 清单）；在设置里填好自己的
+     baseUrl / apiKey / 模型 id。
   2. 填好密钥的 data/models.json 是私密文件，不要连同日志一起发出去。
   不填也能启动主浏览器；AI 面板会因为没有模型配置而无法调用。
 
@@ -306,6 +307,7 @@ def main() -> int:
   logs/                 审计与事件日志（首次启动生成）
   cache/                WebView2 用户数据（可整体删除）
   runtime/              AI 通道发现文件（进程退出即删）
+  profiles/             MULTI/显式 profile 的完整隔离根（首次启动生成）
   RELEASE-MANIFEST.json 文件清单与 SHA-256，便于校验完整性
 
 WebView2Loader.dll 版权归 Microsoft Corporation，随包分发遵循 Microsoft WebView2 SDK 许可。

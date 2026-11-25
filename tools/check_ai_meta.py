@@ -410,9 +410,22 @@ MENU_ACTIONS = {
     '书签·上移': 'bmk.move',
     '书签·下移': 'bmk.move',
     '书签·移到书签栏': 'bmk.move',
+    # 移到分类…：二层菜单列所有分类 + 顶层，选中走 bmk.move（同拖拽/AI）。
+    '书签·移到分类…': 'bmk.move',
+    '书签·书签栏（顶层）': 'bmk.move',
+    # 禁用占位行（没有其它分类时显示），不是真动作。
+    '书签·（暂无其它分类）': None,
     # ---- 全量覆盖 Batch 2：菜单直接调命令（不再是 UI 私有动作）----
     # 「打开」用现成的 fs.open：书签项拿到的是路径，机器侧也从 bmk.list 拿路径。
     '书签·打开': 'fs.open',
+    # 「打开」族的另外六条去处：带 path 的书签项直接把路径递给命令。
+    # 后台新标签与前台新标签是同一条 fs.open.tab，只是多带 background=true。
+    '书签·在新标签中打开': 'fs.open.tab',
+    '书签·在后台新标签中打开': 'fs.open.tab',
+    '书签·在新窗口中打开': 'fs.open.window',
+    '书签·在另一窗格中打开': 'fs.open.pane',
+    '书签·在终端中打开': 'ext.terminal.at',
+    '书签·属性': 'fs.properties',
     '书签·复制路径': 'clipboard.copy',
     '书签·重新载入书签文件': 'bmk.reload',
     '书签·导出书签': 'bmk.export',
@@ -722,6 +735,170 @@ def _src_func_body(fragment):
         if body:
             return body
     return ''
+
+
+def _anchor_body(fragment):
+    """从任意锚点后找第一个 '{'，按花括号配平截出代码块；找不到返回 ''。
+
+    与 _find_def_body 的分工：那个函数只认 `Type Name(...) {` 形态的函数定义，
+    遇到回调注册 `navBar_.SetViewFn([](...) { ... });` 会在参数括号上算错 depth
+    而返回空。菜单体系的 action 大量经 lambda 回调委托给 App，判据必须能取到
+    这些 lambda 体，否则委托型路径会被误报成"没走总线"。
+    调用方同样必须把"找不到"当失败处理，别让检查面静默塌掉。
+    """
+    for p in sorted((ROOT / 'src').glob('*.cpp')):
+        text = _strip_comments(p.read_text(encoding='utf-8', errors='replace'))
+        idx = text.find(fragment)
+        if idx < 0:
+            continue
+        j = text.find('{', idx + len(fragment))
+        if j < 0:
+            continue
+        body, _ = _html_block(text, j)
+        if body:
+            return body
+    return ''
+
+
+# ---- 参数契约判据（16e）的辅助 ------------------------------------------------
+#
+# 【为什么需要】命令的 argsSchema 是**对外契约**：AI/MCP 路径按它校验参数
+# （ai_api.cpp 里"未知参数"直接拒收），而人类路径的总线**不校验**。
+# 于是"handler 读了某个键、schema 没声明"会造成人机不对称：
+# 人从界面传得进去、AI 传不进去，机器侧永远够不着那个目标。
+#
+# 【实测踩到过】tab.rename 的 handler 读了 args.index（右键菜单要作用于
+# 被右键那个标签），但 schema 只声明了 name 且 additionalProperties:false ——
+# 右键能改名，AI 改不了。
+
+def _skip_literal(text, i):
+    """从 text[i] 处的引号开始，返回整个字面量结束后的下标。
+
+    处理 "..." / L'...' 及其转义。字符字面量也要跳：'(' 这种里带括号，
+    不跳会把括号配平算错。
+    """
+    q = text[i]
+    i += 1
+    while i < len(text):
+        if text[i] == '\\':
+            i += 2
+            continue
+        if text[i] == q:
+            return i + 1
+        i += 1
+    return i
+
+
+def _match_paren(text, open_idx):
+    """返回与 text[open_idx] 处 '(' 配对的 ')' 下标；找不到返回 -1。
+
+    跳过字符串/字符字面量 —— 字面量里的括号不是代码结构。
+    """
+    depth = 0
+    i = open_idx
+    while i < len(text):
+        c = text[i]
+        if c == '"' or c == "'":
+            i = _skip_literal(text, i)
+            continue
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _free_func_body(name, cache):
+    """在 src/*.cpp 里找 name 的**定义体**（不是调用点）。
+
+    判定：name( 之后（跨过参数表）必须是 '{' 才算定义；调用点后面跟的是
+    ';' 或 '='，直接排除。
+
+    【为什么允许 "::" 前缀】共享 helper 常常是成员函数
+    （bool App::TransferTargets(const Args& args, bool move)），
+    前缀是 Class:: 时名字前面是 ':' —— 把它当成调用点排除掉，
+    整条委托链就断了（实测 fs.copy 的取参全在那个 helper 里，
+    判据会漏掉它）。
+
+    【为什么要查签名】只跟随"确实接收 Args 的 helper"：
+    形如 TransferTargets(const Args& args, ...) 的才跟，
+    否则随便一个同名函数都会把不相干的参数键带进来。
+    """
+    if name in cache:
+        return cache[name]
+    body = ''
+    for p in sorted((ROOT / 'src').glob('*.cpp')):
+        key = '__text__' + p.name
+        text = cache.get(key)
+        if text is None:
+            text = _strip_comments(p.read_text(encoding='utf-8', errors='replace'))
+            cache[key] = text
+        for m in re.finditer(r'(?<![\w.>])' + re.escape(name) + r'\s*\(', text):
+            open_i = m.end() - 1
+            close_i = _match_paren(text, open_i)
+            if close_i < 0:
+                continue
+            sig = text[open_i:close_i + 1]
+            # 只跟随确实接收 Args 的 helper（参数名叫 args）。
+            if not re.search(r'\bArgs\s*&?\s*args\b', sig):
+                continue
+            j = close_i + 1
+            while j < len(text) and text[j] in ' \t\r\n':
+                j += 1
+            if j < len(text) and text[j] == '{':
+                blk, _ = _html_block(text, j)
+                if blk:
+                    body = blk
+                    break
+        if body:
+            break
+    cache[name] = body
+    return body
+
+
+# handler 取参数的访问器全集（Args 的公开方法）。
+_ARG_READ_RE = re.compile(r'args\.(?:Has|Str|Int|Bool|StrArray|Any)\(\s*L"(\w+)"')
+
+# 不该被当成"自由函数调用"的关键字。
+_CALL_STOP = frozenset((
+    'if', 'for', 'while', 'switch', 'return', 'sizeof', 'catch', 'else',
+    'do', 'case', 'new', 'delete', 'and', 'or', 'not',
+))
+
+
+def _handler_arg_reads():
+    """CmdId → 它的 handler 读取的参数键集合。
+
+    【为什么要跟一层调用图】handler 常把取参逻辑委托给共享 helper
+    （fs.copy 的 handler 只有一句 `return TransferTargets(args, false);`，
+    真正读 targets/to 的是那个 helper）。只看 reg 块会把这些命令误判成
+    "schema 声明了但没实现"。跟一层自由函数调用即可覆盖这类写法，
+    且不会陷入无限递归（只跟一层）。
+    """
+    cache = {}
+    reads = {}
+    for p in sorted((ROOT / 'src').glob('*.cpp')):
+        text = _strip_comments(p.read_text(encoding='utf-8', errors='replace'))
+        for m in re.finditer(r'\breg(R?)\(\s*CmdId::(\w+)', text):
+            cid = m.group(2)
+            open_i = text.find('(', m.start())
+            close_i = _match_paren(text, open_i)
+            if close_i < 0:
+                continue
+            blk = text[m.start():close_i + 1]
+            keys = set(_ARG_READ_RE.findall(blk))
+            for call in set(re.findall(r'(?<![\w.>])(\w+)\s*\(', blk)):
+                if call in _CALL_STOP:
+                    continue
+                hb = _free_func_body(call, cache)
+                if hb:
+                    keys |= set(_ARG_READ_RE.findall(hb))
+            if keys:
+                reads.setdefault(cid, set()).update(keys)
+    return reads
 
 
 def _ai_state_body():
@@ -1811,6 +1988,114 @@ def main():
     else:
         print(f'  ok     {len(MENU_ACTIONS)} 项登记全部能在源码找到对应文案')
 
+    # 16d. 菜单动作的执行链必须落到命令总线（防"挂了 .Cmd 却直调 App 方法"的假覆盖）。
+    #
+    # 【为什么第 16/16b/16c 三项加起来还不够】它们只验证"菜单文案在 MENU_ACTIONS
+    # 里、登记的命令别名在命令表里存在"。但 ui::Menu::Cmd(CmdId::X) 只是**快捷键
+    # 显示锚点**，不是执行绑定 —— 真动作在调用方拿到 action 后的 switch / 回调里。
+    # 实测：标签右键的 18 行全挂了 .Cmd(CmdId::TabClose/...)，执行却在
+    # App::ShowTabMenu 的 switch 里直接调 CloseTab/NewTab/MoveTab，一条 Invoke 都没有：
+    # 快捷键走总线（有审计/确认/事件），右键菜单绕过总线（三者全无）。三项检查全绿，
+    # 覆盖却是假的。这正是 FULL-COVERAGE §3.1"代码路径上必须先经过一个可被程序
+    # 调用的处理器"的反面。
+    #
+    # 【判据粒度】逐条核对：菜单构建函数里每个 `.Cmd(CmdId::X)` 的 X，都必须在
+    # 对应**执行体**里以 `CmdId::X` 出现（要么是 Invoke(CmdId::X)，要么是
+    # `CmdId id = ...; CmdId::X` 的变量派发）。实测这条判据能抓出两类真缺口：
+    #   · 标签右键整段绕过总线（18 条 .Cmd 在执行体里一个都找不到）
+    #   · 把面包屑段回调的某个分支改坏（该 CmdId 从执行体消失 → 抓到）
+    # 只查"执行体含 CommandBus 字符串"不够 —— 改坏一个分支但其它分支还有
+    # CommandBus 时照样绿，那是装饰性判据。
+    #
+    # 每项 = (区域, 菜单构建函数锚, [执行体锚点...])
+    # 构建/执行常在不同文件（右键先发 WM_APP_* 再投回 App），一律跨符号定位。
+    MENU_DISPATCH = {
+        '标签右键': ('void TabStrip::ShowTabMenu', ['void App::ShowTabMenu']),
+        '状态栏右键': ('void App::ShowStatusMenu', ['void App::ShowStatusMenu']),
+        '书签项右键': ('void BookmarkBar::ShowItemMenu', ['void BookmarkBar::ShowItemMenu']),
+        '书签空白右键': ('void BookmarkBar::ShowEmptyMenu', ['void BookmarkBar::ShowEmptyMenu']),
+        '分类弹层右键': ('void BookmarkBar::ShowCategoryItemMenu', ['void BookmarkBar::ShowCategoryItemMenu']),
+        '视图下拉': ('void NavBar::ShowViewMenu', [
+            'navBar_.SetViewFn', 'navBar_.SetSettingsFn',
+            'navBar_.SetColumnsFn', 'navBar_.SetZoomFn']),
+        '导航空白右键': ('void NavPane::ShowBlankMenu', ['void NavPane::ShowBlankMenu']),
+        '面包屑段右键': ('void NavBar::ShowSegmentMenu', ['navBar_.SetSegmentCmdFn']),
+        # 地址框下拉（⌄）：底部「清除历史记录」菜单行挂着 .Cmd(NavHistoryClear)，
+        # 但那一行以前走的是 clearHistory_() 回调 —— 有命令、却没走总线，
+        # 于是快捷键那路弹确认框、菜单这路不弹。正因为它挂着 .Cmd，
+        # 这条路径必须被本项覆盖住，否则这类假覆盖会一直静默。
+        '地址框下拉': ('void NavBar::ShowDropMenu', ['navBar_.SetClearHistoryFn']),
+    }
+    print('\n16d. 菜单动作逐条落到命令总线（.Cmd 不是执行绑定）')
+    broken = []
+    missing_body = []
+    checked = 0
+    for area, (menu_anchor, exec_anchors) in MENU_DISPATCH.items():
+        menu_body = _src_func_body(menu_anchor) or _anchor_body(menu_anchor)
+        if not menu_body:
+            missing_body.append((area, menu_anchor))
+            continue
+        exec_body = '\n'.join(
+            b for a in exec_anchors
+            for b in [(_src_func_body(a) or _anchor_body(a))] if b)
+        if not exec_body:
+            missing_body.append((area, str(exec_anchors)))
+            continue
+        menu_cmds = set(re.findall(r'\.Cmd\(CmdId::(\w+)\)', menu_body))
+        exec_cmds = set(re.findall(r'CmdId::(\w+)', exec_body))
+        for cid in sorted(menu_cmds):
+            checked += 1
+            if cid not in exec_cmds:
+                broken.append((area, cid))
+    if missing_body:
+        for area, anchor in missing_body:
+            fail(f'{area} 判据锚 {anchor} 取不到函数体 —— 锚已失效（改名/搬文件），本项结论不可信')
+    if broken:
+        for area, cid in broken:
+            fail(f'{area}·CmdId::{cid} 菜单动作未走命令总线：执行体里找不到该命令 —— '
+                 '.Cmd(CmdId) 只是快捷键显示，不是执行绑定；这条路径无审计、'
+                 '无事件、不过破坏性确认门')
+    if not missing_body and not broken:
+        print(f'  ok     {checked} 条带 .Cmd 标记的菜单动作逐条落到命令总线')
+
+    # 16e. 参数契约：handler 读取的参数键必须在 argsSchema 里声明。
+    #
+    # 【为什么单独一项】argsSchema 是对外契约：AI/MCP 路径按它校验
+    # （ai_api.cpp 里"未知参数"直接拒收），人类路径的总线**不校验**。
+    # 于是"handler 读了、schema 没声明"= 人能传、AI 不能传 —— 机器侧
+    # 永远够不着那个目标，而界面看着完全正常。
+    #
+    # 【只查正查方向】handler 读了但没声明 = 真缺口。反过来（schema 声明了
+    # 但 handler 没读）会因"委托共享 helper"产生假阳性（fs.copy 的取参在
+    # TransferTargets 里），所以不做 —— 反向缺口由"schema 必填项"的
+    # 既有检查覆盖。
+    print('\n16e. handler 读取的参数必须在 argsSchema 中声明（参数契约）')
+    arg_reads = _handler_arg_reads()
+    viol = []
+    checked_args = 0
+    for r in cmds:
+        sch = r.get('schema')
+        if not sch:
+            continue
+        try:
+            v = json.loads(sch)
+        except Exception:
+            continue
+        if not isinstance(v, dict):
+            continue
+        props = set((v.get('properties') or {}).keys())
+        for k in sorted(arg_reads.get(r['id'], ())):
+            checked_args += 1
+            if k not in props:
+                viol.append((r['id'], r['name'], k, sorted(props)))
+    if viol:
+        for cid, name, k, props in viol:
+            fail(f'{name}（CmdId::{cid}）的 handler 读了参数「{k}」，但 argsSchema 没声明它'
+                 f'（已声明：{"/".join(props) if props else "无"}）—— AI 路径按 schema '
+                 f'校验会直接拒收该参数，人侧却传得进去，形成人机不对称')
+    else:
+        print(f'  ok     {checked_args} 处参数读取全部在对应 argsSchema 里有声明')
+
 
     # ---------------------------------------------------------------- 17
     print('\n17. 可写状态必须有回读（写完能验证）')
@@ -2361,7 +2646,7 @@ def main():
          'ParseTraceparent(tp' in ev2_test and 'LoadFromDisk()' in ev2_test
          and 'GetStr(L"parentSpanId")' in ev2_test),
         ('落盘事件不入库（不污染 dev.diff）',
-         'data/events.jsonl' in (ROOT / '.gitignore').read_text(encoding='utf-8', errors='replace')),
+         'logs/events.jsonl' in (ROOT / '.gitignore').read_text(encoding='utf-8', errors='replace')),
     ]:
         if not cond:
             ev2_missing.append(label)

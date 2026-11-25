@@ -52,9 +52,17 @@ static void Expect(bool cond, const wchar_t* key, const char* what) {
 // 效果等价于重启进程（内存里只剩默认值 + 盘上的文件）。
 static void ReloadFromDisk() {
     Config& cfg = Config::Get();
-    const std::wstring keep = cfg.Dir();
-    cfg.SetProfileDir(keep + L"-bounce");
-    cfg.SetProfileDir(keep);
+    // 【必须用 RootDir，不能用 Dir()】RootDir 与 Dir 现在是两层：
+    // Dir() = RootDir()\data，是**根的子目录**。拿 Dir() 去弹跳、再拿 Dir() 还原，
+    // 等于把"根"设成了 <root>\data —— 路径整整下移一层（探针实测：
+    // RootDir <root> → <root>\data，Dir <root>\data → <root>\data\data）。
+    // 于是 Load() 读的是 <root>\data\data\settings.json（不存在）→ 读回默认值
+    // → 每一条回环都判"值丢了"（80 项全红），而根因只是路径错了一层。
+    // 弹跳与还原都必须是**根**：SetProfileDir 会清空内存配置并复位 loaded_，
+    // 效果等价于重启进程（内存里只剩默认值 + 盘上的文件）。
+    const std::wstring keepRoot = cfg.RootDir();
+    cfg.SetProfileDir(keepRoot + L"-bounce");
+    cfg.SetProfileDir(keepRoot);
     cfg.Load();
 }
 
@@ -91,13 +99,19 @@ int main() {
 
     wchar_t tmp[MAX_PATH] = L"";
     GetTempPathW(MAX_PATH, tmp);
-    const std::wstring dir = tf::Join(std::wstring(tmp), L"exbar-roundtrip-test");
-    tf::EnsureDir(dir);
     // 测试必须可重复跑：上一轮的 settings.json 会让"原值"断言假失败。
-    DeleteFileW(tf::ToExtended(tf::Join(dir, L"settings.json")).c_str());
+    // 目录名带 PID：多会话/并行跑测试时，固定目录会被另一轮同时改写，
+    // 随机出现"边界值写盘再读盘后不变"失败（键名每次还不一样）。
+    const std::wstring dir =
+        tf::Join(std::wstring(tmp), L"exbar-roundtrip-test_" + std::to_wstring(GetCurrentProcessId()));
+    tf::EnsureDir(dir);
 
     Config& cfg = Config::Get();
     cfg.SetProfileDir(dir);
+    // 清掉上一轮留下的偏好与四份状态，保证"原值"真的是默认值。
+    for (const auto& p : {cfg.SettingsPath(), cfg.SessionPath(), cfg.HistoryPath(),
+                          cfg.TabsPath(), cfg.WindowPath()})
+        DeleteFileW(tf::ToExtended(p).c_str());
     cfg.Load();
 
     const auto& entries = settings_reg::Entries();
@@ -197,7 +211,7 @@ int main() {
     }
 
     // 恢复默认目录，避免同进程里的后续测试受影响（与 profile_isolation_test 同口径）。
-    cfg.SetProfileDir(tf::Join(tf::ExeDir(), L"data"));
+    cfg.SetProfileDir(tf::ExeDir());
     cfg.Load();
 
     std::printf("  通过 %d / 失败 %d\n", g_pass, g_fail);

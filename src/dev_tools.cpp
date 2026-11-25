@@ -251,7 +251,7 @@ std::wstring Snapshot() {
     v.Set(L"status", Str(status));
     v.Set(L"diffStat", Str(diff));
     v.Set(L"repo", Str(tf::ExeDir()));
-    v.Set(L"profile", Str(Config::Get().Dir()));
+    v.Set(L"profile", Str(Config::Get().RootDir()));
     v.Set(L"bash", Str(bash));
     v.Set(L"python", Str(python));
     v.Set(L"evalSurfaceOk", json::Value::MakeBool(ev.ok));

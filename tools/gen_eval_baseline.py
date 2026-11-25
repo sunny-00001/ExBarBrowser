@@ -10,7 +10,7 @@ evaluator"列为公开问题。
 
 本脚本做两件事：
 
-    python tools/gen_eval_baseline.py            # 签发（覆盖 data/eval-surface.json）
+    python tools/gen_eval_baseline.py            # 签发（覆盖 tests/baselines/eval-surface.json）
     python tools/gen_eval_baseline.py --check    # 校验清单是否与当前仓库一致
 
 规则是「只许签发，不许自改」：
@@ -21,7 +21,7 @@ evaluator"列为公开问题。
 新增测试文件本身是好事（只会更强），但它必须由人显式签发一次 ——
 这样"谁在什么时候放宽了判据"在 git 里留得下痕迹。
 
-清单路径：<repo>/data/eval-surface.json（入库，因为它属于工程资产而不是用户数据）。
+清单路径：<repo>/tests/baselines/eval-surface.json（入库，因为它属于工程资产而不是用户数据）。
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ import sys
 from datetime import datetime, timezone
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MANIFEST = os.path.join(REPO, "data", "eval-surface.json")
+MANIFEST = os.path.join(REPO, "tests", "baselines", "eval-surface.json")
 
 # 单个文件（仓库相对路径 → 用途说明）
 #
@@ -170,28 +170,28 @@ def check_git_tracked():
     `git diff --cached` / review / CI 都看得见，谁在什么时候放宽了判据留得下痕迹。
     agent 若想悄悄放宽判据，就必须连"提交"这一步也做掉（那本身是另一道
     更显眼的动作）。**不跟踪**就等于这条痕迹完全不存在 —— 这正是
-    本轮修复前的状态（`?? data/eval-surface.json`）。
+    本轮修复前的状态（`?? tests/baselines/eval-surface.json`）。
 
     【流程】签发 → `git add` → `git commit`。提交之后 status 变空，门开。
     签发之后**门仍然关着**，直到有人提交 —— 这正是"签发权归人"的机械含义
     （见 src/eval_surface.h 的同名注释）。
     """
-    ok, tracked = git("ls-files", "--error-unmatch", "data/eval-surface.json")
+    ok, tracked = git("ls-files", "--error-unmatch", "tests/baselines/eval-surface.json")
     if not ok:
-        return False, ("data/eval-surface.json 未被 git 跟踪 —— 重签将不留任何痕迹。"
-                       "先执行：git add data/eval-surface.json")
-    ok2, status = git("status", "--porcelain", "--", "data/eval-surface.json")
+        return False, ("tests/baselines/eval-surface.json 未被 git 跟踪 —— 重签将不留任何痕迹。"
+                       "先执行：git add tests/baselines/eval-surface.json")
+    ok2, status = git("status", "--porcelain", "--", "tests/baselines/eval-surface.json")
     if not ok2:
         return True, ""   # status 查不了（比如浅克隆）时不阻塞，只跳过这条
     # 【判据必须与 C++ 运行时门逐条一致】src/eval_surface.cpp 的 CheckGitTrust
-    # 要求 `git status --porcelain -- data/eval-surface.json` **输出为空**
+    # 要求 `git status --porcelain -- tests/baselines/eval-surface.json` **输出为空**
     # （已跟踪 + 已提交 + 工作树干净）。这里曾经放宽成"已暂存即可"，
     # 于是同一个不变量有了两个判定：清单只暂存没提交时，
     # tools/check_components.py 第 3 道放行（绿），而 dev.build/dev.test 拒绝启动。
     # 一边绿一边红，调用方只能猜 —— 而"两处判定同一件事"本身就是一条纪律。
     # 所以这里也要求空：已暂存（"M "）同样不合格。
     if status.strip():
-        return False, ("data/eval-surface.json 与 HEAD 不一致（已跟踪但有未提交改动）—— "
+        return False, ("tests/baselines/eval-surface.json 与 HEAD 不一致（已跟踪但有未提交改动）—— "
                        "有人重签过但还没提交。先 git add 并提交它；"
                        "在此之前 dev.build/dev.test 会拒绝启动（fail-closed，这是对的）。")
     return True, ""
@@ -252,7 +252,7 @@ def main() -> int:
         if compute_seal(manifest) != seal:
             print("清单正文与 selfSeal 不符 —— **清单被直接改过**（没有走重签）。")
             print("  这比\"评估面被改\"更可疑：改清单的人想让哪些检查看起来仍然合法？")
-            print("  git diff data/eval-surface.json 可以看到改了什么。")
+            print("  git diff tests/baselines/eval-surface.json 可以看到改了什么。")
             return 1
 
         problems = diff(None, manifest)

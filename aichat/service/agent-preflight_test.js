@@ -31,7 +31,7 @@ fake("./config", {
     logDir: "", dryRun: false, denyCommands: [], allowedRoots: []
   },
   modelReadiness: () => ({ ok: true, reason: "" }),
-  CONFIG_PATH: "config.json", MODEL_PATH: "model.json",
+  CONFIG_PATH: "aichat.json", MODEL_PATH: "models.json",
   reloadConfig: () => false,
   configStatus: () => ({ path: "", modelPath: "", error: "" }),
   saveAll: () => ({}), keyHint: () => ""

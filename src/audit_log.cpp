@@ -145,8 +145,9 @@ std::wstring ToTextLine(const Record& r) {
 }
 
 bool Write(const Record& r) {
-    const std::wstring dir = Config::Get().Dir();
+    const std::wstring dir = Config::Get().LogsDir();
     if (dir.empty()) return false;
+    tf::EnsureDir(dir);
 
     // 规范格式：audit.jsonl（R18 要求的文件名）。
     const std::wstring jsonl = tf::Join(dir, L"audit.jsonl");

@@ -67,7 +67,7 @@ function stubClient() {
       PipeClient: realPipe.PipeClient,
       ListEndpoints: () => [],
       ConnectAny: async () => ({ ok: true, client: fake, tried: 0, total: 1 }),
-      DATA_DIR: realPipe.DATA_DIR
+      RUNTIME_DIR: realPipe.RUNTIME_DIR
     };
     delete require.cache[require.resolve("./tools-exbar")];
     const te = require("./tools-exbar");

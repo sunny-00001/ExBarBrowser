@@ -11,6 +11,7 @@
 // 拼 hist/push_back，那是历史上导致"后退要按两次"的直接原因。
 #include "app.h"
 
+#include "commands.h"    // CommandBus：界面侧的历史跳转/搜索提交转投命令总线
 #include "text_file.h"   // tf::Exists / tf::IsDirectory（区分"导航到目录"与"打开文件"）
 #include "icon_resolve.h"
 #include "search_folder.h"  // searchfolder::Create —— 原生搜索文件夹（系统搜索协议）
@@ -65,8 +66,10 @@ bool IsSearchTitle(const std::wstring& path) {
 //   2. 真的去导航
 //   3. 失败则回滚栈（Fail），并让上层知道
 bool App::NavigateActive(const std::wstring& path, bool push) {
-    Tab* t = Active();
-    Pane* p = t ? ActivePane() : nullptr;
+    return NavigateInPane(ActivePane(), path, push);
+}
+
+bool App::NavigateInPane(Pane* p, const std::wstring& path, bool push) {
     if (!p || path.empty()) return false;
 
     // 目标是**文件**时不该走"导航"：IExplorerBrowser::BrowseToObject 对文件项
@@ -103,6 +106,23 @@ bool App::NavigateActive(const std::wstring& path, bool push) {
 }
 
 // 历史游标移动：先改游标，再导航；失败退回 —— 避免"地址栏显示 A、视图还是 B"。
+bool App::OpenPathInOtherPane(const std::wstring& path) {
+    Tab* t = Active();
+    if (!t || path.empty()) return false;
+
+    // 单栏时没有"另一窗格"可打：先开双栏（会建好第二视图并把焦点留在活动窗格），
+    // 再拿到非活动窗格的索引。双栏下 activePane 是槽位 0/1，另一边就是 1-它。
+    if (!Config::Get().s().dualPane) SetDualPane(true);
+    t = Active();  // SetDualPane 可能改标签/状态，重取
+    if (!t) return false;
+    const int other = t->activePane == 0 ? 1 : 0;
+    if (!EnsurePaneView(t, other)) return false;
+    Pane* p = PaneAt(t, other);
+    // push=true 写进那一栏自己的历史栈；活动窗格与焦点都不动 —— "在另一窗格打开"
+    // 的语义就是不动用户正在看的这一边。
+    return NavigateInPane(p, path, true);
+}
+
 void App::GotoHistory(int target) {
     Pane* p = ActivePane();
     if (!p) return;
@@ -232,6 +252,18 @@ bool App::RunSearch(const std::wstring& query, std::wstring* title) {
     return true;
 }
 
+// 搜索框提交从这里进，转投 search.find 命令。
+//
+// 【为什么不是直接调 RunSearch】界面提交与命令面板/AI 的 search.find 必须
+// 是同一个入口：两处各写一遍，表现迟早不同（"搜索框能搜、命令搜不到"）。
+// 命令的 handler 内部调的正是 RunSearch，所以转投后仍是同一份实现，
+// 差别只在于这一路多了审计与事件。
+void App::RunSearchViaCommand(const std::wstring& query) {
+    json::Value a = json::Value::MakeObject();
+    a.Set(L"query", json::Value::MakeStr(query));
+    (void)CommandBus::Get().Invoke(CmdId::OpSearch, Args::FromJson(a), Actor::Ui());
+}
+
 void App::RefreshActive() {
     Pane* p = ActivePane();
     if (p && p->view) p->view->Refresh();
@@ -257,6 +289,18 @@ void App::JumpHistory(int depth, bool backward) {
     if (!p) return;
     const int target = backward ? p->nav.idx() - 1 - depth : p->nav.idx() + 1 + depth;
     GotoHistory(target);
+}
+
+// 界面侧的历史跳转（地址框下拉 / 后退·前进下拉）从这里进，转投命令总线。
+//
+// 【为什么绕这一圈】界面回调直接调 JumpHistory 时，那一步既没有审计也没有
+// 事件：命令面板/AI 跳历史会留痕，人点菜单跳历史不留。同一个动作两条强度。
+// 转投 nav.history.jump 后两路同源（该命令的 handler 内部调的就是 JumpHistory）。
+void App::JumpHistoryViaCommand(int depth, bool backward) {
+    json::Value a = json::Value::MakeObject();
+    a.Set(L"depth", json::Value::MakeInt(depth));
+    a.Set(L"backward", json::Value::MakeBool(backward));
+    (void)CommandBus::Get().Invoke(CmdId::NavHistoryJump, Args::FromJson(a), Actor::Ui());
 }
 
 int App::ClearHistory() {

@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "ai_api.h"  // RiskName / ScopeName：cmd.help 复用协议层的风险/作用域命名
 #include "app_commands.h"
 #include "dev_snapshot.h"
 #include "dev_tools.h"
@@ -248,6 +249,44 @@ void App::RegisterDevCommands() {
         out->Set(L"snapshotId", Str(snapshotId));
         out->Set(L"before", Str(before));
         out->Set(L"after", Str(after));
+        return true;
+    });
+
+    // cmd.help：运行期命令自省。只读遍历命令表，字段全部来自 CommandDef ——
+    // 与 tools/list / 构建期 check_ai_meta 共用同一份真源，不另建命令知识副本。
+    // 传 name 只回一条（走 FindCommand，点分名/legacy 名都认）；省略回全部。
+    regR(CmdId::CmdHelp, [](const Args& args, json::Value* out) {
+        const std::wstring only = args.Str(L"name");
+        std::vector<const CommandDef*> rows;
+        if (!only.empty()) {
+            if (const CommandDef* d = FindCommand(only)) rows.push_back(d);
+            else {
+                CommandBus::Get().NoteFailure(L"未知命令：" + only);
+                return false;
+            }
+        } else {
+            for (const CommandDef& d : CommandTable()) rows.push_back(&d);
+        }
+        json::Value arr = json::Value::MakeArray();
+        for (const CommandDef* d : rows) {
+            json::Value o = json::Value::MakeObject();
+            o.Set(L"name", Str(d->name));
+            o.Set(L"title", Str(d->title));
+            o.Set(L"group", Str(d->group));
+            o.Set(L"implemented", json::Value::MakeBool(d->implemented));
+            o.Set(L"aiExposed", json::Value::MakeBool(d->aiExposed));
+            o.Set(L"risk", Str(ai::RiskName(d->effects)));
+            o.Set(L"scope", Str(ai::ScopeName(d->effects.scope)));
+            o.Set(L"hasRequiredArgs", json::Value::MakeBool(HasRequiredArgs(*d)));
+            // schema/断言是编译期 UTF-8 字面量（const char*），用 str::FromUtf8 转宽串。
+            o.Set(L"argsSchema", Str(str::FromUtf8(d->argsSchema)));
+            o.Set(L"outputSchema", Str(str::FromUtf8(d->outputSchema)));
+            o.Set(L"assertion", Str(str::FromUtf8(d->assertion)));
+            o.Set(L"assertionExempt", Str(str::FromUtf8(d->assertionExempt)));
+            arr.arr.push_back(std::move(o));
+        }
+        out->Set(L"count", json::Value::MakeInt(static_cast<int>(rows.size())));
+        out->Set(L"commands", std::move(arr));
         return true;
     });
 }

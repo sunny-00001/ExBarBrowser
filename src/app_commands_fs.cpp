@@ -16,6 +16,7 @@
 #include "app.h"
 
 #include "app_commands.h"
+#include "file_attr.h"
 #include "file_undo.h"
 #include "log.h"
 #include "path_util.h"
@@ -155,7 +156,24 @@ void App::RegisterFsCommands() {
             }
             return false;
         }
-        return NewTab(path) != 0;
+        // background 由书签右键「在后台新标签中打开」传入：建标签但不切走当前视图。
+        // 注意极性：NewTab 的第三个参数是 activate（是否激活），与 background 相反，
+        // 所以这里必须取反 —— 直传会把「后台」做成「前台」。
+        const bool background = args.Bool(L"background");
+        return NewTab(path, NewTabIndex(), !background) != 0;
+    });
+    reg(CmdId::FsOpenInPane, [this](const Args& args) {
+        const std::wstring path = pathutil::ToShellPath(args.Str(L"path"));
+        if (path.empty() || !tf::Exists(path)) {
+            if (!path.empty()) {
+                LogDbg(L"[cmd] FsOpenInPane 目标不存在：%s", path.c_str());
+                CommandBus::Get().NoteFailure(L"目标不存在：" + path);
+            } else {
+                CommandBus::Get().NoteFailure(L"缺少必填参数：path");
+            }
+            return false;
+        }
+        return OpenPathInOtherPane(path);
     });
     reg(CmdId::FsOpenInNewWindow, [this](const Args& args) {
         const std::wstring path = pathutil::ToShellPath(args.Str(L"path"));
@@ -223,5 +241,25 @@ void App::RegisterFsCommands() {
         sei.lpFile = target.c_str();
         sei.nShow = SW_SHOWNORMAL;
         return ShellExecuteExW(&sei) != FALSE;
+    });
+
+    // 属性写入（指定路径）：与 file.attr.set 共用同一份 fileattr::Apply，
+    // 区别只在目标从哪来 —— 这里是点名的路径，那边是当前选中集。
+    regR(CmdId::FsAttrSet, [](const Args& args, json::Value* out) {
+        std::vector<std::wstring> targets = args.StrArray(L"targets");
+        for (auto& p : targets) p = pathutil::ToShellPath(p);
+        const json::Value* a = args.Any(L"attrs");
+        fileattr::Delta delta;
+        if (targets.empty() || !a || !fileattr::ParseDelta(*a, &delta)) {
+            CommandBus::Get().NoteFailure(L"需要 targets（非空）与 attrs（至少一项）");
+            return false;
+        }
+        std::vector<DWORD> bits;
+        if (!fileattr::Apply(targets, delta, &bits)) {
+            CommandBus::Get().NoteFailure(L"属性写入失败（路径、权限或回读校验不通过）");
+            return false;
+        }
+        fileattr::WriteResult(bits, out);
+        return true;
     });
 }

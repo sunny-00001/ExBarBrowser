@@ -82,10 +82,45 @@ public:
     //   · 执行失败 → 返回 false，且**保留**记录（撤销机会不能被一次失败吃掉）。
     bool Undo(bool machineCaller, const Applier& apply, std::wstring* why);
 
-    void Clear() { entries_.clear(); }
+    // 一次撤到指定那一步（index 从 0 起，0 = 栈顶 = 下一步要撤的那条）。
+    //
+    // 【为什么在栈里做，而不是让调用方自己循环 Undo】这段语义恰好是最容易错的：
+    //   · 撤到第 N 步 = **撤 N+1 次**（0 是栈顶，含它自己）；
+    //   · 中途失败：已撤掉的不回到栈里，失败的那步留在栈顶（还能再试）；
+    //   · 机器发起时不穿透人工操作（同 Undo 的边界规则）；
+    //   · 返回值要说清"实际撤了几步"，不能把"撤了一半"报成成功。
+    // 这四条每条都能各自出错，而散在调用方里的循环没法单测 ——
+    // 所以放在这里（本文件不含 COM，是纯策略，可单测）。
+    //
+    // 返回实际撤掉的步数；中途失败时 why 写明停在哪、为什么，
+    // undone_out 写明撤了几步（没给指针就不写）。
+    size_t UndoTo(size_t index, bool machineCaller, const Applier& apply, std::wstring* why,
+                  size_t* undone_out = nullptr);
+
+    // ---- redo（撤销的反向）----
+    // 栈分离：Undo 成功时把**撤销前的完整记录**压入 redo_（撤销后 apply 会
+    // 清空 e.items，所以必须在调用 apply 之前留副本）；新的 Push 会清空 redo_
+    // （标准语义：做了新操作就不能再重做被撤掉的那一步）。
+    bool CanRedo() const { return !redo_.empty(); }
+    size_t RedoSize() const { return redo_.size(); }
+
+    // 只读枚举（file.undo.list 用）。顺序 0 = 栈顶 = 下一步要撤的那条。
+    // 返回内部引用，调用方不得修改；栈本身不暴露写接口。
+    const std::vector<Entry>& Entries() const { return entries_; }
+    const std::vector<Entry>& RedoEntries() const { return redo_; }
+
+    // 重做栈顶已撤销的一步。
+    //   · applyFwd 是**正向**执行器（beforePath → afterPath），与撤销的 apply 对称；
+    //   · machineCaller 边界同 Undo：机器的重做不穿透人工操作；
+    //   · 失败不弹 redo_（重做机会不能被一次失败吃掉）；
+    //   · 成功后该记录压回 undo_（于是还能再 Undo 回来）。
+    bool Redo(bool machineCaller, const Applier& applyFwd, std::wstring* why);
+
+    void Clear() { entries_.clear(); redo_.clear(); }
 
 private:
     std::vector<Entry> entries_;
+    std::vector<Entry> redo_;
 };
 
 }  // namespace fileundo

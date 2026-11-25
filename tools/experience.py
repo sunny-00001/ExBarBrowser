@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 
 
 ACTIVE = "experience.jsonl"
@@ -51,10 +52,37 @@ def now_iso():
     return datetime.datetime.now().astimezone().isoformat(timespec="milliseconds")
 
 
+# 经验池是**状态**（随每次 add/upvote 变），不放在 data\ 里；事件与审计是
+# **日志**，放 logs\。传入的 profile 可以仍指向旧布局（文件直接在 data\），
+# 首次使用时复制一份到新位置，旧文件保留不删（回退用）。
+def _resolve_dir(profile, subdir, filenames):
+    p = os.path.abspath(profile or ".")
+    if os.path.basename(p).lower() == subdir:
+        return p
+    new = os.path.join(p, subdir)
+    legacy = os.path.join(p, "data")
+    for name in filenames:
+        src, dst = os.path.join(legacy, name), os.path.join(new, name)
+        if os.path.isfile(src) and not os.path.exists(dst):
+            os.makedirs(new, exist_ok=True)
+            shutil.copyfile(src, dst)
+    return new
+
+
+def state_dir(profile):
+    return _resolve_dir(profile, "state", (ACTIVE, QUARANTINE, LEDGER))
+
+
+def logs_dir(profile):
+    return _resolve_dir(profile, "logs",
+                        ("events.jsonl", "events.jsonl.1", "audit.jsonl", "audit.jsonl.1"))
+
+
 def paths(data_dir):
-    return (os.path.join(data_dir, ACTIVE),
-            os.path.join(data_dir, QUARANTINE),
-            os.path.join(data_dir, LEDGER))
+    state = state_dir(data_dir)
+    return (os.path.join(state, ACTIVE),
+            os.path.join(state, QUARANTINE),
+            os.path.join(state, LEDGER))
 
 
 def read_jsonl(path):
@@ -129,14 +157,14 @@ def _ledger(data_dir, action, entry_id, reason, extra=None):
     rec = {"ts": now_iso(), "action": action, "id": entry_id, "reason": reason}
     if extra:
         rec.update(extra)
-    append_jsonl(os.path.join(data_dir, LEDGER), rec, cap=MAX_LEDGER)
+    append_jsonl(os.path.join(state_dir(data_dir), LEDGER), rec, cap=MAX_LEDGER)
 
 
 def _quarantine(data_dir, entry, reasons):
     rec = dict(entry)
     rec.update({"id": entry_hash(entry), "state": "quarantined",
                 "quarantinedAt": now_iso(), "reasons": reasons})
-    append_jsonl(os.path.join(data_dir, QUARANTINE), rec)
+    append_jsonl(os.path.join(state_dir(data_dir), QUARANTINE), rec)
     _ledger(data_dir, "quarantine", rec["id"], "suspicious_or_unverified",
             {"reasons": reasons})
     return rec
@@ -150,7 +178,7 @@ def verify_against_events(data_dir, proof, command):
     trace_id = proof.get("traceId")
     if not isinstance(seq, int) or not trace_id:
         return False, "proof_incomplete"
-    events_path = os.path.join(data_dir, "events.jsonl")
+    events_path = os.path.join(logs_dir(data_dir), "events.jsonl")
     rows, _ = read_jsonl(events_path)
     for e in rows:
         if e.get("seq") != seq or e.get("traceId") != trace_id:
@@ -334,8 +362,8 @@ def stats(data_dir):
     写命令数，分子是同目录审计里人工发起的撤销/回滚数 —— 这是当前代码能
     给出的最接近"人改了 AI 的产出"的可观测信号。等 A10 的 edit 动作落事件
     后，应改读 human.rewrite 事件而不是继续用这个代理指标。"""
-    events_path = os.path.join(data_dir, "events.jsonl")
-    audit_path = os.path.join(data_dir, "audit.jsonl")
+    events_path = os.path.join(logs_dir(data_dir), "events.jsonl")
+    audit_path = os.path.join(logs_dir(data_dir), "audit.jsonl")
     per_tool = {}
     turns = {}
     ai_writes = 0

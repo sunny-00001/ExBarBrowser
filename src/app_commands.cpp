@@ -228,6 +228,7 @@ void App::ApplyViewMode(int index) {
     if (!host) return;
     host->SetViewMode(kViewModes[index].fvm, kViewModes[index].icon);
     viewMode_ = index;
+    SyncZoomSlider();   // 换模式会换图标尺寸，滑块要跟着走
     // 视图模式是用户偏好（不是某个目录的状态），改了就落盘，下次启动直接套用。
     Settings& s = Config::Get().mutableSettings();
     if (s.viewMode != index) {
@@ -355,6 +356,7 @@ void App::RegisterCommands() {
     RegisterCompareCommands();
     RegisterJobCommands();
     RegisterMiscCommands();
+    RegisterConfigCommands();
     RegisterExternalCommands();
     RegisterBookmarkIoCommands();
     RegisterWindowCommands();
@@ -393,53 +395,78 @@ void App::ShowTabSwitcher() {
 }
 
 void App::ShowTabMenu(int index, int action) {
-    int id = tabSet_.IdAt(index);
+    // 菜单所有动作统一走 CommandBus：与快捷键/命令面板同源，于是审计、事件、
+    // 破坏性确认、前置拒绝理由全都在这条路径上。以前这里直接调 App 方法，
+    // 同一动作"快捷键有审计、右键没审计"，是第 16d 项抓出的假覆盖。
+    // 目标一律传 index —— 右键可以落在非活动标签上，命令默认取活动标签会做错对象。
+    auto invokeIndex = [index](CmdId cmd) {
+        json::Value a = json::Value::MakeObject();
+        a.Set(L"index", json::Value::MakeInt(index));
+        return CommandBus::Get().Invoke(cmd, Args::FromJson(a), Actor::Ui());
+    };
+
+    const int id = tabSet_.IdAt(index);
     const core::TabRef* ref = tabSet_.Find(id);
     if (!ref) return;
-    // 关闭历史条目：动作号 = 基址 + 序号。先于 switch 处理，
-    // 避免为 20 条历史各写一个 case（枚举会被撑成噪声）。
+    // 关闭历史条目：与 tab.reopen 同一命令，序号决定重开第几条（命令 side 从
+    // 关闭栈按序取，这里把序号转成 index 参数传给 handler 的历史序号口径）。
+    // 先于 switch 处理，避免为 20 条历史各写一个 case。
     if (action >= kTabMenuReopenBase) {
-        ReopenClosed(action - kTabMenuReopenBase);
+        json::Value a = json::Value::MakeObject();
+        a.Set(L"index", json::Value::MakeInt(action - kTabMenuReopenBase));
+        CommandBus::Get().Invoke(CmdId::TabReopenAt, Args::FromJson(a), Actor::Ui());
         return;
     }
     switch (action) {
     // "新建标签页"与"+"按钮、tab.new 同义：开一个此电脑作为全新起点。
     // 以前它和 kTabMenuClone 一模一样（都复制当前路径），两个菜单项名不副实 ——
     // 现在"新建"= 新起点、"复制标签"= 同路径副本，语义分开。
-    case kTabMenuNew: NewTab(nav::kThisPc, NewTabIndex()); break;
-    case kTabMenuSwitcher: ShowTabSwitcher(); break;
-    case kTabMenuClose: CloseTab(id); break;
-    case kTabMenuCloseOther: CloseOthers(id); break;
-    case kTabMenuCloseLeft: CloseSide(id, true); break;
-    case kTabMenuCloseRight: CloseSide(id, false); break;
-    case kTabMenuClone: NewTab(ref->path, NewTabIndex()); break;
-    case kTabMenuToggleLock: ToggleLock(id); break;
-    case kTabMenuTogglePin: TogglePin(id); break;
-    case kTabMenuCopyPath: CopyText(ref->path); break;
-    case kTabMenuCopyTitle: CopyText(core::DisplayTitle(*ref)); break;
+    case kTabMenuNew:
+        CommandBus::Get().Invoke(CmdId::TabNew, Args::Empty(), Actor::Ui());
+        break;
+    case kTabMenuSwitcher:
+        CommandBus::Get().Invoke(CmdId::TabSwitcher, Args::Empty(), Actor::Ui());
+        break;
+    case kTabMenuClose: invokeIndex(CmdId::TabClose); break;
+    case kTabMenuCloseOther: invokeIndex(CmdId::TabCloseOther); break;
+    case kTabMenuCloseLeft: invokeIndex(CmdId::TabCloseLeft); break;
+    case kTabMenuCloseRight: invokeIndex(CmdId::TabCloseRight); break;
+    case kTabMenuClone: invokeIndex(CmdId::TabClone); break;
+    case kTabMenuToggleLock: invokeIndex(CmdId::TabLock); break;
+    case kTabMenuTogglePin: invokeIndex(CmdId::TabPin); break;
+    case kTabMenuCopyPath: {
+        // 复制路径走 clipboard.copy（带 text 参数），不是无参命令。
+        json::Value a = json::Value::MakeObject();
+        a.Set(L"text", json::Value::MakeStr(ref->path));
+        CommandBus::Get().Invoke(CmdId::ClipboardCopy, Args::FromJson(a), Actor::Ui());
+        break;
+    }
+    case kTabMenuCopyTitle: invokeIndex(CmdId::TabCopyTitle); break;
     case kTabMenuRename: {
         std::wstring name = core::DisplayTitle(*ref);
         // 输入框初值给"当前显示名"，用户直接改比较顺手；清空即取消改名。
-        if (PromptText(hwnd_, theme_, L"重命名标签页", L"标签名称", name, &name))
-            RenameTab(id, name);
+        if (PromptText(hwnd_, theme_, L"重命名标签页", L"标签名称", name, &name)) {
+            json::Value a = json::Value::MakeObject();
+            a.Set(L"index", json::Value::MakeInt(index));
+            a.Set(L"name", json::Value::MakeStr(name));
+            CommandBus::Get().Invoke(CmdId::TabRename, Args::FromJson(a), Actor::Ui());
+        }
         break;
     }
     case kTabMenuDedup: {
-        const int closed = CloseDuplicates(id);
-        if (!closed) MessageBeep(MB_ICONASTERISK);  // 全被锁定挡住了，别静默
+        const bool ok = invokeIndex(CmdId::TabCloseDuplicates);
+        if (!ok) MessageBeep(MB_ICONASTERISK);  // 全被锁定挡住了，别静默
         break;
     }
-    case kTabMenuMoveLeft: MoveTab(id, tabSet_.IndexOf(id) - 1); break;
-    case kTabMenuMoveRight: MoveTab(id, tabSet_.IndexOf(id) + 1); break;
-    case kTabMenuMoveFirst: MoveTab(id, 0); break;
-    case kTabMenuMoveLast: MoveTab(id, tabSet_.Count() - 1); break;
-    case kTabMenuMoveNewWindow:
-        if (!ref->locked && !ref->pinned && !ref->path.empty()) {
-            OpenPathInNewWindow(ref->path);
-            CloseTab(id);
-        }
+    case kTabMenuMoveLeft: invokeIndex(CmdId::TabMoveLeft); break;
+    case kTabMenuMoveRight: invokeIndex(CmdId::TabMoveRight); break;
+    case kTabMenuMoveFirst: invokeIndex(CmdId::TabMoveFirst); break;
+    case kTabMenuMoveLast: invokeIndex(CmdId::TabMoveLast); break;
+    case kTabMenuMoveNewWindow: invokeIndex(CmdId::TabMoveNewWindow); break;
+    case kTabMenuReopen:
+        // 无参重开最近关闭的一条，与菜单 .Cmd(CmdId::TabReopenClosed) 标记一致。
+        CommandBus::Get().Invoke(CmdId::TabReopenClosed, Args::Empty(), Actor::Ui());
         break;
-    case kTabMenuReopen: ReopenClosed(0); break;
     default:
         break;
     }

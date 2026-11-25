@@ -3,7 +3,7 @@
 # 启动独立实例打开大目录 → 等首帧 + 稳定 → 采样 5s 进程 CPU 时间 → WM_CLOSE 收尾。
 # 用来验证 P0-2：状态栏 800ms 定时器在“什么都没变”时不再做全量取数。
 # 用法：
-#   python tools/perf_idle.py --exe ExBarBrowser.new.exe --label "P0前" --save data/idle-before.json
+#   python tools/perf_idle.py --exe ExBarBrowser.new.exe --label "P0前" --save tests/baselines/idle-before.json
 #   python tools/perf_idle.py --exe ExBarBrowser.p0.exe   --label "P0后" --save data/idle-after.json
 import ctypes
 import ctypes.wintypes as wt

@@ -53,7 +53,7 @@ StateProbe g_probe;
 
 void SetStateProbe(StateProbe fn) { g_probe = std::move(fn); }
 
-bool CanExecute(const CommandDef& def, std::wstring* reason) {
+bool CanExecute(const CommandDef& def, std::wstring* reason, int targetTab) {
     auto deny = [reason](Req r) {
         if (reason) *reason = ReqReason(r);
         return false;
@@ -78,10 +78,18 @@ bool CanExecute(const CommandDef& def, std::wstring* reason) {
         case Req::HasTabs:           if (st.tabCount <= 0) return deny(r); break;
         case Req::HasClipboard:      if (!st.hasClipboard) return deny(r); break;
         case Req::CanGoUp:           if (!st.canGoUp) return deny(r); break;
-        case Req::CanMoveTabLeft:    if (st.activeTabIndex <= 0) return deny(r); break;
-        case Req::CanMoveTabRight:
-            if (st.activeTabIndex >= st.tabCount - 1) return deny(r);
+        // 目标标签：右键菜单传了 index 就按它判断；缺省仍是活动标签（快捷键/面板）。
+        // 不这么改的话，右键第一个标签「左移」会被"活动标签已在最左"误拒。
+        case Req::CanMoveTabLeft: {
+            const int at = targetTab >= 0 ? targetTab : st.activeTabIndex;
+            if (at <= 0 || at >= st.tabCount) return deny(r);
             break;
+        }
+        case Req::CanMoveTabRight: {
+            const int at = targetTab >= 0 ? targetTab : st.activeTabIndex;
+            if (at < 0 || at >= st.tabCount - 1) return deny(r);
+            break;
+        }
         case Req::HasClosedTabs:     if (!st.hasClosedTabs) return deny(r); break;
         case Req::HasMultipleTabs:   if (st.tabCount < 2) return deny(r); break;
         case Req::HasSelectionSingle: if (st.selectionCount != 1) return deny(r); break;
@@ -193,8 +201,11 @@ bool CommandBus::Dispatch(CmdId id, const Args& args, json::Value* result, Actor
     // "无历史时点后退"——handler 里静默 return false，界面毫无反馈。
     // 现在拒绝时给出明确原因（审计里也能看到），并把原因留给调用方：
     // 对外报"已经是顶层"远比笼统的"命令执行失败"有用。
+    // 目标标签下标：右键菜单会传 index（作用于被右键的标签，可能不是活动标签）。
+    // 前置检查据此判断"能不能左移/右移"，不能一律拿活动标签。
+    const int targetTab = args.Has(L"index") ? args.Int(L"index", -1) : -1;
     std::wstring reason;
-    if (!CanExecute(*def, &reason)) {
+    if (!CanExecute(*def, &reason, targetTab)) {
         last_ = def->name;
         lastBlockReason_ = reason;
         // 前置条件不满足 —— 这就是 PreconditionUnmet 的定义，

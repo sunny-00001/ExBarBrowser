@@ -28,6 +28,12 @@ inline constexpr const char* kNoArgs = R"({"type":"object","additionalProperties
 // 与数值域钉在一起：检查器读得到，漂移在编译时报错。
 inline constexpr const char* kPaneSplitSchema = "{\"type\":\"object\",\"properties\":{\"percent\":{\"type\":\"integer\",\"minimum\":20,\"maximum\":80,\"description\":\"主窗格占比百分比（左右并排=左栏宽度，上下堆叠=上栏高度）\"}},\"required\":[\"percent\"],\"additionalProperties\":false}";
 
+// 标签动作的目标下标：右键菜单作用于"被右键的那一格"（可能不是活动标签），
+// 故这些命令都接受可选 index；省略时 handler 回落到活动标签（快捷键/面板口径）。
+// 与 tab.lock/tab.color 的 index 写法一致。必须是单行字面量（见上方 kPaneSplitSchema
+// 的注释：check_ai_meta 只解析字面量/常量名，拼接字符串会让这批命令的 schema 解析不到）。
+inline constexpr const char* kTabIndexArg = "{\"type\":\"object\",\"properties\":{\"index\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"标签序号；省略=当前标签\"}},\"additionalProperties\":false}";
+
 // 从字面量里取 "minimum": / "maximum": 后面的整数（只看 ASCII 数字）。
 // constexpr：判据必须在编译期成立，不能等运行时才发现 AI 拿到的边界是旧的。
 constexpr int NumberAfter(const char* s, const char* token) {

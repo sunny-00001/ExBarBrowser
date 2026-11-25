@@ -37,7 +37,8 @@ const struct {
 } kSysKeys[] = {
     {L"hotkeyCmdCopy", L"Ctrl+C"},          {L"hotkeyCmdCut", L"Ctrl+X"},
     {L"hotkeyCmdPaste", L"Ctrl+V"},         {L"hotkeyCmdDelete", L"Delete"},
-    {L"hotkeyCmdUndo", L"Ctrl+Z"},          {L"hotkeyCmdSelectAll", L"Ctrl+A"},
+    {L"hotkeyCmdUndo", L"Ctrl+Z"},          {L"hotkeyCmdRedo", L"Ctrl+Y"},
+    {L"hotkeyCmdSelectAll", L"Ctrl+A"},
     {L"hotkeyCmdNewFolder", L"Ctrl+Shift+N"},{L"hotkeyNavBack", L"Alt+←"},
     {L"hotkeyNavForward", L"Alt+→"},        {L"hotkeyNavUp", L"Alt+↑"},
     {L"hotkeyNavRefresh", L"F5"},           {L"hotkeyTogglePreviewPane", L"Alt+P"},

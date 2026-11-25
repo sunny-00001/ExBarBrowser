@@ -74,7 +74,7 @@ function CollectPaths(value, where, out) {
   }
 }
 
-// 路径归一化后比较。两侧都要归一化：白名单可能来自 config.json（JSON 转义）、
+// 路径归一化后比较。两侧都要归一化：白名单可能来自 aichat.json（JSON 转义）、
 // 环境变量（shell 转义），也可能写成正斜杠；只比裸字符串会让"合法路径被判越界"
 // 和"含 // 的根一个都匹配不上"同时发生（这在 tools.js 里踩过一次）。
 //

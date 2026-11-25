@@ -1,7 +1,7 @@
 // 破坏性命令的人工确认：判据与收口实现。
 //
 // 【为什么独立成文件】CommandBus 所在的 commands.cpp 早已超 500 行（欠账棘轮
-// 记在 data/file-length-baseline.json）。破坏性确认这一块自带一张豁免表
+// 记在 tests/baselines/file-length-baseline.json）。破坏性确认这一块自带一张豁免表
 // 与一整套判据说明，塞在 commands.cpp 里只会让那个文件继续涨 ——
 // 而"欠账只能变少不能变多"是项目规则（AGENTS.md §3）。
 //
@@ -42,7 +42,7 @@ namespace {
 const CmdId kNoConfirmDestructive[] = {
     CmdId::TabCloseOther, CmdId::TabCloseLeft, CmdId::TabCloseRight,
     CmdId::CloseLeftOne, CmdId::CloseRightOne, CmdId::TabCloseDuplicates,
-    CmdId::HotkeyManager, CmdId::AiStop, CmdId::PathCopyLink,
+    CmdId::HotkeyManager, CmdId::AiStop,
     CmdId::DevBuild, CmdId::DevTest,
 };
 

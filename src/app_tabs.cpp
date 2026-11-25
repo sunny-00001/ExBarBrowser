@@ -88,9 +88,12 @@ bool App::PathOpenable(const std::wstring& path) {
     return tf::Exists(path);
 }
 
-int App::NewTab(const std::wstring& path, int index) {
+int App::NewTab(const std::wstring& path, int index, bool activate) {
     std::wstring target = path.empty() ? HomePath() : path;
     auto tab = std::make_unique<Tab>();
+    // 后台模式：从建第一个视图起就抑制它的"被激活"自报，否则 shell 在
+    // EnsurePaneView 内的焦点回调会把新标签当成用户点的标签切过去。
+    if (!activate) backgroundTab_ = tab.get();
     // 两个 Pane 先就位：右窗格只准备路径/历史，Shell 视图按需创建。
     // 双栏里左右目录可以不同，因此不能共用一个 nav::History。
     Pane* left = PaneAt(tab.get(), 0);
@@ -99,6 +102,7 @@ int App::NewTab(const std::wstring& path, int index) {
     rightPane->nav.Reset(target);
     if (!EnsurePaneView(tab.get(), 0)) {
         LogDbg(L"[tab] 创建视图失败：%s", target.c_str());
+        backgroundTab_ = nullptr;
         return 0;
     }
     left = PaneAt(tab.get(), 0);  // EnsurePaneView 可能触发回调；重取指针
@@ -137,8 +141,19 @@ int App::NewTab(const std::wstring& path, int index) {
     ApplyPersistedViewState(created);
     // 右窗格视图交给 Activate 按需创建；这里只恢复路径/历史（会话恢复时最后统一建活动标签）。
 
-    Activate(id);
-    Layout();
+    if (activate) {
+        Activate(id);
+    } else {
+        // 后台打开：标签已入 tabSet_、视图已导航，但不能切走当前视图。
+        // Activate 里唯一的"显示 + 焦点 + activeId_"就是这三件，全部跳过；
+        // 标签条仍要刷新（用户看得见新标签），几何也要排好（点它时才不会闪一下 0 尺寸）。
+        if (left->view) left->view->SetVisible(false);
+    }
+    backgroundTab_ = nullptr;
+    if (!activate) {
+        SyncChrome();  // 标签条要看得见新标签，但不能让它切走当前视图
+        Layout();
+    }
     MarkSessionDirty();   // 2s 去抖落盘：崩溃也不丢刚开的标签
     return id;
 }

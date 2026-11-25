@@ -117,10 +117,27 @@ void App::Layout(bool force) {
     MoveWindow(viewArea_, 0, y, rc.right, viewH, TRUE);
 
     if (s.showStatus) {
-        MoveWindow(statusBar_.hwnd(), 0, rc.bottom - stH, rc.right, stH, TRUE);
+        // 图标大小滑块占状态栏行最右端，状态栏本体让出这段宽度。
+        //
+        // 【为什么是"让位"而不是叠在上面】叠上去会盖住状态栏最右边的段
+        // （AI chip 就在那儿），而那段是有内容的。缩窄状态栏是唯一不打架的做法。
+        //
+        // 【窄窗口为什么整体收起】窗口不够宽时，让状态栏少一段信息比让它被切掉
+        // 一半要好 —— 与状态栏自己"收窄时按优先级丢段"的处理是同一个思路。
+        const int sliderW = StatusZoomSlider::WidthPx(theme_);
+        const bool roomForSlider = rc.right >= theme_.S(360);
+        const int statusW = roomForSlider ? rc.right - sliderW : rc.right;
+        MoveWindow(statusBar_.hwnd(), 0, rc.bottom - stH, statusW, stH, TRUE);
         ShowWindow(statusBar_.hwnd(), SW_SHOW);
+        if (roomForSlider) {
+            MoveWindow(zoomSlider_.hwnd(), statusW, rc.bottom - stH, sliderW, stH, TRUE);
+            ShowWindow(zoomSlider_.hwnd(), SW_SHOW);
+        } else {
+            ShowWindow(zoomSlider_.hwnd(), SW_HIDE);
+        }
     } else {
         ShowWindow(statusBar_.hwnd(), SW_HIDE);
+        ShowWindow(zoomSlider_.hwnd(), SW_HIDE);
     }
 
     // 全局导航窗格占内容区最左一块；窗格区（含左右/上下分栏）排在它右边。
@@ -325,6 +342,7 @@ void App::ApplyTheme(int dpiOverride) {
     navBar_.ReloadTheme();
     bookmarkBar_.ReloadTheme();
     statusBar_.ReloadTheme();
+    zoomSlider_.ReloadTheme();
     // 设置对话框是独立窗口，不会跟着主窗口 InvalidateRect 一起刷新 ——
     // 不显式通知它，深色切换后它会保持旧配色直到用户碰它一下。
     settingsDialog_.ReloadTheme();

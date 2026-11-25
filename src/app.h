@@ -29,6 +29,7 @@
 #include "settings_dialog.h"
 #include "shell_view.h"
 #include "status_bar.h"
+#include "status_zoom_slider.h"
 #include "layout_key.h"
 #include "tab_set.h"
 #include "tab_strip.h"
@@ -114,6 +115,9 @@ private:
     // fs.*（按路径操作）单独成文件：作用域与 file.*（选中集）不同。
     void RegisterFsCommands();
     void RegisterMiscCommands();
+    // 设置域（config.*）：枚举/读写/导出/还原。单独成文件是因为它要落地到
+    // 界面（栏高、主题、窗格、状态栏段…），混在杂项里会把那个文件推过欠账线。
+    void RegisterConfigCommands();
     // 书签编辑族（收藏夹增删改查、拖放/重排的结构化入口）：作用域自成一体，
     // 实现见 app_commands_misc_bookmarks.cpp。
     void RegisterBookmarkCommands();
@@ -174,7 +178,9 @@ private:
     void BuildSystemMenu();
 
     // 标签
-    int NewTab(const std::wstring& path, int index = -1);
+    // activate=false：建好标签但不切走当前视图（书签右键「在后台新标签中打开」）。
+    // 新标签的 ShellView 仍然创建并导航，只是容器保持隐藏，用户点它时才显示。
+    int NewTab(const std::wstring& path, int index = -1, bool activate = true);
     int NewTabIndex() const;  // tabNewPos: after_current = 当前右侧, end = 最右
     // 按需创建某个窗格的 Shell 视图；已创建时幂等。第二窗格首次打开双栏时才真正建。
     bool EnsurePaneView(Tab* tab, int paneIndex);
@@ -227,6 +233,9 @@ private:
     // 真正执行撤销（逆操作）。返回 false = 没撤成（原因写进 why）。
     // 失败时会把"已经撤成功"的项从记录里剔掉，让重试只试剩下的。
     bool ApplyFileUndo(fileundo::Entry& e, std::wstring* why);
+    // 真正执行重做（正向操作 beforePath → afterPath，与撤销对称）。
+    // 失败时同样把已成功的项从记录里剔掉，让重试只试剩下的。
+    bool ApplyFileRedo(fileundo::Entry& e, std::wstring* why);
     // 标签切换器（Ctrl+Shift+A）：列出全部标签，支持键入前缀定位。
     // 选中后激活；取消不改状态。
     void ShowTabSwitcher();
@@ -302,6 +311,10 @@ private:
     // 服务是面板的前置条件 —— 没服务时面板显示占位页而不是白屏。
     void InitAiPanel();
     void ToggleAiPanel();
+    // AI 页自绘标题栏的窗口动作（close/minimize/maximize/pin/unpin）：
+    // 统一转投命令总线（ai.panel.toggle / win.minimize / win.maximize /
+    // win.restore / win.topmost），与系统菜单、快捷键同源。
+    void DispatchAiPanelWindowAction(const std::wstring& action);
     // 页面经 WebMessage 上报的 AI 状态：chip 文本 + peek 内容。
     // 参数用基本类型，避免把 WebView COM 绑定类型漏进 app.h 的公共面。
     void ApplyAiWebStatus(const std::wstring& state, const std::wstring& summary,
@@ -336,6 +349,11 @@ private:
     // 导航
     // 唯一出口：路径 -> 历史栈 + 一次 Navigate。所有入口都必须经过这里。
     bool NavigateActive(const std::wstring& path, bool push);
+    // 同一套导航落到**指定窗格**：另一窗格打开用它，活动窗格由 NavigateActive 转调。
+    // 收 Pane* 而不是下标，是为了让"另一窗格"的选取留在调用方（那里才知道谁是活动）。
+    bool NavigateInPane(Pane* p, const std::wstring& path, bool push);
+    // 书签右键「在另一窗格中打开」：单栏时先开双栏，再把路径打到非活动窗格。
+    bool OpenPathInOtherPane(const std::wstring& path);
     void GotoHistory(int target);  // 历史游标移动的唯一入口（后退/前进/跳转共用）
     void GoBack();
     void GoForward();
@@ -343,6 +361,9 @@ private:
     void GoHome();
     void RefreshActive();
     void JumpHistory(int depth, bool backward);
+    // 历史跳转的**总线入口**：界面侧（地址框下拉 / 后退·前进下拉）走它，
+    // 内部转投 nav.history.jump 命令 —— 与命令面板/AI 同源，有审计与事件。
+    void JumpHistoryViaCommand(int depth, bool backward);
     std::vector<std::wstring> HistoryList(bool backward) const;
     // 清空地址框下拉里的历史：当前标签的后退/前进栈 + 全局"最近访问"。
     // 两者都清是因为下拉把它们合并成一个列表，只清一半会让人以为没生效。
@@ -398,6 +419,8 @@ private:
     // 不同（"搜索框能搜、命令搜不到"这种最典型的假等价）。成功时把结果视图的
     // 标题写进 title，供命令返回结构化结果。
     bool RunSearch(const std::wstring& query, std::wstring* title);
+    // 搜索框提交的总线入口：转投 search.find 命令，与命令面板/AI 同源。
+    void RunSearchViaCommand(const std::wstring& query);
 
     // ---- 搜索域（导航栏搜索框）----
     //
@@ -444,6 +467,8 @@ private:
     std::vector<std::wstring> SelectedOrFolder();
     void OpenPathInNewWindow(const std::wstring& path);
     void ApplyViewMode(int index);
+    // 把视图里**真实**的图标像素回灌给滑块（读回而不是自己记一份 —— 见实现处注释）。
+    void SyncZoomSlider();
 
     // ---- 序列总览弹窗（复刻 mod 的 ExBarSeqOverlay）----
     // 取数与派发都在本层：弹窗只管 UI/键盘，App 用既有数据源填行、
@@ -465,6 +490,8 @@ private:
     NavBar navBar_;
     BookmarkBar bookmarkBar_;
     StatusBar statusBar_;
+    // 状态栏右端的图标大小滑块（独立子窗口，见 status_zoom_slider.h）。
+    StatusZoomSlider zoomSlider_;
     // 设置对话框（成员而非全局：它需要一个 owner 窗口与一份主题，
     // 两者都在 App 里；做成全局就得多传参数或多存一份全局状态）。
     SettingsDialog settingsDialog_;
@@ -507,6 +534,11 @@ private:
     bool mruCycling_ = false;
     // 会话恢复期间不急建第二窗格 ShellView：路径/历史先入模型，最后只为活动标签建一次。
     bool restoringSession_ = false;
+    // 后台新标签正在建：它自己的 ShellView 会同步报告"被激活"，
+    // 若照单全收会把当前标签/窗格切走 —— 与"后台"语义相反。
+    // 记下正在建的 Tab（视图回调发生在 id 分配之前，只能用指针身份），
+    // OnPaneActivated 对属于它的视图忽略，创建完即清零。
+    Tab* backgroundTab_ = nullptr;
     // 首帧还没画出来（Run 的 ShowWindow 之前）。
     //
     // 【为什么需要】建第二个窗格的 ShellView 实测 375 ms（双栏启动：

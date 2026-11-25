@@ -390,8 +390,8 @@ function effectiveModels(p) {
 // re-adds the *current* model, and /api/config/model rejects ids that are
 // not in a saved provider.
 //
-// saveAll splits the flat object back into config.json (behaviour) and
-// model.json (active triple + providers), so callers keep mutating one view.
+// saveAll splits the flat object back into aichat.json (behaviour) and
+// models.json (active triple + providers), so callers keep mutating one view.
 function saveConfigNormalized(mutate) {
   return saveAll((raw) => {
     const next = mutate(raw) || raw;
@@ -428,7 +428,7 @@ function providersPayload() {
     const off = disabledSet(p);
     return {
       index: i,
-      // Stable identifier: the key this provider has in model.json#providers.
+      // Stable identifier: the key this provider has in models.json#providers.
       // Renaming the provider or editing its URL keeps it; index does not.
       key: String(p.key || ""),
       vendor: String(p.vendor || p.name || "").trim() || hostLabel(p.baseUrl),
@@ -599,7 +599,7 @@ async function pingModel(base, key, protocol, model) {
   }
 }
 
-// Prove endpoint + key + protocol before anything is written to config.json.
+// Prove endpoint + key + protocol before anything is written to aichat.json.
 // /models is free and usually present; a 404/405 falls back to a one-token
 // chat request. 401/403 short-circuits with a clear "key invalid" message.
 async function validateEndpoint(base, protocol, key, model) {
@@ -1239,7 +1239,7 @@ async function handleApi(req, res, url) {
     const mergeModels = body.mergeModels === true;
     const activate = String(body.activate || "").trim();
 
-    // Identity is an explicit, stable model.json key -- NOT the display name
+    // Identity is an explicit, stable models.json key -- NOT the display name
     // and NOT a guess from the endpoint. `editKey` is the only signal that
     // authorises replacing an existing provider, and it is precise enough to
     // let the endpoint itself change while `default` keeps pointing at the
@@ -1367,7 +1367,7 @@ async function handleApi(req, res, url) {
       if (idx < 0 && isActivePair && action === "add") {
         // Fresh install / only provider removed: the active triple is the only
         // source of truth. Build its provider shell from credentials that are
-        // already live, so no unvalidated key can enter model.json here.
+        // already live, so no unvalidated key can enter models.json here.
         const name = String(config.vendor || "").trim() || vendorLabel(base);
         list.push({ vendor: name, name, baseUrl: base, apiKey: config.apiKey,
           protocol, models: [] });
@@ -1399,7 +1399,7 @@ async function handleApi(req, res, url) {
         if (models.includes(next)) { error = "该模型 ID 已存在"; return raw; }
         models[i] = next;
         off = off.map((x) => (x === model ? next : x));
-        // Per-model metadata in model.json is keyed by id (display name,
+        // Per-model metadata in models.json is keyed by id (display name,
         // contextWindow, cost…). Follow the rename or it becomes an orphan and
         // the entry silently degrades to a bare {id}.
         if (p.meta && Object.prototype.hasOwnProperty.call(p.meta, model)) {
@@ -1572,7 +1572,7 @@ function start() {
   }
 
   const server = http.createServer(async (req, res) => {
-    // Pick up config.json edits on every request. reloadConfig() only re-reads
+    // Pick up aichat.json edits on every request. reloadConfig() only re-reads
     // the file when its mtime/size actually changed, so this is a cheap stat,
     // not a JSON parse per request. A long-lived SSE chat reloads once at the
     // start of the turn, so the model cannot swap halfway through a reply.

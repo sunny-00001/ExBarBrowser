@@ -7,8 +7,8 @@
 //   命名管道没有这个问题：它连的是**已经在运行的那个窗口**。
 //
 // 【发现机制】本工程本来就为外部客户端准备了发现文件：
-//     <dataDir>/ai-pipe.<pid>.txt   → \\.\pipe\ExBarBrowser_ai_<hash>_<pid>
-//     <dataDir>/ai-token.<pid>.txt  → 32 位令牌（每次请求都要带）
+//     <runtimeDir>/ai-pipe.<pid>.txt   → \\.\pipe\ExBarBrowser_ai_<hash>_<pid>
+//     <runtimeDir>/ai-token.<pid>.txt  → 32 位令牌（每次请求都要带）
 //
 // 【管道只有一个连接槽】服务端 CreateNamedPipe 的 nMaxInstances = 1。
 //   所以**同一时刻只能有一个客户端**。若有别的客户端（或残留的 --mcp-stdio

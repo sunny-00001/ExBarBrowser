@@ -324,7 +324,7 @@ Emacs Lisp 没有包系统，所有全局符号共享一个命名空间，于是
 | `Cmd*` 与 `fs.*` 是否合并 | 🔁 已结论：**不合并** | `file.*` 是交互式（弹框/读选中），`fs.*` 是确定式（参数点名）。`commands.h:39-47` 已论证两套语义应当共存；合并会丢掉这个区分，且改写已暴露给 AI 的 `fs.*` 名 |
 | `eb` 拆成领域命名空间 | ✅ 2026-11-20 | `eb_ui.*` → `ui_draw.*`（`namespace ui`）、`eb_theme.h` → `ui_palette.h`；`EbColors`/`EbPalette` → `UiPalette`/`PaletteFor`；21 文件约 77 处调用点；`shell_view.cpp` 里同名的局部 `HWND eb` 一并改掉 |
 | `CurrentMods` 移入输入端 | ✅ 2026-11-20 | 从 `eb::` 移到 `mouse_rules.cpp` 的全局 `CurrentMods()`。**顺带修掉重复**：`input_router` 的成员版本与它一字不差（含 AltGr 特判），原先以"需按焦点抑制"为由放行 —— 读代码后确认无任何额外逻辑，改为转调；白名单收紧到 1 个文件 |
-| 校验器：C1 命令 id 稳定 + C2 旧名只增不减 | ✅ 2026-11-20 | `check_commands.py` 新增基线比对（`data/commands-baseline.json`，`--update-baseline` 更新）：C1a 顺序不变、C1b 不删、C2 legacy 只增 |
+| 校验器：C1 命令 id 稳定 + C2 旧名只增不减 | ✅ 2026-11-20 | `check_commands.py` 新增基线比对（`tests/baselines/commands-baseline.json`，`--update-baseline` 更新）：C1a 顺序不变、C1b 不删、C2 legacy 只增 |
 | 校验器：`eb` 废弃规则 | ✅ 2026-11-20 | 3 条 `FORBID`（`namespace eb` / `eb::` / `#include "eb_`），防旧前缀回流 |
 | `eb` 五类符号拆成具名类型（`Painter`/`Assets`/`Metrics`） | ⬜ 待办 | 命名空间已改 `ui`（"来源前缀"这个痛点已消除）；进一步拆成类型属组件化（B4），见 §3.2 |
 | 窗口类 11 → 3 | ⛔ 依赖 B5，不是独立任务 | R12 原文即"**B5 之后**：窗口类 ≤3"。当前 11 个类各承载独立 WndProc + 独立绘制，减到 3 个等价于把栏/面板合并进统一载体（Lister/Popup/Dialog）—— 那是架构重构，改法与"改名"完全无关。**把它挂在命名清单里是分类错误**，已在 §6 标注依赖关系 |

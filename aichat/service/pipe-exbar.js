@@ -17,8 +17,8 @@
 //    管道名内嵌 hwnd 与 pid（`\\.\pipe\ExBarBrowser_ai_<hwnd>_<pid>`），
 //    进程一重启名字就变，**无法固定**（改管道名要动 C++ 侧）。
 //    所以"固定"落在**发现文件**这一层：
-//      <dataDir>/ai-pipe.txt  / ai-token.txt        → 最后启动的实例（规范文件）
-//      <dataDir>/ai-pipe.<pid>.txt / ai-token.<pid>.txt → 每实例副本
+//      <runtimeDir>/ai-pipe.txt  / ai-token.txt                  -> 最后启动的实例（规范文件）
+//      <runtimeDir>/ai-pipe.<pid>.txt / ai-token.<pid>.txt       -> 每实例副本
 //    客户端每次**重连都重读这两个文件**，自然跟上最新实例。
 //    这就是本工程的"固定端口"等价物。
 "use strict";
@@ -28,7 +28,19 @@ const path = require("path");
 const { spawn } = require("child_process");
 const readline = require("readline");
 
-const DATA_DIR = process.env.EXBAR_DATA_DIR || "E:\\ExBarBrowser\\data";
+// 发现文件已从 data\ 移到 runtime\。优先用 C++ 显式传入的 EXBAR_RUNTIME_DIR；
+// 老调用方只给了 EXBAR_DATA_DIR 时，按同级 runtime\ 推导（若该目录本身就放着
+// ai-pipe.txt，则认定为旧布局，直接沿用），保证 profile 隔离。
+const DATA_DIR = process.env.EXBAR_DATA_DIR
+  ? path.resolve(process.env.EXBAR_DATA_DIR)
+  : null;
+const RUNTIME_DIR = process.env.EXBAR_RUNTIME_DIR
+  ? path.resolve(process.env.EXBAR_RUNTIME_DIR)
+  : (DATA_DIR
+    ? (fs.existsSync(path.join(DATA_DIR, "ai-pipe.txt"))
+      ? DATA_DIR
+      : path.resolve(path.join(DATA_DIR, "..", "runtime")))
+    : "E:\\ExBarBrowser\\runtime");
 const BRIDGE_PS1 = path.join(__dirname, "exbar-bridge.ps1");
 
 function readText(p) {
@@ -39,18 +51,18 @@ function readText(p) {
 //   本工程支持 `EXBARBROWSER_PROFILE` 隔离（并行开发的测试会话、--multi、
 //   回归脚本都会用自己的 profile）。每个 profile 目录都有**自己的一套**
 //   ai-pipe.txt / ai-pipe.<pid>.txt，互相不可见。
-//   实测：只读 data/ai-pipe.txt 会指向一个早已退出的实例，而真正活着的是
-//   data/profile-multi/ 下的那个 —— 表现就是"文件在、名字对、连不上"。
+//   实测：只读 runtime/ai-pipe.txt 会指向一个早已退出的实例，而真正活着的是
+//   另一个 profile 的 runtime\ 下的那份 —— 表现就是"文件在、名字对、连不上"。
 //   所以这里递归扫 data/ 下所有目录（一层 + 两层，够用且不慢）。
 function AllPipeFiles() {
   const out = [];
   const push = (p) => { try { if (fs.statSync(p).isFile()) out.push(p); } catch (e) { } };
 
-  push(path.join(DATA_DIR, "ai-pipe.txt"));
+  push(path.join(RUNTIME_DIR, "ai-pipe.txt"));
   let dirs = [];
-  try { dirs = fs.readdirSync(DATA_DIR, { withFileTypes: true }); } catch (e) { return out; }
+  try { dirs = fs.readdirSync(RUNTIME_DIR, { withFileTypes: true }); } catch (e) { return out; }
   for (const d of dirs) {
-    const full = path.join(DATA_DIR, d.name);
+    const full = path.join(RUNTIME_DIR, d.name);
     if (d.isDirectory()) {
       push(path.join(full, "ai-pipe.txt"));
       let inner = [];
@@ -114,7 +126,7 @@ function pidAliveNow(pid) {
 //    管道名由父进程直接给，不可能错。
 //
 // 2. **发现文件枚举**（独立启动服务的旧路径）
-//    没有环境变量时，扫 data 下所有 ai-pipe 文件逐个试。
+//    没有环境变量时，扫 runtime 下所有 ai-pipe 文件逐个试。
 //    这条路径的复杂度来自"多实例 + profile 隔离 + 并行开发"，
 //    每次重启都要重新猜，容易连到死实例。**仅为兼容保留**。
 function EndpointFromEnv() {
@@ -183,7 +195,7 @@ class PipeClient {
     if (!this.inst) {
       const all = ListEndpoints();
       if (!all.length) {
-        this.lastError = `在 ${DATA_DIR} 下找不到任何 ai-pipe 文件（ExBarBrowser 在运行吗？）`;
+        this.lastError = `在 ${RUNTIME_DIR} 下找不到任何 ai-pipe 文件（ExBarBrowser 在运行吗？）`;
         return false;
       }
       this.inst = all[0];
@@ -195,7 +207,7 @@ class PipeClient {
 
     const env = {
       ...process.env,
-      EXBAR_DATA_DIR: DATA_DIR,
+      EXBAR_RUNTIME_DIR: RUNTIME_DIR,
       EXBAR_PIPE: this.inst.pipe,
       EXBAR_TOKEN: this.inst.token
     };
@@ -426,7 +438,7 @@ class PipeClient {
 async function ConnectAny(timeoutMs) {
   const list = ListEndpoints();
   if (!list.length) {
-    return { ok: false, reason: `没有找到 ${path.join(DATA_DIR, "ai-pipe.txt")}（ExBarBrowser 未运行？）` };
+    return { ok: false, reason: `没有找到 ${path.join(RUNTIME_DIR, "ai-pipe.txt")}（ExBarBrowser 未运行？）` };
   }
   const why = [];
   // 每个候选只给较短时间：候选可能有几十个（每个 profile 都能留下一堆），
@@ -443,4 +455,4 @@ async function ConnectAny(timeoutMs) {
   return { ok: false, reason: "所有端点都连不上：\n  " + why.join("\n  ") };
 }
 
-module.exports = { PipeClient, ListEndpoints, ConnectAny, DATA_DIR };
+module.exports = { PipeClient, ListEndpoints, ConnectAny, RUNTIME_DIR };

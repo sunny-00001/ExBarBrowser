@@ -11,8 +11,8 @@
 // AGENTS.md §8.5 的口径是「没有审计的『成功』不认」—— 被拒的更不该消失。
 //
 // 【这一版验的是结构化契约】审计现在有两份投影：
-//   · data\audit.jsonl —— 规范格式（R18 要求的那份），一行一条 JSON
-//   · data\audit.log   —— 旧文本格式的镜像，给既有脚本 grep
+//   · logs\audit.jsonl —— 规范格式（R18 要求的那份），一行一条 JSON
+//   · logs\audit.log   —— 旧文本格式的镜像，给既有脚本 grep
 // 两者来自**同一条记录**，所以必须同时断言"JSONL 里有结构化字段"
 // 与"文本行里仍能分辨拒绝"—— 只验一份，另一份坏了没人知道。
 //
@@ -86,8 +86,10 @@ int main() {
     const std::wstring dir = tf::Join(TempDir(), L"ebb_audit_test");
     CreateDirectoryW(dir.c_str(), nullptr);
     Config::Get().SetProfileDir(dir);
-    const std::wstring logPath = tf::Join(dir, L"audit.log");
-    const std::wstring jsonlPath = tf::Join(dir, L"audit.jsonl");
+    const std::wstring logs = tf::Join(dir, L"logs");
+    tf::EnsureDir(logs);
+    const std::wstring logPath = tf::Join(logs, L"audit.log");
+    const std::wstring jsonlPath = tf::Join(logs, L"audit.jsonl");
 
     std::printf("被拒绝的调用也落审计（规范格式 audit.jsonl）\n");
     {

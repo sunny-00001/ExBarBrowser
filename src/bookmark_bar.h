@@ -20,6 +20,72 @@ struct BookmarkDropSpot {
     std::wstring folderId;  // 非空 = 拖进该分类
 };
 
+// ---------------------------------------------------------------------------
+// 书签栏横向滚动的几何判据（纯函数，便于单测）
+//
+// 【为什么要有滚动】书签一多就放不下。以前放不下的项被"折叠"（rect 置空），
+// 栏本身横向挪不动 —— 用户只能从 » 菜单里点。要求是"鼠标停在书签栏上滚滚轮，
+// 后面的书签就一个个滑进来"。
+//
+// 模型与标签栏同构（见 tab_strip.h）：内容整体左移 scrollX_，可视窗口右缘是
+// 裁切线 viewRight_（» 按钮画在它右边，不属于任何书签）。
+//
+// 可见性判据集中在这里，**唯一来源**：绘制 / 命中 / 提示 / 溢出菜单 / 键盘导航
+// 全都问同一组函数。否则就会出现"画出来了却点不到"或"已经滚进视野的项还挂在
+// » 菜单里"这类分叉（折叠语义时代判据散在 8 处，每换一次语义就得改 8 遍）。
+// ---------------------------------------------------------------------------
+
+// 项矩形 r 与可视窗口 [0, viewRight) 求交：有交集 = 至少露出来一部分。
+inline bool BmkInView(const RECT& r, int viewRight) {
+    return r.right > 0 && r.left < viewRight;
+}
+
+// 完全落在窗口内（左右都没被切掉）。
+inline bool BmkFullyInView(const RECT& r, int viewRight) {
+    return r.left >= 0 && r.right <= viewRight;
+}
+
+// 命中判据：点必须落在可视窗口内。裁切线右侧是 » 按钮，不属于任何书签 ——
+// 不按"点"判而只按"项自己的矩形"判的话，跨过裁切线的那一项会盖在 » 下面，
+// 于是点 » 变成点它，溢出菜单永远打不开（标签栏踩过同一个坑，见 TabHitInView）。
+inline bool BmkHitInView(int x, int viewRight) {
+    return x >= 0 && x < viewRight;
+}
+
+// 滚动量夹紧到 [0, maxScroll]。
+inline int BmkClampScroll(int scroll, int delta, int maxScroll) {
+    int next = scroll + delta;
+    if (next < 0) next = 0;
+    if (next > maxScroll) next = maxScroll;
+    return next;
+}
+
+// 让这一项露出来需要的位移：露在左边就往回滚（正数 = scrollX 减小），
+// 露在右边就往前滚（负数 = scrollX 增大）。0 = 已经在视野内。
+inline int BmkScrollToShow(const RECT& r, int viewRight) {
+    if (r.left < 0) return r.left;
+    if (r.right > viewRight) return r.right - viewRight;
+    return 0;
+}
+
+// 滚轮方向 → 滚动方向。
+// 垂直轮：向上滚（delta>0）= 看更早的书签（scrollX 减小），与标签栏同一口径
+// （tab_strip_input.cpp：滚轮向上先看左边的内容）。
+// 横向轮：向右倾（delta>0）= 看更晚的书签（scrollX 增大），Windows 文档口径。
+inline int BmkWheelScroll(int delta, int step, bool horizontal) {
+    if (horizontal) return delta > 0 ? step : -step;
+    return delta > 0 ? -step : step;
+}
+
+// 把矩形右缘裁到可视窗口（» 按钮在它右边）。左缘不裁：x<0 的部分栏窗口自己
+// 就会裁掉，而且**不能**把左缘也裁到 0 再重画 —— 那样滚出左边的书签会从
+// 第一个字重新显示，而不是显示它被切掉的那一段。
+inline RECT BmkClipRight(const RECT& r, int viewRight) {
+    RECT out = r;
+    if (out.right > viewRight) out.right = viewRight;
+    return out;
+}
+
 class BookmarkBar {
 public:
     void Create(HWND parent, const Theme& theme);
@@ -47,6 +113,13 @@ public:
     int ApplyDroppedPaths(const std::vector<std::wstring>& paths, const BookmarkDropSpot& spot);
     std::wstring FolderIdAt(int index) const;        // 项索引 → 文件夹书签 id（非文件夹=空）
     void ReloadExternal();                           // 拖放完成后的外部触发的刷新
+    // 宿主按光标位置把滚轮转交给本栏。返回 true = 已处理。
+    //
+    // 【为什么需要这一条】滚轮消息只发给**焦点窗口**。光标停在书签栏上、
+    // 焦点却在文件列表时，书签栏收不到 WM_MOUSEWHEEL —— 用户在栏上滚滚轮，
+    // 滚的却是背后的文件列表。宿主在消息循环里（派发之前）按光标位置转交，
+    // 与序列弹层用的是同一手法（见 input_router_overlay.cpp 的同类说明）。
+    bool HandleWheelAt(UINT msg, WPARAM wParam, LPARAM lParam);
 
 private:
     struct Item {
@@ -68,9 +141,17 @@ private:
     int HitItem(int x, int y) const;
     int HitIcon(int x, int y) const;
     bool HitOverflow(int x, int y) const;
+    // 横向滚动（滚轮）：ScrollBy 改滚动量并重排，EnsureVisible 把某一项带进视野。
+    void ScrollBy(int dx);
+    void EnsureVisible(int index);
+    // 滚轮处理：先问鼠标规则（用户可能把"书签栏上滚滚轮"绑成别的动作），
+    // 规则没接管才走默认的横向滚动。返回 true = 已消费。
+    bool OnWheel(UINT msg, WPARAM w, LPARAM l);
     BookmarkDropSpot DropSpotAtClient(int x, int y) const;  // 内外拖动共用落点算法
     HICON IconFor(const BookmarkNode& n);
     void ShowItemMenu(int index, POINT screen);
+    // "移到分类…"的二层菜单：列出所有分类 + 顶层，走 bmk.move 命令总线。
+    void ShowMoveToMenu(const std::wstring& id, const std::wstring& label, POINT screen);
     void ShowEmptyMenu(POINT screen);
     void ShowFolderMenu(int index, POINT screen);
     // 分类内容弹层（可拖动排序 + 行内右键），实现见 bookmark_category_popup.cpp
@@ -90,6 +171,13 @@ private:
     std::vector<Item> items_;
     RECT ovfRc_{};
     bool overflow_ = false;
+    // ---- 横向滚动 ----
+    // scrollX_：内容整体左移的像素数（滚轮往回滚就减小）。
+    // maxScroll_：滚动上限（内容末端顶到裁切线为止）。
+    // viewRight_：可视窗口右缘（裁切线）。» 按钮画在它右边，不属于任何书签。
+    int scrollX_ = 0;
+    int maxScroll_ = 0;
+    int viewRight_ = 0;
     int hover_ = -1;
     int hoverIcon_ = -1;   // 悬停在图标格上的项（高亮该格，提示"这里能点开子目录"）
     bool hotOvf_ = false;
@@ -117,6 +205,10 @@ private:
     //   · Esc → 把焦点还给视图（不然焦点卡在栏上，Delete/type-ahead 全哑）
     int kbdIdx_ = -1;
     void PaintFocusRing(HDC dc) const;
+
+    // 「移到分类…」的最近目标（MRU，最多 5 条）。只在本窗口会话内有效：
+    // 它仅是菜单排序提示，不写配置、丢了不影响任何数据或撤销记录。
+    std::vector<std::wstring> recentMoveTargets_;
 
     std::function<void(const std::wstring&)> onNavigate_;
     std::function<void()> refocus_;

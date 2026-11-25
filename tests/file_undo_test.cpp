@@ -181,6 +181,106 @@ int main() {
         Check(!s.CanUndo(), "空记录被忽略");
     }
 
+    std::printf("\n空栈不能 redo\n");
+    {
+        fileundo::Stack s;
+        Check(!s.CanRedo(), "空栈没有可重做的");
+        std::wstring why;
+        Check(!s.Redo(false, [](fileundo::Entry&, std::wstring*) { return true; }, &why),
+              "空栈重做返回失败");
+        Check(!why.empty(), "给出人可读的原因");
+    }
+
+    std::printf("\n撤销→重做→再撤销：记录来回弹栈，不丢也不重复\n");
+    {
+        fileundo::Stack s;
+        s.Push(MakeEntry(fileundo::Op::Rename, false, L"C:\\a.txt", L"C:\\b.txt"));
+        std::wstring why;
+        // 撤销成功 → redo 栈应有 1 条
+        Check(s.Undo(false, [](fileundo::Entry& e, std::wstring*) {
+                  e.items.clear(); return true;
+              }, &why), "撤销成功");
+        Check(!s.CanUndo() && s.CanRedo(), "撤后 undo 空、redo 有 1 条");
+        Check(s.RedoSize() == 1, "redo 栈长度正确");
+        // 重做成功 → 记录回到 undo 栈
+        Check(s.Redo(false, [](fileundo::Entry& e, std::wstring*) {
+                  e.items.clear(); return true;
+              }, &why), "重做成功");
+        Check(s.CanUndo() && !s.CanRedo(), "重做后 undo 有 1 条、redo 空");
+        Check(s.Top() && s.Top()->op == fileundo::Op::Rename, "回来的记录内容没变");
+        // 还能再撤回去
+        Check(s.Undo(false, [](fileundo::Entry& e, std::wstring*) {
+                  e.items.clear(); return true;
+              }, &why), "重做后的记录还能再撤");
+        Check(!s.CanUndo(), "再次撤销后 undo 空");
+    }
+
+    std::printf("\nredo 保留完整的 before/after（撤销清空 items 后仍能重做）\n");
+    {
+        fileundo::Stack s;
+        s.Push(MakeEntry(fileundo::Op::Move, false, L"C:\\a.txt", L"D:\\a.txt"));
+        std::wstring why;
+        Check(s.Undo(false, [](fileundo::Entry& e, std::wstring*) {
+                  e.items.clear(); return true;  // 模拟真实执行器：成功后清空
+              }, &why), "撤销清空 items");
+        // 关键：redo 必须拿到撤销前的完整记录，而不是被清空的那份
+        Check(s.Redo(false, [](fileundo::Entry& e, std::wstring*) {
+                  if (e.items.empty() || e.items[0].beforePath != L"C:\\a.txt" ||
+                      e.items[0].afterPath != L"D:\\a.txt")
+                      return false;   // 记录丢了就不该声称重做成功
+                  e.items.clear(); return true;
+              }, &why), "重做拿到完整 before/after 并正向执行");
+    }
+
+    std::printf("\n新操作清空 redo 链（不能重做被放弃的旧状态）\n");
+    {
+        fileundo::Stack s;
+        s.Push(MakeEntry(fileundo::Op::Rename, false, L"C:\\a.txt", L"C:\\b.txt"));
+        std::wstring why;
+        s.Undo(false, [](fileundo::Entry& e, std::wstring*) {
+            e.items.clear(); return true;
+        }, &why);
+        Check(s.CanRedo(), "撤销后有可重做的");
+        // 用户做了新操作
+        s.Push(MakeEntry(fileundo::Op::Rename, false, L"C:\\x.txt", L"C:\\y.txt"));
+        Check(!s.CanRedo(), "新操作清空 redo 链");
+    }
+
+    std::printf("\nredo 边界：机器的重做不穿透人工操作\n");
+    {
+        fileundo::Stack s;
+        s.Push(MakeEntry(fileundo::Op::Rename, /*byMachine=*/false, L"C:\\a.txt", L"C:\\b.txt"));
+        std::wstring why;
+        // 人工撤销后，redo 栈顶是人工操作
+        s.Undo(false, [](fileundo::Entry& e, std::wstring*) {
+            e.items.clear(); return true;
+        }, &why);
+        int applied = 0;
+        Check(!s.Redo(/*machineCaller=*/true,
+                      [&](fileundo::Entry&, std::wstring*) { ++applied; return true; }, &why),
+              "机器重做人工操作被拒绝");
+        Check(applied == 0 && s.CanRedo(), "拒绝时没真的做，记录还在");
+    }
+
+    std::printf("\nredo 失败不弹栈（能重试）\n");
+    {
+        fileundo::Stack s;
+        s.Push(MakeEntry(fileundo::Op::Copy, false, L"C:\\a.txt", L"C:\\b.txt"));
+        std::wstring why;
+        s.Undo(false, [](fileundo::Entry& e, std::wstring*) {
+            e.items.clear(); return true;
+        }, &why);
+        Check(!s.Redo(false, [](fileundo::Entry&, std::wstring* w) {
+                  if (w) *w = L"目标被占用";
+                  return false;
+              }, &why), "重做失败返回失败");
+        Check(s.CanRedo(), "失败后redo记录还在");
+        Check(s.Redo(false, [](fileundo::Entry& e, std::wstring*) {
+                  e.items.clear(); return true;
+              }, &why), "重试成功");
+        Check(!s.CanRedo(), "成功后 redo 栈空");
+    }
+
     std::printf("\n%s（失败 %d 项）\n", g_fail == 0 ? "全部通过" : "有失败", g_fail);
     return g_fail == 0 ? 0 : 1;
 }

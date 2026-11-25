@@ -1,7 +1,7 @@
 // 破坏性命令的人工确认：App 侧的弹框实现。
 //
 // 【为什么独立成文件】app.cpp 已超 500 行（欠账棘轮记在
-// data/file-length-baseline.json），而这一段确认框只有十来行 ——
+// tests/baselines/file-length-baseline.json），而这一段确认框只有十来行 ——
 // 塞在 app.cpp 里只会让那个文件继续涨。
 //
 // 【这一层负责什么】
