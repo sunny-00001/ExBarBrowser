@@ -10,7 +10,7 @@ void TabStrip::Paint(HWND h) {
     const int clipRight = overflow_ ? tabViewRight_ : 0;
 
     ui::PaintBuffered(h, theme_->bar, [&](HDC mem, const RECT& rc) {
-        HGDIOBJ oldFont = SelectObject(mem, theme_->font);
+        ui::ScopedFont font(mem, theme_->font);
         const int clipR = clipRight ? clipRight : rc.right;
 
         for (size_t i = 0; i < tabRects_.size(); ++i) {
@@ -105,7 +105,5 @@ void TabStrip::Paint(HWND h) {
         if (hoverKind_ == kNew) FillRect(mem, &newRect_, theme_->brHover);
         ui::DrawGlyph(mem, ico::IconId::Add, newRect_, theme_->iconGlyph(),
                       hoverKind_ == kNew ? theme_->text : theme_->sub);
-
-        SelectObject(mem, oldFont);
     });
 }

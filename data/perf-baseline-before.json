@@ -1,0 +1,149 @@
+{
+  "label": "优化前-基线",
+  "ai": true,
+  "runs": [
+    {
+      "stages_ms": {
+        "config": 0,
+        "oncreate_begin": 0,
+        "navpane_tree": 110,
+        "navpane_done": 110,
+        "bars_done": 141,
+        "bookmarks_done": 157,
+        "oncreate_end": 172,
+        "mainwnd_created": 172,
+        "shell_init": 172,
+        "nav_request": 172,
+        "tabs_built": 532,
+        "layout_done": 532,
+        "window_shown": 750,
+        "first_focus": 782,
+        "ai_channel": 860,
+        "node_started": 860,
+        "kbhook_ready": 860,
+        "right_view": 1063
+      },
+      "blocks_ms": {
+        "oncreate_total": 172,
+        "navpane_build": 110,
+        "bars_and_bookmarks": 62,
+        "first_navigation": 360,
+        "layout_and_show": 218,
+        "show_window_cost": 218,
+        "time_to_first_frame": 750,
+        "ai_startup": 78
+      },
+      "window_close_ms": 154.3,
+      "exit_ms": 621.9
+    },
+    {
+      "stages_ms": {
+        "config": 0,
+        "oncreate_begin": 16,
+        "navpane_tree": 94,
+        "navpane_done": 94,
+        "bars_done": 141,
+        "bookmarks_done": 157,
+        "oncreate_end": 157,
+        "mainwnd_created": 157,
+        "shell_init": 157,
+        "nav_request": 157,
+        "tabs_built": 438,
+        "layout_done": 454,
+        "window_shown": 688,
+        "first_focus": 704,
+        "ai_channel": 782,
+        "node_started": 797,
+        "kbhook_ready": 797,
+        "right_view": 969
+      },
+      "blocks_ms": {
+        "oncreate_total": 141,
+        "navpane_build": 78,
+        "bars_and_bookmarks": 63,
+        "first_navigation": 281,
+        "layout_and_show": 250,
+        "show_window_cost": 234,
+        "time_to_first_frame": 688,
+        "ai_startup": 93
+      },
+      "window_close_ms": 139.4,
+      "exit_ms": 516.8
+    },
+    {
+      "stages_ms": {
+        "config": 0,
+        "oncreate_begin": 15,
+        "navpane_tree": 109,
+        "navpane_done": 109,
+        "bars_done": 156,
+        "bookmarks_done": 171,
+        "oncreate_end": 171,
+        "mainwnd_created": 171,
+        "shell_init": 171,
+        "nav_request": 187,
+        "tabs_built": 546,
+        "layout_done": 546,
+        "window_shown": 781,
+        "first_focus": 796,
+        "ai_channel": 875,
+        "node_started": 875,
+        "kbhook_ready": 890,
+        "right_view": 1062
+      },
+      "blocks_ms": {
+        "oncreate_total": 156,
+        "navpane_build": 94,
+        "bars_and_bookmarks": 62,
+        "first_navigation": 375,
+        "layout_and_show": 235,
+        "show_window_cost": 235,
+        "time_to_first_frame": 781,
+        "ai_startup": 94
+      },
+      "window_close_ms": 141.8,
+      "exit_ms": 441.2
+    }
+  ],
+  "aggregate": {
+    "time_to_first_frame": {
+      "median": 750,
+      "min": 688,
+      "max": 781
+    },
+    "oncreate_total": {
+      "median": 156,
+      "min": 141,
+      "max": 172
+    },
+    "navpane_build": {
+      "median": 94,
+      "min": 78,
+      "max": 110
+    },
+    "first_navigation": {
+      "median": 360,
+      "min": 281,
+      "max": 375
+    },
+    "layout_and_show": {
+      "median": 235,
+      "min": 218,
+      "max": 250
+    },
+    "show_window_cost": {
+      "median": 234,
+      "min": 218,
+      "max": 235
+    },
+    "ai_startup": {
+      "median": 93,
+      "min": 78,
+      "max": 94
+    },
+    "exit_ms": {
+      "median": 516.8,
+      "min": 441.2
+    }
+  }
+}

@@ -26,6 +26,8 @@ baseline: 2026-11-21 18:40
 
 独立进程的文件浏览器（360 文件夹路线）：自己的窗口、自绘 chrome、每个标签一个
 `IExplorerBrowser`。**不注入 explorer、不装全局钩子、单 exe 零运行时依赖**。
+全局钩子的唯一豁免是 `src/kb_hook.cpp` 的 `WH_KEYBOARD_LL`（中文输入法把字母吃成
+`VK_PROCESSKEY`，不挂钩取不到真实 vk；`check_components.py` 的 HOOK_GUARD 强制只允许这一处）。
 视图（右键菜单/拖放/重命名/缩略图/排序分组/导航窗格）全部由系统 shell 提供，不自绘。
 
 现状要点：`src/` 是**扁平多文件**（`src/*.cpp`，由 `build_fast.py` 自动扫描），
@@ -70,6 +72,11 @@ baseline: 2026-11-21 18:40
 目标是单 exe 零依赖。新依赖必须先证明"自己写 200 行解决不了"。
 系统库加一项只改 `build_fast.py` 的 `LIBS` 一处。
 
+**已豁免的一项（见 docs/DECISIONS.md D14）**：AI 面板的渲染层用 WebView2
+（`WebView2Loader.dll` **运行时**加载，不进链接期依赖）+ Node 子进程。
+这两个依赖只在"用户主动展开 AI 面板"时被用到；缺任意一个时面板显示占位页，
+其余功能不受影响。新增**其它**第三方依赖仍需按上面的标准论证。
+
 ### 1.3 视觉与品牌串各只有一个来源
 
 - 颜色/字号/间距一律 `theme_.S()` 与 `theme_.xxx`；不写死像素，不写 `RGB(`。
@@ -96,6 +103,13 @@ bash build.sh --clean          # 全量重建（换目录/换机器后必须，P
 bash build.sh -j 16            # 并行数（默认 8）
 bash build.sh --stats          # 每个 TU 耗时
 bash build.sh --out /tmp/x.exe # 只验证能否编过，不碰正在运行的 exe
+bash build.sh --no-gc          # 本次构建不做残留回收（排障时用）
+bash build.sh --gc-age 60      # 回收的活跃保护窗口（分钟，默认 15）
+
+# 构建残留回收（每次构建成功后自动跑一轮；这里是手动入口）
+python tools/reclaim.py            # 预演：只列会删什么，不动手
+python tools/reclaim.py --apply    # 真删
+python tools/reclaim.py --apply --min-age 60   # 放宽"还在写"的保护窗口
 
 # 单测（推荐；数量自动枚举，末行给通过/总数）
 bash tests/run_all.sh          # 全量
@@ -120,6 +134,18 @@ python tools/ebbctl.py call view.sort '{"by":2}' --verdict
 python tools/intents.py list                   # 声明式意图（配方在 tools/intents.py 的 INTENTS 表）
 python tests/e2e/bookmark_move_e2e.py 坚果云    # E2E 闭环验收（落盘/审计/设置未被改）
 ```
+
+**执行运行时操作时，先问通道，别扫源码。** 能力面本来就是自描述的：
+
+| 要知道什么 | 用什么 | 不要做什么 |
+|---|---|---|
+| 有没有某能力、叫什么、必填参数 | `agentctl tools --grep <词>` / `ebbctl list` | 不 Grep `src/` 找 `WinMain` / 命令表 / handler |
+| 现在的状态（标签/路径/选中/计数） | `ebbctl state` | 不读配置文件猜 |
+| 执行一个动作 | `agentctl call <名字> '<json>'` / `ebbctl call` | 不模拟输入、不抢焦点 |
+
+扫源码只在**改代码**时做；只是"打开磁盘 / 切换标签 / 读状态"这类操作，
+查一次工具清单就能确定名字和参数，直接调。通道返回的 `verdict` 和
+断言就是回读，不必再回头翻实现确认它做没做。
 
 其他环境事实：
 
@@ -147,6 +173,7 @@ python tests/e2e/bookmark_move_e2e.py 坚果云    # E2E 闭环验收（落盘/�
 | 头文件自足 | `xxx.h` 用到的类型自己 include，不靠 `common.h` 的 PCH 间接提供 —— 单测单独编 `src/xxx.cpp` 会立刻暴露 |
 | 文案/注释中文 | 标识符英文 |
 | 文档不写行号 | 用符号名定位（行号必漂移） |
+| **构建残留必须自动回收** | 隔离构建（`--objdir`/`--out`）每次留下 100 MB+ 中间目录与 54 MB exe。回收只有 `tools/reclaim.py` 一处实现，由 `build_fast.py` 收尾自动调用。**不要**再写第二个清理脚本，也不要手工 `rm -rf obj_*`/`t*`（会抽走别人正在构建的那份） |
 
 自检头文件是否自足（不带 PCH 编一次）：
 

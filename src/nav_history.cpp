@@ -1,5 +1,7 @@
 #include "nav_history.h"
 
+#include <cstddef>
+
 namespace nav {
 
 std::vector<std::wstring> History::backward() const {
@@ -24,12 +26,23 @@ void History::Reset(const std::wstring& path) {
     }
 }
 
+size_t History::Trim() {
+    // 从头部丢弃最老条目，保留当前位置附近的历史。返回丢弃条数，**不碰 idx_**：
+    // Push 后游标本就在末尾，Restore/SetMaxEntries 需要按 drop 左移原游标。
+    if (hist_.size() <= maxEntries_) return 0;
+    const size_t drop = hist_.size() - maxEntries_;
+    hist_.erase(hist_.begin(), hist_.begin() + static_cast<std::ptrdiff_t>(drop));
+    return drop;
+}
+
 void History::Push(const std::wstring& path) {
     // 截断"前进"分支：从中间导航后，原来的前进项已经不可达。
     // 少这一步的典型症状是"后退能退，但退回来的顺序是错的"。
     if (idx_ >= 0 && idx_ + 1 < static_cast<int>(hist_.size()))
         hist_.resize(static_cast<size_t>(idx_) + 1);
     hist_.push_back(path);
+    // 新条目压在末尾，裁剪只丢头部，所以游标恒落在裁剪后的末尾。
+    Trim();
     idx_ = static_cast<int>(hist_.size()) - 1;
 }
 
@@ -119,7 +132,10 @@ void History::ClearKeepingHere() {
 
 void History::Restore(std::vector<std::wstring> hist, int idx) {
     hist_ = std::move(hist);
-    idx_ = idx;
+    // 旧配置里可能已经攒了上万条；恢复时也裁一次，否则上限要等下一次导航才生效。
+    // 裁剪口径与 Push 共用 Trim()；传入的 idx 要减去丢掉的头部条数。
+    const size_t drop = Trim();
+    idx_ = idx - static_cast<int>(drop);
     pending_.Clear();
     ClampIdx();
 }

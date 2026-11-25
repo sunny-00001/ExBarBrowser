@@ -1,0 +1,13 @@
+src/app_confirm.cpp
+src/app_file_undo.cpp
+src/app_layout.cpp
+src/app_nav.cpp
+src/app_panes.cpp
+src/app_search.cpp
+src/app_sequence_overlay.cpp
+src/app_settings.cpp
+src/app_state.cpp
+src/app_stats.cpp
+src/app_tabs.cpp
+src/app_view_menus.cpp
+src/app_wnd.cpp

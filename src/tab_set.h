@@ -107,6 +107,14 @@ public:
     bool PopClosedAt(int index, std::wstring* path);
     const std::vector<std::wstring>& closed() const { return closed_; }
     void SetClosed(const std::vector<std::wstring>& list);
+    // 关闭历史的栈深（= Ctrl+Shift+T 能回退几步）。来源是配置项 closedTabLimit。
+    //
+    // 【为什么由外面推进来，而不是本类自己读配置】core::TabSet 是零 Win32 的
+    // 纯模型，而 Config 反过来 include 本文件（Settings 里存着 lockedPaths 等）——
+    // 在这里 include config.h 会成环。所以上限是一个**参数**：App 在启动时与
+    // config.set 之后各推一次（见 App::ApplyClosedTabLimit）。
+    void SetClosedLimit(int n);
+    int closedLimit() const { return closedLimit_; }
 
     void Clear();
 
@@ -114,6 +122,8 @@ private:
     std::vector<TabRef> items_;
     std::vector<int> mru_;
     std::vector<std::wstring> closed_;
+    // 关闭历史栈深上限。默认 20 与旧硬编码一致；由 App 按配置覆盖。
+    int closedLimit_ = 20;
     // MRU 循环的瞬态：仅在按住 Ctrl 连续切换期间有效。
     std::vector<int> cycleOrder_;
     int cyclePos_ = 0;

@@ -26,7 +26,7 @@ enum class IconId {
     // 方向
     ChevronDown, ChevronUp, ChevronLeft, ChevronRight,
     // 状态
-    Check, Add, Close, Lock, Search, Settings, Pin,
+    Check, Add, Close, Lock, Search, Settings, Pin, Keyboard,
     // 状态栏段
     Folder, Page, Calendar, HardDrive, Eye, Tag,
     // 菜单动作
@@ -35,6 +35,18 @@ enum class IconId {
     NewWindow, Terminal, Sort, Import, Export,
     // 视图档位
     GridView, ListView, DetailsView,
+    // 设置对话框的分组图标（见 settings_reg 的分组表）
+    //
+    // 【一条一栏】四条自绘栏（导航栏 / 标签栏 / 书签栏 / 状态栏）在设置左栏里
+    // 各自占一个导航项，所以这四栏各有一个专属字形；其它分组复用既有字形。
+    NavBar,    // 导航栏：前进箭头（与 Forward 同形）
+    TabBar,    // 标签栏：标签牌（与 Tag 同形）
+    Bookmark,  // 书签栏：图钉（与 Pin 同形）
+    StatusBar, // 状态栏：带勾选的分段（与 Segments 同形）
+    Window,   // 窗口几何：窗框
+    History,  // 会话状态：时钟回转
+    Bolt,     // 序列键：闪电
+    Channel,  // AI 通道：信号波
 };
 
 // id -> 字形（码位）。未登记的 id 返回兜底字形（放大镜，必然存在）。

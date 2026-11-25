@@ -2,6 +2,10 @@
 
 #include "icon_glyph.h"
 
+#include <algorithm>
+#include <cmath>    // std::pow —— 相对亮度要还原 gamma
+#include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 namespace ui {
@@ -17,7 +21,52 @@ std::vector<UiFontEntry>& FontPool() {
     return pool;
 }
 
+std::unordered_map<COLORREF, HBRUSH>& BrushCache() {
+    static std::unordered_map<COLORREF, HBRUSH> cache;
+    return cache;
+}
+
+// 高 32 位放 COLORREF，低 32 位放线宽；线宽为正整数。
+std::uint64_t PenKey(COLORREF color, int thickness) {
+    return (static_cast<std::uint64_t>(color) << 32) |
+           static_cast<std::uint32_t>(thickness);
+}
+
+std::unordered_map<std::uint64_t, HPEN>& PenCache() {
+    static std::unordered_map<std::uint64_t, HPEN> cache;
+    return cache;
+}
+
+HBRUSH CachedBrush(COLORREF color) {
+    auto& cache = BrushCache();
+    if (const auto it = cache.find(color); it != cache.end()) return it->second;
+    HBRUSH b = CreateSolidBrush(color);
+    if (b) cache.emplace(color, b);
+    return b;
+}
+
+HPEN CachedPen(COLORREF color, int thickness) {
+    const std::uint64_t key = PenKey(color, thickness);
+    auto& cache = PenCache();
+    if (const auto it = cache.find(key); it != cache.end()) return it->second;
+    HPEN p = CreatePen(PS_SOLID, thickness, color);
+    if (p) cache.emplace(key, p);
+    return p;
+}
+
 }  // namespace
+
+void ClearGdiCaches() {
+    for (auto& e : FontPool())
+        if (e.font) DeleteObject(e.font);
+    FontPool().clear();
+    for (auto& kv : BrushCache())
+        if (kv.second) DeleteObject(kv.second);
+    BrushCache().clear();
+    for (auto& kv : PenCache())
+        if (kv.second) DeleteObject(kv.second);
+    PenCache().clear();
+}
 
 // FontPx / Scale / IconSize 已删（零调用，且在造"第二个 DPI 换算公式"）。
 // DPI 缩放唯一入口是 Theme::S()。见 ui_draw.h 的注释与 docs/NAMING.md §3.2。
@@ -115,15 +164,11 @@ void DrawIconVCentered(HDC hdc, HICON hIcon, int x, int top, int bottom, int slo
 }
 
 void FillRectColor(HDC hdc, const RECT& rc, COLORREF color) {
-    HBRUSH b = CreateSolidBrush(color);
-    FillRect(hdc, &rc, b);
-    DeleteObject(b);
+    if (HBRUSH b = CachedBrush(color)) FillRect(hdc, &rc, b);
 }
 
 void FrameRectColor(HDC hdc, const RECT& rc, COLORREF color) {
-    HBRUSH b = CreateSolidBrush(color);
-    FrameRect(hdc, &rc, b);
-    DeleteObject(b);
+    if (HBRUSH b = CachedBrush(color)) FrameRect(hdc, &rc, b);
 }
 
 void FillRound(HDC hdc, const RECT& rc, COLORREF color, int radius) {
@@ -132,18 +177,18 @@ void FillRound(HDC hdc, const RECT& rc, COLORREF color, int radius) {
         FillRectColor(hdc, rc, color);
         return;
     }
-    HBRUSH b = CreateSolidBrush(color);
-    HGDIOBJ ob = SelectObject(hdc, b);
-    HGDIOBJ op = SelectObject(hdc, GetStockObject(NULL_PEN));
-    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, radius * 2, radius * 2);
-    SelectObject(hdc, op);
-    SelectObject(hdc, ob);
-    DeleteObject(b);
+    if (HBRUSH b = CachedBrush(color)) {
+        HGDIOBJ ob = SelectObject(hdc, b);
+        HGDIOBJ op = SelectObject(hdc, GetStockObject(NULL_PEN));
+        RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, radius * 2, radius * 2);
+        SelectObject(hdc, op);
+        SelectObject(hdc, ob);
+    }
 }
 
 void DrawSeparator(HDC hdc, const RECT& rc, bool vertical, COLORREF color, int thickness) {
     if (thickness < 1) thickness = 1;
-    HPEN pen = CreatePen(PS_SOLID, thickness, color);
+    HPEN pen = CachedPen(color, thickness);
     if (!pen) return;
     HGDIOBJ old = SelectObject(hdc, pen);
     if (vertical) {
@@ -156,7 +201,6 @@ void DrawSeparator(HDC hdc, const RECT& rc, bool vertical, COLORREF color, int t
         LineTo(hdc, rc.right, y);
     }
     SelectObject(hdc, old);
-    DeleteObject(pen);
 }
 
 int MeasureText(HDC hdc, HFONT font, const wchar_t* text, int len) {
@@ -167,6 +211,29 @@ int MeasureText(HDC hdc, HFONT font, const wchar_t* text, int len) {
                                          &sz);
     if (old) SelectObject(hdc, old);
     return ok ? static_cast<int>(sz.cx) : 0;
+}
+
+int MeasureStableText(HDC hdc, HFONT font, const std::wstring& text) {
+    if (!hdc || text.empty()) return 0;
+    // 数字换 '8'：字体里数字多为等宽，'8' 是其中的代表宽度。
+    // 换完再走 MeasureText —— 量字只有这一份实现（GetTextExtentPoint32W 只允许在
+    // ui_draw.cpp 出现，见 tools/check_components.py 的"文本测量"规则）。
+    std::wstring m = text;
+    for (wchar_t& c : m)
+        if (c >= L'0' && c <= L'9') c = L'8';
+    return MeasureText(hdc, font, m);
+}
+
+int EditLineHeight(HDC hdc, HFONT font, int fallbackPx) {
+    // 实测（EM_POSFROMCHAR）：原生单行 EDIT 的文字顶部恒为 0，不随控件窗口高度居中。
+    // 所以控件窗口高度必须≈文字实际高度，文字才会落在我们指定的那一行；窗口越高，
+    // 文字越贴顶。再偶数化，才能在偶数行高里做到上下留白严格对称。
+    const auto even = [](int h) { return (h & 1) ? h + 1 : h; };
+    if (!hdc) return even(fallbackPx);
+    ScopedFont scoped(hdc, font);
+    TEXTMETRICW tm{};
+    if (!GetTextMetricsW(hdc, &tm) || tm.tmHeight <= 0) return even(fallbackPx);
+    return even(static_cast<int>(tm.tmHeight));
 }
 
 void DrawTextRow(HDC hdc, HFONT font, const std::wstring& text, const RECT& rc, COLORREF color,
@@ -182,7 +249,70 @@ void DrawTextRow(HDC hdc, HFONT font, const std::wstring& text, const RECT& rc, 
     if (old) SelectObject(hdc, old);
 }
 
+int MeasureTextHeight(HDC hdc, HFONT font, const std::wstring& text, const RECT& box, UINT fmt) {
+    if (!hdc || text.empty()) return 0;
+    // 和 DrawTextRow 同一套"选字体 → 还原"纪律：DT_CALCRECT 也用 hdc 当前字体，
+    // 不还原会让后续绘制串体（见 DrawTextRow 的说明）。
+    HGDIOBJ old = font ? SelectObject(hdc, font) : nullptr;
+    RECT r = box;   // DT_CALCRECT 会写回 r，不能传调用方的 box
+    DrawTextW(hdc, text.c_str(), static_cast<int>(text.size()), &r,
+              fmt | DT_CALCRECT);
+    if (old) SelectObject(hdc, old);
+    return r.bottom - r.top;
+}
+
 // CurrentMods 已移到输入端（mouse_rules.h）：它读 GetKeyState，属输入状态。
+
+// ---------------------------------------------------------------------------
+// 颜色对比度（见 ui_draw.h 的说明：前景/背景不是一对时必须按实际对比度兜底）
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// sRGB 分量 -> 线性。gamma 2.2 的近似（WCAG 用分段公式，这里按同一分段做，
+// 差别在小数点后第 4 位，对"够不够读"的判定没有影响）。
+double SrgbToLinear(unsigned char v) {
+    const double s = v / 255.0;
+    return s <= 0.03928 ? s / 12.92 : std::pow((s + 0.055) / 1.055, 2.4);
+}
+
+}  // namespace
+
+double RelativeLuminance(COLORREF c) {
+    // COLORREF 是 0x00BBGGRR（RGB 宏的字节顺序）。
+    const unsigned char r = GetRValue(c);
+    const unsigned char g = GetGValue(c);
+    const unsigned char b = GetBValue(c);
+    return 0.2126 * SrgbToLinear(r) + 0.7152 * SrgbToLinear(g) + 0.0722 * SrgbToLinear(b);
+}
+
+double ContrastRatio(COLORREF a, COLORREF b) {
+    const double la = RelativeLuminance(a);
+    const double lb = RelativeLuminance(b);
+    const double hi = la > lb ? la : lb;
+    const double lo = la > lb ? lb : la;
+    return (hi + 0.05) / (lo + 0.05);
+}
+
+COLORREF EnsureContrast(COLORREF fg, COLORREF bg, double minRatio) {
+    if (ContrastRatio(fg, bg) >= minRatio) return fg;   // 主题配得好，原样用
+
+    // 不足就二选一：黑或白里对比度更高的那个。
+    // 不选"把 fg 提亮/压暗一档"是因为那需要反复迭代，且结果依赖初始色；
+    // 黑白只有一个答案，且必然可达 21:1 上限内的高值。
+    const COLORREF black = RGB(0, 0, 0);
+    const COLORREF white = RGB(255, 255, 255);
+    return ContrastRatio(black, bg) >= ContrastRatio(white, bg) ? black : white;
+}
+
+COLORREF MixColor(COLORREF fg, COLORREF bg, int t) {
+    if (t < 0) t = 0;
+    if (t > 100) t = 100;
+    const int r = (GetRValue(fg) * t + GetRValue(bg) * (100 - t)) / 100;
+    const int g = (GetGValue(fg) * t + GetGValue(bg) * (100 - t)) / 100;
+    const int b = (GetBValue(fg) * t + GetBValue(bg) * (100 - t)) / 100;
+    return RGB(r, g, b);
+}
 
 void PaintBuffered(HWND hwnd, COLORREF bg, const std::function<void(HDC, const RECT&)>& draw) {
     PAINTSTRUCT ps;
@@ -195,16 +325,30 @@ void PaintBuffered(HWND hwnd, COLORREF bg, const std::function<void(HDC, const R
     }
 
     HDC mem = CreateCompatibleDC(dc);
-    HBITMAP bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
-    HGDIOBJ oldBmp = bmp ? SelectObject(mem, bmp) : nullptr;
-    if (bmp && oldBmp) {
-        FillRectColor(mem, rc, bg);
-        SetBkMode(mem, TRANSPARENT);
-        if (draw) draw(mem, rc);
-        BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
-        SelectObject(mem, oldBmp);
-        DeleteObject(bmp);
+    if (!mem) {
+        EndPaint(hwnd, &ps);
+        return;
     }
+    HBITMAP bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
+    if (!bmp) {
+        DeleteDC(mem);
+        EndPaint(hwnd, &ps);
+        return;
+    }
+    HGDIOBJ oldBmp = SelectObject(mem, bmp);
+    if (!oldBmp || oldBmp == HGDI_ERROR) {
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        EndPaint(hwnd, &ps);
+        return;
+    }
+
+    FillRectColor(mem, rc, bg);
+    SetBkMode(mem, TRANSPARENT);
+    if (draw) draw(mem, rc);
+    BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, oldBmp);
+    DeleteObject(bmp);
     DeleteDC(mem);
     EndPaint(hwnd, &ps);
 }

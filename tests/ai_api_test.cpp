@@ -280,6 +280,35 @@ int main() {
     Check(badJson.find(L"\"verdict\":false") != std::wstring::npos,
           "断言失败 → verdict=false（调用方一眼知效果不对）");
 
+    std::printf("\n撤销组元数据\n");
+    Check(ai::IsValidUndoGroupId(L"turn-12"), "turn-12 是合法组 ID");
+    Check(ai::IsValidUndoGroupId(L"a.b_c:d-1"), "分隔符合法");
+    Check(!ai::IsValidUndoGroupId(L""), "空组 ID 拒绝");
+    Check(!ai::IsValidUndoGroupId(L"-x"), "连字符开头拒绝");
+    Check(!ai::IsValidUndoGroupId(std::wstring(65, L'x')), "超长组 ID 拒绝");
+    Check(std::wstring(ai::UndoGroupPolicyName(ai::UndoGroupPolicy::Join)) == L"join",
+          "join 是稳定协议取值");
+    {
+        const ai::ToolSpec* fsMove = nullptr;
+        const ai::ToolSpec* bmkRemove = nullptr;
+        const ai::ToolSpec* navBack = nullptr;
+        const ai::ToolSpec* tabClose = nullptr;
+        for (const auto& t : tools) {
+            if (t.name == L"fs.move") fsMove = &t;
+            else if (t.name == L"bmk.remove") bmkRemove = &t;
+            else if (t.name == L"nav.back") navBack = &t;
+            else if (t.name == L"tab.close") tabClose = &t;
+        }
+        Check(fsMove && fsMove->undoGroup == ai::UndoGroupPolicy::Join
+              && fsMove->undoDomain == L"file", "fs.move 声明 file 撤销组");
+        Check(bmkRemove && bmkRemove->undoGroup == ai::UndoGroupPolicy::Join
+              && bmkRemove->undoDomain == L"bookmark", "bmk.remove 声明 bookmark 撤销组");
+        Check(navBack && navBack->undoGroup == ai::UndoGroupPolicy::None
+              && navBack->undoDomain.empty(), "只读导航命令不进撤销组");
+        Check(tabClose && tabClose->undoGroup == ai::UndoGroupPolicy::None
+              && tabClose->undoDomain.empty(), "tab.close 虽 undoable 但没有同域栈，不承诺 join");
+    }
+
     std::printf("\n%s（失败 %d 项）\n", g_fail == 0 ? "全部通过" : "有失败", g_fail);
     return g_fail == 0 ? 0 : 1;
 }

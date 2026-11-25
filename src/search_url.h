@@ -1,10 +1,14 @@
-// search-ms: URL 的唯一拼装点。
+// search-ms: URL 的协议形式（拼装规则 + 自测）。
 //
-// 【为什么单独拿出来】这段拼装原来长在导航栏搜索框的回调里，于是：
-//   · 命令总线（命令面板 / 键位 / agent）根本用不到它 —— `search.find` 一直
-//     是 implemented=false，用户能看到搜索框、机器却"没有搜索这个能力"；
-//   · 拼错了没法测（要真起一个 IShellView 才能看出结果不对）。
-// 抽成纯函数后，引号转义这类细节可以被单测按住。
+// 【现状：程序执行搜索不走这里】搜索的执行改走**原生搜索文件夹**
+// （src/search_folder.h，ISearchFolderItemFactory 造的 PIDL）—— 因为 URL 形式
+// 在本宿主根本导航不了：ShellView::DoNavigate 明确拒绝 search-ms: 前缀
+// （见 docs/EXPLORER-GAP-AUDIT.md §2.1 F1），BrowseToObject 只会返回 S_OK 却把
+// 视图留在原地，"搜索成功"成了一句假话。
+//
+// 本模块保留的是**协议本身**的拼装规则：搜索词的规范化（Trim）与引号转义
+// 仍是搜索链路上真实存在、且必须有测试兜住的部分（见 tests/search_url_test.cpp）。
+// 谁要是把搜索改回 URL 导航，这里就是现成的契约。
 #pragma once
 #include <string>
 

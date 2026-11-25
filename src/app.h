@@ -7,6 +7,7 @@
 //   · 视觉令牌                 -> Theme（唯一）
 //   · 键位/鼠标规则            -> InputRouter（唯一）
 #pragma once
+#include <array>
 #include <map>
 #include <memory>
 #include <string>
@@ -17,11 +18,18 @@
 #include "common.h"
 #include "config.h"
 #include "file_undo.h"
+#include "aichat_panel.h"
+#include "ai_status_peek.h"
+#include "nav_pane.h"
 #include "input_router.h"
 #include "nav_bar.h"
 #include "nav_history.h"
+#include "split_bar.h"
+#include "side_layout.h"
+#include "settings_dialog.h"
 #include "shell_view.h"
 #include "status_bar.h"
+#include "layout_key.h"
 #include "tab_set.h"
 #include "tab_strip.h"
 #include "theme.h"
@@ -30,10 +38,17 @@
 class App {
 public:
     static App& Get();
-    int Run(HINSTANCE hInst, const std::wstring& initialPath);
+    // initialPath：启动要打开的目录；selectTarget：/select,<文件> 要选中的完整路径（可空）。
+    // 两者分开 because SelectPaths 要完整路径、导航目标是父目录。
+    int Run(HINSTANCE hInst, const std::wstring& initialPath,
+            const std::wstring& selectTarget = std::wstring());
 
     HWND hwnd() const { return hwnd_; }
-    void OpenExternal(const std::wstring& path);
+    // AI 面板（命令层需要它判"可用"并做断言回读）。
+    aiui::Panel& aiPanel() { return aiPanel_; }
+    const aiui::Panel& aiPanel() const { return aiPanel_; }
+    void OpenExternal(const std::wstring& path,
+                      const std::wstring& selectTarget = std::wstring());
     // 把键盘焦点还给当前标签的视图片。热键总线上所有"离开编辑态"的路径都收口到这里，
     // 否则焦点停在 OWNER 主窗口上：type-ahead / Delete / Enter 全部失效（只剩热键还能用）。
     void FocusActiveView();
@@ -41,18 +56,33 @@ public:
 private:
     App() = default;
 
-    struct Tab {
-        int id = 0;
-        std::unique_ptr<ShellView> view;
-        // 历史栈（含 pending 事务状态）：唯一实现在 nav::History。
-        // 以前这里是 hist/idx/pending/pendingPushed/pendingPrevIdx 五个字段、
-        // 由四个函数各自手工维护 —— 那正是"后退要按两次"这类 bug 的温床。
+    // 一个窗格 = 一个系统 Shell 视图 + 它自己的导航栈与视图私有状态。
+    // 双栏里两个窗格的目录可以完全不同；把历史放在标签级会让地址栏/后退栈互相串台。
+    //
+    // 【槽位与方向是两回事】槽位永远是 0/1（左右并排时 0=左 1=右，上下堆叠时 0=上 1=下）；
+    // 路径/历史/选中/视图档位全挂在**槽位**上，方向只决定这两个槽位怎么摆 —— 切方向不丢状态。
+    struct Pane {
+        std::unique_ptr<ShellView> view;  // 第二窗格按需创建，关闭双栏后保留以保住状态
         nav::History nav;
         unsigned items = 0;
         std::wstring display;
         SplitCache split;  // 文件夹/文件分类缓存（状态栏 800ms 取数不再重算）
-        // 当前目录。历史栈是唯一真相，这里只是便捷读取。
+        std::wstring searchFrom;
+        std::wstring searchQuery;
         std::wstring path() const { return nav.here(); }
+    };
+
+    struct Tab {
+        int id = 0;
+        std::array<std::unique_ptr<Pane>, 2> panes;
+        int activePane = 0;  // 0 主窗格，1 第二窗格；单栏时永远是 0
+        // 标签代表"用户正在看的那个视图"：路径随活动窗格走。
+        // 两个窗格自己的目录/历史仍各自保存在 Pane 里，互不覆盖。
+        std::wstring path() const {
+            return panes[static_cast<size_t>(activePane)]
+                       ? panes[static_cast<size_t>(activePane)]->path()
+                       : std::wstring();
+        }
     };
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -63,9 +93,15 @@ private:
     // WM_CLOSE 与 win.quit / 系统菜单退出共用这一份判定。
     bool ConfirmExit();
     void RegisterCommands();
+    // 破坏性命令的人工确认：把弹框实现注入命令总线（实现见 app_confirm.cpp）。
+    void InstallConfirmCallback();
+    // 命令前置状态与 AI 状态快照的接线（实现见 app_state.cpp）。
+    void RegisterStateProviders();
     // 命令注册按域分片（app_commands*.cpp），RegisterCommands 只做调度。
     void RegisterTabCommands();
     void RegisterFileCommands();
+    // 文件视图的双栏：开关 / 切换活动窗格 / 比例。作用域是窗格，不是标签。
+    void RegisterViewPaneCommands();
     // 长任务域（工作线程 + 进度 + 取消）：体积统计 / 摘要 / 查重 / 比较。
     // 与 RegisterFileCommands 分开是因为它们有**独立的并发约定**，
     // 而那个约定只该有一份（见 app_commands_scan.cpp 文件头）。
@@ -78,9 +114,23 @@ private:
     // fs.*（按路径操作）单独成文件：作用域与 file.*（选中集）不同。
     void RegisterFsCommands();
     void RegisterMiscCommands();
+    // 书签编辑族（收藏夹增删改查、拖放/重排的结构化入口）：作用域自成一体，
+    // 实现见 app_commands_misc_bookmarks.cpp。
+    void RegisterBookmarkCommands();
+    // 带参外部入口（clipboard.copy / ext.terminal.at）与书签文件 IO
+    // （bmk.import/export/reload）：作用域与 misc 不同，各自独立成文件。
+    void RegisterExternalCommands();
+    void RegisterBookmarkIoCommands();
+    // 窗口管理（minimize/maximize/topmost/center/move/resize/list/tile/cascade）：
+    // 作用域是顶层窗口，与 misc 的"进程级动作"分开。
+    void RegisterWindowCommands();
     void RegisterDevCommands();
     void RegisterArchiveCommands();
-    void Layout();
+    // 搜索域（导航栏搜索框的范围/历史）。
+    void RegisterSearchCommands();
+    // force=true 时跳过"输入没变就整段跳过"的指纹（见 app_layout.cpp 的 LayoutKey）。
+    // 用于"某个控件刚刚才建出来"这类场景：新建这件事不在指纹里，必须显式要求重排。
+    void Layout(bool force = false);
     // dpiOverride > 0 时用它（WM_DPICHANGED 的 wParam 才是权威值）
     void ApplyTheme(int dpiOverride = 0);
     // 用户主目录。做成成员是为了让分片文件里的 HomePath() 不用再共享一个匿名命名空间。
@@ -92,6 +142,17 @@ private:
     // 会话自动快照：标签增删/移动/切换/导航后 2s 落盘一次（去抖）。
     // 正常退出仍会立即保存；这个定时器只为"崩溃/断电"兜底。
     static constexpr UINT_PTR kSessionTimer = 3;
+    // 文件视图自动刷新（M7）：shell 变更连发时合并成一次 RefreshActive。
+    // 300ms 去抖，避免批量文件操作把视图刷几十次、也避免和用户自己的导航打架。
+    static constexpr UINT_PTR kViewRefreshTimer = 4;
+    void ScheduleViewAutoRefresh();
+    // 根集发现完成后换成完整清单（见 nav_pane_root.h 的 Prefetch*）。
+    // 发现要 461 ms（15 次绑定第三方网盘扩展 + Home 枚举），同步跑会卡住首帧，
+    // 所以先挂内置三项出图、发现走工作线程，算完 PostMessage 回这里。
+    // 幂等：没算完就什么都不做。
+    void ApplyDiscoveredRootsIfReady();
+    // 真正销毁关标签时摘下来的视图（WM_APP_RECLAIM_VIEWS）。幂等。
+    void ReclaimPendingViews();
     // 标记会话已变：重启 2s 去抖定时器（重复 SetTimer 只改间隔，不叠加）。
     void MarkSessionDirty();
     // 会话快照的唯一写入点（内存 + 落盘）。退出与自动快照共用。
@@ -114,7 +175,10 @@ private:
 
     // 标签
     int NewTab(const std::wstring& path, int index = -1);
-    int NewTabIndex() const;  // tabNewPos: right = 当前标签右侧, end = 末尾
+    int NewTabIndex() const;  // tabNewPos: after_current = 当前右侧, end = 最右
+    // 按需创建某个窗格的 Shell 视图；已创建时幂等。第二窗格首次打开双栏时才真正建。
+    bool EnsurePaneView(Tab* tab, int paneIndex);
+    void WirePaneCallbacks(Tab* tab, int paneIndex, ShellView* view);
     // 路径是否值得开一个标签：命名空间/shell: 一律允许；文件系统路径要求存在。
     //
     // 为什么需要预检：ShellView::Create 对不存在的目录也可能成功（导航失败是
@@ -180,7 +244,47 @@ private:
     Tab* Active();
     Tab* ById(int id);
     int ActiveIndex() const;
-    std::wstring ActivePath() const;
+    std::wstring ActivePath();
+    // 双栏：0 主窗格 / 1 第二窗格（左右并排=左/右，上下堆叠=上/下）。PaneAt 永不返回
+    // null（标签创建时两个 Pane 都在），但 Pane::view 可能还没创建（按需创建）。
+    static Pane* PaneAt(Tab* tab, int index);
+    Pane* ActivePane();
+    ShellView* ActiveShellViewHost();
+    // 活动窗格变化时把 tabSet_ 的路径/标题/别名/颜色/锁定态改成"当前显示的视图"：只改模型，不重排标签（固定态属于标签本身）。
+    void SyncTabIdentity(Tab* tab);
+    // 全局导航窗格的显隐/宽度落地：整个窗口只有一棵，固定在内容区最左，与方向无关。
+    void ApplyNavPane();
+    void ApplyPaneChrome();
+    // 从活动 ShellView 现读视图档位；读不到才退回 viewMode_。
+    int ActiveViewModeIndex();
+    void SetDualPane(bool on);
+    void NextPane();
+    void CreateSplitBars();   // 建三条布局边界条（窗格间 / 导航|文件 / 文件|AI）
+    void SetPaneSplit(int percent);
+    void OnSplitterDragged(int percent, bool final);   // final=false 只重排，true 才落盘
+    // 侧栏边界拖动：落点是像素（边界中心，客户区坐标）。
+    // 与 OnSplitterDragged 分开，是因为两条边界的"像素 -> 宽度"换算是相反的
+    // （导航 = center，AI = 客户区宽 - center），混在一个函数里就得靠参数区分。
+    void OnNavEdgeDragged(int centerX, bool final);
+    void OnAiEdgeDragged(int centerX, bool final);
+    // 双栏方向：false = 左右并排，true = 上下堆叠（垂直双栏）。只改摆法，不动窗格槽位
+    // —— 两个窗格的路径/历史/选中全部保留（理由与翻转/应用两种语义见 app_panes.cpp）。
+    void SetPaneVertical(bool vertical);
+    void ApplyPaneVertical();   // 按当前 paneVertical 重排
+    // 焦点进入某个 ShellView 时，把该视图所属窗格设为活动窗格：双栏下这是
+    // "激活哪个视图就哪个响应"的触发点（点击/Tab 进入即切换），另一窗格保持不变。
+    void OnPaneActivated(ShellView* view);
+    // 焦点在哪个视图（返回窗格下标，-1 = 焦点不在本标签的任何视图里）。
+    // 活动窗格的唯一真源：焦点从哪来（键盘/程序/鼠标/shell 内部）都一视同仁。
+    int FocusedPaneIndex(Tab* tab) const;
+    // 焦点事件到达时按真实焦点同步外壳（双栏：活动窗格跟随焦点）。
+    // 幂等：焦点没落在视图里、或本来就在同一窗格，都只做无害的刷新。
+    void OnFocusMaybeChanged();
+    // 焦点事件观察（EVENT_OBJECT_FOCUS，只读）：任何来源的焦点变化都据此同步外壳。
+    void StartFocusWatch();
+    void StopFocusWatch();
+    // Shell 回调反查所属窗格：FindTab 只保留给不关心左右的老调用点。
+    bool FindPane(ShellView* view, Tab** tab, int* paneIndex) const;
     // 焦点面板判定（观测面）：按真实窗口层级判断焦点属于哪个面板，
     // 匹配不上就如实返回 unknown，不猜。AI 状态快照每次现取。
     std::wstring FocusPaneOf(HWND focus);
@@ -193,7 +297,39 @@ private:
     // AI 通道热插拔：按当前配置启停管道服务与请求泵定时器（幂等）。
     // 启动时调一次；运行中 config.set aiEnabled 之后由 WM_APP_SYNC_AI 再调。
     void SyncAiChannel();
+
+    // AI 面板：创建（含拉起 node 服务）与显隐切换。
+    // 服务是面板的前置条件 —— 没服务时面板显示占位页而不是白屏。
+    void InitAiPanel();
+    void ToggleAiPanel();
+    // 页面经 WebMessage 上报的 AI 状态：chip 文本 + peek 内容。
+    // 参数用基本类型，避免把 WebView COM 绑定类型漏进 app.h 的公共面。
+    void ApplyAiWebStatus(const std::wstring& state, const std::wstring& summary,
+                          const std::wstring& detail, bool canUndo,
+                          const std::wstring& undoDomain, int turnId);
+    // 页面尚未上报前，Web 视图的原生启动进度。starting 会让页面状态归零；
+    // 真实页面状态一旦到达，原生态不再回写（除非后来 WebView2 失败）。
+    void RefreshAiNativeStatus();
+    void ApplyAiNativeStatus(const std::wstring& state, const std::wstring& summary,
+                             const std::wstring& detail);
+    // 页面状态与原生态共用的落盘逻辑：未读、peek、chip 只有这一处写入。
+    void ApplyAiStatusCore(const std::wstring& state, const std::wstring& summary,
+                           const std::wstring& detail, bool canUndo,
+                           const std::wstring& undoDomain, int turnId, bool fromPage);
+    void ShowAiPeek();
+    void ToggleAiPeek();
+    void HideAiPeek();
+    // 用户看过这次结果（chip / peek 关闭 / 打开对话 / 撤销）后清未读。
+    // 只改 chip 文案，不改状态本身；面板展开时由 ApplyAiWebStatus 直接清。
+    void ConsumeAiUnread();
+    // chip 文案与 tooltip 的唯一写入点：状态与未读都要走这里。
+    void RefreshAiChip();
+    // ai.* 命令的注册入口（app_commands_ai.cpp）。
+    void RegisterAiPanelCommands();
     void RefreshStats();
+    // 显式标脏：选中/隐藏状态/窗格结构等命令改完后调它，再 RefreshStats()
+    // 强制走一次全量取数；800ms 定时器只调 RefreshStats()，靠轻量判据决定是否全量。
+    void MarkStatsDirty();
     // 把配置里的视图偏好（模式/排序/分组/窗格）套到指定标签。
     void ApplyPersistedViewState(ShellView* view);
 
@@ -224,12 +360,31 @@ private:
     // 菜单/对话框
     void ShowStatusMenu(POINT screen);
     void ShowCommandPalette();
+    // 从面板（命令/序列总览）派发一条命令：破坏性确认 + 必填参数追问统一在此。
+    void InvokeFromPalette(const CommandDef& d);
     void ShowTabMenu(int index, int action);
-    void ShowTabColor(int index, int color);
     void ShowViewMenuAt();
-    // 设置面板：表（settings_reg）驱动的可调项列表，改动走 config.set 命令。
-    // at 是弹层的屏幕锚点（视图菜单按钮下方），与其它弹层一致。
-    void ShowSettingsPanel(POINT at);
+    // 设置对话框：表（settings_reg）驱动的可调项列表，改动走 config.set 命令。
+    // 【为什么是独立窗口而不是弹出菜单】旧的设置面板是一整块弹出菜单：39 项平铺，
+    // 高度只够露出十几项，剩下的靠滚动找，而"这一项属于哪一类"完全没有表达。
+    // 设置本来就有明确分组（栏 / 视图 / 序列键 / 标签 / 窗口 / 会话 / 状态栏 /
+    // 键位 / AI），分组就该出现在界面上 ——
+    //   左栏分类页签 → 中栏按类排 → 右栏讲清这一项的名称、键名与生效时机。
+    // 详见 src/settings_dialog.h 顶部的取舍说明。
+    //
+    // 【非模态】多数设置立即生效，模态窗会把主窗口挡住，用户改完只能凭记忆
+    // 猜"到底变了没有"。它是主窗口的 owned 窗口：主窗口关掉时它跟着销毁。
+    void ShowSettingsDialog();
+    // 把配置里的历史上限推到实际拥有它们的两个模型上：
+    //   · recentLimit / searchLimit → Config 自己的两个 vector（超出的立刻裁掉）
+    //   · closedTabLimit → core::TabSet（见 TabSet::SetClosedLimit）
+    // 启动时调一次，config.set 之后调一次。收成一个函数，是因为"改了上限"
+    // 的三条路径（启动 / 面板 / AI）必须落在同一处 —— 三处各写一遍的话，
+    // 面板改了 AI 改不了（或反过来），而表现只是"有时生效"。
+    void ApplyHistoryLimits();
+    // 把配置里的四条栏高推给 Theme。建窗前调一次、config.set 后调一次：
+    // Theme 只保存实例值，不直接读全局 Config，保持它作为渲染对象的独立性。
+    void ApplyBarHeights();
     // “选择详细信息”：反复弹出列勾选菜单，每次选择都走 view.columns.set 命令，
     // 直到用户按 Esc 或选“完成”。不自己模拟输入，只展示菜单并接命令。
     void ShowColumnMenu(POINT at);
@@ -240,9 +395,25 @@ private:
     // 在搜索视图里搜当前目录（query 为空 = 取消搜索回到来源目录）。
     //
     // 导航栏搜索框与 search.find 命令共用这一份实现：两处各写一遍，表现迟早
-    // 不同（"搜索框能搜、命令搜不到"这种最典型的假等价）。成功时把实际用的
-    // URL 写进 url，供命令返回结构化结果。
-    bool RunSearch(const std::wstring& query, std::wstring* url);
+    // 不同（"搜索框能搜、命令搜不到"这种最典型的假等价）。成功时把结果视图的
+    // 标题写进 title，供命令返回结构化结果。
+    bool RunSearch(const std::wstring& query, std::wstring* title);
+
+    // ---- 搜索域（导航栏搜索框）----
+    //
+    // 范围与历史的真相在 Config::Settings 里（App 不持有副本，R19 同源）。
+    // 左带弹「搜索范围」、右带弹「搜索历史」—— 两个菜单里的每一项都走**命令**
+    // （search.scope.set / search.query.set / search.history.clear）：
+    // 鼠标路径与键盘/AI 路径必须同源，否则就是两套实现。
+    //
+    // widthPx = 搜索框宽度（物理像素，由导航栏给）：弹层与搜索框同宽、
+    // 左右边缘齐平。宽度跟着锚点一起传，App 不自己量（几何在导航栏那一侧）。
+    void ShowSearchScopeMenu(POINT at, int widthPx);
+    void ShowSearchHistoryMenu(POINT at, int widthPx);
+    // 当前搜索范围档位（0..3，见 searchscope::Range）。
+    static int SearchRange();
+    // 设置搜索范围。path 只对"自定义路径"有意义（其它档忽略它）。
+    static void SetSearchRange(int range, const std::wstring& path);
 
     // 命令辅助
     IShellView* ActiveView();
@@ -274,14 +445,58 @@ private:
     void OpenPathInNewWindow(const std::wstring& path);
     void ApplyViewMode(int index);
 
+    // ---- 序列总览弹窗（复刻 mod 的 ExBarSeqOverlay）----
+    // 取数与派发都在本层：弹窗只管 UI/键盘，App 用既有数据源填行、
+    // 统一经 CommandBus 派发（与人机等价 R20 同源）。
+    std::vector<SequenceOverlay::Row> SequenceRows(const std::wstring& mode,
+                                                   const std::wstring& filter);
+    void SequenceExecute(const SequenceOverlay::Row& row);
+    // 打开弹窗（Ctrl+Shift+P / win.palette 的应用入口）。
+    void ShowSequenceOverlay(const std::wstring& mode = std::wstring());
+    void SetupSequenceOverlay();
+
     HINSTANCE hInst_ = nullptr;
     HWND hwnd_ = nullptr;
     HWND viewArea_ = nullptr;
+    HWND viewTopCover_ = nullptr;    // 内容区上沿 1px 覆盖带（压住 Shell 原生边框）
+    HWND viewBottomCover_ = nullptr; // 内容区下沿 1px 覆盖带
     Theme theme_;
     TabStrip tabStrip_;
     NavBar navBar_;
     BookmarkBar bookmarkBar_;
     StatusBar statusBar_;
+    // 设置对话框（成员而非全局：它需要一个 owner 窗口与一份主题，
+    // 两者都在 App 里；做成全局就得多传参数或多存一份全局状态）。
+    SettingsDialog settingsDialog_;
+    // 全局导航窗格：窗口唯一一棵，固定在内容区最左侧（不属于任何窗格）。
+    // 用的是 IExplorerBrowser 的原生 EP_NavPane（shell 自己绘制的树），
+    // 见 src/nav_pane.h 顶部的取舍说明。
+    navpane::NavPane navPane_;
+    // AI 面板（右侧）：宿主是子窗口，内部挂 WebView2。
+    // 与 navPane_ 对称 —— 一个占最左，一个占最右，中间区域归文件视图。
+    // 见 src/aichat_panel.h。
+    aiui::Panel aiPanel_;
+    // 状态栏 AI chip 的 peek 气泡（面板收起后的完成摘要 / 撤销 / 打开对话）。
+    aiui::StatusPeek aiPeek_;
+    // 最近一次页面上报的 AI 状态。RefreshStats 每次重建 StatusModel，
+    // 但 chip 不能回到"空闲"，所以这里保留一份权威值。
+    std::wstring aiStatusState_ = L"idle";
+    std::wstring aiStatusSummary_ = L"AI · 空闲";
+    std::wstring aiStatusDetail_;
+    bool aiStatusCanUndo_ = false;
+    std::wstring aiStatusUndoDomain_;
+    int aiStatusTurnId_ = 0;
+    // 页面是否已经上报过真实状态。原生启动态只在它变 true 之前接管 chip；
+    // 这样可以避免"页面已经显示完成，宿主又把 chip 改回准备中"。
+    bool aiPageStatusSeen_ = false;
+    // 面板收起期间到达的终态结果是否被用户看过。peek 只是呈现层，
+    // 自动弹出不算"已读"；用户点 chip / 关闭 / 打开对话 / 撤销才算。
+    bool aiUnread_ = false;
+    // 三条边界共用 SplitBar 状态机，只在落点口径上不同：panesBar_=百分比、
+    // navEdge_=导航宽像素、aiEdge_=AI 宽像素。分三套实现会各自漏捕获/悬停。
+    SplitBar panesBar_;
+    SplitBar navEdge_;
+    SplitBar aiEdge_;
     InputRouter input_;
 
     core::TabSet tabSet_;
@@ -290,17 +505,54 @@ private:
     // MRU 循环进行中：CycleMru 自己调 Activate，不能让它把循环快照重置掉；
     // 其余任何激活（点击/命令/新建）都会结束循环。
     bool mruCycling_ = false;
+    // 会话恢复期间不急建第二窗格 ShellView：路径/历史先入模型，最后只为活动标签建一次。
+    bool restoringSession_ = false;
+    // 首帧还没画出来（Run 的 ShowWindow 之前）。
+    //
+    // 【为什么需要】建第二个窗格的 ShellView 实测 375 ms（双栏启动：
+    // [+734] 建右视图 -> [+1109] 完成）。这段时间窗口还没显示，花掉的是
+    // 用户"双击后等窗口"的耐心，而第二窗格对**第一眼**没有贡献 —— 首帧有主窗格就够。
+    // 所以启动期把右视图延到首帧之后补（WM_APP_STARTUP_SETTLE），
+    // 用户先看到窗口，第二窗格随后填上。非启动路径的 Activate 仍然同步建 ——
+    // "点一下标签、第二窗格立刻有内容"这件事不能被拖。
+    bool startupPending_ = false;
+    // 焦点事件观察句柄（EVENT_OBJECT_FOCUS，out-of-context，只读）。
+    // 它不改焦点、不注入输入，只用来在焦点落到另一个视图时同步外壳显示。
+    void* focusWatch_ = nullptr;
     // 视图模式 0..7（与导航栏的 8 档一致）。排序/分组/方向不在这里留副本：
     // 它们只在 Config::Settings 里存一份，需要时现取，避免两份值漂移。
     int viewMode_ = 3;
     bool inDestroy_ = false;
-    // 搜索视图的来源目录（非空 = 当前标签正在显示搜索结果）。
-    // 搜索视图没有"上一级"，取消搜索必须靠它回到进来时的目录 ——
-    // 否则取消之后用户只能自己重新输一遍路径。
-    std::wstring searchFrom_;
-    // 当前生效的搜索词。与 searchFrom_ 同生同灭：只给观测面（state.searchQuery）用，
-    // 不参与判定 —— 判定一律看 searchFrom_ 是否为空。
-    std::wstring searchQuery_;
+    // 上一次 Layout 的输入指纹（定义见 layout_key.h）。相同就整段跳过。
+    layout::LayoutKey lastLayout_{};
+    // SyncChrome 的可见输入指纹：标题/标签条/地址栏/导航树用到的数据没变时，
+    // 只刷新状态栏统计，不再重复 SetTabs（图标着色 + tooltip 重建）与 SyncTo。
+    // 不把选中集放进来：它只影响状态栏，RefreshStats 每次仍会取。
+    std::wstring lastChromeSignature_;
+    // ---- 状态栏取数的节流状态（以前是 RefreshStats 里的函数内 static）----
+    // 搬成成员的两个理由：① static 违反"组件内不得有文件级可变状态"（AGENTS §3）；
+    // ② 多标签共用一个 lastPath 会让"路径变没变"判断错乱，本该节流的全量枚举被反复触发。
+    // 这组状态是性能关键：探针 82 实测 System32（5003 项）只数总数 8.2 ms、
+    // 逐项分类 85.7 ms —— 差 10 倍，所以"何时允许分类"必须由这里控。
+    unsigned statsTick_ = 0;
+    std::wstring statsLastPath_;
+    // P0-2 轻量判据：只有这些量变化（或 MarkStatsDirty 标脏）才做全量取数。
+    // 单看路径不够：同一目录里换选另一个文件，选中数不变但容量/类型/日期会变。
+    bool statsDirty_ = true;
+    std::wstring statsLastDisplay_;
+    unsigned statsLastTotal_ = 0;
+    unsigned statsLastSelCount_ = 0;
+    int statsLastHidden_ = -1;
+    IShellView* statsLastView_ = nullptr;
+
+    // ---- 关标签时的视图延迟销毁队列 ----
+    // 探针 84：ShellView::Destroy（IExplorerBrowser::Destroy + Release + DestroyWindow）
+    // = 20~69 ms per view，全在 UI 线程；关一个标签销毁 1~2 个 → 20~138 ms。
+    // 用户对"关闭"的期待是立刻消失，所以 CloseTab 只隐藏窗口 + 把 unique_ptr
+    // 移进这里，真正的 release 交给 WM_APP_RECLAIM_VIEWS（消息循环空闲时）。
+    // 生命周期：队列由 App 独占，视图已不在 tabs_ 里、无人能再拿到，所以安全；
+    // 唯一风险是退出时队列非空 —— OnDestroy 必须清空它（见那里）。
+    std::vector<std::unique_ptr<ShellView>> pendingDestroy_;
     // 文件操作撤销栈（唯一一份）。
     //
     // 为什么需要它：shell 的撤销谓词在 IExplorerBrowser 宿主里取不到

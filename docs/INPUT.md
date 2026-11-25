@@ -29,6 +29,10 @@ baseline: 2026-11-21 11:00
   注册到 `CommandBus`（`src/commands.cpp` 是命令目录，id/name/group/scope/implemented）。
 - **同一命令多入口**：快捷键、序列、鼠标、菜单、命令面板都走 `InvokeByName`，
   所以"能点"就"能绑键"，不存在第二套动作实现。
+- **菜单右端的键位自动派生**：菜单行只声明 `CmdId`（带参命令再带内联参数，如
+  `tab.color:3` / `view.mode:3`），`Show()` 时从当前键位表解析文案；新增或改键后
+  所有声明该命令的菜单行自动更新，调用点不写键名。带必填参数却没有内联参数的
+  键一律不显示（按下走空参，做不出那一行）。
 - **未实现命令保留在目录里**（`implemented=false`）：管理器里显示"未实现"，
   不会出现"键位静默消失"。
 
@@ -40,7 +44,7 @@ baseline: 2026-11-21 11:00
 |---|---|
 | 默认资产 | `<仓库>/data/keymap.json`（与 ExBar mod 的 `data/defaults/keymap.json` 同格式）—— 注意 `data/` 不入库，此文件是本地真实配置；内置兜底表在 `src/keymap.gen.h`，由 `tools/gen_keymap.py` 从这里生成 |
 | 用户文件 | `data\keymap.json`（直接编辑；缺失时用内置默认键位） |
-| 规模 | **81 条热键 + 38 条序列**（2026-11-21 15:00 实测）。其中若干条热键指向 `implemented=false` 的命令（占位，`check_commands.py` 会列出），按下无反应是**预期**，不是 bug |
+| 规模 | **104 条热键 + 169 条序列**（2026-11-23 实测）。序列数从 207 降到 169 是**修缺陷**：那 38 条绑的是"有必填参数又没带内联参数"的命令，按下去必然失败，其中三条还会静默改状态（见 §3）。其中若干条热键指向 `implemented=false` 的命令（占位，`check_commands.py` 会列出），按下无反应是**预期**，不是 bug |
 | 结构 | `hotkeys[] {setting, command, key}`；`sequences[] {seq, command}` |
 | 解析 | `Ctrl+Shift+T` / `Alt+←` / `F5` / `Alt+P`（预览窗格）/ `Shift+Left` / `Ctrl+Shift+1` |
 | 生效顺序 | 用户覆盖 → 文件默认键 → mod 的系统原生键参考表（`keymap.cpp` 的 `SystemKeyFor`） |
@@ -62,7 +66,12 @@ baseline: 2026-11-21 11:00
 
 ## 3. 序列键
 
-- 数据：`sequences[]`（默认 38 条，`g g`、`g t`、`x l a`…）。
+- 数据：`sequences[]`（**169 条**）。前缀按命令组分配：`b`书签 `c`配置 `d`开发 `e`外部 `f`文件 `g`前往 `n`导航 `p`路径 `q`搜索 `s`会话 `t`标签 `v`视图 `w`窗口 `x`关闭族 `y`复制族 `z`工具。
+- **序列只绑无必填参数的命令。** 序列的派发路径是 `FeedSequence → InvokeByNameLegacy(cmd, L"") → ArgsFromLegacyArg(def, "") → Args::Empty()` —— 参数**恒为空**，所以带必填参数的命令绑到序列上，每按一次都注定失败。更坏的是有几条在空参下会**静默改状态**（`tab.color` → 无颜色、`win.move` → 窗口挪到左上角、`view.pane.split` → 比例重置 50%）：那不是"按了没反应"，是"按了做了别的事"。
+  - 合法形态有两种：无必填参数，或命令规格带内联参数（`view.mode:3` / `ViewZoom:-1`）。
+  - 2026-11-23 删掉了 38 条违例（207 → 169）。带参命令的正确入口是命令面板（按 schema 追问参数）或界面菜单，不是序列。
+  - **防复发是机械的**：`check_commands.py` 规则 C4 从 `argsSchema` 的 `required` 判定，命中即报错 —— 新增命令时不需要有人记得来登记。
+- 模式总览弹窗：在弹窗外按 `/ ! # @ $ & % ^ * ? < > ~` 或 `Ctrl+Shift+P` 唤起（`src/sequence_overlay.cpp`），打字过滤、↑↓ 导航、回车派发、Esc 收起。模式：`/`快速跳转 `#`书签 `@`标签 `&`历史 `<`后退 `>`前进 `~`当前目录 `$`搜索 `%`路径 `!`命令（全部已实现命令）`?`帮助。
 - 状态机：`SequenceMachine`（纯逻辑，可单测）
   - 前缀匹配多条 → pending，右下角弹候选（`SequenceHint`，无激活、置顶）。
   - 命中且唯一 → 立即执行；`exact` 且仍有更长候选 → 等下一键（`x l` / `x l a`）。

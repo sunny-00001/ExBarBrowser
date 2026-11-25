@@ -180,6 +180,15 @@ std::vector<ToolSpec> ListTools() {
         t.outputSchema = d.outputSchema ? Utf8ToWide(d.outputSchema) : std::wstring();
         t.effects = d.effects;
         t.needsSelection = d.needsSelection;
+        t.timeoutMs = 90000;   // 与既有客户端的 90s 一致；长命令以后可逐条覆盖
+        // 撤销组只覆盖两套真有撤销栈的域：File 与 Bookmark。其它 undoable
+        // 命令（例如 tab.close）没有同域栈，不能对 AI 承诺 join。
+        if (const wchar_t* domain = UndoDomainOfGroup(t.group)) {
+            if (t.effects.undoable) {
+                t.undoDomain = domain;
+                t.undoGroup = UndoGroupPolicy::Join;
+            }
+        }
         // 自断言必须在这里填上：CallImpl 靠 spec.assertion 判断"要不要先采一份
         // 执行前的状态"（$changed / $unchanged 需要它）。不填则 before 永远为空，
         // 那两种断言被判 malformed —— 断言语言的一半是死的。
@@ -207,6 +216,13 @@ bool FindTool(const std::wstring& name, ToolSpec* out) {
             out->outputSchema = d.outputSchema ? Utf8ToWide(d.outputSchema) : std::wstring();
             out->effects = d.effects;
             out->needsSelection = d.needsSelection;
+            out->timeoutMs = 90000;
+            if (const wchar_t* domain = UndoDomainOfGroup(out->group)) {
+                if (out->effects.undoable) {
+                    out->undoDomain = domain;
+                    out->undoGroup = UndoGroupPolicy::Join;
+                }
+            }
             out->assertion = d.assertion ? Utf8ToWide(d.assertion) : std::wstring();
             out->assertionExempt =
                 d.assertionExempt ? Utf8ToWide(d.assertionExempt) : std::wstring();

@@ -14,7 +14,9 @@
 #include "theme.h"
 
 // 逻辑像素（Theme::S 再缩放）。Layout 与窗口初建尺寸共用，避免两处各写一个数。
-constexpr int kTabBarHeightDp = 26;
+// 【值只有一个出处】栏高令牌在 theme.h（Theme::barTab96）。这里不写第二遍数字 ——
+// 标签栏按 26 建、布局按 28 排这类 1px 错位，只有"同一个来源"才能从根上避免。
+constexpr int kTabBarHeightDp = Theme::barTab96;
 
 // 拖拽插入指示线画在哪个 x（客户区坐标）。-1 = 不画。**纯函数**，便于单测。
 //
@@ -84,7 +86,7 @@ enum TabMenuAction {
     kTabMenuMoveFirst,
     kTabMenuMoveLast,
     kTabMenuMoveNewWindow,   // 有损近似：新实例按路径打开 + 关闭源标签
-    kTabMenuColor,       // 不是动作本身：TabStrip 内部再弹一层色板，选中值走 WM_APP_TAB_COLOR
+    kTabMenuColor,       // 不是动作本身：TabStrip 再弹一层色板，选中行走 TabSetColor(color,index)
     // 关闭历史条目：action = kTabMenuReopenBase + 序号（0 = 最近关闭）。
     // 用基址+偏移而不是为每条加一个枚举项：栈深 20，枚举会被撑成噪声。
     kTabMenuReopenBase = 1000,

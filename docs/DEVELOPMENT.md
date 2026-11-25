@@ -116,6 +116,46 @@ bash build.sh --out /tmp/ebb_check.exe
 
 `*.exe` / `*.png` / `*.log` / `backup/` / `.old/` 已在 `.gitignore` 排除，不要提交。
 
+### 2.3.1 隔离构建的残留回收
+
+`--objdir` / `--out` 让多会话能并行构建，代价是**每一轮都留下一份 100 MB+ 的中间目录
+和一个 54 MB 的 exe**。这些不属于任何一轮的"产物"，但没有回收环节就会稳定堆积：
+
+> 实测 2026-11-23 上午：堆出 `obj_rev2/s3/s4/s5/s6`（5×101 MB）+ 3 个 54 MB 的 exe，
+> 把当轮手工清掉的 607 MB 全部抵掉还倒涨了 1 GB。
+
+回收只有一处实现：`tools/reclaim.py`，由 `build_fast.py` 在**每次构建收尾自动调用**
+（成功与失败两条路径都调）。手工入口：
+
+```bash
+python tools/reclaim.py                    # 预演，只列会删什么
+python tools/reclaim.py --apply            # 真删
+python tools/reclaim.py --apply --min-age 60   # 放宽"还在写"的保护窗口
+```
+
+它认五类残留：`obj_*/ obj.*/`、`tN/ tmp*/ profile-*/`、`ExBarBrowser*.exe`（除主产物）、
+`tools/probe*.exe`（有同名 `.cpp` 才删）、`__pycache__/` 与根目录 `tN.py`。
+
+**跳过规则（任一命中就保留）**：
+
+| 判据 | 为什么 |
+|---|---|
+| 同名 `ExBarBrowser*.exe` 进程在跑 | 删不掉，且 try 删除会留半删状态 |
+| 目录树最新 mtime 在 `--min-age` 内（默认 15 分钟） | 它正在被写；**本轮自己的产物天然落在窗口内** |
+| 目录持有 `.reclaim-lock` 且持有者进程存活 | 卡住的构建也能保护自己，见下 |
+| 目录下有任一项被 git 跟踪 | 不是垃圾，是资产 |
+
+**为什么要显式锁**：mtime 只证明"最近写过"，不证明"仍然持有"。一个卡住的构建
+（`windres` 遇损坏 `.ico` 会静默挂 20 分钟）期间不写任何文件，窗口一过就被判成陈旧，
+回收器抽走它的中间目录，链接期报成 `undefined symbol` —— 看起来像代码坏了。
+所以 `build_fast.py` 在 `OBJ` 里写 `.reclaim-lock{pid=…}`，`atexit` 释放（多个 return
+点用 `finally` 会漏一处，漏掉就留成永久锁）。
+
+判存活不能用 `os.kill(pid, 0)` —— Windows 上它对已退出进程直接返回成功，
+于是崩溃留下的陈旧锁会被当成活锁、目录永久不回收。实际用
+`OpenProcess` + `GetExitCodeProcess`，且**判不清时按活着处理**（宁可多留 100 MB，
+也不要抽走别人正在构建的目录）。
+
 ### 2.4 自测（不需要 GUI）
 
 > **规则 R21：禁止模拟鼠标点击、禁止抢焦点、禁止循环点击 —— 一条不让。**
@@ -167,11 +207,15 @@ python tests/e2e/bookmark_move_e2e.py 坚果云           # E2E 闭环验收（�
 所以测试实例关闭不会把用户的 `aiEnabled` 翻成 true。意图配方在 `tools/intents.py`
 的 `INTENTS` 表里，加一个意图只需加一行。详见 `FULL-COVERAGE.md` §7.1。
 
-它用**测试专属的 obj 目录**（`$TMPDIR/ebb_tests/obj`）和独立产物名 `ExBarBrowser.test.exe`
-（经 `build.sh --objdir --out`），然后复用这批 obj 链接每个测试
-（排除 `main.obj` / `*_test.obj` / `*.check.obj`），所以：
+它用**测试专属的 obj 目录**（工程根 `tmp_tests/obj`，可由 `EXBAR_TEST_OUT` 改到工程内其它
+子目录）和独立产物名 `ExBarBrowser.test.exe`（经 `build.sh --objdir --out`），然后复用这批
+obj 链接每个测试（排除 `main.obj` / `*_test.obj` / `*.check.obj`），所以：
 - **多会话隔离**：主构建/另一个会话清空重建自己的 `obj/` 时，不会抽走测试链接到一半的 obj
   （曾导致 25 个测试同时 COMPILE-FAIL）；
+- **不占系统临时区**：产物落在工程内、不进 `%TEMP%`。早先放 `%TEMP%/ebb_tests` 时，
+  `reclaim.py` 只扫工程根、够不到系统临时目录，70+ 个 55 MB 的 exe 每跑一次全量就堆 ~4 GB，
+  高并发多会话叠到 9 GB+。现在每个测试 exe 跑完即删，峰值只留 1 个；`tmp_tests/` 名字符合
+  `reclaim.py` 的会话目录规则，闲置后由 `build_fast.py` 构建收尾整目录兜底回收；
 - 不需要维护"每个测试要链哪些 `.cpp`"的依赖表（那种表必然过期，这正是下面那些长命令的由来）；
 - 每条测试的链接只要 ~3 秒，而不是把 60 个 `.cpp` 重编一遍的 3 分钟；
 - 依赖关系由构建脚本保证，改 `src/` 后不会出现"文档里的命令突然链接失败"。

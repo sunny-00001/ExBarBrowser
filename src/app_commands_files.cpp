@@ -7,6 +7,7 @@
 #include "menu.h"           // 选择详细信息列的勾选菜单
 #include "prompt.h"         // PromptText —— 批量改名/按模式选择的交互式输入
 #include "search_url.h"     // searchurl::Trim —— 与导航栏搜索框共用同一套规范化
+#include "search_scope.h"  // searchscope::RangeId —— 结果里回报用的范围档位 id
 #include "shell_columns.h"  // IColumnManager 的唯一封装
 #include "shell_ops.h"
 #include "view_modes.h"     // 图标尺寸步进与边界
@@ -330,7 +331,7 @@ void App::RegisterFileCommands() {
     reg(CmdId::CmdSelectAll, [this](const Args&) {
         return WithView([this](IShellView* v) {
             bool ok = shellops::SelectAll(v);
-            RefreshStats();
+            MarkStatsDirty(); RefreshStats();
             return ok;
         }, L"全选");
     });
@@ -423,7 +424,7 @@ void App::RegisterFileCommands() {
                 shellops::SelectMode::Replace);
             // 一项都没选上不是错误：目录里全都被选中时"反选"的结果就是空。
             // 但要让用户看到状态变化（状态栏已选数归零），所以照样刷。
-            RefreshStats();
+            MarkStatsDirty(); RefreshStats();
             (void)n;
             return true;
         }, L"反向选择");
@@ -433,7 +434,7 @@ void App::RegisterFileCommands() {
             const int n = shellops::SelectWhere(v, [](const shellops::DirEntry& e) {
                 return !e.isFolder && !e.path.empty();
             });
-            RefreshStats();
+            MarkStatsDirty(); RefreshStats();
             // 一个文件都没有时必须如实失败（"只选文件"在全是目录的目录里做不到）。
             return n > 0;
         }, L"只选文件");
@@ -443,7 +444,7 @@ void App::RegisterFileCommands() {
             const int n = shellops::SelectWhere(v, [](const shellops::DirEntry& e) {
                 return e.isFolder && !e.path.empty();
             });
-            RefreshStats();
+            MarkStatsDirty(); RefreshStats();
             return n > 0;
         }, L"只选文件夹");
     });
@@ -464,7 +465,7 @@ void App::RegisterFileCommands() {
         opt.caseSensitive = args.Bool(L"caseSensitive", false);
         return WithView([this, &pattern, &opt](IShellView* v) {
             const int n = shellops::SelectByPattern(v, pattern, opt);
-            RefreshStats();
+            MarkStatsDirty(); RefreshStats();
             return n > 0;   // 没匹配到要如实报 false，不能假装成功
         }, L"按模式选择");
     });
@@ -498,7 +499,7 @@ void App::RegisterFileCommands() {
                 if (d == std::wstring::npos || d == 0) return false;
                 return str::Lower(e.name.substr(d)) == ext;
             });
-            RefreshStats();
+            MarkStatsDirty(); RefreshStats();
             return n > 0;   // 只有样板本身时也算成功（它已经在选中里）
         }, L"按类型选择");
     });
@@ -646,51 +647,61 @@ void App::RegisterFileCommands() {
     reg(CmdId::ToggleHidden, [this](const Args&) {
         return WithView([this](IShellView* v) {
             bool ok = shellops::ToggleHidden(v, 0, hwnd_);
-            RefreshStats();
+            MarkStatsDirty(); RefreshStats();
             return ok;
         }, L"隐藏文件");
     });
     reg(CmdId::ToggleSystemFiles, [this](const Args&) {
         return WithView([this](IShellView* v) {
             bool ok = shellops::ToggleHidden(v, 1, hwnd_);
-            RefreshStats();
+            MarkStatsDirty(); RefreshStats();
             return ok;
         }, L"系统文件");
     });
     reg(CmdId::ToggleExtensions, [this](const Args&) {
         return WithView([this](IShellView* v) {
             bool ok = shellops::ToggleHidden(v, 2, hwnd_);
-            RefreshStats();
+            MarkStatsDirty(); RefreshStats();
             return ok;
         }, L"扩展名");
     });
     reg(CmdId::CycleHiddenSeg, [this](const Args&) {
         return WithView([this](IShellView* v) {
             shellops::CycleHiddenState(v, hwnd_);
-            RefreshStats();
+            MarkStatsDirty(); RefreshStats();
             return true;
         }, L"隐藏状态三态");
     });
     reg(CmdId::TogglePreviewPane, [this](const Args&) {
-        Tab* t = Active();
-        if (!t || !t->view) return false;
-        t->view->TogglePreviewPane();
-        RefreshStats();
+        ShellView* host = ActiveShellViewHost();
+        if (!host) return false;
+        host->TogglePreviewPane();
+        MarkStatsDirty(); RefreshStats();
         return true;
     });
     reg(CmdId::ToggleNavPane, [this](const Args&) {
-        Tab* t = Active();
-        if (!t || !t->view) return false;
-        t->view->ToggleNavPane();
-        RefreshStats();
+        // 导航树现在整个窗口只有一棵（App 的 navPane_），不属于任何窗格 ——
+        // 所以这里切的是全局开关，不是"活动窗格"的树（旧版那套已拆除）。
+        if (!navPane_.ok()) {
+            CommandBus::Get().NoteFailure(L"导航窗格不可用", FailKind::NotSupported);
+            return false;
+        }
+        Settings& s = Config::Get().mutableSettings();
+        s.showNavPane = !s.showNavPane;
+        Config::Get().Save();
+        ApplyNavPane();
+        ApplyPaneChrome();
+        MarkStatsDirty(); RefreshStats();
         return true;
     });
     reg(CmdId::NavTreeExpandAll, [this](const Args&) {
-        Tab* t = Active();
-        if (!t || !t->view) return false;
-        const bool ok = t->view->ExpandNavTree();
+        if (!navPane_.ok() || !navPane_.visible()) {
+            CommandBus::Get().NoteFailure(L"导航窗格当前不可见", FailKind::NotSupported);
+            return false;
+        }
+        const bool ok = navPane_.ExpandAll();
         if (!ok)
-            CommandBus::Get().NoteFailure(L"没找到可展开的原生导航树（窗格可能被隐藏）",
+            CommandBus::Get().NoteFailure(L"没找到可展开的导航树（树可能还没物化）",
                                          FailKind::NotSupported);
         return ok;
     });
@@ -745,9 +756,9 @@ void App::RegisterFileCommands() {
         }
         int ascending = -1;
         if (args.Has(L"ascending")) ascending = args.Bool(L"ascending", true) ? 1 : 0;
-        Tab* t = Active();
-        if (!t || !t->view || !result) return false;
-        IShellView* v = t->view->CurrentView();
+        ShellView* host = ActiveShellViewHost();
+        if (!host || !result) return false;
+        IShellView* v = host->CurrentView();
         if (!v) return false;
         const bool ok = SUCCEEDED(shellops::SetSortByKey(v, key, ascending));
         if (ok) {
@@ -769,9 +780,9 @@ void App::RegisterFileCommands() {
                                           FailKind::PreconditionUnmet);
             return false;
         }
-        Tab* t = Active();
-        if (!t || !t->view || !result) return false;
-        IShellView* v = t->view->CurrentView();
+        ShellView* host = ActiveShellViewHost();
+        if (!host || !result) return false;
+        IShellView* v = host->CurrentView();
         if (!v) return false;
         const bool ok = SUCCEEDED(shellops::SetGroupByKey(v, key));
         if (ok) {
@@ -797,14 +808,14 @@ void App::RegisterFileCommands() {
     reg(CmdId::ViewZoom, [this](const Args& args) {
         const int steps = args.Int(L"delta");
         if (!steps) return false;
-        Tab* t = Active();
-        if (!t || !t->view) return false;
+        ShellView* host = ActiveShellViewHost();
+        if (!host) return false;
         int fvm = 0, icon = 0;
-        if (!t->view->GetViewMode(&fvm, &icon)) {
+        if (!host->GetViewMode(&fvm, &icon)) {
             CommandBus::Get().NoteFailure(L"读不到当前视图模式，无法缩放图标");
             return false;
         }
-        t->view->SetViewMode(fvm, viewmode::ZoomIconPx(icon, steps));
+        host->SetViewMode(fvm, viewmode::ZoomIconPx(icon, steps));
         return true;
     });
     reg(CmdId::ViewZoomSet, [this](const Args& args) {
@@ -813,14 +824,14 @@ void App::RegisterFileCommands() {
             CommandBus::Get().NoteFailure(L"图标大小必须在 16..256 像素之间");
             return false;
         }
-        Tab* t = Active();
-        if (!t || !t->view) return false;
+        ShellView* host = ActiveShellViewHost();
+        if (!host) return false;
         int fvm = 0, icon = 0;
-        if (!t->view->GetViewMode(&fvm, &icon)) {
+        if (!host->GetViewMode(&fvm, &icon)) {
             CommandBus::Get().NoteFailure(L"读不到当前视图模式，无法设置图标大小");
             return false;
         }
-        t->view->SetViewMode(fvm, px);
+        host->SetViewMode(fvm, px);
         return true;
     });
     reg(CmdId::ViewZoomChoose, [this](const Args&) {
@@ -828,22 +839,13 @@ void App::RegisterFileCommands() {
         return true;
     });
 
-    // ---------------- 搜索 ----------------
-    //
-    // search.find 已于 2026-11-21 降级为 implemented=false：
-    // 宿主 IExplorerBrowser 没有搜索带，RunSearch 走 search-ms: 必然失败。
-    // 处理器一并移除（check_commands.py 要求 implemented=false 不能有处理器），
-    // 让"搜索"在命令面板/快捷键/AI 侧都显示为未实现，而不是每次都失败。
-    // 导航栏搜索框仍保留，提交时由 App::RunSearch 给出明确提示。
-
     // ---------------- 只读查询（P6：读操作返回结构化结果）----------------
     //
     // 这两条是第一批带 outputSchema 的命令。它们证明"命令能返回数据"这条路
     // 走得通 —— 以前 handler 只返回 bool，所以"列目录"这类需求只能另起一套
     // 并行的查询 API，破坏"命令是唯一契约"（P1）。
     regR(CmdId::OpListDir, [this](const Args& args, json::Value* result) {
-        Tab* t = Active();
-        if (!t || !t->view || !result) return false;
+        if (!result) return false;
 
         shellops::DirListing listing;
         const int limit = args.Int(L"limit", 0);
@@ -898,81 +900,4 @@ void App::RegisterFileCommands() {
     // app_commands_scan.cpp 与 app_commands_compare.cpp：
     // 那些活可能跑很久，必须在工作线程上跑（进度 + 取消 + async），
     // 而并发约定只该有一份。搬走之后本文件回到行数上限以内。
-}
-
-void App::ShowColumnMenu(POINT at) {
-    // 每次重开菜单都重新读列状态：上一次勾选已经通过 view.columns.set 落地，
-    // 这里若沿用旧快照，第二次勾选会把前一次改动覆盖掉。
-    for (;;) {
-        std::vector<shellcolumns::ColumnDesc> cols;
-        if (IShellView* v = ActiveView()) {
-            const bool ok = shellcolumns::List(v, &cols);
-            v->Release();
-            if (!ok || cols.empty()) {
-                CommandBus::Get().NoteFailure(L"当前视图不支持详情列管理（需详细信息视图）",
-                                         FailKind::NotSupported);
-                return;
-            }
-        } else {
-            CommandBus::Get().NoteFailure(L"没有活动文件视图，无法选择详情列",
-                                         FailKind::NotSupported);
-            return;
-        }
-
-        ui::Menu menu;
-        for (size_t i = 0; i < cols.size(); ++i)
-            menu.AddChecked(cols[i].name, cols[i].visible, static_cast<int>(i),
-                            ico::IconId::DetailsView, !cols[i].canHide);
-        menu.Separator();
-        menu.Add(L"完成", -2, ico::IconId::Check);
-
-        ui::MenuOptions opt;
-        opt.maxRows = 30;
-        opt.toggleKey = L"view.columns";   // 同一实例内防重复打开
-        const int pick = menu.Show(hwnd_, theme_, at, opt);
-        if (pick == -2 || pick < 0 || pick >= static_cast<int>(cols.size())) break;
-
-        std::vector<std::wstring> visible;
-        for (size_t i = 0; i < cols.size(); ++i) {
-            const bool shown = (static_cast<int>(i) == pick) ? !cols[i].visible : cols[i].visible;
-            if (shown) visible.push_back(cols[i].id);
-        }
-        json::Value args = json::Value::MakeObject();
-        json::Value arr = json::Value::MakeArray();
-        for (const std::wstring& id : visible) arr.arr.push_back(json::Value::MakeStr(id));
-        args.Set(L"visible", std::move(arr));
-        CommandBus::Get().Invoke(CmdId::ViewColumnsSet, Args::FromJson(args), Actor::Ui());
-    }
-}
-
-void App::ShowZoomMenu(POINT at) {
-    static constexpr int kSizes[] = {16, 32, 48, 64, 96, 128, 192, 256};
-    Tab* t = Active();
-    if (!t || !t->view) {
-        CommandBus::Get().NoteFailure(L"没有活动文件视图，无法调整图标大小");
-        return;
-    }
-    int fvm = 0, current = 0;
-    if (!t->view->GetViewMode(&fvm, &current)) {
-        CommandBus::Get().NoteFailure(L"读不到当前图标大小");
-        return;
-    }
-
-    ui::Menu menu;
-    int initial = -1;
-    for (size_t i = 0; i < _countof(kSizes); ++i) {
-        const int row = menu.AddChecked(std::to_wstring(kSizes[i]) + L" 像素",
-                                        kSizes[i] == current, static_cast<int>(i),
-                                        ico::IconId::GridView);
-        if (kSizes[i] == current) initial = row;
-    }
-    ui::MenuOptions opt;
-    opt.toggleKey = L"view.zoom";
-    opt.initialRow = initial;
-    const int pick = menu.Show(hwnd_, theme_, at, opt);
-    if (pick < 0 || pick >= static_cast<int>(_countof(kSizes))) return;
-
-    json::Value args = json::Value::MakeObject();
-    args.Set(L"iconPx", json::Value::MakeInt(kSizes[pick]));
-    CommandBus::Get().Invoke(CmdId::ViewZoomSet, Args::FromJson(args), Actor::Ui());
 }

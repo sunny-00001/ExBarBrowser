@@ -12,6 +12,7 @@
 
 #include "audit_log.h"
 #include "common.h"
+#include "config.h"   // auditArgsTextLimit：参数明文保留多少字符（可调）
 #include "json.h"
 
 namespace {
@@ -24,7 +25,10 @@ namespace {
 std::wstring DescribeArgs(const Args& args) {
     if (args.IsEmpty()) return std::wstring();
     std::wstring s = json::Stringify(args.raw(), 0);
-    if (s.size() > 160) s = s.substr(0, 157) + L"...";
+    // 上限来自设置 auditArgsTextLimit（默认 160）：隐私与可查性的权衡，管理员可调。
+    // 哈希仍在完整 JSON 上算（见 Audit），所以调大/调小不影响判重。
+    const size_t limit = static_cast<size_t>(Config::Get().s().auditArgsTextLimit);
+    if (s.size() > limit) s = s.substr(0, limit > 3 ? limit - 3 : 0) + L"...";
     return s;
 }
 

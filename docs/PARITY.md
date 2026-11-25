@@ -10,7 +10,7 @@ baseline: 2026-11-21 21:00
 > 数据来源：`src/commands.cpp` 的命令目录（逐条对照 `implemented` 字段，不按 README 宣称），
 > mod 侧对照其 127 条命令目录（`data/capabilities.json`）。本工程在其上补了确定式操作、
 > 菜单动作、长任务/开发面等扩展命令；总数以 `tools/check_commands.py` 实测为准
-> （2026-11-22：**196 条**）。
+> （2026-11-22：**215 条**）。
 > 数字不写死在这里 —— 加一条命令就变，见 §2 口径说明。
 
 ---
@@ -35,26 +35,37 @@ baseline: 2026-11-21 21:00
 | Nav | 10 | 10 | 0 |
 | Path | 8 | 7 | 1（`path.copy.link`） |
 | File | 36 | 36 | 0 |
-| View | 22 | 21 | 1（`view.toggle.checkboxes`） |
-| Window | 12 | 10 | 2（`win.ai.toggle` / `win.ai.stop`） |
+| View | 25 | 24 | 1（`view.toggle.checkboxes`） |
+| Window | 23 | 21 | 2（`win.ai.toggle` / `win.ai.stop`） |
 | External | 5 | 3 | 2（`ext.run` / `ext.sendkeys`） |
 | Bookmark | 21 | 21 | 0 |
 | Config | 3 | 3 | 0 |
 | Dev | 9 | 9 | 0 |
 | Session | 8 | 8 | 0 |
 | Tool | 10 | 10 | 0 |
-| Search | 2 | 0 | 2（`search.everything` / `search.find`） |
-| **合计** | **196** | **187** | **9** |
+| Search | 7 | 6 | 1（`search.everything`） |
+| **合计** | **215** | **207** | **8** |
 
 > 口径：脚本按 `src/commands.cpp` 里 `{CmdId::X, …}` 字面形式逐条统计分组与 `implemented`，
 > 不按 README 宣称。命令行：见 `tools/check_commands.py`（同时校验 keymap × 处理器三方一致）。
 >
-> `search.find` 于 2026-11-21 从「已实现」降级为 `implemented=false`：宿主
-> `IExplorerBrowser` 没有搜索带，`search-ms:` 被 `ShellView::DoNavigate` 明确拒绝，
-> 该命令实测恒失败。降级让失败显形（详见 `docs/EXPLORER-GAP-AUDIT.md` §2.1），
-> 真搜索需要换宿主或接 `ISearchFolderItemFactory`，属另一件事。
+> `search.find` 于 2026-11-21 从「已实现」降级为 `implemented=false`（宿主
+> `IExplorerBrowser` 没有搜索带，`search-ms:` 被 `ShellView::DoNavigate` 明确拒绝）；
+> **2026-11-22 已修好并恢复为已实现**：改走**原生搜索文件夹**
+> （`ISearchFolderItemFactory` 造 PIDL → 以 PIDL 形式导航），搜索真的能执行，
+> 结果视图默认详细信息。详见 `docs/EXPLORER-GAP-AUDIT.md` §2.1 F1。
 >
-> 总数 196 里，10 条确定式命令
+> Search 组现在 7 条：只剩 `search.everything` 一条未实现（要接 Everything 的 IPC）；
+> 另 6 条里 5 条（`search.scope.*` / `search.history.*` / `search.query.set`）是
+> 2026-11-22 搜索框分裂改造带来的**搜索框配置面**（不执行搜索），`search.find`
+> 才是执行搜索的那条，详见 §3.12.1。
+>
+> **「此电脑」这一档是已知的能力边界，不是假绿**：原生搜索文件夹的作用域只能是
+> 一个普通文件系统目录（整机范围要 Explorer 进程内的 `search-ms` 宿主），
+> 所以 `search.scope.set {scope:"thispc"}` **直接拒绝**，范围菜单里那一行摆成灰字
+> 「（本宿主暂不可用）」。详见 EXPLORER-GAP-AUDIT §2.1 F1 的遗留小节。
+>
+> 总数 215 里，10 条确定式命令
 > （`fs.open` / `fs.open.tab` / `fs.open.window` / `fs.copy.toclip` / `fs.cut.toclip` /
 > `fs.properties` / `fs.rename` / `fs.delete` / `fs.copy` / `fs.move`）不是"mod 有而我们没有"，
 > 而是"机器需要按路径点名操作"的补充 —— 详见 §3.5 与 `docs/OPERATION-MODEL.md` 第 4 步。
@@ -81,8 +92,9 @@ baseline: 2026-11-21 21:00
 > （旧版本手写的 90/36 与代码不一致：`GoTab1..9` 在 keymap 里绑了但目录里没有，
 > `CopyToFolder`/`MoveToFolder` 也一直缺，已补齐。）
 
-一句话结论：**File / Bookmark / Config / Dev / Session / Tool 六组全部落地；剩下的 9 条是 Everything 搜索（1，要接它的 IPC）、
-AI 面板（2，缺窗口内对话 UI），以及少量"本工程模型下没有意义/没有把握"的项
+一句话结论：**File / Bookmark / Config / Dev / Session / Tool 六组全部落地；剩下的 8 条里搜索占 1
+（`search.everything` 要接它的 IPC；`search.find` 已于 2026-11-22 走原生搜索文件夹修好），
+另有 AI 面板（2，缺窗口内对话 UI），以及少量"本工程模型下没有意义/没有把握"的项
 （合并窗口、复制为快捷方式、复选框、RunCommand/SendKeys 等）。**
 
 ---
@@ -159,7 +171,7 @@ mod 的 25 条 + 本工程新增的 11 条命令（10 条确定式 `Fs*` + `Shif
 > 给 `CmdRename` 加参数会让"传了参数就不弹框"变成隐式分叉。拆开后人机各走入口、逻辑共用，
 > 这条口径见 `docs/OPERATION-MODEL.md` 第 4 步与 `ARCHITECTURE-RULES.md` R6。
 
-### 3.6 View（19）—— 已实现 18
+### 3.6 View（26）—— 已实现 25
 
 8 档视图模式（按钮 / `Ctrl+Shift+1..8` / `ViewNext/ViewPrev` / 面板）、
 排序（名称/日期/类型/大小）、分组（无/类型/日期/大小）、
@@ -169,6 +181,57 @@ mod 的 25 条 + 本工程新增的 11 条命令（10 条确定式 `Fs*` + `Shif
 **图标缩放（`Ctrl+滚轮` → `view.zoom`，视图菜单 →「图标大小…」 → `view.zoom.choose`）**、
 预览窗格开关（`FWF_SHOWPREVIEWPANE`，用户意图跨目录保持）。
 
+**最小双栏（2026-11-22，+3 条）**：一个标签持两个窗格，各有独立 `ShellView`、
+历史、搜索来源和状态；右窗格按需创建，隐藏也保留目录/历史。
+`view.dualpane.toggle`（`Ctrl+F6`）开合双栏，`view.pane.next`（`F6`）切活动窗格，
+`view.pane.split {percent}`（20..80）设左栏宽度；配置键为 `dualPane` / `paneSplit`，
+右栏路径与历史入会话快照。导航/命令/状态一律走活动窗格；切换窗格时标签标题、
+地址栏、视图档位指示与 AI 快照都切到该窗格，两个视图本身保持原样。
+会话落盘固定按左/右窗格写，切焦点不会把两边目录对调。原生导航窗格只给活动视图显示，
+视觉上是一套共享侧栏。实现在 `src/app_panes.cpp` / `app_state.cpp` /
+`app_commands_panes.cpp`，布局在 `src/app_layout.cpp`。
+
+**垂直双栏（2026-11-23，+1 条）**：`view.pane.vertical`（`Ctrl+Shift+F6`）把两个窗格
+从左右并排切成**上下堆叠**；配置键 `paneVertical`，AI 快照带 `paneVertical`。
+**槽位与方向是两回事**：模型里始终是槽位 0/1，左右时 0=左 1=右，上下时 0=上 1=下；
+路径/历史/选中/视图档位挂在**槽位**上，**方向只决定这两个槽位怎么摆**，
+所以切方向不丢任何状态。分栏比例复用 `paneSplit` —— 左右表示左栏**宽度**百分比，
+上下表示上栏**高度**百分比（同一把尺子）。导航树**不搬家**：始终占内容区最左侧、
+占满整个高度，两个窗格都在它右边。活动窗格的真源仍是 `GetFocus()`，与方向无关。
+中间是主题尺寸的缝（`Theme::splitter()`，96 DPI 下 6px，缝本身是独立分割条窗口
+`ExBarBrowser_PaneSplitter`，可拖动改比例），每栏最小边长 80px。
+措辞上全局改用"**主窗格 / 第二窗格**"（槽位 0/1），AI 字段名 `leftPanePath` /
+`rightPanePath` **不改**（契约），只补注释说明是槽位语义。
+
+实测（只读观测，不发合成输入）：启动即上下堆叠时 `TabView0 1038x317` /
+`TabView1 1038x281`、分割条 `1038x6` 横贯、导航树仍 `176x604` 占满左侧全高；
+运行时经 AI 通道 `config.set paneVertical` 热切，分割条由 `6x463` 变 `690x6`，
+两栏由左右并排改为上下堆叠，导航树位置宽度不变。
+
+**三条可拖边界（2026-11-23）**：内容区里"两块内容之间"的线现在都能拖：
+导航树 | 文件区（`navPaneWidth`）、文件区 | AI 面板（`aiPanelWidth`）、
+双栏之间（`paneSplit`）。共用 `src/split_bar.cpp` 的拖拽状态机，
+只是落点口径不同（侧栏是像素、双栏是百分比）；边界条压在交界线上，
+不额外占宽 —— `navPaneWidth=220` 仍等于"文件区从 x=220 开始"。
+宽度上下限与"窗口变窄先收谁"收在 `src/layout_limits.h` / `side_layout.cpp`：
+AI 先收、导航后收、文件区至少留 160px。侧栏边界没有时（面板收起/导航关闭）
+对应的真窗口会隐藏，不留拖不动的把手。拖动只在松手时写盘，
+`config.set` 也能改这两个宽度并立即重排。
+
+**导航树组间分隔线（2026-11-23）**：原生导航树的根节点按 Explorer 习惯分三组，
+组间画 1px 横线，色 `0x383838`（与 Explorer 实测一致），左端内缩 10px。
+画法是**子类化 NSTC 内部的 `SysTreeView32`，在它的 `WM_PAINT` 走完之后补画**；
+线位每次绘制现算（`GetItemRect` → `ScreenToClient`），滚动/展开/收起天然跟随。
+另两条路已实测否决并记录在 `src/nav_pane_sep.h`：往 NSTC 插外来空行树项会让它崩；
+本机创建不出 `WS_EX_LAYERED` 子窗口（`CreateWindowExW` 返回 NULL）。
+两条线的**组界与 Explorer 相同**（`TAN-个人 | 桌面`、`tools | 123云盘`）。
+实测像素：树客户区 159x604（隔离副本那轮）/ 159x463（当前树那轮），背景 `0x191919`，
+两条线在 `y=89` / `y=299`，色 `0x383838`，`x=10..158`；两线相隔 210px = 7 行 x 30px，
+与根清单里组界落在第 3 行（`桌面`）、第 10 行（`123云盘`）逐项对齐
+（根清单 25~27 项，Nextcloud 客户端在跑时多 2 项，组界不变）。
+已知差异：Explorer 组间有 30px 空行、线画在空行正中，我们只能在行边界画线；
+Explorer 顶部有 15px 留白、我们没有。
+
 列 id 由 `view.columns.list` 给出稳定 `{GUID}:pid` 字符串；菜单里的每次勾选都转投
 `view.columns.set`，不直接改 shell 状态。`view.columns.choose` 只作为人工入口，不暴露给 AI。
 缩放同理：`view.zoom` / `view.zoom.set` 经命令总线调 `ShellView::ZoomIcon`，
@@ -176,7 +239,7 @@ mod 的 25 条 + 本工程新增的 11 条命令（10 条确定式 `Fs*` + `Shif
 
 未实现：`ToggleCheckboxes`。
 
-### 3.7 Window（12）—— 已实现 10
+### 3.7 Window（23）—— 已实现 21
 
 新窗口、退出程序（`QuitExplorer` 重定义为关闭本程序，点分名 `win.quit`）、文件夹选项、
 映射/断开网络驱动器、命令面板、快捷键管理器、聚焦地址栏、**聚焦搜索框（`Ctrl+F`，
@@ -192,6 +255,27 @@ mod 的 25 条 + 本工程新增的 11 条命令（10 条确定式 `Fs*` + `Shif
 未实现：`AiTogglePanel` / `AiStop`
 （缺窗口内对话 UI，接口层 `ai_api` / `ai_server` 已就绪）。
 
+**窗口管理命令体系（2026-11-22，+11 条）**，全部经 `CommandBus`，实现在
+`src/app_commands_window.cpp`：
+
+- 单窗口几何/状态：`win.minimize` / `win.maximize` / `win.restore`（`ShowWindow`）、
+  `win.topmost {on}`（`SetWindowPos` HWND_TOPMOST，省略 on = 切换）、
+  `win.center`（居中到当前显示器工作区）、`win.move {x,y}` / `win.resize {width,height}`。
+- 多窗口布局：`win.list`（只读列出所有 `ExBarBrowser_Main` 顶层窗口的 hwnd/pid/标题/矩形/状态）、
+  `win.tile {orientation}`（横排/纵排）、`win.cascade`（级联错位）。枚举用 `EnumWindows`，
+  布局一律带 `SWP_NOACTIVATE`，不抢前台焦点；跨进程只改窗口位置，不搬 ShellView。
+- `win.activate` 把主窗口切到前台——**抢前台焦点，故 `aiExposed=false`**，与 `win.quit`
+  同理：焦点归属不该由机器决定，只有快捷键/命令面板等人侧路径可达。
+- 拆分标签已有 `tab.move.window`（有损：新窗口按路径开、源标签关，历史/视图状态不迁移——
+  ShellView 是进程内 COM，跨进程搬不了）；**合并窗口未做**：需要跨进程标签传输协议，
+  属另一件事，不在本次命令体系范围。
+- 这些命令的断言统一豁免：窗口矩形/z 序/前台窗口不在 `exbar/state` 快照里，
+  回读面是 `win.list` 的返回值，写不出 state 级判据。
+
+> 会计口径：R21 禁的是**自动化脚本**模拟输入/抢焦点（`tools`/`scripts`/`tests` 零例外），
+> 不是产品代码里由命令触发的窗口 API——`AGENTS.md` §R21 明确豁免 `src/` 里的
+> `SetForegroundWindow` 等调用，判据是触发源而非 API 名字。
+
 > `QuitExplorer` 是本组唯一的命名债：mod 期它的行为是"重启 explorer.exe"，本工程里是"退出本程序"。
 > 2026-11-20 已把表里的主名改成 `win.quit`，枚举名 `CmdId::QuitExplorer` 按规则 C1 保留
 > （改枚举名会打断 keymap / 审计日志 / 脚本）。见 [NAMING.md](NAMING.md) §4.5。
@@ -205,8 +289,19 @@ mod 的 25 条 + 本工程新增的 11 条命令（10 条确定式 `Fs*` + `Shif
 
 - 数据：`data\bookmarks.html`（Netscape + `EXBAR_ID/ICON/FLAGS`）。
   不再与 mod 共用同一份（便携模式各写各的），需要共用请手工拷贝。
-- 书签栏：图标 + 名称、分类下拉（扁平化缩进）、溢出 `»`、右键菜单
+- 书签栏：图标 + 名称、分类下拉（逐级下钻）、溢出 `»`、右键菜单
   （打开/复制路径/重命名/删除/新建分类/添加当前目录）、拖入文件夹添加、双击空白切换显隐。
+- 分类内部也是可组织的（2026-11-25 补齐，原先只能读不能改）：
+  - **拖动重排** —— 分类内容弹层里按住条目拖动即改顺序，与顶层那条栏同一套
+    `bmk.move` 落点语义（插到第几行之前）。
+  - **行内右键菜单** —— 打开 / 复制路径 / 编辑 / 复制书签 / 上移 / 下移 /
+    移到书签栏 / 删除；子分类另有"解散分类"。
+  - **解散分类**（`bmk.dissolve`，超出 mod 目录的新增能力）—— 分类右键菜单里的
+    "解散分类"把该分类的**直接子项**提到它所在的上一层（顶层分类 → 书签栏），
+    分类本身消失；嵌套分类解散只降一层。子项带着自己的子树一起走 ——
+    散掉的是"这一层壳"，不是把整棵树拍平。改树前拍快照，可撤销。
+  - **排序本分类**（`bmk.sort` 带 `parentId`）—— 只排这个分类的直接子项，
+    不动别的层；与"按名称排序（含分类内）"的递归排序是两条不同的路。
 - 显示/隐藏/切换：命令 + `Ctrl+Shift+B` + 鼠标规则。
 
 ### 3.10 Session（4）—— 全实现
@@ -258,29 +353,65 @@ mod 的 25 条 + 本工程新增的 11 条命令（10 条确定式 `Fs*` + `Shif
 > `tool.topn` / `tool.diskusage` 过去**没有任何人可见的输出**（命令面板只调 `Invoke`
 > 不调 `InvokeResult`，返回值被丢弃），现在跑完给一份可读报告。
 
-### 3.12 Search（2）—— 已实现 0
+### 3.12 Search（7）—— 已实现 6
 
-**两条都未实现。** 这是 2026-11-21 实测后的诚实结论，不是倒退：
+**六条已实现、一条未实现。** 未实现的那条是 `search.everything`（要接 Everything 的 IPC）。
 
-`OpSearch`（`search.find`）曾标为已实现，走 shell 的 `search-ms:` 协议，文档当时声称
-"结果落在同一个 `IShellView` 里，所以排序 / 右键 / 拖放照旧可用"。**实测证明这句话是假的**：
-宿主 `IExplorerBrowser` 没有搜索带，`ShellView::DoNavigate` 对 `search-ms:` 前缀明确
-`return false`，`App::RunSearch` 必然失败。真实管道实测：
+`OpSearch`（`search.find`）的来历值得留着：它曾标为已实现，走 shell 的 `search-ms:` 协议，
+文档当时声称"结果落在同一个 `IShellView` 里，所以排序 / 右键 / 拖放照旧可用"。
+**实测证明这句话是假的**：宿主 `IExplorerBrowser` 没有搜索带，`ShellView::DoNavigate`
+对 `search-ms:` 前缀明确 `return false`，`App::RunSearch` 必然失败。于是 2026-11-21
+把它降级为 `implemented=false`，让失败显形 —— **宁可少暴露，不可假绿**。
+
+**2026-11-22 真搜索落地**（`src/search_folder.{h,cpp}` + `src/shell_view_search.cpp`）：
+改走**原生搜索文件夹** —— `ISearchFolderItemFactory` 造 PIDL，再以 **PIDL** 形式
+`BrowseToObject`。`DoNavigate` 拒绝的是**字符串前缀**、不是文件夹类型，所以同一个
+文件夹以 PIDL 交出去 shell 就能绑定，导航过去就是**真的搜索结果视图**（排序 / 右键 /
+拖放照旧可用）。同一套做法见 `D:\Windhawk\exbar.cpp:26215 RunSystemSearchFolder`。
+结果视图默认**详细信息**（原生搜索文件夹的视图是异步创建的，所以定时等它就位再补设）。
+
+实测（`data/profile-multi` 通道）：
 
 ```
-call search.find '{"query":"test"}' → ok=false
-error="搜索视图没有接受这个查询：search-ms:query=test&crumb=location:..."
+call search.find '{"query":"a"}' → ok=true      断言 searchQuery=$arg:query.trim 通过
+scope=subtree  → 1371 条（含子目录）
+scope=current  →   19 条（仅本层）
+path=搜索: a · E:\ExBarBrowser（含子目录）
+[search] 详情视图 hr=0x00000000 now=4 icon=16
 ```
-
-于是 2026-11-21 把它降级为 `implemented=false` 并移除处理器，让"搜索"在命令面板 /
-快捷键 / AI 侧都显示为未实现 —— **宁可少暴露，不可假绿**。真搜索要换宿主或接
-`ISearchFolderItemFactory`（当前工具链无 `searchapi.h`），属另一件事。
 
 `searchurl::Build` / `Trim`（`src/search_url.*`）与 `tests/search_url_test.cpp` 保留：
-它们是纯函数，将来接真搜索时可直接复用。`obj/e2e_search.py` 记录的是降级前的历史测试，
-**不能作为当前可用的证据**。
+`Trim` 仍在用（搜索词规范化），`Build`（URL 形式）留作纯函数与单测参考 ——
+**程序执行搜索不走 URL**（本宿主导航不了那个前缀）。
 
 `SearchEverything`：需要接 Everything 的 IPC（mod 的 `evipc`）。
+
+#### 3.12.1 已实现的五条：搜索框的配置面（2026-11-22）
+
+导航栏搜索框按 exbar 的形态改成**分裂按钮**（左带=范围菜单，右带=历史下拉）后，
+新增五条命令。它们**不执行搜索** —— 只管"搜索框长什么样、装什么词、搜哪个范围"，
+每条都是本宿主真能兑现的能力：
+
+| 命令 | 作用 | 回读面 |
+|---|---|---|
+| `search.scope.list` | 列出四档范围与当前档（带 `supported`：哪一档本宿主真能搜） | `searchRange` / `searchRangePath` |
+| `search.scope.set {scope,path}` | 设范围档（`current`/`subtree`/`custom`；`thispc` 明确拒绝） | `searchRange`（= `$arg:scope`） |
+| `search.history.list` | 列出提交过的搜索词（最近在前） | `searchHistoryCount` |
+| `search.history.clear` | 清空搜索历史 | `searchHistoryCount`（= 0） |
+| `search.query.set {query}` | 把词填进搜索框（**不代按回车**） | `searchInput`（= `$arg:query.trim`） |
+
+四档范围真的进搜索后端（不再是 URL crumb）：`current` = 仅本层（作用域收窄到当前目录，
+再用条件圈"父目录恰好等于它"）、`subtree` = 当前目录及其子目录、`custom` = 自定义路径
+及其子目录、`thispc` = **本宿主做不到，明确报错**。范围的唯一真源是
+`src/search_scope.{h,cpp}`（`searchscope::Resolve`），作用域的构造与约束见
+`src/search_folder.h` 的头注释。
+
+搜索历史记的是"**提交过的词**"（与是否成功无关）：宿主拒绝 `search-ms` 时，
+若只在成功后记录，历史永远是空的，右带下拉就成了死功能。历史去重、置顶、上限 20，
+随 `settings.json` 落盘。
+
+**已知缺口不变**：`search-ms:` 提交仍被宿主拒绝 —— 范围/历史/回填三项真实可用，
+但"按下回车看到结果"仍要换宿主或接 `ISearchFolderItemFactory`（`docs/EXPLORER-GAP-AUDIT.md` §2.1 F1）。
 
 ---
 
@@ -290,7 +421,7 @@ error="搜索视图没有接受这个查询：search-ms:query=test&crumb=locatio
 |---|---|---|
 | 不在 explorer 进程内 | `TabMergeAll`、`SendKeys` | 不适用 / 不实现 |
 | 视图不自绘 | `ToggleCheckboxes` | shell 视图未暴露接口；预览窗格已改用 `IFolderView2` 的 folder flag，无需自绘 |
-| 需要独立进程/协议 | Search 2（Everything 的 IPC + `IExplorerBrowser` 无搜索带，`search-ms:` 被宿主拒绝） | 真搜索要换宿主或接 `ISearchFolderItemFactory`；Everything 走 mod 的 `evipc` 协议。文件集三条**不需要**：显式预算 + 完整性上报已够（见 §3.11） |
+| 需要独立进程/协议 | Search 未实现的 1 条（`search.everything` 的 IPC） | `search.find` 已改走原生搜索文件夹（`ISearchFolderItemFactory`），不依赖独立进程；Everything 走 mod 的 `evipc` 协议。文件集三条**不需要**：显式预算 + 完整性上报已够（见 §3.11）。Search 组已实现的 6 条（搜索执行 + 范围/历史/回填）**不依赖**这条 |
 | 缺窗口内对话 UI | `AiTogglePanel` / `AiStop` | 接口层已完成，只缺面板与历史（ROADMAP P4） |
 | 语义与既有命令重叠 | 6 条 `tool.*` 包装命令 | 先确认没有第二种语义，再接线；重复一套实现比"未实现"更糟 |
 | 安全边界 | `RunCommand`、`SendKeys` | 不做；AI 侧也不暴露 |
@@ -315,7 +446,7 @@ error="搜索视图没有接受这个查询：search-ms:query=test&crumb=locatio
 | 收藏当前目录 / 切换书签栏 | `Ctrl+D` / `Ctrl+Shift+B` | 同 | 一致 |
 | 命令面板 / 快捷键管理器 | `Ctrl+Shift+P` / `Alt+K` | 同 | 一致 |
 | 视图模式 | `Ctrl+Shift+1..8` | 同 | 一致 |
-| 序列键 | 38 条（`g g`、`g t`…） | 同 | 一致 |
+| 序列键 | 38 条（`g g`、`g t`…） | 209 条（38 默认 + 171 全命令覆盖），另有模式总览弹窗 | 本工程增强 |
 | 鼠标规则 | `empty` 双击上一级、`bookmark_empty` 双击切换书签栏 | 同 + 状态栏双击复制路径；Shell 视图目标由 UIA/ListView 探测接入 | 超集 |
 
 完整键位表：`data/keymap.json`；输入系统细节：[INPUT.md](INPUT.md)。

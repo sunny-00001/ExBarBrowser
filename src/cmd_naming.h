@@ -29,4 +29,13 @@ bool LooksDotted(const std::wstring& name);
 // 规范名：优先别名，没有则用原名。用于展示/文档/审计。
 std::wstring CanonicalName(const std::wstring& anyName);
 
+// 命令目录分组 → 中文展示名（弹层「分组」列用）。
+//
+// 【为什么不用 scopeUi】分组列显示的是**命令目录分组**（Tab/Go/Nav/Path/File/
+// View/Window/External/Bookmark/Session/Tool/Search），不是 UI 作用域
+// （标签栏/导航栏/…）。两者语义不同：前者是"这条命令属于哪一族"，后者是
+// "这条命令在哪个 UI 区域生效"。原版 mod 的 kHkCmdGroupMeta 也是这么分的。
+// 查不到时回退到原分组标识（不猜、不吞）。
+const wchar_t* GroupDisplayName(const wchar_t* group);
+
 }  // namespace cmdnaming

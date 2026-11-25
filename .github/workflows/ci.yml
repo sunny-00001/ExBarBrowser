@@ -1,0 +1,84 @@
+# ExBarBrowser 闭环强门（CI-enforced verification）
+#
+# 为什么需要这个文件：
+#   仓库内的 check_* 与 run_all.sh 是"判据"，但过去只靠人或 agent 自觉去跑 ——
+#   这正是 closed-loop 范式里的"弱闭环"：agent 超时、崩溃、跳过命令，或改完代码
+#   忘了验证，都可能让"未验证的改动"被当成"通过了"。弱闭环的信号是概率性的。
+#   本工作流把判据钉进基础设施：每次 push / PR 自动跑，产生客观的 pass/fail，
+#   把"跑没跑测试"从 agent 的责任变成结构性的门（strong closed loop）。
+#
+# 分两层，诚实地反映本工程的真实约束：
+#   1. static-gates：三个静态检查 + 评估面清单校验，纯 Python，任何 runner 都能跑。
+#      这层永远执行，是判定"命令契约/AI 元数据/唯一性/输入纪律/判据未被改软"的硬门。
+#   2. native-build：真实编译 + 全量单测。本工程硬依赖 Windhawk clang 与 MinGW
+#      windres（见 build_fast.py 顶部 CLANG/WINDRES 常量），GitHub 托管 runner 没有。
+#      因此这层用 self-hosted runner（带标签 native-build）；没有匹配 runner 时
+#      GitHub 会把它标记为 pending 而不是 green —— 绝不伪造一个"绿"的假象。
+#      没有 self-hosted 的团队：这层可暂时禁用，但要知道编译/单测门此时是空的，
+#      本地必须手动跑 tests/run_all.sh（见下方 workflow_dispatch 说明）。
+#
+# R21：本工作流只编译、只跑控制台单测，不启动 GUI 窗口、不发任何输入消息、
+# 不动光标、不抢焦点。单测里 clipboard_test 在非交互会话返回 77=无法运行，
+# run_all.sh 已把它单列、不计入失败，符合其既定口径。
+
+name: closed-loop gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支上新的 push 让旧的在途 run 自动取消，省 self-hosted 机时。
+concurrency:
+  group: closed-loop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 第 1 层：静态门。纯 Python，windows-latest 上 Python 现成；self-hosted 亦可。
+  # 用 windows-latest 是因为 check_components 的路径语义按 Windows 设计。
+  static-gates:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 命令表 / keymap / 处理器三方对账
+        run: python tools/check_commands.py
+
+      - name: AI 元数据 / 错误码 / 断言覆盖 / 人机等价（28 组）
+        run: python tools/check_ai_meta.py
+
+      - name: 唯一性 / 禁令 / 接线 / 令牌 / 输入纪律 / 评估面完整性
+        run: python tools/check_components.py
+
+      - name: 评估面清单自封印与 git 信任锚
+        # 清单必须已入库且与 HEAD 一致：重签后未提交时这道门会红，正是"签发权归人"。
+        run: python tools/gen_eval_baseline.py --check
+
+      - name: 键位表生成物未过期
+        run: python tools/gen_keymap.py --check
+
+  # 第 2 层：原生编译 + 全量单测。需要带 Windhawk clang 20.x 的自托管 runner。
+  # 没有 self-hosted 时此 job 保持 pending（不是绿），如实反映"编译门未覆盖"。
+  native-build:
+    runs-on: [self-hosted, windows, native-build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 确认工具链就位
+        shell: bash
+        run: |
+          test -f "/c/Program Files/Windhawk/Compiler/bin/clang++.exe" \
+            || { echo "缺少 Windhawk clang，runner 标签 native-build 配错了"; exit 2; }
+
+      - name: 全量单测（含编译，56 个测试；77=环境不满足单列）
+        shell: bash
+        run: bash tests/run_all.sh
+
+      - name: 零警告构建验证（--out 不碰运行实例）
+        shell: bash
+        run: bash build.sh --out build-ci.exe

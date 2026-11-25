@@ -27,8 +27,9 @@ public:
     using SortGroupFn = std::function<void(int kind, int arg)>;  // kind: 0 排序 1 分组
     using RecentFn = std::function<std::vector<std::wstring>()>;
     using ClearHistoryFn = std::function<void()>;  // 清空地址框下拉里的历史
-    // 打开设置面板。参数是弹层的屏幕锚点（视图按钮下方）—— 面板与其它弹层
-    // 同一套定位方式，不在面板内部自己算位置（那样两个地方都要算一次）。
+    // 打开设置。参数是弹层的屏幕锚点（视图按钮下方）—— 设置现在是**独立窗口**
+    // （三栏版式，见 src/settings_dialog.h），自己居中于主窗口，不用这个锚点；
+    // 参数保留是为了与 ColumnsFn / ZoomFn 共用同一种回调形状。
     using SettingsFn = std::function<void(POINT)>;
     // “选择详细信息…”入口，与设置面板共用锚点类型；回调由 App 转投命令。
     using ColumnsFn = std::function<void(POINT)>;
@@ -70,9 +71,9 @@ public:
     void FocusAddress();    bool IsEditing() const { return editing_; }
     // 聚焦搜索框（Ctrl+F）。
     //
-    // 搜索框此前**不存在** —— 于是 Ctrl+F 既没绑上也没处可绑。这里补的是控件本身，
-    // 而不是让热键去"假装做了点什么"：一个按键要么把人带到光标已在闪烁的输入框，
-    // 要么就该说清楚"这个功能没做"（我们选择前者）。
+    // 搜索框**常驻**导航栏右侧（对齐 exbar / 资源管理器）：以前它只在
+    // Ctrl+F 时出现，平时把宽度还给地址框 —— 于是"搜索"这个每天都要用的
+    // 入口反而要靠一个快捷键才找得到。现在它在窄窗口下才整体收起。
     //
     // 搜索交给 shell 视图自己的搜索（与在资源管理器里输入即搜同一套），
     // 不自己扫盘 —— 扫盘要么卡 UI，要么结果与用户看到的不一致。
@@ -82,10 +83,29 @@ public:
     // 于是 win.focus.search 只能靠猜（而猜错比不答更糟）。
     HWND searchHwnd() const { return search_; }
     bool IsSearching() const;
+    // 输入框里现在是什么（**还没提交**）。这是搜索框唯一的可回读面 ——
+    // 命令 search.query.set 写的就是它，AI 要能确认"词确实填进去了"。
+    std::wstring SearchText() const { return searchText_; }
+    // 外部设置搜索词（搜索历史回填 / 命令）。**不提交**：提交是回车的事，
+    // 替用户按下回车等于替他决定了要不要真去搜。
+    void SetSearchText(const std::wstring& q);
+    // 清空搜索词并退出搜索（Esc 的语义）。搜索框本身留着 —— 它是常驻的。
+    void ClearSearch();
     // 用户提交搜索词（Enter）。空串 = 清除搜索回到原目录。
     // 由 NavBar 自己调，不让 App 去读控件文本（那是两份状态）。
     using SearchFn = std::function<void(const std::wstring& query)>;
     void SetSearchFn(SearchFn fn) { onSearch_ = std::move(fn); }
+    // 打开搜索框左带（搜索范围）/ 右带（搜索历史）的弹层。
+    //
+    // 菜单内容由 App 组装（范围的真相在 Config::Settings 里，导航栏不该持有
+    // 副本），导航栏只算锚点并转过去 —— 与"设置…""选择详细信息…"同一套路。
+    //
+    // 【宽度随回调一起给】弹层要与搜索框**同宽**（左右边缘齐平），而搜索框
+    // 的几何在导航栏这一侧 —— 锚点从导航栏算，宽度也得从导航栏给；否则 App
+    // 只能自己再量一遍宽度，两处各量一次必然对不上（缩放/DPI 一变就错位）。
+    using PopupFn = std::function<void(POINT screen, int widthPx)>;
+    void SetSearchScopeFn(PopupFn fn) { onSearchScope_ = std::move(fn); }
+    void SetSearchHistoryFn(PopupFn fn) { onSearchHistory_ = std::move(fn); }
     void SetMouseSink(MouseSink fn) { sink_ = std::move(fn); }
     void ShowViewMenuNow();  // 命令面板/快捷键触发"视图菜单"
     void ReloadTheme();
@@ -145,14 +165,20 @@ private:
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK EditProc(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK SearchProc(HWND, UINT, WPARAM, LPARAM);
+    // nav_bar_input.cpp：地址框子类安装与 SHAutoComplete 只在这里做，
+    // g_oldEditProc 也只活在该 TU，避免生命周期文件与输入文件各持一份。
+    void InstallEditSubclass(HWND edit);
     LRESULT Handle(HWND, UINT, WPARAM, LPARAM);
 
     void BuildButtons();
-    void Layout();
+    void Layout();  // nav_bar_layout.cpp：唯一的几何出处
     void Paint(HWND);
     void DrawButton(HDC dc, const Btn& b, bool hover, bool down);
     void DrawBreadcrumb(HDC dc, const RECT& rc);
+    // 搜索框（整框底色 + 左带放大镜 + 右带箭头 + 悬停高亮）。
+    void DrawSearchBox(HDC dc);
 
+    // ---- 命中（nav_bar_hit.cpp；只读 Layout 产出的矩形）----
     int HitButton(int x, int y) const;
     bool HitArrow(int x, int y, int* id) const;
     bool HitMore(int x, int y) const;
@@ -186,23 +212,39 @@ private:
     HWND hwnd_ = nullptr;
     HWND parent_ = nullptr;
     HWND edit_ = nullptr;
+    // 上次给 edit_ 设字体时的 Theme::fontGeneration。不用 HFONT 值比较：GDI
+    // 句柄会复用，删了旧字体再建新的可能拿到同一数值，误判成"没变"就会让 EDIT
+    // 继续持有已失效句柄。
+    unsigned editFontGen_ = 0;
     const Theme* theme_ = nullptr;
     NavModel model_;
 
     std::vector<Btn> buttons_;
     RECT fieldRc_{};
     RECT dropRc_{};
-    // 搜索框（地址框右侧）。没做成常显：它只在 Ctrl+F / 有搜索词时占位，
-    // 平时把宽度还给地址框 —— 地址栏是每天用几十次的东西，不该为偶尔的搜索让位。
+    // 搜索框（地址框右侧，常驻）。形态对齐 exbar：左带点开「搜索范围」，
+    // 中间是输入条，右带点开「搜索历史」。三段的判定与几何在 nav_bar_search.cpp，
+    // 绘制在 nav_bar_draw.cpp，栏本体只管命中与命中后的转投。
     HWND search_ = nullptr;
-    RECT searchRc_{};
-    bool searchVisible_ = false;
-    std::wstring searchText_;   // 已有搜索词时保持可见（否则用户看不到"还在筛选"）
+    RECT searchRc_{};       // 整个搜索框（边框由本栏画）
+    RECT searchMenuRc_{};   // 左带：搜索范围
+    RECT searchHistRc_{};   // 右带：搜索历史
+    bool searchShown_ = false;  // 布局给了空间（窄窗口时整体收起）
+    std::wstring searchText_;   // 输入框里的词（还没提交）
     SearchFn onSearch_;
+    PopupFn onSearchScope_;
+    PopupFn onSearchHistory_;
+    bool hotSearchMenu_ = false;
+    bool hotSearchHist_ = false;
     void SearchCreate();
-    void LayoutSearch(int fieldRight, int fy, int fieldH);
+    void LayoutSearch(int fieldRight, int fy, int fieldH, int lineH);
     void CommitSearch();
-    void ShowSearch(bool show);
+    // 命中左带 / 右带。
+    bool HitSearchMenu(int x, int y) const;
+    bool HitSearchHist(int x, int y) const;
+    // 弹层的锚点（屏幕坐标）：从带的位置算，与点击落在带的哪一像素无关。
+    void ShowSearchScopeMenu();
+    void ShowSearchHistoryMenu();
     RECT moreRc_{};
     std::vector<RECT> segRects_;   // 可见段文本区
     std::vector<RECT> chevRects_;  // 可见段 chevron 区（与 segRects_ 平行）

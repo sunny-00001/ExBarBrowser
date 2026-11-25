@@ -26,13 +26,33 @@ void AppendLine(const wchar_t* buf) {
     const std::wstring path = std::wstring(dir) + id::kLogFileName;
 
     std::string bytes(reinterpret_cast<const char*>(buf), wcslen(buf) * sizeof(wchar_t));
-    bytes.append("\r\n", 2);   // 与 WriteFile(L"\r\n", 4) 等价：2 个 wchar_t 的字节
+    // 行尾必须是 UTF-16LE 的 "CR LF" 四个字节（两个 wchar_t）。
+    // 之前只追加了 2 个 ASCII 字节 "\r\n" —— 在 UTF-16 文件里那是一个残缺字符，
+    // 结果整个日志变成**一行**，grep/tail 都读不出条目（实测：日志解析只得到 1 行）。
+    const wchar_t eol[2] = {L'\r', L'\n'};
+    bytes.append(reinterpret_cast<const char*>(eol), sizeof(eol));
     tf::AppendLine(path, bytes, 4ull << 20, 500);
 }
 
+// 相对进程启动的毫秒数。启动链路（DPI -> COM -> CreateWindow -> Layout -> ShowWindow）
+// 全靠日志排障，而**没有时间戳**时"窗口为什么 1 秒才出来"只能靠猜：
+// 每段耗时要能对着数字读，否则"启动慢"永远是感觉而不是判据。
+//
+// 用 GetTickCount64 而不是 time()：它单调、毫秒级、无时区问题，且启动阶段
+// 一定已可用。基准取第一次调用日志的瞬间 —— 日志的第一行是 0 ms，
+// 之后的都是"距第一行多久"，与进程启动的绝对时刻无关（差值才是要看的东西）。
+unsigned StartupMs() {
+    static const ULONGLONG base = GetTickCount64();
+    return static_cast<unsigned>(GetTickCount64() - base);
+}
+
 void LogV(const wchar_t* fmt, va_list ap) {
-    wchar_t buf[1024] = L"";
-    _vsnwprintf(buf, 1023, fmt, ap);
+    wchar_t body[1024] = L"";
+    _vsnwprintf(body, 1023, fmt, ap);
+    // 前缀 `[+  123 ms]` 固定宽度：日志按行对比时各行的正文起点对齐，
+    // 用 grep 前导零差异不会把行弄成锯齿。
+    wchar_t buf[1088] = L"";
+    _snwprintf(buf, 1087, L"[+%5u ms] %s", StartupMs(), body);
     AppendLine(buf);
 }
 

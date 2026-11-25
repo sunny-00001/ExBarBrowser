@@ -54,6 +54,10 @@ struct Status {
 
 class Service {
 public:
+    // 已完成且 join 过的记录保留上限。Set/List 会深拷贝 result，扫描类作业
+    // 的结果很大；不设上限会让每次 tool.diskusage / tool.hash 都常驻到进程退出。
+    static constexpr unsigned kMaxRetainedRecords = 32;
+
     static Service& Get();
     ~Service();
 
@@ -100,6 +104,8 @@ private:
     // join 掉作业的工作线程（幂等）。必须在**不持锁**时调用：
     // 工作线程收工时要拿同一把锁写状态。
     void JoinRecord(const std::shared_ptr<Record>& rec);
+    // 淘汰过老的"已完成且已 join"记录。调用方必须已持有 mu_。
+    void PruneLocked();
 
     std::mutex mu_;
     std::condition_variable cv_;

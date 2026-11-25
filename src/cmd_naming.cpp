@@ -234,6 +234,29 @@ const Alias kAliases[] = {
     // AI 面板是窗口级 UI（group=Window），不是"工具"——它开/关的是窗口里的一块区域。
     {L"AiTogglePanel",     L"win.ai.toggle"},
     {L"AiStop",            L"win.ai.stop"},
+    // ai.panel.toggle：右侧聊天面板的开合。**与上面两条不是同一条命令** ——
+    //   · win.ai.toggle / win.ai.stop 是协议层（AI 通道的启停，老 mod 的键位表里就有）；
+    //   · ai.panel.toggle 是界面层（右侧那块 WebView 面板）。
+    // 两条都叫 "AI"，但一个改的是"机器能不能连进来"，另一个改的是"人看不看得见面板"。
+    // 混用会让"我按了 Ctrl+J，AI 服务却没起来"变成一条查不出原因的故障。
+    {L"AiPanelToggle",     L"ai.panel.toggle"},
+    // ai.panel.web：用系统浏览器打开面板服务。
+    // 【为什么需要这条】内嵌 WebView2 依赖运行时与异步回调，任一环节出问题
+    // 面板就是白屏；而 node 服务（同一份 UI）通常完全正常。这条命令把
+    // "服务好好的、只是内嵌视图不肯画"变成一条可用的退路，不必等它修好。
+    {L"AiPanelWeb",        L"ai.panel.web"},
+    // 窗口管理命令体系：legacy 名保留 PascalCase，点分名是契约。
+    {L"WinMinimize",       L"win.minimize"},
+    {L"WinMaximize",       L"win.maximize"},
+    {L"WinRestore",        L"win.restore"},
+    {L"WinTopmost",        L"win.topmost"},
+    {L"WinActivate",       L"win.activate"},
+    {L"WinCenter",         L"win.center"},
+    {L"WinMove",           L"win.move"},
+    {L"WinResize",         L"win.resize"},
+    {L"WinList",           L"win.list"},
+    {L"WinTile",           L"win.tile"},
+    {L"WinCascade",        L"win.cascade"},
 
     // --- Search（group=Search）---
     {L"SearchEverything",  L"search.everything"},
@@ -288,6 +311,23 @@ std::wstring CanonicalName(const std::wstring& anyName) {
     if (LooksDotted(anyName)) return anyName;
     const std::wstring a = AliasOf(anyName);
     return a.empty() ? anyName : a;
+}
+
+// ---- 分组 → 中文展示名 ----
+// 与参考 mod 的 kHkCmdGroupMeta 同源（Tab→标签 / Go→浏览 / …）。
+// 本项目多出的分组（Session/Tool/Search）在这里补齐，不靠调用方猜。
+const wchar_t* GroupDisplayName(const wchar_t* group) {
+    struct Entry { const wchar_t* id; const wchar_t* zh; };
+    static const Entry kTable[] = {
+        {L"Tab", L"标签"},   {L"Go", L"浏览"},     {L"Nav", L"导航"},
+        {L"Path", L"路径"},  {L"Bookmark", L"书签"}, {L"View", L"视图"},
+        {L"File", L"文件"},  {L"Window", L"窗口"}, {L"External", L"外部"},
+        {L"Session", L"会话"}, {L"Tool", L"工具"}, {L"Search", L"搜索"},
+    };
+    if (!group || !*group) return L"";
+    for (const Entry& e : kTable)
+        if (str::IEquals(e.id, group)) return e.zh;
+    return group;   // 未知分组：原样显示，不吞
 }
 
 }  // namespace cmdnaming

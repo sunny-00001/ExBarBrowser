@@ -173,7 +173,7 @@ refactor(app): 把历史栈操作收敛到 Tab 的成员函数
 
 | 禁止 | 原因 |
 |---|---|
-| 注入 explorer / 装全局钩子 / `SetWindowsHookEx` | 本工程的全部价值就是"不碰 explorer" |
+| 注入 explorer / 装全局钩子 / `SetWindowsHookEx` | 本工程的全部价值就是"不碰 explorer"。**唯一豁免：`src/kb_hook.cpp` 的 `WH_KEYBOARD_LL`**，理由是中文输入法把字母键吃成 `VK_PROCESSKEY`，不装钩子取不到真实 vk（`review/G7_cmd_input.md` H2 有完整论证）；除此之外任何文件装钩子一律禁止，由 `check_components.py` 的 `HOOK_GUARD` 强制 |
 | **模拟鼠标键盘 / 抢焦点**（`SendInput`、`mouse_event`、`keybd_event`、`SetCursorPos`、`BlockInput`、`AttachThreadInput`） | 本程序是本机正在用的窗口：抢走光标会把用户下一次点击挪到别处，抢焦点会打断用户手上的操作。规则 R21，由 `check_components.py` 强制；替代方案是命令总线 / AI 管道 / 单测 / 截图 |
 | **`PostMessage`/`SendMessage` 投 `WM_LBUTTON*` / `WM_KEY*` / `WM_CHAR`**（含"扫一行坐标、每隔几像素投一次点击"的循环） | 合成点击会真的命中控件 → `ShowPopupList` → 弹层内部 `SetForegroundWindow`，结果与 `SendInput` 一样是抢前台；循环投更会连续建模态弹层。真的必须点 → 人工点、脚本只观察（`tools/probe_toggle.py`） |
 | 自动化脚本里 `SetForegroundWindow` 改用户前台窗口 | 同上（R21），脚本零例外：需要前台才能测的场景改成"没前台就 SKIP"，不要自己抢过来 |

@@ -3,7 +3,8 @@
 """命令目录静态审计（CI / 提交前跑一次，无窗口依赖）。
 
 检查四件事，任何一条不满足都说明"键位/面板点得到但没实现"：
-  1. data/keymap.json 里出现的每条命令（hotkeys + sequences）都在 src/commands.cpp 的表里；
+  1. data/keymap.json 里出现的每条命令（hotkeys + sequences）都在命令表里
+     （src/commands_table.cpp 用户操作域 + src/commands_table_tools.cpp 工具域）；
   2. 表里 implemented=true 的命令，在 src/app_commands.cpp 里都有 reg(CmdId::X) 处理器；
   3. 表里 implemented=false 的命令不能有处理器（否则是"实现了却标成未实现"）；
   4. keymap 里的键位不能绑到 implemented=false 的命令上（否则按了没反应、也没有提示）。
@@ -17,7 +18,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TABLE_SRC = ROOT / "src" / "commands.cpp"
+# 命令表本体按作用域分在两个文件里（用户操作域 / 工具·Agent 域），
+# 由 commands_table.h 提供共用常量。读表要读**全部**两段 —— 少读一段
+# 会让那一段的命令在校验器眼里"不存在"（键位里绑了它们却报未注册）。
+TABLE_SRCS = [
+    ROOT / "src" / "commands_table.cpp",
+    ROOT / "src" / "commands_table_tools.cpp",
+]
 HANDLERS_GLOB = "app_commands*.cpp"   # 处理器按域分片后不再只有一个文件
 KEYMAP = ROOT / "data" / "keymap.json"
 
@@ -61,12 +68,13 @@ def strip_comments(text):
 
 
 def EnumOrder():
-    """按声明顺序读出 commands.h 里 `enum class CmdId` 的全部标识符。
+    """按声明顺序读出 commands_ids.h 里 `enum class CmdId` 的全部标识符。
 
     只认 word 形态的 token，跳过显式赋值（`None = 0`）与注释。
-    这是 CmdId 数值的真实来源 —— 与 commands.cpp 表行的顺序无关。
+    这是 CmdId 数值的真实来源 —— 与命令表行的顺序无关。
+    （枚举本体在 src/commands_ids.h，与命令契约 commands.h 分开。）
     """
-    src = (ROOT / "src" / "commands.h").read_text(encoding="utf-8")
+    src = (ROOT / "src" / "commands_ids.h").read_text(encoding="utf-8")
     body = re.search(r"enum class CmdId\s*:\s*int\s*\{(.*?)\n\};", src, re.S)
     if not body:
         return []
@@ -307,12 +315,14 @@ def key_label(chord):
 
 
 def main():
-    table_src = strip_comments(TABLE_SRC.read_text(encoding="utf-8"))
+    table_src = "\n".join(
+        strip_comments(p.read_text(encoding="utf-8")) for p in TABLE_SRCS
+    )
     # 命令表条目现在带结构化元数据（Effects{...}/argsSchema/aiExposed/needsSelection/
     # Requirements{...}），argsSchema 是含大量 '}' 的 JSON 字符串、Effects 本身也是
     # 花括号 —— 跨行/跨括号的整条匹配极易失配。
     #
-    # 改为**按行**匹配：每个条目在 commands.cpp 里固定占一行，只取前 6 个字段
+    # 改为**按行**匹配：每个条目在命令表里固定占一行，只取前 6 个字段
     # （id/name/group/scopeUi/title/implemented）。本脚本只关心这 6 个，
     # 尾部结构一概不管 —— 这样以后再加字段也不会把它弄坏。
     rows = []
@@ -325,7 +335,7 @@ def main():
         if m:
             rows.append(m.groups())
     if not rows:
-        print("FAIL 没能从 commands.cpp 解析出命令表")
+        print("FAIL 没能从命令表（src/commands_table*.cpp）解析出条目")
         return 1
 
     ids = {r[0] for r in rows}
@@ -435,6 +445,99 @@ def main():
     dup_names = sorted({r[1] for r in rows if [x[1] for x in rows].count(r[1]) > 1})
     if dup_names:
         errors.append("命令名重复：" + ", ".join(dup_names))
+
+    # ---- 规则 C4：序列键不得绑"有必填参数又没带内联参数"的命令 ----
+    #
+    # 【为什么这条必须机械检查】序列的派发是
+    #   InputRouter::FeedSequence → InvokeByNameLegacy(cmd, L"") → ArgsFromLegacyArg(def, "")
+    # 而 ArgsFromLegacyArg 收到空串直接返回 Args::Empty() —— 必填参数**永远是空的**。
+    # 于是带必填参数的命令绑到序列上，每按一次都注定失败；更糟的是有三条
+    # 在空参下会**静默改状态**而不是如实报错：
+    #   · tab.color   空 color=0        → 把标签改成"无颜色"（用户看不出发生了什么）
+    #   · win.move    空 x,y=0          → 把窗口挪到屏幕左上角
+    #   · view.pane.split 空 percent=50 → 分栏比例被重置成一半
+    # 这三条不是"按了没反应"，是"按了做了别的事" —— 比失败更坏。
+    #
+    # 合法形态只有两种：
+    #   · 命令没有必填参数；
+    #   · 命令规格带内联参数（"view.mode:3" / "ViewZoom:-1"）。
+    # 有必填参数又要留在序列里的，唯一正解是补内联参数，不是往白名单里塞。
+    #
+    # 判据从数据里取（argsSchema 的 required），不看注释、不看命令名 ——
+    # 新增命令时它自动生效，不需要有人记得来登记。
+    #
+    # 这里单独抽一份"CmdId → argsSchema 字符串"：上面 rows 只取了前 6 个字段
+    # （够用且稳定），但"有没有必填参数"必须读 schema 本体。
+    # 取法同样是按行 —— schema 是同一行里的第 7 个字段（kNoArgs 常量名也算），
+    # 所以从行里切出 `, Effects{...}, "..."` 之后的那一段即可。
+    schema_of = {}
+    const_schema = {}
+    # 表元数据常量（kNoArgs 等）定义在 commands_table.h：`inline constexpr const char* kNoArgs = R"({...})";`
+    consts_src = strip_comments((ROOT / "src" / "commands_table.h").read_text(encoding="utf-8"))
+    for m in re.finditer(r'constexpr\s+const\s+char\*\s+(\w+)\s*=\s*R"\((.*?)\)"', consts_src, re.S):
+        const_schema[m.group(1)] = m.group(2)
+
+    def unescape_c(text):
+        """把表里的 C 字符串字面量转成原始 JSON 文本。
+
+        【为什么必须做】命令表的 argsSchema 是 `"...\"required\":[...]"` 这种
+        C 转义写法（JSON 里的引号在 C 源码里必须转义）。不去转义直接查
+        `'"required"'` 永远不命中 —— 判据会**恒绿**，比不写这条更坏：
+        它给出一个"已经查过了"的承诺，而实际什么都没查。
+        """
+        out = []
+        i, n = 0, len(text)
+        while i < n:
+            c = text[i]
+            if c == '\\' and i + 1 < n:
+                nxt = text[i + 1]
+                out.append({'n': '\n', 't': '\t', 'r': '\r', '"': '"', '\\': '\\'}.get(nxt, nxt))
+                i += 2
+                continue
+            out.append(c)
+            i += 1
+        return ''.join(out)
+
+    for line in table_src.splitlines():
+        m_id = re.match(r'\s*\{CmdId::(\w+),', line)
+        if not m_id:
+            continue
+        # Effects{...} 之后、下一个逗号分隔的字段就是 argsSchema。
+        m_eff = re.search(r'Effects\{[^}]*\}\s*,\s*', line)
+        if not m_eff:
+            continue
+        rest = line[m_eff.end():]
+        m_schema = re.match(r'(?:R"\((.*?)\)"|"((?:[^"\\]|\\.)*)"|(\w+))', rest)
+        if not m_schema:
+            continue
+        if m_schema.group(1) is not None:
+            schema_of[m_id.group(1)] = m_schema.group(1)       # 原始字符串：不用解转义
+        elif m_schema.group(2) is not None:
+            schema_of[m_id.group(1)] = unescape_c(m_schema.group(2))
+        else:
+            schema_of[m_id.group(1)] = const_schema.get(m_schema.group(3), "")
+    seq_needs_arg = []
+    for s in km.get("sequences", []):
+        spec = s.get("command", "")
+        name, _, inline = spec.partition(":")
+        if inline or not name:
+            continue
+        cid = to_cmd_id(name)
+        if cid is None:
+            continue          # 认不出的名字上面已经报过
+        schema_txt = schema_of.get(cid) or ""
+        if '"required"' not in schema_txt:
+            continue
+        m_req = re.search(r'"required"\s*:\s*\[(.*?)\]', schema_txt)
+        if not m_req or not m_req.group(1).strip():
+            continue          # required 是空数组：没有必填参数
+        seq_needs_arg.append(f"{s.get('seq')}→{name}({m_req.group(1).replace(chr(34), '')})")
+    if seq_needs_arg:
+        errors.append(
+            "序列绑了必填参数命令却没有内联参数（按下去必然失败，或静默改值）："
+            + ", ".join(sorted(seq_needs_arg))
+            + "。修法：给序列补内联参数（如 \"view.sort:2\"），或删掉这条序列"
+              "（带参命令的正确入口是命令面板，它会按 schema 追问）")
 
     # ---- 规则 C1：命令 id 稳定（docs/NAMING.md §4.3）----
     #

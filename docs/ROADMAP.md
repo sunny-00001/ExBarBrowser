@@ -1,6 +1,6 @@
 ---
 status: current
-baseline: 2026-11-21 11:00
+baseline: 2026-11-22 20:25
 ---
 
 # 路线图
@@ -37,6 +37,9 @@ P2.5 契约化          ✅ 2026-11-20 完成（v0.2.1）
 P3  好用（可发现）    搜索 → 工具（helper IPC）→ 预览窗格 → 批量选择/复制到/移动到
  │                    已提前落地：目录统计（OpTopN/OpDiskUsage）、书签导入导出与拖放
 P4  差异化            AI 面板 → chrome Web 化 → 与 mod 的 UI 资产互通
+ │                    拆三期（2026-11-22）：P4-a 原生活动流与审批（零新依赖）
+ │                    → P4-b 自带模型客户端 + 纯文本流式消息区（形态 A，不引入 WebView2 / DirectWrite）
+ │                    → P4-c 渲染层 + 动作粒度（检索层 / 多步编排 / 计划级确认）+ 与 mod 资产互通
 ```
 
 版本号映射见 [../CHANGELOG.md](../CHANGELOG.md) 末尾。
@@ -271,14 +274,103 @@ P4  差异化            AI 面板 → chrome Web 化 → 与 mod 的 UI 资产�
 
 ## 5. P4 差异化
 
+P4 拆成三期（2026-11-22 决定）：**P4-a 不引入任何新依赖**，
+**P4-b 只引入自带模型客户端**（WinHTTP + SSE，消息区做**纯文本流式**，不引入 WebView2 也不引入 DirectWrite/Direct2D ——
+先验证链路，渲染层后置，见 D3），
+**P4-c 补渲染层与动作粒度**（检索层 / 多步编排 / 计划级确认，见 D11；
+三项都**先记着，等 P4-b 跑完再定**）。
+拆的理由是 P4-a 的产物（活动流 + 审批）本身就是安全边界，必须能独立验收 ——
+不能让它与"WebView2 可用性""agent 装没装"这些外部条件绑在一起。
+同理，P4-b 的模型链路也不该与"富文本渲染做没做"绑在一起。
+
+### 5.1 P4-a 原生活动流与审批（零新依赖）
+
 | 项 | 内容 | 前置 |
 |---|---|---|
-| AI 面板 | 侧栏聊天。**接口层已完成**（`ai_api`/`ai_server`：JSON-RPC over 命名管道、令牌 + 危险双门；工具数以 `tools/check_commands.py` 实测为准），缺的是窗口内对话 UI 与会话历史 | 会话存储 + 面板载体（`docs/ARCHITECTURE-TARGET.md` 的 Panel） |
-| chrome Web 化 | 用 `ui/theme/tokens.css` 统一视觉；WebView2 只承载"面板"，标签栏/导航栏保持 GDI（启动速度优先） | 与 `ExBarUI` 的宿主代码复用评估 |
-| 与 mod 的资产互通 | 同一套图标、同一套色令牌；`bookmarks.html` / `keymap` **不再共用**（便携模式后各写各的），需要互通时走导入导出（`bookmark_io.cpp` 已实现 Netscape 导入导出） | P2-3、P2-4、P3-4 |
+| **宿主侧审批通道** | **新加，工作量可能大于面板本身**：宿主挂起一个待批请求 → 面板显示为面板级固定条 → 用户点完回执给请求方。现有双门是**客户端声明式**的（`aiAllowDanger` 静态开关 + 调用方带 `approve=true`），宿主那个弹框回调 `confirmFn_` **只对 `ActorKind::Human` 生效且同步返回 bool** —— AI actor 走不到。而在形态 A（D13）下，那个"客户端"就是我们自己 —— 更容易把审批写成走过场，必须显式补这条通道 | `ai_api.cpp` 的双门判定（`:265`）；`commands_confirm.cpp` 的 `confirmFn_` |
+| 进程内事件订阅 | 面板不是管道客户端，用不了 `events/subscribe`。要新增：**订阅线程 `WaitFor(afterSeq, &line, -1)` → 投递 UI 线程**。`Publish` 线程安全，且事件在返回值之前发布 → UI 线程收到时状态已新 | `ai_events.h`（只有 `Since`/`WaitFor`，无进程内回调） |
+| 分组键 = `traceId` | **不用 `turn`** —— `RequestScope` 每请求 `++g_turn`，MCP 一次 `tools/call` 就是一个 turn，一次对话轮会是多个 turn。形态 A 下我们自己发请求，可以在一次对话轮的所有 `tools/call` 上注入**同一 traceparent** → traceId 相同自然归一组 | `ai_events.cpp` 的 `RequestScope`；AI 引擎线程要注入 `_meta.traceparent` |
+| 面板宿主 | AI 面板是**同一客户区最右的一列**，由我们的布局划出来，**把 Shell 窗格区往左挤**（squeeze）。快捷键启停（`win.ai.toggle`，`CmdId::AiTogglePanel` 已预留，实现它 + 补 `assertion` `aiPanelVisible=$changed`）。宽度**复用 nav pane 的分割条机制**。**不盖在列表上**（overlay 会遮住选中项） | `ui/containers/panel`（B5）；`app_layout.cpp` 的 `RECT inner` 右侧让位 |
+| 焦点契约 | 文件区态 / 面板态两态显式定义；`Esc` 三级（关菜单 → 停这一轮 → 收面板）；焦点必须能一键回文件列表 | — |
+| 活动流面板 | 侧栏面板，按 `turn`/`step` 分组展示命令事件：状态点 + 中文标题 + 点分命令名 + 风险徽章（读/写/危）+ 时间；可按「全部/写/危险/失败」筛选，点行展开详情（分组 / args / 结果 / 断言 / 失败原因）。**原生自绘**，`ui_draw.h` 即可，**不用 WebView2** | `Panel` 载体 + 事件订阅（`ai_events.h` 已有） |
+| 审批 UI | agent 或外部客户端请求危险命令时，面板内出现审批块（允许一次 / 本会话允许 / 拒绝）。**原生自绘**，且必须与 `aiAllowDanger` + `approve` 双门同源。**审批块是面板级固定条（横跨底部、在输入区之上），不随页签切换而消失** —— 它在面板层，不在页签层 | `CommandBus::SetConfirmFn`（已有） |
+| 状态栏 chip + peek 气泡 | 收起后不是消失：状态栏 `✦ AI` chip 上方浮一张气泡（完成摘要 + 撤销 + 打开对话）。状态栏是段位图驱动的（`StatusSegmentIcon` / `SetEnabledSegments` / `HitSegment`），加这一段要动段位图映射 | 状态栏段位图 + `statusSegOrder` 设置项 |
+| 会话历史 | 按 `traceId` 归档到 `events.jsonl`（已落盘），面板能回看上一轮 | `events.jsonl` 已有，`LoadFromDisk` 已有 |
+| **对话散文落盘** | 新增 `<dataDir>/chat.jsonl`：一条记录 = 一个对话轮，带 `traceId` 与 `events.jsonl` 关联。`events.jsonl` 只存**事实**（谁调了什么命令、成没成），**不含 agent 的话** —— 不存的话重启后只剩"命令活动" | `ai_events.cpp` 的 `EventsPath()` 约定（同目录、追加写 + 按大小轮转、坏行跳过） |
+| **agent 子进程归属** | **每窗口一个**。共用一个的话，第二个窗口的请求带着第一个窗口的上下文，而 `get_state` 类工具返回的是**当前进程**的状态 —— 对不上，模型会误推断 | D10 子决定①；MCP 发现文件本来就是多实例枚举（`ai-pipe.<pid>.txt`） |
 
-**明确不做**：把整个窗口 Web 化（一个空白 WebView2 就 260 MB，见 `ExBar换栈总体方案.md` §4.3；
-本工程的价值之一就是轻）。
+> **Web 侧已先行落地两种看法，共用同一批 `tool` 事件**：独立的「活动流」页签用于
+> 事后审计（按 `turn` 分组、筛选、展开详情）；嵌在助手回答里的「执行台账」用于
+> 正常聊天流 —— 成功步骤默认折叠，失败 / 效果未达成 / 危险命令默认展开，
+> 历史恢复也会重建台账。原生 Win32 自绘活动流仍按上表待做，Web 与原生是
+> 同一事件源的两个载体，不互相替代。
+
+**验收**：面板能完整显示一轮命令活动；危险命令的审批块可点、且拒绝后命令**真的没执行**
+（审计日志里能看到 `ok=false`）；**AI 发起的危险命令会真的弹框问用户**
+（而不是靠客户端带 `approve=true` 声明 —— 现在只有声明，没有询问）；
+断网/无 agent 时面板不空、不报错；
+**展开/收起时 Shell 文件列表的列宽会重排**（与 explorer 拖窗口同理），
+且 details 视图宽于窗口时的**横向滚动位置不重置**（要实测，不达标就得补位置保持）；
+**切到别的页签时审批块仍在**（不能只在"活动"页签里）；
+**用户手动点标签栏/排序不会出现在活动流里**（`command` 事件的唯一发布点是 `ai_api.cpp:417`，
+天然成立，但要作为验收项钉住）。
+
+### 5.2 P4-b 自带模型客户端 + 纯文本流式消息区（形态 A）
+
+> **2026-11-22 21:54 改向**：本节原为"ACP 对话"（形态 B），用户拍板改为**形态 A**
+> （本工程自己发请求、自己管密钥），依据见 **D13**。D10 的 ACP 方案整段保留为
+> 被否方案记录，不再执行。
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| **SSE 流式解析** | `src/ai_sse.h/.cpp`：跨 chunk 残行缓冲、只按 `\n` 切（UTF-8 多字节安全）、`[DONE]` 哨兵、`event:`/注释/空行忽略、`tool_calls.arguments` 分片累积、`reasoning_content` 与正文分离、断流时交付"不完整"标记。**纯函数、零 Win32、可离网单测** | ✅ 已完成（23 条断言全绿） |
+| **HTTPS 传输** | `src/ai_http.h/.cpp`：WinHTTP 会话/连接/请求三级 RAII；接收超时 180s（默认 30s 会掐断长生成）；强制 TLS1.2+；HTTP≥400 时把服务端正文一并回显（不能只给"HTTP 401"）；`Cancel` 令牌支持中途停止；`ParseBaseUrl` 只接受 `https://`（明文会泄露密钥） | ✅ 已完成（22 条断言全绿） |
+| **构建接入** | `build_fast.py` 的 `LIBS` 加 `-lwinhttp`、`-lcrypt32`（系统库，仍是单 exe 零安装）；`tests/run_all.sh` 同步（否则链接期 `undefined symbol: WinHttpOpen`） | ✅ 已完成 |
+| 密钥存储 | DPAPI（`CryptProtectData`）加密到 `<dataDir>/ai_key.bin`，绑定当前用户。**只在引擎线程解密、不进日志、不写 `settings.json`** | 待做（~150 行） |
+| Provider 配置 | 三字段：`baseUrl` / `model` / `key`。国内主流全部兼容 OpenAI chat format（DeepSeek / DashScope / Moonshot / 智谱 / MiniMax）。**刻意不做 reasoning/thinking 参数适配** —— Pulse 为 13 家写了一套 `ThinkKind`/`ThinkWire` 枚举，我们不重复这笔账 | 待做（~300 行含设置页） |
+| AI 引擎线程 | 一条常驻线程：组 `messages[]` → `PostChatStreaming` → 事件投 UI 队列。**UI 线程绝不做网络**（`WinHttpReadData` 会阻塞到有数据）。**工具循环有步数上限**（`maxSteps`，参考 AgentChat 的 12）；`usage` 跨步按**最大**合并而非求和（兼容重发累计值的网关） | 待做（~200 行） |
+| 工具结果裁剪 | 每个工具结果**硬截断**（参考 AgentChat 的 8000 字符）。一次 `readdir` 大目录就能吃掉整个上下文窗口，模型随即停止推理真问题 | 待做（并入上一条） |
+| 消息区（纯文本） | GDI 换行追加，**只投增量**：UI 用定时器（≈30ms）从队列取 delta 合并重绘，不每 chunk 重排全文 | 待做（~400 行） |
+| 面板输入框 | 面板底部一个输入框；Enter 发送，Shift+Enter 换行。**chip 语义 = 选哪个 provider**（DeepSeek / 通义 / 智谱 / 月之暗面…），因为现在是本工程自己接模型 | 待做 |
+| tool_calls → CommandBus | 收到完整 `toolCall` 后解析 `toolArgs` → 映射到命令表 → 经 `CommandBus` 执行。**危险命令仍走双门 + 审批**（D10 里与形态无关的部分继续有效）。**审批判定必须代码化**（按命令 `Effects.destructive`），不能只写在系统提示里；**只读模式下不发审批卡**，直接回 `not executed`（参考 AgentChat 的 `ctx.readonly` 处理） | 待做（~300 行） |
+
+**为什么这一期只做纯文本**（沿用 2026-11-22 的判断，理由随形态改变而更新）：
+
+1. **顺序**：先把"发请求 → 收流 → 显示 → 工具回调"整条链路跑通，
+   而不是一上来就投 ≈2,600 行渲染层。
+2. **渲染选型不阻塞链路**：A1（WebView2）与 A2（原生 DirectWrite）
+   **只影响消息区怎么画**，前面 ≈1,750 行完全共用（D13 已写明）。
+3. **纯文本够用**：文件管理器里的 AI 回复以「做了什么 + 结果」为主；
+   真正需要渲染的是 Markdown 表格 / 代码高亮 / diff，属于 P4-c 按实测决定。
+
+**验收**：在面板里说一句话 → 请求真的发出（抓包可见 SSE）→ 回复**逐段**出现
+（首字延迟 < 2s，不是等全部生成完才显示）；说"删掉 build 里 3 天前的 obj"
+→ 模型返回 `toolCall(fs.delete)` → **真的弹审批块** → 批准后命令执行、
+拒绝后命令**真的没执行**（审计里 `ok=false`）；
+**长回复（>8k token）滚动不卡**（这是 D13 复检条件 2 的实测点，不达标就提前做渲染层）；
+断网 / key 错 / 服务端 5xx 时**显示具体原因**（不是"AI 不说话"）；
+点"停止"能在 1s 内中断请求。
+
+**明确不做**（2026-11-22）：
+- 不做 ACP / 不拉起任何 agent 子进程（D13 取代 D10 的形态选择）。
+- **P4-b 不引入 WebView2，也不引入 DirectWrite/Direct2D** —— 消息区纯文本，
+  `LIBS` 只加 `winhttp` + `crypt32`（都是系统库）。
+- 不做 13 家 provider 的思考档位适配（只做 `content` 流式 + `reasoning_content` 分离展示）。
+
+**键已钉住的两个坑**（有单测守着，不要"顺手简化"）：
+1. **只能按 `\n` 切行**，绝不能按字节长度切 —— 否则 UTF-8 多字节会被切开成乱码。
+2. **`tool_calls.arguments` 是分片 JSON**，必须按 `index` 累积到 `finish_reason`
+   再整体解析，中途解析永远失败。
+
+### 5.3 P4-c 渲染层、动作粒度与 mod 资产互通
+
+| 项 | 内容 | 前置 |
+|---|---|---|
+| 渲染层（待 P4-b 跑通后再定） | 消息区的富文本渲染，二选一：**原生富文本**（DirectWrite + 自写 Markdown 子集）或 **WebView2**（`ui/containers/web_panel`，B9）。**2026-11-22 决定：先不排期**，等实测看到模型确实返回 Markdown / 代码块 / diff 再定（D13 复检条件 2） | D3；原生路线需 `build_fast.py` 加 `dwrite`/`d2d1`；Web 路线需 B9 |
+| `find_actions` 检索层 | agent 按词检索命令表（本地匹配 `CommandTable`），返回 id/title/args/now/enabled+why/risk/asks_user。**本工程命令表 215 条，其中 171 条 `aiExposed` 进 `tools/list`，全量列表对 agent 上下文是重消耗**。**2026-11-22 决定：先记着，等 P4-b 跑完再定是否做** | D11 |
+| `run_actions` 多步编排 | agent 一次交一串步骤（≤N 步），整体作为一个撤销组。**前置：`fileundo::Stack` 现在是扁平 `vector<Item>`，没有 group 标记，要加**。同上，先记着 | D11 |
+| 计划级确认 | 写动作先出方案卡 → 一次确认 → 一次撤销（Pulse 风格）。**与现有 `aiAllowDanger` + `approve` 逐命令双门是两层叠加，不是二选一**。同上，先记着 | D11 |
+| 与 mod 的资产互通 | 同一套图标、同一套色令牌；`bookmarks.html` / `keymap` **不再共用**（便携模式后各写各的），需要互通时走导入导出（`bookmark_io.cpp` 已实现 Netscape 导入导出） | P2-3、P2-4、P3-4 |
 
 ---
 
@@ -303,4 +395,6 @@ P4  差异化            AI 面板 → chrome Web 化 → 与 mod 的 UI 资产�
 | P2 | 可以当默认文件夹处理器 | 重启还原几何与标签；路径复制/终端/书签/会话可用；一周无崩溃 | ✅ |
 | P2.5 | 人机同源：同一操作对人可用、对机器可调 | 全部命令带 schema/效果/前置；对 AI 暴露的命令全部满足 R20 人机等价；**48 个单测**（47 通过 / 1 环境限制）+ **25 项** `check_ai_meta` 与 `check_commands`/`check_components` 全绿 | ✅ |
 | P3 | 能力可发现、可编排 | 命令面板覆盖全部已实现命令（✅）；搜索 200 ms 内出结果；预览 3 种格式 | 进行中 |
-| P4 | 与 mod 视觉一致、AI 面板可用 | 同一套色令牌与图标；AI 面板能在窗口内对话（接口层已完成） | 未开始 |
+| P4-a | 活动流与审批可用（原生，零新依赖） | 面板完整显示一轮命令活动；危险命令审批块可点、拒绝后命令确实没执行 | **Web UI 侧已落地**：浏览器面板新增结构化活动流视图（对话/活动流切换、按 `turn` 分组、风险徽章 read/write/danger、全部/只读/写/危险/失败筛选、点行展开参数/结果/自断言/失败原因；刷新后从 history 重建），并把同一批事件嵌成助手回答内的「执行台账」（成功折叠，失败/未达成/危险展开，历史也重建）。服务端 SSE `tool` 事件补 `command/risk/step/ts/turn` 并随历史落盘。**原生面板侧仍未开始**（`ui_draw.h` 自绘活动流），Web UI 与原生是同一批事件的两个载体，不互相替代。审批块 Web 侧此前已可点、拒绝后命令确实不执行 |
+| P4-b | 窗口内能对话（纯文本流式） | 一句话发给模型 → 模型返回 `toolCall` → 命令执行 → 纯文本逐段回到面板（首字 <2s）；危险命令弹审批块，拒绝则命令真没执行；长回复滚动不卡；断网/错 key 显示具体原因 | **原生侧 SSE/HTTP 已完成**；`aichat/`（WebView2 面板路线）端到端已跑通：模型→`toolCall`→命令执行→拒绝则命令真没执行（实测文件仍在）/批准则真执行（实测文件被删）、审批判定改由命令表 `annotations.destructiveHint` 驱动。**安全边界已补**：`allowedRoots`/`denyCommands`/`dryRun` 三项此前都是"配置了没人读"的假开关（执行点只在已无调用方的 `tools.js`/`opus.js` 里），现在统一收口到 `service/guard.js`，挂在 `tools-exbar.dispatch` 这个唯一出口上，三套测试 52+14+5 全绿。**仍未做**：密钥 DPAPI 落盘（现在是本地明文 + `.gitignore`）、面板嵌进主窗口（现在还是独立窗口）、长回复性能实测 |
+| P4-c | 渲染层、动作粒度与 mod 视觉一致 | （渲染层与三项动作粒度**待 P4-b 跑完后定**，本期不排期）；同一套色令牌与图标 | 未开始 |

@@ -69,11 +69,25 @@ std::wstring StateToJson(const StateSnapshot& s) {
     v.Set(L"bookmarkBarVisible", json::Value::MakeBool(s.bookmarkBarVisible));
     v.Set(L"navPaneVisible", json::Value::MakeBool(s.navPaneVisible));
     v.Set(L"previewPaneVisible", json::Value::MakeBool(s.previewPaneVisible));
+    v.Set(L"dualPane", json::Value::MakeBool(s.dualPane));
+    v.Set(L"activePane", json::Value::MakeInt(s.activePane));
+    v.Set(L"paneSplit", json::Value::MakeInt(s.paneSplit));
+    v.Set(L"paneVertical", json::Value::MakeBool(s.paneVertical));
+    v.Set(L"leftPanePath", Str(s.leftPanePath));
+    v.Set(L"rightPanePath", Str(s.rightPanePath));
 
     // ---- 搜索态（search.find 的回读面）----
     v.Set(L"searching", json::Value::MakeBool(s.searching));
     v.Set(L"searchScope", Str(s.searchScope));
     v.Set(L"searchQuery", Str(s.searchQuery));
+
+    // ---- 搜索框的设置面（范围菜单 / 历史下拉改的就是这几个）----
+    // searchScope 是"这次搜索从哪儿发起"，searchRange 是"下次用哪一档范围"，
+    // 两者不是一回事 —— 混起来会让 AI 以为"改了范围 = 换了来源目录"。
+    v.Set(L"searchRange", Str(s.searchRange));
+    v.Set(L"searchRangePath", Str(s.searchRangePath));
+    v.Set(L"searchHistoryCount", json::Value::MakeInt(s.searchHistoryCount));
+    v.Set(L"searchInput", Str(s.searchInput));
 
     // ---- 选中与焦点（观测面）：AI 回答"用户选中了什么/焦点在哪"的唯一来源 ----
     v.Set(L"selectionCount", json::Value::MakeInt(static_cast<int>(s.selectionCount)));
@@ -106,6 +120,24 @@ std::wstring StateToJson(const StateSnapshot& s) {
     v.Set(L"showSystemFiles", json::Value::MakeBool(s.showSystemFiles));
     v.Set(L"showExtensions", json::Value::MakeBool(s.showExtensions));
     v.Set(L"shellHiddenState", json::Value::MakeInt(s.shellHiddenState));
+
+    // ---- AI 面板可见性（ai.panel.toggle 的回读面）----
+    v.Set(L"aiPanelVisible", json::Value::MakeBool(s.aiPanelVisible));
+    // 与 chip 文案同源：页面未上报前也能读到 starting 这个原生启动态。
+    v.Set(L"aiState", Str(s.aiState));
+    // 未读圆点的机器可读面：UI 与快照必须同源，否则 AI 会以为用户已看到结果。
+    v.Set(L"aiUnread", json::Value::MakeBool(s.aiUnread));
+
+    // ---- AI 面板排查面（见 ai_api.h 的字段说明）----
+    //
+    // 这三个字段是为了让"面板白屏"变成**可查询**的问题，而不是只能翻日志。
+    // 组合能唯一定位卡在哪：
+    //   port=0                → node 服务没起来（多半是 PATH 里没有 node）
+    //   port>0, webview=none  → 服务在跑，WebView2 没建起来（可走浏览器路径）
+    //   port>0, webview=ready → 视图已就绪，白屏是页面自己还没画完
+    v.Set(L"aiPanelPort", json::Value::MakeInt(static_cast<int>(s.aiPanelPort)));
+    v.Set(L"aiPanelError", Str(s.aiPanelError));
+    v.Set(L"aiPanelWebView", Str(s.aiPanelWebView));
     return json::Stringify(v, 0);
 }
 
@@ -169,11 +201,16 @@ std::wstring ToolsToJson() {    json::Value root = json::Value::MakeObject();
         ann.Set(L"idempotentHint", json::Value::MakeBool(t.effects.idempotent));
         ann.Set(L"openWorldHint", json::Value::MakeBool(t.effects.openWorld));
         ann.Set(L"undoable", json::Value::MakeBool(t.effects.undoable));
+        ann.Set(L"undoGroup", Str(UndoGroupPolicyName(t.undoGroup)));
+        if (!t.undoDomain.empty()) ann.Set(L"undoDomain", Str(t.undoDomain));
         ann.Set(L"scope", Str(ScopeName(t.effects.scope)));
         o.Set(L"annotations", ann);
 
         // 兼容字段：粗粒度三档，老的调用方还能用。
         o.Set(L"risk", Str(RiskName(t.effects)));
+        // 单次调用超时。客户端按它设定时器；敌不过"宿主其实还在跑"时也要
+        // 让 UI 先结束等待，并明确标记 timeout（不是把命令说成成功了）。
+        o.Set(L"timeoutMs", json::Value::MakeInt(t.timeoutMs));
 
         // inputSchema 要原样回给 MCP 客户端，所以这里必须解析回对象而不是塞字符串
         // （MCP 规定 inputSchema 是 JSON 对象；字符串会让客户端 schema 校验直接失败）。

@@ -433,6 +433,22 @@ INPUT_GUARD = [
          allow=set(),
          why="自动化脚本不得改变用户的前台窗口。需要前台才能测的场景，"
              "改成'没前台就跳过'（probe_toggle.py 的做法），而不是自己抢过来"),
+
+    # HOOK_GUARD：全局钩子。项目明文禁令"不装全局钩子"（AGENTS.md / CONTRIBUTING.md /
+    # ARCHITECTURE-RULES.md）的机械守门。R21 的四条判据不管 SetWindowsHookEx（它拦截
+    # 真人按键、不是合成输入），所以这条单独守"别再装第二个钩子"。
+    #
+    #   唯一豁免 src/kb_hook.cpp：中文输入法把字母吃成 VK_PROCESSKEY，不装 WH_KEYBOARD_LL
+    #   取不到真实 vk。这是已签发的功能豁免（CONTRIBUTING.md 禁项表 + review/G7 H2），
+    #   不是漏洞 —— 任何其它文件再装钩子就把"不碰 explorer/不装钩子"的价值主张推翻。
+    dict(name="全局钩子 HOOK_GUARD（唯一豁免 kb_hook.cpp）",
+         scope="all",
+         pat=r"\bSetWindowsHookEx(?:W|A)?\s*\(",
+         allow={"src/kb_hook.cpp"},
+         why="项目不装全局钩子（不碰 explorer 的延伸）。唯一豁免 src/kb_hook.cpp 的 "
+             "WH_KEYBOARD_LL：中文输入法把字母吃成 VK_PROCESSKEY，必须取真实 vk"
+             "（见 CONTRIBUTING.md 禁项表豁免行、review/G7_cmd_input.md H2）。"
+             "其它文件不得再装钩子 —— 否则照抄先例就会装出第二个"),
 ]
 
 # 扫描 R21 时覆盖的目录与后缀（相对仓库根）

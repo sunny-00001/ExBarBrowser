@@ -316,6 +316,27 @@ int main() {
         CHECK(store.Merge(std::move(fresh)) == 1, "新路径被加入并计为 1");
         CHECK(store.Flatten().size() == 4, "叶子数 3 -> 4");
 
+        // 【撤销栈必须存"合并之前"的树】2026-11-23 之前 PushUndo 写在
+        // mergeInto 之后 —— 快照里已经是合并结果，撤销它等于什么都没退，
+        // "撤销删除"还会亮起来（一次假的成功回执）。判据：合一条新路径、
+        // 撤销后叶子数必须回到合并前的值。
+        {
+            const size_t before = store.Flatten().size();
+            BookmarkList undoProbe;
+            {
+                BookmarkNode n;
+                n.name = L"UNDO-ME";
+                n.path = L"C:\\undo-me";
+                undoProbe.push_back(n);
+            }
+            CHECK(store.Merge(std::move(undoProbe)) == 1, "合并 1 条用于撤销判据");
+            CHECK(store.Flatten().size() == before + 1, "合并后叶子 +1");
+            CHECK(store.CanUndo(), "合并产生了撤销快照");
+            CHECK(store.Undo(), "撤销这次合并");
+            CHECK(store.Flatten().size() == before, "撤销回到合并之前（快照不是合并后的）");
+            CHECK(store.FindByPath(L"C:\\undo-me") == nullptr, "撤销后新条目真的消失");
+        }
+
         // 导入节点自带与现存书签相同的 id：必须换新，否则 Find() 会串位。
         const std::wstring existingId = store.FindByPath(L"D:\\")->id;
         BookmarkList colliding;
@@ -403,6 +424,41 @@ int main() {
         CHECK(store.Undo(), "排序可撤销");
     }
 
+    // ---- AddPath / AddFolder：新增也必须可撤销 ----
+    //
+    // bmk.add.path / bmk.add.current / bmk.add.selection / bmk.add.tabs 与
+    // bmk.newfolder 都声明 undoable=1，可真到 2026-11-23 才发现这一族**一条都撤不掉**：
+    // PushUndo 只写在 Remove/Copy/MoveTo/Sort/Dedup/ReplaceAll/Merge 里，
+    // 两条新增路径都漏了。空承诺比不声明更坏 —— AI 据此敢试错，试完退不回来。
+    printf("\nAddPath / AddFolder：新增进撤销栈\n");
+    {
+        FIXTURE(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/x\" >X</A>\r\n</DL><p>\r\n");
+        store.Load(file);
+        while (store.Undo()) {}   // 清空撤销栈，判据只看这一条动作
+        const size_t before = store.roots().size();
+
+        const std::wstring id = store.AddPath(L"NEW", L"C:\\new");
+        CHECK(!id.empty(), "AddPath 返回新 id");
+        CHECK(store.roots().size() == before + 1, "新增后多一条");
+        CHECK(store.CanUndo(), "AddPath 产生了撤销快照");
+        CHECK(store.Undo(), "撤销 AddPath");
+        CHECK(store.roots().size() == before, "撤销后条目数回到新增之前");
+        CHECK(store.Find(id) == nullptr, "撤销后该条目真的不在了");
+
+        const std::wstring fid = store.AddFolder(L"新分类");
+        CHECK(!fid.empty(), "AddFolder 返回新 id");
+        CHECK(store.CanUndo(), "AddFolder 产生了撤销快照");
+        CHECK(store.Undo(), "撤销 AddFolder");
+        CHECK(store.Find(fid) == nullptr, "撤销后该分类真的不在了");
+
+        // 失败路径不该占撤销额度（空路径 / parentId 不存在）
+        while (store.Undo()) {}
+        CHECK(store.AddPath(L"X", L"").empty(), "空路径被拒绝");
+        CHECK(store.AddFolder(L"Y", L"not-a-folder").empty(), "父分类不存在被拒绝");
+        CHECK(!store.CanUndo(), "被拒绝的新增不产生撤销快照");
+    }
+
     // ---- RemoveDuplicatePaths：跨层级去重 ----
     printf("\nRemoveDuplicatePaths：同一路径不重复占位\n");
     {
@@ -428,6 +484,164 @@ int main() {
         while (store.Undo()) {}   // 清空撤销栈
         CHECK(store.RemoveDuplicatePaths() == 0, "无重复 -> 删 0 条");
         CHECK(!store.CanUndo(), "无重复时不产生撤销快照");
+    }
+
+    // ---- Dissolve：解散分类，子项回到上一层 ----
+    //
+    // 这是"把分类里的文件夹解散到书签栏"这条需求的落点。判据盯三件事：
+    //   · 子项真的**提到了上一层**（不是留在分类里，分类也没删）；
+    //   · 子项**带着自己的子树**一起走（解散掉的是壳，不是摊平整棵树）；
+    //   · 改树前拍了快照（一次能挪很多条，点错必须能一步退回来）。
+    printf("\nDissolve：解散分类（子项提到上一层）\n");
+    {
+        FIXTURE(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/top\" >top</A>\r\n"
+                            L"<DT><H3>A</H3>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/x\" >X</A>\r\n"
+                            L"<DT><H3>B</H3>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/deep\" >deep</A>\r\n"
+                            L"</DL><p>\r\n"
+                            L"</DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/tail\" >tail</A>\r\n"
+                            L"</DL><p>\r\n");
+        store.Load(file);
+        const std::wstring idA = store.roots()[1].id;
+        CHECK(store.Find(idA) != nullptr, "seed: 分类 A 在顶层");
+
+        const std::vector<std::wstring> promoted = store.Dissolve(idA);
+        CHECK(promoted.size() == 2, "A 的两个直接子项被提升（X 与 B）");
+        CHECK(store.roots().size() == 4, "顶层项数 3 -> 4（1 个变 2 个）");
+        CHECK(store.Find(idA) == nullptr, "分类 A 自己消失了");
+        CHECK(store.roots()[1].name == L"X", "X 顶到 A 原来的位置");
+        CHECK(store.roots()[2].isFolder && store.roots()[2].name == L"B",
+              "B 跟着上来，还是分类");
+        // 子树跟着走：B 里的 deep 还在 B 里，没被摊平到顶层。
+        const BookmarkNode* b = store.Find(promoted.size() > 1 ? promoted[1] : L"");
+        CHECK(b && b->isFolder && b->children.size() == 1 && b->children[0].name == L"deep",
+              "B 带着自己的子树一起上来了（deep 仍在 B 内）");
+        CHECK(store.CanUndo(), "解散产生了撤销快照");
+        CHECK(store.Undo(), "撤销解散");
+        CHECK(store.Find(idA) != nullptr, "撤销后分类 A 回来了");
+
+        // 叶子不能解散（没有壳可散）
+        const std::wstring idTop = store.roots()[0].id;
+        CHECK(store.Dissolve(idTop).empty(), "叶子解散被拒绝");
+        CHECK(store.Find(idTop) != nullptr, "被拒绝后叶子还在");
+        // 空 id / 不存在的 id 同样拒绝，且不得留下撤销快照
+        while (store.Undo()) {}
+        CHECK(store.Dissolve(L"").empty(), "空 id 被拒绝");
+        CHECK(store.Dissolve(L"no-such-id").empty(), "不存在的 id 被拒绝");
+        CHECK(!store.CanUndo(), "失败的解散不产生撤销快照");
+    }
+
+    // ---- Dissolve：嵌套分类只降一层 ----
+    //
+    // "解散"降的是**一层壳**，不是把整棵子树拍平：嵌套分类解散后，
+    // 它的子项回到它的上级分类，而不是直接冲到书签栏。
+    printf("\nDissolve：嵌套分类只降一层\n");
+    {
+        FIXTURE(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+                            L"<DT><H3>Outer</H3>\r\n<DL><p>\r\n"
+                            L"<DT><H3>Inner</H3>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/leaf\" >leaf</A>\r\n"
+                            L"</DL><p>\r\n"
+                            L"</DL><p>\r\n</DL><p>\r\n");
+        store.Load(file);
+        const std::wstring idOuter = store.roots()[0].id;
+        const std::wstring idInner = store.Find(idOuter)->children[0].id;
+
+        CHECK(store.Dissolve(idInner).size() == 1, "Inner 的一个子项被提升");
+        const BookmarkNode* outer = store.Find(idOuter);
+        CHECK(outer != nullptr && outer->children.size() == 1 &&
+                  outer->children[0].name == L"leaf",
+              "leaf 回到 Outer 里（降一层，不是冲到顶层）");
+        CHECK(store.roots().size() == 1, "顶层仍只有 Outer");
+        CHECK(store.Find(idInner) == nullptr, "Inner 消失了");
+    }
+
+    // ---- SortChildren：只排某一个分类，不动别的层 ----
+    printf("\nSortChildren：只排这个分类的直接子项\n");
+    {
+        FIXTURE(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/zzz\" >zzz</A>\r\n"
+                            L"<DT><H3>A</H3>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/b\" >bee</A>\r\n"
+                            L"<DT><A HREF=\"file:///D:/a\" >ant</A>\r\n"
+                            L"<DT><H3>Zed</H3>\r\n<DL><p>\r\n"
+                            L"</DL><p>\r\n"
+                            L"</DL><p>\r\n"
+                            L"<DT><H3>Other</H3>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/q\" >que</A>\r\n"
+                            L"</DL><p>\r\n</DL><p>\r\n");
+        store.Load(file);
+        const std::wstring idA = store.roots()[1].id;
+        const std::wstring idOther = store.roots()[2].id;
+
+        CHECK(store.SortChildren(idA, true, true), "排序 A 的子项成功");
+        const BookmarkNode* a = store.Find(idA);
+        CHECK(a && a->children.size() == 3, "A 仍有 3 个子项");
+        // foldersFirst=true = 分类排在**前面**（与 SortRecursive(true, true)
+        // 同一口径），分类之间/文件之间再按名称不区分大小写排。
+        CHECK(a->children[0].isFolder && a->children[0].name == L"Zed",
+              "分类排在前面（foldersFirst）");
+        CHECK(a->children[1].name == L"ant", "ant 在 bee 前（名称升序）");
+        CHECK(a->children[2].name == L"bee", "bee 在最后");
+        // 别的层没被动过 —— 这是"排序本分类"与"按名称排序（含分类内）"的分界。
+        CHECK(store.Find(idOther) && store.Find(idOther)->children[0].name == L"que",
+              "另一个分类的顺序原样保留");
+        CHECK(store.roots()[0].name == L"zzz", "顶层顺序没被动过");
+        CHECK(store.CanUndo() && store.Undo(), "分类内排序可撤销");
+
+        // 降序
+        CHECK(store.SortChildren(idA, true, false), "降序排序成功");
+        a = store.Find(idA);
+        CHECK(a->children[0].name == L"Zed", "降序时文件夹在前");
+        CHECK(a->children[2].name == L"ant", "降序时 ant 在最后");
+        store.Undo();
+
+        // 目标不是分类 / 不存在 → 拒绝
+        CHECK(!store.SortChildren(store.roots()[0].id, true, true), "叶子不能排子项");
+        CHECK(!store.SortChildren(L"no-such-id", true, true), "不存在的分类被拒绝");
+        // 单子项分类：成功但不占撤销额度
+        FIXTURE(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+                            L"<DT><H3>One</H3>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/only\" >only</A>\r\n"
+                            L"</DL><p>\r\n</DL><p>\r\n");
+        store.Load(file);
+        while (store.Undo()) {}
+        CHECK(store.SortChildren(store.roots()[0].id, true, true), "单子项分类排序返回成功");
+        CHECK(!store.CanUndo(), "单子项分类排序不产生撤销快照");
+    }
+
+    // ---- MoveTo：同容器内移动的越界下标必须被拒 ----
+    //
+    // 分类内移动（"上移/下移"、分类内容弹层的拖放）走的是 MoveTo 的
+    // "同容器"分支，那条路以前没有下标检查 —— insert() 不会自己检查，
+    // 传一个超出末位的值就是往 vector 之外写（未定义行为）。
+    // 命令侧不夹取（夹取会把"非法"与"移到末尾"混成同一个结果），所以 store 必须拒。
+    printf("\nMoveTo：同容器内的越界下标被拒绝\n");
+    {
+        FIXTURE(file, L"<!DOCTYPE NETSCAPE-Bookmark-file-1>\r\n<DL><p>\r\n"
+                            L"<DT><H3>A</H3>\r\n<DL><p>\r\n"
+                            L"<DT><A HREF=\"file:///D:/x\" >X</A>\r\n"
+                            L"<DT><A HREF=\"file:///D:/y\" >Y</A>\r\n"
+                            L"</DL><p>\r\n</DL><p>\r\n");
+        store.Load(file);
+        const std::wstring idA = store.roots()[0].id;
+        const std::wstring idX = store.Find(idA)->children[0].id;
+        const std::wstring idY = store.Find(idA)->children[1].id;
+
+        CHECK(!store.MoveTo(idX, idA, 99), "越界下标被拒绝（不得越界写 vector）");
+        CHECK(store.Find(idA) && store.Find(idA)->children.size() == 2, "两个子项都还在");
+        CHECK(store.Find(idX) && store.Find(idY), "越界后没有条目丢失");
+        // 合法边界：size = 插到末项之后
+        CHECK(store.MoveTo(idX, idA, 2), "下标 = 容器大小 = 插到末尾（合法）");
+        CHECK(store.Find(idA)->children[0].name == L"Y" && store.Find(idA)->children[1].name == L"X",
+              "X 落到了末尾");
+        // 负下标是"未指定"的哨兵（= 追加到末尾），不是越界
+        CHECK(store.MoveTo(idY, idA, -5), "负下标按追加到末尾处理");
+        CHECK(store.Find(idA)->children[0].name == L"X" && store.Find(idA)->children[1].name == L"Y",
+              "Y 被追加到了末尾");
     }
 
     // 收尾：删掉临时目录（不碰用户书签）

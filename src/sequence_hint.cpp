@@ -94,7 +94,7 @@ void SequenceHint::Paint(HWND h) {
         RECT rgt{rc.right - 1, 0, rc.right - 1, rc.bottom};
         ui::DrawSeparator(mem, rgt, true, theme_->editBorder);
 
-        HGDIOBJ oldFont = SelectObject(mem, theme_->font);
+        ui::ScopedFont font(mem, theme_->font);
         const int pad = theme_->S(10);
         const int rowH = theme_->S(22);
         int y = pad;
@@ -117,7 +117,5 @@ void SequenceHint::Paint(HWND h) {
                             DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
             y += rowH;
         }
-
-        SelectObject(mem, oldFont);
     });
 }

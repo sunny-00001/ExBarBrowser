@@ -1,0 +1,154 @@
+# ExBarBrowser 本地构建产物与临时文件
+# 注：仓库根的 .gitignore 已排除 ExBarBrowser/*.exe|png|log 与 backup/，
+#     这里再列一遍是为了本目录被单独取用（或作为子模块）时也成立。
+
+# 构建产物
+*.exe
+*.dll
+*.obj
+*.o
+*.map
+*.pdb
+*.ilk
+
+# 运行期 / 开发期产物
+*.log
+backup/
+.takeover
+shot*.png
+out*.png
+
+# 崩溃转储：tools/crash_capture.cpp 以调试器方式拉起目标进程，在首次真实异常时
+# 用 MiniDumpWithFullMemory 写全内存 dump（单份可到几百 MB）。它是**调试证据**
+# 而不是产物，但绝不入库 —— 否则 git status / dev.diff 会被几百 MB 的二进制淹没。
+# 注意：转储是"证据"不是"垃圾"，回收器不自动删它（没人写它并不等于没人还在分析它）。
+crashdumps/
+
+# Python 字节码：tools/ 下的 CLI 每次运行都可能生成，不入库
+__pycache__/
+*.pyc
+
+# 编辑器 / 系统
+.vs/
+.vscode/
+*.swp
+Thumbs.db
+desktop.ini
+
+# 迁移期归档（旧构建产物）
+.old/
+*.running.exe
+
+# 测试全量运行的落点（tests/run_all.sh 的 OUT，默认工程根 tmp_tests/）。
+# 名字带 tmp 前缀 → tools/reclaim.py 会当会话目录在构建收尾兜底回收；
+# 其中 exe 由脚本跑完即删，这里整目录忽略，避免日志/obj 混进 git。
+tmp*/
+
+# 增量构建中间产物：obj/（以及多会话隔离目录 obj.*/、obj_*/）下的依赖文件(.d)、
+# 预编译头(.gch)、签名(.build_sig) 以及 src/common.h.gch —— 这些由 build_fast.py
+# 生成，clean 后应可全部消失
+obj*/
+*.d
+*.gch
+
+# 构建进行中的持锁标记（见 tools/reclaim.py 的 active_locks）：build_fast.py 在
+# 中间目录里写 {pid=…}，回收器靠它跳过"卡住的构建"。它不是产物，不该入库。
+.reclaim-lock
+
+# 编辑期临时备份：app.cpp.bak / app.cpp.iconbak / nav_bar.cpp.fixbak /
+# bookmark_bar.cpp.bak2 / popup_list.cpp.scrollbak / build_fast.py.iconbak …
+*bak
+*bak[0-9]
+
+# ---------------------------------------------------------------------------
+# 便携模式的用户数据：data\ 里全是**真实配置**，没有种子/默认值之分
+#
+# 这些文件因人而异（书签、最近访问、窗口几何、键位习惯），提交会把个人数据带进仓库，
+# 因此整个 data\ 下的运行期文件都不入库。
+#
+#   浏览器设置    data\settings.json
+#   书签          data\bookmarks.html
+#   键位          data\keymap.json
+#   鼠标规则      data\mouse.json
+#   审计日志      data\audit.log   （旧文本格式）
+#                 data\audit.jsonl （规范格式，R18/C6 要求的那份）
+# ---------------------------------------------------------------------------
+data/settings.json
+data/settings.json.tmp
+data/settings.json.bak
+data/bookmarks.html
+data/keymap.json
+data/mouse.json
+data/audit.log
+data/audit.log.1
+data/audit.jsonl
+data/audit.jsonl.1
+# 事件流落盘（B8）：跨重启观测历史，含轮转副本。与审计同理不入库；
+# 被忽略才不会被 dev.diff 当成"未跟踪改动"混进候选源码。
+data/events.jsonl
+data/events.jsonl.1
+data/events-test/
+data/ai-token.txt
+data/ai-pipe.txt
+data/.write-probe
+# AI 面板的 WebView2 用户数据目录：src/aichat_panel.cpp 把 user-data-dir 挂在
+# Config::Dir()\webview2 —— 默认 profile 是 <exe>\data\webview2，多实例/profile
+# 则落在 data\profile-*\webview2（后者已被下面的 data/profile-*/ 覆盖）。
+# 跟配置目录走是为了让 profile 隔离生效：多实例共用同一份 user-data-dir 会撞
+# Chromium 单例锁，且各 profile 的 localStorage 会互相污染。
+# 它是运行期 profile —— 缓存、Local State、Cookies 等，不是构建产物。
+data/webview2/
+# 每实例发现文件（多实例并存时各写一份）与测试 profile：运行期产物，不入库
+data/ai-token.*.txt
+data/ai-pipe.*.txt
+data/profile-multi/
+# 结构化测试用的隔离 profile（EXBARBROWSER_PROFILE=data/profile-*）：
+# 每个 profile 一份 settings.json + 发现文件，都是运行期产物。
+data/profile-*/
+# agentctl 记录的"自己启的实例"（用于只关自己的窗口，不入库）
+data/.agentctl.pid
+# dev.snapshot 落盘的工作树快照（改动文件的内容副本 + 清单）。
+# 它是**兜底**不是备份：里面存的是工作树里当时的内容，入库等于把
+# 未提交的改动塞进仓库历史。不入库，但**不能删** —— dev.rollback 靠它还原。
+snapshots/
+# dev.archive 的候选档案：源码副本 + 原始执行轨迹（逐字，不摘要）。
+# 与 snapshots/ 同理不入库；被忽略才不会被 dev.diff 当成"未跟踪改动"。
+archive/
+# 程序自动生成的书签备份（含用户数据，绝不入库）
+data/*.backup-*.html
+
+# 已废弃的旧命名（曾用 browser- 前缀，已合并进 keymap.json / mouse.json）
+data/browser.json
+data/browser-keymap.json
+data/browser-mouse.json
+data/bookmarks.default.html
+data/*.from-appdata
+# Agent 工作区（随会话上下文）
+.workbuddy/
+
+# ---------------------------------------------------------------------------
+# aichat/ —— AI 聊天面板（Node 服务 + WebView2 前端）
+#
+# 只入库**代码**。下面这些是运行期产物与本机凭据，绝不入库：
+#
+#   model.json / config.json   model.json 里有**明文 API key**（provider 的
+#                              apiKey 字段，见 config.js 的读取路径）。入库
+#                              等于把密钥写进仓库历史，删都删不干净。
+#   *.bak-<时间戳>             config.js 每次保存配置时留的旧副本，同样含 key。
+#   *.opus.bak                 Opus 时代的实现副本，含当时的桥配置。
+#   logs/                      会话历史（用户与 AI 的对话原文）。
+#
+# 需要分发默认配置时另写 *.example.json，不要把真实文件改个名就提交。
+# ---------------------------------------------------------------------------
+aichat/service/model.json
+aichat/service/model.json.bak-*
+aichat/service/config.json
+aichat/service/config.json.bak-*
+aichat/service/*.opus.bak
+aichat/logs/
+# Node 若被塞进 node_modules（当前零依赖，但别让它哪天混进来）
+aichat/node_modules/
+# 从 Opus 时代迁过来、已无调用方的模块（tools.js / opus.js / mcp-exbar.js）。
+# 移到这里只为可回溯，不参与构建、不入库 —— 它们里面那份 allowedRoots
+# 执行点曾经是"以为有边界"的错觉来源。
+aichat/_removed_opus/

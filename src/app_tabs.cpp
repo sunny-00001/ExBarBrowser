@@ -8,6 +8,76 @@
 
 #include "icon_resolve.h"
 
+namespace {
+
+// SyncChrome 的指纹只记"外壳真正会画出来的输入"。字段带长度前缀，
+// 避免路径/别名里出现分隔符时把两段拼成同一种签名。
+void AppendChromeSigText(std::wstring& sig, const std::wstring& value) {
+    sig.append(std::to_wstring(value.size()));
+    sig.push_back(L':');
+    sig.append(value);
+    sig.push_back(L';');
+}
+
+void AppendChromeSigInt(std::wstring& sig, int value) {
+    sig.append(std::to_wstring(value));
+    sig.push_back(L';');
+}
+
+void AppendChromeSigBool(std::wstring& sig, bool value) {
+    sig.push_back(value ? L'1' : L'0');
+    sig.push_back(L';');
+}
+
+std::wstring MakeChromeSignature(const core::TabSet& tabSet, int activeId, int activeIndex,
+                                 int activePane, bool activeRefFound,
+                                 const std::wstring& windowTitle, const std::wstring& navPath,
+                                 const std::wstring& navDisplay, const NavBar::NavState& ns,
+                                 bool navPaneOk, bool tabStripReady, bool navBarReady) {
+    size_t reserve = 256;
+    for (const auto& ref : tabSet.items()) {
+        reserve += ref.path.size() + ref.title.size() + ref.alias.size() + 64;
+    }
+    for (const auto& path : tabSet.closed()) reserve += path.size() + 16;
+    reserve += windowTitle.size() + navPath.size() + navDisplay.size() + 64;
+
+    std::wstring sig;
+    sig.reserve(reserve);
+    // 控件/导航树的就绪态也进签名：若首次 SyncChrome 早于它们创建，
+    // 就绪后的那次 SyncChrome 必须再刷一次，不能被旧签名挡掉。
+    AppendChromeSigBool(sig, navPaneOk);
+    AppendChromeSigBool(sig, tabStripReady);
+    AppendChromeSigBool(sig, navBarReady);
+    AppendChromeSigBool(sig, activeRefFound);
+    AppendChromeSigInt(sig, activeId);
+    AppendChromeSigInt(sig, activeIndex);
+    AppendChromeSigInt(sig, activePane);
+    AppendChromeSigText(sig, windowTitle);
+    // 标签条：标题、图标路径、锁/固定、着色与重复标记全由 TabRef 派生。
+    AppendChromeSigInt(sig, static_cast<int>(tabSet.items().size()));
+    for (const auto& ref : tabSet.items()) {
+        AppendChromeSigInt(sig, ref.id);
+        AppendChromeSigText(sig, ref.path);
+        AppendChromeSigText(sig, ref.title);
+        AppendChromeSigText(sig, ref.alias);
+        AppendChromeSigInt(sig, ref.color);
+        AppendChromeSigBool(sig, ref.locked);
+        AppendChromeSigBool(sig, ref.pinned);
+    }
+    // 重开菜单读的是完整关闭列表，不只是"有没有"。
+    AppendChromeSigInt(sig, static_cast<int>(tabSet.closed().size()));
+    for (const auto& path : tabSet.closed()) AppendChromeSigText(sig, path);
+    // 地址栏/面包屑与导航按钮可用态。
+    AppendChromeSigText(sig, navPath);
+    AppendChromeSigText(sig, navDisplay);
+    AppendChromeSigBool(sig, ns.canBack);
+    AppendChromeSigBool(sig, ns.canForward);
+    AppendChromeSigBool(sig, ns.canUp);
+    return sig;
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------- 标签
 bool App::PathOpenable(const std::wstring& path) {
     if (path.empty()) return false;
@@ -21,30 +91,29 @@ bool App::PathOpenable(const std::wstring& path) {
 int App::NewTab(const std::wstring& path, int index) {
     std::wstring target = path.empty() ? HomePath() : path;
     auto tab = std::make_unique<Tab>();
-    tab->view = std::make_unique<ShellView>(theme_);
-    ShellView* raw = tab->view.get();
-    // 先接输入汇流再 Create：首次 Shell 视图可能在 Create() 内部就创建完成。
-    tab->view->SetMouseSink([this](int target, UINT msg, int button, int mods, POINT pt) {
-        return OnChromeMouse(target, msg, button, mods, pt);
-    });
-    if (!tab->view->Create(viewArea_, target)) {
-        // 不在这里弹模态：启动恢复会话时可能连续失败多个标签，弹窗会一串串冒出来。
+    // 两个 Pane 先就位：右窗格只准备路径/历史，Shell 视图按需创建。
+    // 双栏里左右目录可以不同，因此不能共用一个 nav::History。
+    Pane* left = PaneAt(tab.get(), 0);
+    Pane* rightPane = PaneAt(tab.get(), 1);
+    left->nav.Reset(target);
+    rightPane->nav.Reset(target);
+    if (!EnsurePaneView(tab.get(), 0)) {
         LogDbg(L"[tab] 创建视图失败：%s", target.c_str());
         return 0;
     }
-    tab->view->SetNavFn([this, raw](const std::wstring& p, const std::wstring& d, unsigned n) {
-        OnTabNav(raw, p, d, n);
-    });
-    tab->view->SetFailFn([this, raw] { OnTabNavFailed(raw); });
+    left = PaneAt(tab.get(), 0);  // EnsurePaneView 可能触发回调；重取指针
 
     std::wstring initial = target;
-    if (!tab->view->path().empty()) initial = tab->view->path();
-    tab->display = ico::DisplayName(initial, tab->view->display());
-    tab->nav.Reset(initial);
+    if (!left->view->path().empty()) initial = left->view->path();
+    // Shell 可能把 target 规范化（大小写/尾斜杠）：历史栈与标签身份必须用同一个结果。
+    left->nav.Reset(initial);
+    if (str::IEquals(rightPane->path(), target)) rightPane->nav.Reset(initial);
+    // 显示名跟着**窗格**走（Pane 拆分后 display 在 Pane 上，Tab 上没有了）。
+    left->display = ico::DisplayName(initial, left->view->display());
 
-    const int id = tabSet_.Add(initial, tab->display, index);
+    const int id = tabSet_.Add(initial, left->display, index);
     tab->id = id;
-    ShellView* created = tab->view.get();
+    ShellView* created = left->view.get();
     tabs_[id] = std::move(tab);
 
     for (const auto& locked : Config::Get().s().lockedPaths)
@@ -66,6 +135,7 @@ int App::NewTab(const std::wstring& path, int index) {
     // 新标签套用持久化的视图偏好（模式/排序/分组/窗格），而不是每次回到默认。
     // 必须等首个视图就绪后再调：Create() 内部的首个导航可能还没产出 IShellView。
     ApplyPersistedViewState(created);
+    // 右窗格视图交给 Activate 按需创建；这里只恢复路径/历史（会话恢复时最后统一建活动标签）。
 
     Activate(id);
     Layout();
@@ -74,9 +144,13 @@ int App::NewTab(const std::wstring& path, int index) {
 }
 
 int App::NewTabIndex() const {
-    const std::wstring& pos = Config::Get().s().tabNewPos;
-    if (str::IEquals(pos.c_str(), L"end")) return tabSet_.Count();
-    return ActiveIndex() + 1;
+    // 【一个取值 = 一种行为】以前 "right" 与 "after_current" 走同一行代码
+    // （ActiveIndex()+1），也就是界面上的"最右"从来没生效过。
+    // 现在：after_current 插在当前标签右侧；其余（end，以及读入时已归一的
+    // 旧值 right）追加到最右。
+    if (str::IEquals(Config::Get().s().tabNewPos.c_str(), L"after_current"))
+        return ActiveIndex() + 1;
+    return tabSet_.Count();
 }
 
 bool App::CloseTab(int id) {
@@ -96,12 +170,35 @@ bool App::CloseTab(int id) {
     // 才能不被"关闭路径上多一次 SetFocus/SendMessage"之类的改动悄悄破坏。
     HWND focus = GetFocus();
     Tab* closing = ById(id);
-    const bool focusInClosingView =
-        closing && closing->view && closing->view->hwnd() &&
-        (focus == closing->view->hwnd() || IsChild(closing->view->hwnd(), focus));
+    bool focusInClosingView = false;
+    if (closing) {
+        for (const auto& pane : closing->panes) {
+            if (pane && pane->view && pane->view->hwnd() &&
+                (focus == pane->view->hwnd() || IsChild(pane->view->hwnd(), focus))) {
+                focusInClosingView = true;
+                break;
+            }
+        }
+    }
     const int index = tabSet_.IndexOf(id);
     std::wstring path = ref->path;
     tabSet_.PushClosed(path);
+
+    // 【先摘下来、藏起来，再延后销毁】探针 84：ShellView::Destroy = 20~69 ms per view
+    // （IExplorerBrowser::Destroy + Release + DestroyWindow），关一个标签会同步销毁
+    // 1~2 个 → 20~138 ms 卡顿。用户对"关闭"的期望是立刻消失，清理可以稍后做。
+    // 顺序不能换（错了就是 use-after-free 或漏销毁）：move 出 unique_ptr -> 隐藏窗口
+    // -> 移进 pendingDestroy_ -> tabs_.erase（已不含视图，所以很快）-> PostMessage。
+    if (closing) {
+        for (auto& pane : closing->panes) {
+            if (!pane || !pane->view) continue;
+            // 隐藏是立刻生效的那一步：只 ShowWindow(SW_HIDE)，不碰 shell 内部状态。
+            if (HWND vh = pane->view->hwnd()) ShowWindow(vh, SW_HIDE);
+            pendingDestroy_.push_back(std::move(pane->view));
+        }
+        if (!pendingDestroy_.empty()) PostMessageW(hwnd_, WM_APP_RECLAIM_VIEWS, 0, 0);
+    }
+
     tabs_.erase(id);
     tabSet_.Remove(id);
 
@@ -191,17 +288,54 @@ void App::Activate(int id) {
     // 循环内部的 Activate 由 mruCycling_ 标记，不能在这里清掉快照。
     if (!mruCycling_) tabSet_.ResetMruCycle();
     activeId_ = id;
-    for (auto& kv : tabs_) kv.second->view->SetVisible(kv.first == id);
+    const bool dual = Config::Get().s().dualPane;
+    // 双栏下右视图按需建：切到哪个标签才建那个标签的右视图，
+    // 会话恢复期间由 Run() 在最后统一建活动标签的那一份。
+    //
+    // 【首帧之前不建】双栏启动时建第二个 ShellView 实测 375 ms（IExplorerBrowser
+    // 的 CoCreateInstance + Initialize + 首次导航），这段落在窗口可见之前，
+    // 用户只感觉到"启动慢"，右栏对他第一眼没有任何贡献。启动期跳过，
+    // 由 Run 在首帧之后经 WM_APP_STARTUP_SETTLE 补建（见 app.h 的 startupPending_）。
+    // 非启动路径（用户点标签/开双栏）照旧同步建 —— 那时窗口已经可见，不能拖。
+    if (dual && !restoringSession_ && !startupPending_) {
+        if (Tab* activeTab = ById(id)) (void)EnsurePaneView(activeTab, 1);
+    }
+    for (auto& kv : tabs_) {
+        Tab* t = kv.second.get();
+        const bool tabActive = kv.first == id;
+        Pane* left = PaneAt(t, 0);
+        Pane* right = PaneAt(t, 1);
+        if (left && left->view) left->view->SetVisible(tabActive);
+        if (right && right->view) right->view->SetVisible(tabActive && dual);
+    }
+    ApplyPaneChrome();
     tabSet_.Touch(id);
+    // 每个标签都有自己的活动窗格；激活时按它的活动窗格刷新显示身份。
+    SyncTabIdentity(ById(id));
+    viewMode_ = ActiveViewModeIndex();
     SyncChrome();
     // 只有焦点原本在视图区（或还没有焦点）时才搬焦点。从标签栏点过来时保留在标签栏，
     // 否则"标签栏"作用域的裸键（Shift+←/→/Home/End）永远收不到。
-    Tab* t = Active();
-    if (!t || !t->view) return;
+    //
+    // 【窗口还不可见时不要设焦点 —— 这是启动慢 344 ms 的直接原因】
+    // 启动路径是 NewTab -> Activate -> 这里，而 ShowWindow 在更后面。给一个
+    // **隐藏窗口**设焦点会让消息链一路走到 ShellView::ActivateFocus()：
+    //   SetFocus -> WM_SETFOCUS -> view->UIActivate(SVUIA_ACTIVATE_FOCUS)
+    // UIActivate 要等 shell 视图把菜单/命令栏/选中态全激活，实测同步阻塞 344 ms
+    // （埋点：[+359] GetFocus -> [+703] Activate 返回），而这段时间窗口还没画出来 ——
+    // 用户看到的是"双击后一秒才出窗口"。
+    // 隐藏窗口本来也不该持有焦点，所以判据是 IsWindowVisible 而不是"启动中"：
+    // 任何给不可见窗口设焦点的调用都是无意义的（用户看不见，键盘也收不到）。
+    // 启动时的首次焦点由 Run() 在 ShowWindow 之后补一次 FocusActiveView()。
     HWND focus = GetFocus();
     const bool focusInView =
         !focus || focus == viewArea_ || (viewArea_ && IsChild(viewArea_, focus));
-    if (focusInView && t->view->hwnd()) SetFocus(t->view->hwnd());
+    const bool windowVisible = IsWindowVisible(hwnd_) != 0;
+    HWND target = ActiveShellViewHost() ? ActiveShellViewHost()->hwnd() : nullptr;
+    if (focusInView && windowVisible) {
+        if (target) SetFocus(target);
+        else if (viewArea_) SetFocus(viewArea_);
+    }
     MarkSessionDirty();   // sessionActive 变了
 }
 
@@ -323,9 +457,35 @@ App::Tab* App::ById(int id) {
 
 int App::ActiveIndex() const { return tabSet_.IndexOf(activeId_); }
 
-std::wstring App::ActivePath() const {
-    const core::TabRef* t = tabSet_.Find(activeId_);
-    return t ? t->path : std::wstring();
+std::wstring App::ActivePath() {
+    Pane* p = ActivePane();
+    return p ? p->path() : std::wstring();
+}
+
+void App::SyncTabIdentity(Tab* t) {
+    if (!t || !tabSet_.Find(t->id)) return;
+    Pane* p = PaneAt(t, t->activePane);
+    if (!p || p->path().empty()) return;
+
+    const std::wstring path = p->path();
+    tabSet_.SetPath(t->id, path);
+    tabSet_.SetTitle(t->id, ico::DisplayName(path, p->display));
+
+    // 改名/着色按"当前显示的路径"取，切窗格后标签显示的就是那个路径的元数据。
+    std::wstring alias;
+    int color = 0;
+    Config::Get().GetTabMeta(path, &alias, &color);
+    tabSet_.SetAlias(t->id, alias);
+    tabSet_.SetColor(t->id, color);
+
+    // 锁定是按路径持久化的：切到另一个视图后，锁图标必须反映那个视图的路径。
+    // 固定态不在这里重算 —— 固定是标签本身的属性，重算会触发排序让标签跳位。
+    const auto& locked = Config::Get().s().lockedPaths;
+    const bool isLocked =
+        std::find_if(locked.begin(), locked.end(), [&path](const std::wstring& x) {
+            return str::IEquals(x, path);
+        }) != locked.end();
+    tabSet_.SetLocked(t->id, isLocked);
 }
 
 std::wstring App::FocusPaneOf(HWND focus) {
@@ -346,42 +506,85 @@ std::wstring App::FocusPaneOf(HWND focus) {
     wchar_t cls[64] = {};
     GetClassNameW(focus, cls, _countof(cls));
     if (lstrcmpW(cls, L"SysTreeView32") == 0) return L"nav_tree";
-    if (Tab* t = Active(); t && t->view) {
-        if (focus == t->view->hwnd() || IsChild(t->view->hwnd(), focus))
-            return L"file_view";
+    if (Tab* t = Active()) {
+        // 双栏下分辨焦点在左视图还是右视图：两个视图都归为 file_view 的话，
+        // AI 无法知道当前命令会打到哪一栏，也就无法据焦点做决策。
+        const bool dual = Config::Get().s().dualPane;
+        for (int i = 0; i < 2; ++i) {
+            const Pane* pane = t->panes[static_cast<size_t>(i)].get();
+            if (!pane || !pane->view || !pane->view->hwnd()) continue;
+            if (focus == pane->view->hwnd() || IsChild(pane->view->hwnd(), focus))
+                return dual ? (i == 0 ? L"file_view_left" : L"file_view_right") : L"file_view";
+        }
     }
     return L"unknown";
 }
 
 int App::FindTab(ShellView* view) const {
-    for (const auto& kv : tabs_)
-        if (kv.second->view.get() == view) return kv.first;
-    return 0;
+    Tab* tab = nullptr;
+    int pane = 0;
+    return FindPane(view, &tab, &pane) && tab ? tab->id : 0;
 }
 
 void App::SyncChrome() {
     Tab* t = Active();
     if (!t) return;
+
     // 标题三条来源的唯一口径在 core::DisplayTitle（用户改名 > Shell 名 > 路径末级）。
     // 以前窗口标题和标签栏各写一遍 "display.empty() ? LeafOf(p) : display"，
     // 改名的标签就会出现"标签栏新名、标题栏旧名"。
     const core::TabRef* ref = tabSet_.Find(activeId_);
     std::wstring title = ref ? core::DisplayTitle(*ref) : std::wstring();
-    if (title.empty()) title = ico::DisplayName(t->path(), t->display);
+    Pane* ap = ActivePane();
+    if (title.empty() && ap) title = ico::DisplayName(ap->path(), ap->display);
     if (title.empty()) title = id::kBrandShort;
+
+    // 地址栏与标签条同源：都描述活动窗格。右窗格激活时后退/前进也必须退右窗格，
+    // 否则用户看到的是 A、按后退却退的是 B。
+    const std::wstring navPath = ap ? ap->path() : t->path();
+    const std::wstring navDisplay = ap ? ap->display : PaneAt(t, 0)->display;
+    const std::wstring navDisplayName = ico::DisplayName(navPath, navDisplay);
+
+    NavBar::NavState ns;
+    ns.canBack = ap && ap->nav.canBack();
+    ns.canForward = ap && ap->nav.canForward();
+    ns.canUp = nav::CanNavigateUp(navPath);
+
+    const std::wstring sig =
+        MakeChromeSignature(tabSet_, activeId_, ActiveIndex(), t->activePane, ref != nullptr,
+                            title, navPath, navDisplayName, ns, navPane_.ok(),
+                            tabStrip_.hwnd() != nullptr, navBar_.hwnd() != nullptr);
+    if (sig == lastChromeSignature_) {
+        // 选中集/文件计数不在这份签名里：它们只影响状态栏，必须每次照常取。
+        MarkStatsDirty(); RefreshStats();
+        return;
+    }
+
     SetWindowTextW(hwnd_, (title + L" — " + id::kBrandShort).c_str());
 
     // 只喂模型：标题兜底、图标解析/缓存都在 TabStrip 内（App 不持有 HICON）。
     tabStrip_.SetTabs(tabSet_.items(), ActiveIndex(), !tabSet_.closed().empty(),
                       tabSet_.closed());
-    navBar_.SetPath(t->path(), ico::DisplayName(t->path(), t->display));
-    // 后退/前进的可用态只有历史栈知道。以前这两颗按钮恒亮 ——
-    // SyncChrome 是"任何导航完成/失败都会经过"的唯一位置，所以它是最合适的喂点
-    // （比在 GoBack/GoForward 里各改一次更稳：视图内部发起的导航也要更新）。
-    NavBar::NavState ns;
-    ns.canBack = t->nav.canBack();
-    ns.canForward = t->nav.canForward();
-    ns.canUp = nav::CanNavigateUp(t->path());
+    navBar_.SetPath(navPath, navDisplayName);
     navBar_.SetNavState(ns);
-    RefreshStats();
+    // 全局导航窗格的高亮跟随活动窗格路径（窗格只有一棵，与窗格数无关）。
+    // 这里是唯一的同步点：激活标签、切窗格、导航、后退/前进都会走到 SyncChrome，
+    // 树的高亮就不会出现"看的是 A、树还停在 B"。
+    if (navPane_.ok() && !navPath.empty()) navPane_.SyncTo(navPath);
+    lastChromeSignature_ = sig;
+    MarkStatsDirty(); RefreshStats();
+}
+
+// 真正销毁"关标签时摘下来的视图"（WM_APP_RECLAIM_VIEWS）。
+// 探针 84：一个 ShellView::Destroy = 20~69 ms，全在 UI 线程；所以 CloseTab 只做
+// 便宜的两件事（隐藏 + move 出 Pane），析构放到消息循环里。此刻标签已从
+// tabSet_/tabs_ 消失，队列中的视图没有任何代码还能拿到（App 独占），所以安全。
+// 幂等：队列空就返回。清理期间若又关了标签，那条路径会再投一条消息。
+void App::ReclaimPendingViews() {
+    if (pendingDestroy_.empty()) return;
+    // 换出来再销毁：销毁过程可能触发 shell 回调（如 WM_DESTROY 链上的
+    // 重入），若这时往同一个 vector 里 push 会导致迭代器失效。
+    std::vector<std::unique_ptr<ShellView>> doomed;
+    doomed.swap(pendingDestroy_);
+    doomed.clear();   // 每个 ShellView 的析构就是那 20~69 ms
 }

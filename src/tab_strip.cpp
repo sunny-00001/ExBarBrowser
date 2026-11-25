@@ -17,7 +17,8 @@ void TabStrip::Create(HWND parent, const Theme& theme) {
     win::RegisterClassOnce(kTabStripClass, TabStrip::WndProc, CS_DBLCLKS);
     parent_ = parent;
     theme_ = &theme;
-    hwnd_ = win::CreateChild(kTabStripClass, parent, this, theme.S(kTabBarHeightDp));
+    // 用运行值而不是编译期基准：tabBarHeight 可在设置里改，Create 时就要按新高度建窗。
+    hwnd_ = win::CreateChild(kTabStripClass, parent, this, theme.barTab());
     if (!hwnd_) return;
 }
 

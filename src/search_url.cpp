@@ -11,17 +11,27 @@ std::wstring Trim(const std::wstring& s) {
     return s.substr(b, e - b);
 }
 
-std::wstring Build(const std::wstring& query, const std::wstring& scope) {
-    if (query.empty()) return std::wstring();
+namespace {
 
-    // 搜索词里的双引号要翻倍转义：search-ms 用它包短语，不转义会把短语提前截断
-    // （搜 "a" b" 这种词时结果莫名其妙）。
+// 搜索词里的双引号要翻倍转义：search-ms 用它包短语，不转义会把短语提前截断
+// （搜 "a" b" 这种词时结果莫名其妙）。
+//
+// 单独抽出来是因为拼装与单测都要用同一份转义 —— 抄一份就会出现
+// "某条路不转义"的静默分叉。
+std::wstring EscapeQuery(const std::wstring& query) {
     std::wstring q = query;
     for (size_t i = 0; i < q.size(); ++i)
         if (q[i] == L'"') q.insert(i++, 1, L'"');
+    return q;
+}
+
+}  // namespace
+
+std::wstring Build(const std::wstring& query, const std::wstring& scope) {
+    if (query.empty()) return std::wstring();
 
     // crumb 限定范围，query 是搜索词。末尾那个 & 是原实现的写法，保留。
-    return L"search-ms:query=" + q + L"&crumb=location:" + scope + L"&";
+    return L"search-ms:query=" + EscapeQuery(query) + L"&crumb=location:" + scope + L"&";
 }
 
 }  // namespace searchurl

@@ -8,6 +8,8 @@
 // 这一组只做字符串运算。放在一起会让"改名计划"淹没在遍历与哈希的代码里。
 #include "file_rename_plan.h"
 
+#include "str.h"
+
 #include <algorithm>
 #include <set>
 

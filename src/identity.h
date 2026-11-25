@@ -33,9 +33,26 @@ constexpr wchar_t kTabStripClass[] = L"ExBarBrowser_TabStrip";
 constexpr wchar_t kNavBarClass[] = L"ExBarBrowser_NavBar";
 constexpr wchar_t kStatusBarClass[] = L"ExBarBrowser_StatusBar";
 constexpr wchar_t kBookmarkBarClass[] = L"ExBarBrowser_BookmarkBar";
+// 布局边界条：夹在两块内容之间、可拖动改宽窄的真窗口（导航|文件、文件|AI、窗格|窗格）。
+// 双栏那条沿用旧类名（外部脚本按它找窗口，是契约的一部分）；两条侧栏用新类名，
+// 免得"按旧类名找分割条"的脚本突然命中三条、拿错条。
+constexpr wchar_t kPaneSplitterClass[] = L"ExBarBrowser_PaneSplitter";
+constexpr wchar_t kSideSplitterClass[] = L"ExBarBrowser_SideSplitter";
 constexpr wchar_t kPopupClass[] = L"ExBarBrowser_Popup";
 constexpr wchar_t kPromptClass[] = L"ExBarBrowser_Prompt";
+// 导航窗格宿主：只用来承载 INameSpaceTreeControl（树由 shell 自己创建，
+// 那个 SysTreeView32 是系统类名，不归我们登记）。隐藏/缩放/套主题都打在这个窗口上。
+constexpr wchar_t kNavPaneHostClass[] = L"ExBarBrowser_NavPaneHost";
+// AI 面板宿主：右侧一块 WebView2 的裁剪边界与父窗口。与 kNavPaneHostClass 对称
+// （一个占最左、一个占最右），同样只承载第三方内容，不自绘。
+constexpr wchar_t kAiPanelHostClass[] = L"ExBarBrowser_AiPanel";
+// 状态栏 AI chip 上方的 peek 气泡：面板收起后的完成摘要 / 撤销 / 打开对话。
+constexpr wchar_t kAiStatusPeekClass[] = L"ExBarBrowser_AiStatusPeek";
+// 设置对话框（三栏：分类 / 表单 / 说明）。与主窗口是父子关系（owner=主窗口），
+// 关掉主窗口时一并关闭。
+constexpr wchar_t kSettingsClass[] = L"ExBarBrowser_Settings";
 constexpr wchar_t kSeqHintClass[] = L"ExBarBrowser_SeqHint";
+constexpr wchar_t kSeqOverlayClass[] = L"ExBarBrowser_SeqOverlay";
 constexpr wchar_t kHotkeysClass[] = L"ExBarBrowser_Hotkeys";
 constexpr wchar_t kReportClass[] = L"ExBarBrowser_Report";
 // 长任务进度窗口（tool.dupfinder / tool.hash / tool.compare /
@@ -51,6 +68,11 @@ constexpr wchar_t kProgressClass[] = L"ExBarBrowser_Progress";
 //   · 显式多开 —— --new-window（进程内命令要走这条）或 EXBARBROWSER_MULTI 直接新开，
 //     不查找、不转发、不阻断。
 // 因此不存在任何"进程已存在 → 拒绝启动"的分支。
+
+// 启动竞态标记（不是单实例锁）：后进者需要知道"是否已有更早实例正在建窗口"，
+// 才决定要不要为转发短暂等待。首实例据此跳过 400ms 空等 —— 冷启动不该为一个
+// 不存在的窗口付费。句柄只在进程生命周期内持有，所有实例退出后对象自动消失。
+constexpr wchar_t kStartupMarker[] = L"Local\\ExBarBrowser.StartupMarker";
 
 // 诊断日志文件名（落在 %TEMP%）
 constexpr wchar_t kLogFileName[] = L"ExBarBrowser.log";

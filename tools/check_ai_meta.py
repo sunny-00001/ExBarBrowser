@@ -42,7 +42,27 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+def ai_server_source():
+    """AI 通道的实现可能按职责分片；对账时仍按一个逻辑模块看。
+
+    2026-11-24 把协议分派拆到 ai_server_rpc.cpp 后，下面这些"通道里有没有
+    events/since / traceparent"的判据不能只看传输层那一片，否则文件拆了、
+    行为没变，检查却红成"能力消失"。这里显式拼接两片，判据不放松。
+    """
+    parts = []
+    for rel in ('src/ai_server.cpp', 'src/ai_server_rpc.cpp'):
+        path = ROOT / rel
+        if path.exists():
+            parts.append(path.read_text(encoding='utf-8', errors='replace'))
+    return '\n'.join(parts)
+
 COMMANDS = ROOT / 'src/commands.cpp'
+# 命令表本体按作用域分在两个文件里（用户操作域 / 工具·Agent 域），
+# 共用的 schema/豁免/效果常量在 commands_table.h。
+TABLE_SRCS = [ROOT / 'src/commands_table.cpp',
+              ROOT / 'src/commands_table_tools.cpp']
+TABLE_CONSTS_SRC = ROOT / 'src/commands_table.h'
 HANDLERS_GLOB = 'app_commands*.cpp'
 KEYMAP_JSON = ROOT / 'data/keymap.json'
 INPUT_ROUTER = ROOT / 'src/input_router.cpp'
@@ -109,8 +129,9 @@ KNOWN_NO_TARGET = {
 HUMAN_PATH = {
     'tab.rename': '标签右键菜单「重命名标签页...」→ App::ShowTabMenu(kTabMenuRename) '
                   '→ PromptText（参数 name 来自输入框）→ App::RenameTab',
-    'tab.color': '标签右键菜单「设置标签页颜色」→ 二级色板（参数 color 来自选中的那一行）'
-                 '→ WM_APP_TAB_COLOR → App::ShowTabColor → App::SetTabColor',
+    'tab.color': '标签右键菜单「设置标签页颜色」→ 二级色板（参数 color 来自选中的那一行，'
+                 'index 来自被右键的标签）→ CommandBus::Invoke(CmdId::TabSetColor) '
+                 '→ App 的 tab.color handler → App::SetTabColor',
     'tab.activate': '鼠标点标签栏任意标签（TabStrip 命中测试 → NotifySelect），'
                     '参数 index 就是被点中的那一格',
     'fs.open': '文件视图双击条目 / 回车（参数 path 即被双击的项）',
@@ -180,6 +201,14 @@ HUMAN_PATH = {
     'clipboard.copy': '书签栏右键「复制路径」/ 面包屑段右键「复制此路径」→ '
                       'clipboard.copy（参数 text 来自该项/该段路径）',
     'ext.terminal.at': '面包屑段右键「在此打开终端」→ ext.terminal.at（参数 path 来自该段路径）',
+
+    # 搜索域（导航栏搜索框的两条带）。参数都来自界面，不是来自命令规格：
+    #   · 范围档位 = 菜单里点的那一行；自定义档的 path = 弹出的输入框
+    #   · 搜索词   = 历史下拉里点的那一条
+    'search.scope.set': '导航栏搜索框左侧「搜索范围」菜单 → 选中一档（自定义档会再问一次目录）'
+                        '→ App::ShowSearchScopeMenu → 命令总线 search.scope.set',
+    'search.query.set': '导航栏搜索框右侧「搜索历史」下拉 → 选中一条历史 → 命令总线 search.query.set'
+                        '（参数 query 即那条历史词；**只回填不执行搜索**）',
 }
 
 # 机器专用查询：人能通过命令面板触发，但拿到的是 JSON（写进审计日志），
@@ -260,6 +289,9 @@ UNDO_MECHANISM = {
     'bmk.add.tabs': 'BookmarkStore::undo_（快照栈 ≤20）',
     'bmk.copy': 'BookmarkStore::undo_（快照栈 ≤20）',
     'bmk.move': 'BookmarkStore::undo_（快照栈 ≤20）',
+    # 解散分类：改前整树快照（分类消失 + 子项提层是一次结构变动，
+    # 快照一次覆盖全部效果，不需要"逆操作"那套差集推导）。
+    'bmk.dissolve': 'BookmarkStore::undo_（快照栈 ≤20）',
     # 导入两种模式都进快照：覆盖走 ReplaceAll，追加走 Merge（Batch 2 补了 PushUndo）。
     'bmk.import': 'BookmarkStore::undo_（快照栈 ≤20；import=0 追加 / 1 覆盖）',
     # 标签：core::TabSet 的关闭历史（tab.reopen 就是还原路径）
@@ -316,6 +348,13 @@ WRITABLE_STATE = [
     ('showSystemFiles', 'view.toggle.system'),
     ('showExtensions', 'view.toggle.extensions'),
     ('shellHiddenState', 'view.cycle.hidden'),
+    # ---- 搜索域（导航栏搜索框的范围菜单 / 历史下拉）----
+    # 这四个是"某条命令能改，但改完读不回来"的那一类：范围菜单与历史下拉
+    # 过去只有界面一条路，AI 看不见当前配的是什么，也读不出搜过什么。
+    ('searchRange', 'search.scope.set'),
+    ('searchRangePath', 'search.scope.set'),
+    ('searchHistoryCount', 'search.history.clear'),
+    ('searchInput', 'search.query.set'),
 ]
 
 MENU_ACTIONS = {
@@ -362,6 +401,15 @@ MENU_ACTIONS = {
     '书签·隐藏书签栏': 'bmk.hide',
     '书签·编辑': 'bmk.edit',
     '书签·删除': 'bmk.remove',
+    # ---- 分类结构重组（bookmark_bar_popup.cpp / bookmark_category_popup.cpp）----
+    # 解散分类：把分类里的直接子项提到上一层（顶层分类 → 书签栏）。
+    '书签·解散分类': 'bmk.dissolve',
+    # 排序本分类：只排这个分类内的直接子项（bmk.sort 带 parentId）。
+    '书签·排序本分类': 'bmk.sort',
+    # 分类内的三种移动都是同一条 bmk.move，只是 toId/toIndex 不同。
+    '书签·上移': 'bmk.move',
+    '书签·下移': 'bmk.move',
+    '书签·移到书签栏': 'bmk.move',
     # ---- 全量覆盖 Batch 2：菜单直接调命令（不再是 UI 私有动作）----
     # 「打开」用现成的 fs.open：书签项拿到的是路径，机器侧也从 bmk.list 拿路径。
     '书签·打开': 'fs.open',
@@ -381,6 +429,31 @@ MENU_ACTIONS = {
     '视图·清除历史记录': 'nav.history.clear',
     '状态栏·复制当前路径': 'path.copy.dir',
     '状态栏·隐藏状态栏': 'config.set',
+    # ---- 搜索框的两条带（app_search.cpp 的 ui::Menu 链）----
+    # 范围菜单的四个档位是同一条命令的四个参数值；自定义档的路径来自输入框。
+    '搜索·当前目录（仅本层）': 'search.scope.set',
+    '搜索·当前目录（含子目录）': 'search.scope.set',
+    '搜索·此电脑': 'search.scope.set',
+    '搜索·自定义路径…': 'search.scope.set',
+    '搜索·清除搜索历史': 'search.history.clear',
+    # ---- 导航窗格空白区右键（nav_pane_shell.cpp 的 ui::Menu 链）----
+    '导航·刷新': 'nav.refresh',
+    '导航·展开所有文件夹': 'nav.tree.expand.all',
+    # 「（暂无搜索历史）」是禁用提示行，不是动作（点它什么也不发生）。
+    # 这类行单列在 MENU_DISABLED_HINTS：它们既不是缺口、也不该进覆盖计数 ——
+    # 混进"待做"清单里只会把真缺口冲淡。
+    '搜索·（暂无搜索历史）': None,
+}
+
+# 菜单里的**禁用提示行**：文案存在、动作号 < 0、恒为 disabled，
+# 点下去什么也不发生。它们不是"人工可达但无结构化入口"的缺口，
+# 而是空态说明。单独一类，供第 16 项跳过、并在输出里点名。
+#
+# 【为什么必须显式登记而不是靠动作号猜】动作号 < 0 也可能表示别的约定
+# （标签右键的「最近关闭」标题行是 -1、导入弹层的「完成」是 -2）。
+# 判据只看"这一行的点下去有没有语义"，那件事只有写菜单的人知道。
+MENU_DISABLED_HINTS = {
+    '搜索·（暂无搜索历史）',
 }
 
 
@@ -630,6 +703,27 @@ def _ai_func_body(fragment):
     return ''
 
 
+def _src_func_body(fragment):
+    """在 src/*.cpp 全体里找函数的定义体；找不到返回 ''。
+
+    【为什么不能只查一个文件】命令面板的实现**分居三处**：
+      · 取数（列出哪些命令）—— src/app_sequence_overlay.cpp 的 App::SequenceRows
+      · 派发（怎么调、参数怎么收）—— src/app_commands.cpp 的 App::InvokeFromPalette
+      · 连线（面板选中后走哪条）—— src/app_sequence_overlay.cpp 的 App::SequenceExecute
+    判据锚在单个文件上，文件一拆分就整条失灵 —— 2026-11-22 那次第 15 项
+    误报就是这么来的：判据还在 app_commands.cpp 的 ShowCommandPalette 里找
+    `CommandTable()`，而那段代码早已搬去 app_sequence_overlay.cpp。
+
+    与 _ai_func_body 同样的纪律：找不到返回 ''，由调用方判失败。
+    """
+    for p in sorted((ROOT / 'src').glob('*.cpp')):
+        text = _strip_comments(p.read_text(encoding='utf-8', errors='replace'))
+        body = _find_def_body(text, fragment)
+        if body:
+            return body
+    return ''
+
+
 def _ai_state_body():
     """StateToJson 的定义体（exbar/state 的**唯一**序列化来源）。
 
@@ -721,13 +815,41 @@ def parse_commands():
     consts = _string_constants(text)
     eff_consts = _effects_constants(text)
 
-    m = re.search(r'std::vector<CommandDef>\s+kTable\s*=\s*\{', text)
+    # 表元数据常量（kNoArgs / kExempt* / kEffect*）与两段行表同放在
+    # commands_table.h —— 读表必须连常量一起读：
+    # argsSchema 写成常量名的那批条目，解析不到常量就会变成 None，
+    # 进而报"schema 不是 JSON"这种指向错误的假错误。
+    ctext = _strip_comments(TABLE_CONSTS_SRC.read_text(encoding='utf-8'))
+    consts.update(_string_constants(ctext))
+    eff_consts.update(_effects_constants(ctext))
+
+    out = []
+    table_text = []
+    for p in TABLE_SRCS:
+        ttext = _strip_comments(p.read_text(encoding='utf-8'))
+        rows = _parse_table_rows(ttext, consts, eff_consts)
+        if not rows:
+            print('WARN 命令表段落解析为空：%s（形状变了？）' % p.name)
+        out.extend(rows)
+        table_text.append(ttext)
+    # 返回表**本体**的文本（不是 commands.cpp）—— 调用方用它对账
+    # "源码里写了多少条 CmdId:: 条目"，那必须对着表数，不能对着派发总线数。
+    return out, '\n'.join(table_text), consts
+
+
+def _parse_table_rows(text, consts, eff_consts):
+    """从一段 `std::vector<CommandDef> XxxCommandRows() { return { ... }; }` 解出条目。
+
+    命令表按作用域分在两个文件里（用户操作域 / 工具·Agent 域），
+    两段各返回一张行表，由 commands_table.cpp 拼成整张。
+    """
+    m = re.search(r'std::vector<CommandDef>\s+\w+CommandRows\(\)\s*\{\s*return\s*\{', text)
     if not m:
-        return [], text, consts
+        return []
     start = m.end() - 1
     inner, _ = _html_block(text, start)
     if inner is None:
-        return [], text, consts
+        return []
 
     out = []
     i = 0
@@ -836,7 +958,7 @@ def parse_commands():
             'effectsConst': eff_const if eff_const in eff_consts else None,
             'nfields': len(fields),
         })
-    return out, text, consts
+    return out
 
 
 def collect_arg_key_usage():
@@ -1406,9 +1528,9 @@ def main():
                 paths.setdefault(cmd, []).append(why)
             del paths[setting]
 
-    # 命令面板覆盖哪些命令：读 ShowCommandPalette 的实现。
+    # 命令面板覆盖哪些命令：**实现分居三处，判据必须跨三处核对**。
     #
-    # 判据变过一次，原因值得记下来：
+    # 判据变过两次，原因值得记下来：
     #   旧判据 = "筛掉未实现与有必填参数的命令，其余空参调用"。
     #   它防的是真危险（tab.rename/tab.color 空参调用会静默清别名/颜色），
     #   但代价是把 config.get / config.set / file.rename 这类带参命令
@@ -1416,26 +1538,79 @@ def main():
     #   而且"面板跳过"根本不是防静默清空的唯一办法：按 schema 追问参数再调用，
     #   同样不会空参调用，还多了人类入口。
     #
-    # 所以现在的判据是两条，任一不成立都说明"带参命令又被人类侧漏掉了"：
-    #   ① 面板遍历整张命令表（只筛 !implemented），并且**两条路都在**：
-    #      无必填参数走 Args::Empty()，有必填参数走 Args::FromJson(收集结果)。
-    #   ② 参数收集器从 argsSchema 里读 required/properties —— 不允许硬编码
-    #      某几条命令的参数名，否则新增命令又得改面板（回到打补丁）。
-    app_commands = (ROOT / 'src/app_commands.cpp').read_text(encoding='utf-8')
-    palette_body = _body_of(app_commands, 'void App::ShowCommandPalette()')
-    palette_all = ('CommandTable()' in palette_body
-                   and '!d.implemented' in palette_body
-                   and 'Args::Empty()' in palette_body
-                   and 'Args::FromJson(' in palette_body)
-    if not palette_all:
+    #   再旧一版判据 = 只在 app_commands.cpp 的 ShowCommandPalette 一个函数体里
+    #   找四个特征（CommandTable() / !d.implemented / Args::Empty() /
+    #   Args::FromJson(）。**判据指向的位置已经过时** —— 面板取数搬到了
+    #   app_sequence_overlay.cpp 的 App::SequenceRows，派发搬到了
+    #   app_commands.cpp 的 App::InvokeFromPalette，两者由
+    #   app_sequence_overlay.cpp 的 App::SequenceExecute 连起来。
+    #   于是判据对着空文本说话，2026-11-22 报出一条"命令面板没覆盖全"的假警报，
+    #   而实际功能是好的（44/44 深测全绿）。
+    #
+    # 现在的判据（任一不成立都说明"带参命令又在人类侧漏掉了"）：
+    #   ① 取数处（App::SequenceRows）：遍历整张命令表且只收 implemented 的 ——
+    #      带必填参数的命令也必须在列，不能被"有参"筛掉。
+    #   ② 派发处（App::InvokeFromPalette）：无必填参数走 Args::Empty()，
+    #      有必填参数走 Args::FromJson(收集结果) —— 两条路都在。
+    #   ③ 收参处（CollectParamsInteractive）：从 argsSchema 里读
+    #      required/properties —— 不允许硬编码某几条命令的参数名，
+    #      否则新增命令又得改面板（回到打补丁）。
+    #   ④ 连线处（App::SequenceExecute）：面板选中后必须真的走进派发处，
+    #      否则"面板列得出来但点了不执行参数收集"照样是缺口。
+    #      这一条是 ① ② 之间的桥 —— 少了它，两处各自成立也可能是两条平行线。
+    rows_body = _src_func_body('App::SequenceRows')
+    if not rows_body:
+        fail('找不到 App::SequenceRows 的定义 —— 命令面板的取数处判据失效，'
+             '本项后续结论不可信')
+        return 1
+    # implemented 的过滤写法有两种（取反 / 取正），两种都算"只收已实现的"。
+    list_all = ('CommandTable()' in rows_body
+                and ('d.implemented' in rows_body or '!d.implemented' in rows_body))
+    if not list_all:
+        fail('命令面板必须"列出所有已实现命令"（遍历整张命令表 + 按 implemented 过滤）'
+             '—— 否则带参命令在人类侧不可达（R20）')
+        return 1
+
+    dispatch_body = _src_func_body('App::InvokeFromPalette')
+    if not dispatch_body:
+        fail('找不到 App::InvokeFromPalette 的定义 —— 命令面板的派发处判据失效，'
+             '本项后续结论不可信')
+        return 1
+    dispatch_ok = ('Args::Empty()' in dispatch_body
+                   and 'Args::FromJson(' in dispatch_body)
+    if not dispatch_ok:
         fail('命令面板必须"列出所有已实现命令"，且无必填参数走空参、'
              '有必填参数走按 schema 收集后的参数 —— 否则带参命令在人类侧不可达（R20）')
         return 1
-    collect_body = _body_of(app_commands, 'CollectParamsInteractive')
-    if not ('"required"' in collect_body and '"properties"' in collect_body):
-        fail('命令面板的参数收集器必须从 argsSchema 读 required/properties，'
+
+    collect_body = _src_func_body('bool CollectParamsInteractive')
+    if not collect_body:
+        fail('找不到 CollectParamsInteractive 的定义 —— 参数收集处判据失效，'
+             '本项后续结论不可信')
+        return 1
+    # 判据查的是"**从 schema 里读**"，不是"字符串出现过"。
+    # 只查 '"required"' 这种字面量的话，把 schema.Find(L"required") 改成
+    # 读一个常量、或者在函数里留一句注释提 required，都能蒙混过关 ——
+    # 那样判据守的就不是"参数真的来自 schema"这件事了。
+    if not ('Find(L"required")' in collect_body
+            and 'Find(L"properties")' in collect_body):
+        fail('命令面板的参数收集器必须从 argsSchema 读 required/properties'
+             '（schema.Find(L"required") / schema.Find(L"properties")），'
              '不能硬编码某几条命令的参数名')
         return 1
+
+    # 连线：面板选中 → 派发（收集参数就发生在派发里）。
+    exec_body = _src_func_body('App::SequenceExecute')
+    if not exec_body:
+        fail('找不到 App::SequenceExecute 的定义 —— 面板与派发之间的连线判据失效，'
+             '本项后续结论不可信')
+        return 1
+    if 'InvokeFromPalette' not in exec_body:
+        fail('命令面板选中命令后必须走 InvokeFromPalette（统一派发口），'
+             '否则带参命令拿不到参数 —— 违反 R20')
+        return 1
+
+    palette_all = True
 
     def required_of(c):
         return sorted((schemas[c['name']].get('required') or []))
@@ -1515,6 +1690,12 @@ def main():
     covered = 0
     missing = []
     for human, alias in MENU_ACTIONS.items():
+        if human in MENU_DISABLED_HINTS:
+            # 禁用提示行不是动作：点它什么也不发生，也就没有"结构化入口"可言。
+            # 之前把它们登记成 None，结果与真缺口混在同一张"待做"清单里 ——
+            # 一份写着"1 项待补命令"的清单，点开发现是"（暂无搜索历史）"，
+            # 真缺口反而被这行噪声冲淡了。现在单列一类，不参与覆盖计数。
+            continue
         if alias is None:
             missing.append(human)
         elif alias not in alias_all:
@@ -1526,6 +1707,9 @@ def main():
         for h in missing:
             print(f'        {h}')
     ok(f'{covered} 项菜单动作已有结构化入口')
+    if MENU_DISABLED_HINTS:
+        print(f'  ok     {len(MENU_DISABLED_HINTS)} 项是禁用提示行（不是动作，不计入覆盖）：'
+              f'{sorted(MENU_DISABLED_HINTS)}')
 
     # 16b. 覆盖率：扫菜单源码里**实际存在**的文案，凡是没登记的都必须报出来。
     #
@@ -1537,16 +1721,53 @@ def main():
     # 一个都扫不到 —— 于是"全部通过"只覆盖了标签右键。现在：
     #   · 正则放宽到任意动作号（符号或数字），只要求文案有交代；
     #   · 扫描面扩到全部含 ui::Menu 链的文件。
+    #
+    # 【2026-11-23 再补盲：文件名不能写死】上表原来是七条硬编码路径，
+    # 而视图菜单当天被拆到新文件 src/nav_bar_view_menu.cpp（职责拆分，行为不变）——
+    # 于是 5 条视图菜单项立刻报"表已腐烂"，而它们其实一行没改。
+    # 判据指向**文件路径**的时候，重构一次就失效一次；改成"扫描所有出现
+    # ui::Menu 的源文件"，把区域名当纯展示标签（只用于拼登记名，不再决定扫不扫）。
+    #
     # AddPath/AddChecked 用变量文案（如 kSegNames[i]、sortHint），
     # 抽不出静态文案，不进入本项——它们的覆盖由第 15 项与命令表保证。
-    scan_sources = [
-        ('标签', 'src/tab_strip_actions.cpp'),
-        ('书签', 'src/bookmark_bar.cpp'),
-        ('视图', 'src/nav_bar_actions.cpp'),
-        ('状态栏', 'src/app_commands.cpp'),
-        ('书签导入', 'src/bookmark_io.cpp'),
-        ('详情列', 'src/app_commands_files.cpp'),
-    ]
+    AREA_OF_FILE = {
+        'tab_strip_actions.cpp': '标签',
+        'bookmark_bar.cpp': '书签',
+        # 书签栏弹出层已从 bookmark_bar.cpp 拆出（bookmark_bar_popup.cpp =
+        # 四套旧弹层；bookmark_category_popup.cpp = 可拖动的分类内容弹层）。
+        # 区域名沿用"书签"，登记名因此保持不变。
+        'bookmark_bar_popup.cpp': '书签',
+        'bookmark_category_popup.cpp': '书签',
+        'nav_bar_actions.cpp': '视图',
+        'nav_bar_view_menu.cpp': '视图',
+        'app_view_menus.cpp': '视图',
+        'app_commands.cpp': '状态栏',
+        'bookmark_io.cpp': '书签导入',
+        'app_commands_files.cpp': '详情列',
+        'app_search.cpp': '搜索',
+        'nav_pane_shell.cpp': '导航',
+        # 设置面板的两处弹层：枚举档位下拉（options 来自键表，文案是变量）与
+        # 行高档位。都是"改一个值"的菜单，与 config.set 同一族。
+        'settings_dialog_actions.cpp': '设置',
+    }
+    # 判据是"**真的在这里构建菜单**"，不是"文件里出现过 ui::Menu 这个词"：
+    # app_state.cpp 只是调 ui::Menu::SetShortcutResolver（把快捷键文案接给组件），
+    # 它一行菜单都不建 —— 按字符串判会把它误报成"漏登记区域"。
+    # 构造菜单的判据是出现 `ui::Menu <名字>;` 或 `ui::Menu ... .Add(` 链。
+    MENU_BUILD_RE = re.compile(r'ui::Menu\s+\w+\s*;')
+    scan_sources = []
+    for p in sorted((ROOT / 'src').glob('*.cpp')):
+        text = p.read_text(encoding='utf-8', errors='replace')
+        if not MENU_BUILD_RE.search(text):
+            continue
+        area = AREA_OF_FILE.get(p.name)
+        if area is None:
+            fail(f'{p.name} 构建了 ui::Menu 但没在 AREA_OF_FILE 里登记区域名 —— '
+                 '不登记就等于这个文件的菜单项逃出第 16 项（漏登记会静默通过）')
+            continue
+        scan_sources.append((area, str(p.relative_to(ROOT)).replace('\\', '/')))
+    if not scan_sources:
+        fail('找不到任何构建 ui::Menu 的源文件 —— 第 16 项的扫描面塌了，本项结论不可信')
     # 「完成」是弹层关闭行、「最近关闭」是禁用标题行，都不是独立操作。
     MENU_SCAN_IGNORE = {'完成', '最近关闭'}
     registered = set(MENU_ACTIONS.keys())
@@ -1678,7 +1899,7 @@ def main():
     #   · 状态变化由服务端检测后推送（客户端不必自己定时拉 state）
     ev_h = (ROOT / 'src/ai_events.h').read_text(encoding='utf-8', errors='replace')
     ev_cpp = (ROOT / 'src/ai_events.cpp').read_text(encoding='utf-8', errors='replace')
-    srv = (ROOT / 'src/ai_server.cpp').read_text(encoding='utf-8', errors='replace')
+    srv = ai_server_source()
     # API 侧的分片（ai_api*.cpp）合并后查 —— 命令结果事件由"执行"分片发，
     # 工具/能力面的形状由"序列化"分片发，两边都要在检查面里。
     api = _ai_all_text()
@@ -1736,10 +1957,38 @@ def main():
 
     # ---------------------------------------------------------------- 21
     print('\n21. 开发面必须形成可验证的闭环（快照/编译/测试/回滚）')
-    table = (ROOT / 'src/commands.cpp').read_text(encoding='utf-8', errors='replace')
+    table = '\n'.join(p.read_text(encoding='utf-8', errors='replace')
+                      for p in TABLE_SRCS)
     dev_cpp = (ROOT / 'src/dev_tools.cpp').read_text(encoding='utf-8', errors='replace')
     dev_handlers = (ROOT / 'src/app_commands_dev.cpp').read_text(encoding='utf-8', errors='replace')
-    palette = _body_of(app_commands, 'void App::ShowCommandPalette()')
+    # 破坏性命令的人工确认收口在 **CommandBus::Dispatch**（2026-11-22 从
+    # InvokeFromPalette 下沉），判据在 src/commands_confirm.cpp，弹框由
+    # App 注入的回调执行（src/app_confirm.cpp）——
+    # 判据跟着搬，否则它守的是一个已经不管事的调用点。
+    dispatch_body = _src_func_body('bool CommandBus::Dispatch')
+    # 判据层：NeedsConfirm 的实现 + 豁免表在 commands_confirm.cpp。
+    # 豁免表在匿名 namespace 里，不在 NeedsConfirm 的函数体内 —— 要读整个文件。
+    confirm_rule_file = ROOT / 'src' / 'commands_confirm.cpp'
+    confirm_rule_text = ''
+    confirm_rule_body = ''
+    if confirm_rule_file.exists():
+        confirm_rule_text = confirm_rule_file.read_text(encoding='utf-8', errors='replace')
+        confirm_rule_body = _find_def_body(confirm_rule_text, 'bool CommandBus::NeedsConfirm')
+    # 弹框层：App 侧注入的回调。回调体是 lambda，没有具名函数可锚 ——
+    # 按 SetConfirmFn 调用点找它后面第一个 '{'（那就是 lambda 体）。
+    confirm_fn_body = ''
+    for p in sorted((ROOT / 'src').glob('*.cpp')):
+        text = p.read_text(encoding='utf-8', errors='replace')
+        idx = text.find('SetConfirmFn')
+        if idx < 0:
+            continue
+        brace = text.find('{', idx)
+        if brace < 0:
+            continue
+        body, _ = _html_block(text, brace)
+        if body and 'MB_YESNO' in body:
+            confirm_fn_body = body
+            break
     dev_missing = []
     # P0-9：dev.diff 与 changedFiles 的 mtime/sha256 是"改写可见性"的一对判据 ——
     # 缺任何一个，agent 改源码那一步就又回到信任边界之外。
@@ -1794,7 +2043,16 @@ def main():
                               ('snapshot', 'diff', 'build', 'test', 'job', 'rollback'))),
         ('耗时作业异步且发完成事件', 'std::thread' in dev_cpp and 'dev.job.done' in dev_cpp),
         ('全部用带结果的注册', dev_handlers.count('regR(CmdId::Dev') >= 5),
-        ('破坏性命令人侧要确认', 'MB_YESNO' in palette and 'effects.destructive' in palette),
+        # 破坏性命令人侧要确认：**三层都在**才算数 ——
+        #   ① 判据层（NeedsConfirm + 豁免表）：谁要问；
+        #   ② 收口层（Dispatch 里调 ConfirmIfDestructive）：所有人工入口统一过这一道门；
+        #   ③ 弹框层（App 注入的回调真的弹框）：问得到、问得准。
+        # 只查一处的漏法：门在但没弹框（点了直接执行）、弹了框但没设门
+        # （弹框成了摆设）、或者判据层压根没有（调用点拼错名字，照样"通过"）。
+        ('破坏性命令人侧要确认',
+         bool(dispatch_body) and 'ConfirmIfDestructive' in dispatch_body
+         and bool(confirm_rule_body) and 'kNoConfirmDestructive' in confirm_rule_text
+         and bool(confirm_fn_body) and 'MB_YESNO' in confirm_fn_body),
         ('回滚有路径校验', 'ValidRepoPath' in dev_cpp and '..' in dev_cpp),
         ('有开发面单测', (ROOT / 'tests/dev_tools_test.cpp').exists()),
     ]:
@@ -1805,11 +2063,46 @@ def main():
     else:
         ok('快照/编译/测试/作业/回滚齐全，异步结果可订阅，回滚有人侧确认')
 
+    # ---------------------------------------------------------------- 21b
+    # 豁免表**内容**的交叉核对（不是"表在不在"，是"表里装的是什么"）。
+    #
+    # 【为什么单独查】豁免表是破坏性命令唯一的免问通道 ——
+    # 表里多一条，就多一条命令在人工侧不弹框。所以"往表里加一条"是最容易
+    # 也最不容易被发现的拆门方式：判据只看"豁免表存在"的话，加多少条都照过。
+    #
+    # 两条判据：
+    #   ① 表里每一条都必须是**真被标成 destructive** 的命令 ——
+    #      混进非 destructive 的条目，说明这张表正在变成"什么都豁免"。
+    #   ② 表的规模有上限 —— 每加一条都是一次"少问一次"的决定，
+    #      应当被审视，而不是悄悄变长。
+    print('\n21b. 破坏性命令的"日常豁免"表不许被悄悄放宽')
+    cmd_by_id = {c['id']: c for c in cmds}
+    exempt_ids = []
+    m = re.search(r'kNoConfirmDestructive\[\]\s*=\s*\{(.*?)\}', confirm_rule_text, re.S)
+    if m:
+        exempt_ids = re.findall(r'CmdId::(\w+)', m.group(1))
+    if not exempt_ids:
+        fail('读不到破坏性命令的豁免表（kNoConfirmDestructive）—— '
+             '判据层失配，无法核对豁免范围')
+    else:
+        not_destructive = [cid for cid in exempt_ids
+                           if cid in cmd_by_id and not cmd_by_id[cid]['destructive']]
+        if not_destructive:
+            fail(f'豁免表里混进了非破坏性命令：{not_destructive} —— '
+                 '豁免表的每一条都必须是"被标成 destructive 但实际可恢复/无害"的命令')
+        else:
+            ok(f'豁免表 {len(exempt_ids)} 条，每一条都是真破坏性命令')
+        if len(exempt_ids) > 15:
+            fail(f'豁免表有 {len(exempt_ids)} 条（上限 15）—— '
+                 '每加一条都是一次"少问一次"的决定，应先复核是否真的无害')
+        else:
+            ok(f'豁免表规模 {len(exempt_ids)} 条（上限 15）')
+
     # ---------------------------------------------------------------- 22
     print('\n22. 失败必须可机器分类、能力面必须自描述（不靠客户端猜）')
     api_h_text = (ROOT / 'src/ai_api.h').read_text(encoding='utf-8', errors='replace')
     api_cpp_text = _ai_all_text()
-    srv_text = (ROOT / 'src/ai_server.cpp').read_text(encoding='utf-8', errors='replace')
+    srv_text = ai_server_source()
     test_text = (ROOT / 'tests/ai_api_test.cpp').read_text(encoding='utf-8', errors='replace')
 
     # 错误码是客户端的分支依据：多一个未登记的码 = 客户端会掉进 default 分支，
@@ -2037,7 +2330,7 @@ def main():
     print('\n27. 事件必须落盘 + 三级轨迹 + 请求 _meta 贯穿')
     ev2_h = (ROOT / 'src/ai_events.h').read_text(encoding='utf-8', errors='replace')
     ev2_cpp = (ROOT / 'src/ai_events.cpp').read_text(encoding='utf-8', errors='replace')
-    ev2_srv = (ROOT / 'src/ai_server.cpp').read_text(encoding='utf-8', errors='replace')
+    ev2_srv = ai_server_source()
     ev2_test = (ROOT / 'tests/events_test.cpp').read_text(encoding='utf-8', errors='replace')
     ev2_missing = []
     for label, cond in [

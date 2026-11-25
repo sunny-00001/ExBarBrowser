@@ -3,7 +3,6 @@
 #include "path_util.h"
 #include "shell_ops.h"
 
-#include "config.h"
 #include "platform_win.h"
 #include "shell_view_helpers.h"
 
@@ -107,14 +106,6 @@ HRESULT STDMETHODCALLTYPE ShellView::QueryService(REFGUID guidService, REFIID ri
 HRESULT STDMETHODCALLTYPE ShellView::GetPaneState(REFEXPLORERPANE ep,
                                                   EXPLORERPANESTATE* peps) {
     if (!peps) return E_POINTER;
-    // 临时诊断：把壳层询问过的每个窗格 GUID 打出来（用于认领 EP_Content 等
-    // mingw 头文件里缺失的常量）。
-    {
-        const GUID* g = &ep;
-        LogDbg(L"[pane-diag] ep={%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
-               (unsigned long)g->Data1, g->Data2, g->Data3, g->Data4[0], g->Data4[1], g->Data4[2],
-               g->Data4[3], g->Data4[4], g->Data4[5], g->Data4[6], g->Data4[7]);
-    }
     // 命令栏（ribbon）整组强制关：只要导航树 + 文件列表。
     //
     // 这是**官方途径**，不是隐藏窗口。IExplorerPaneVisibility::GetPaneState 的
@@ -191,10 +182,12 @@ bool ShellView::Create(HWND parent, const std::wstring& path) {
 
     // 窗格偏好必须在首次导航前就位：EBO_SHOWFRAMES / IExplorerPaneVisibility 只在
     // 建窗格时被消费，晚一步就要等下一次导航才生效（表现为"第一次打开时窗格还在"）。
-    const Settings& s = Config::Get().s();
+    // 偏好经 App 注入回调读取（R16：本层不碰 Config）；未注入时按关闭兜底。
     // navPaneWanted_ 若已被调用方预置（双栏右窗格），保留那个值，不拿全局偏好盖掉。
-    if (!navPanePreset_) navPaneWanted_ = s.showNavPane;
-    previewPaneWanted_ = s.showPreviewPane;
+    if (!navPanePreset_) {
+        navPaneWanted_ = panePrefs_.getShowNav ? panePrefs_.getShowNav() : false;
+    }
+    previewPaneWanted_ = panePrefs_.getShowPreview ? panePrefs_.getShowPreview() : false;
     previewPaneWantedKnown_ = true;
 
     if (!InitBrowser()) return false;
@@ -332,12 +325,6 @@ bool ShellView::DoNavigate(const std::wstring& path) {
                                              reinterpret_cast<void**>(&item));
     LogDbg(L"[nav] parse '%s' hr=0x%08lX", p.c_str(), static_cast<unsigned long>(hr));
     if (FAILED(hr)) return false;
-
-    PWSTR name = nullptr;
-    if (SUCCEEDED(item->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &name)) && name) {
-        LogDbg(L"[nav] item=%s", name);
-        CoTaskMemFree(name);
-    }
 
     hr = browser_->BrowseToObject(item.get(), 0);
     LogDbg(L"[nav] browse hr=0x%08lX", static_cast<unsigned long>(hr));

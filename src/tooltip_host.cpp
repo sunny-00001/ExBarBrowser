@@ -80,6 +80,24 @@ void TooltipHost::Clear() {
 
 void TooltipHost::SetTools(const std::vector<Item>& items) {
     if (!tip_) return;
+
+    // 高频调用（状态栏 800ms 定时、标签滚动）大多只改矩形，文本和工具数量没变。
+    // 先比对文本：完全一致就只搬热区，避免 2N 次 TTM_DELTOOLW/ADDTOOLW。
+    std::vector<RECT> rects;
+    rects.reserve(items.size());
+    bool sameTexts = true;
+    size_t k = 0;
+    for (const auto& it : items) {
+        if (it.text.empty()) continue;
+        if (k >= texts_.size() || texts_[k] != it.text) sameTexts = false;
+        rects.push_back(it.rc);
+        ++k;
+    }
+    if (sameTexts && k == texts_.size()) {
+        MoveTools(rects);
+        return;
+    }
+
     Clear();
 
     // 两趟：先把所有文本落定（vector 扩容会让 c_str() 失效），再一次性登记工具。
@@ -87,7 +105,7 @@ void TooltipHost::SetTools(const std::vector<Item>& items) {
     for (const auto& it : items)
         if (!it.text.empty()) texts_.push_back(it.text);
 
-    size_t k = 0;
+    k = 0;  // 复用上面已声明的计数：第二趟按同一跳过条件重新从 0 索引 texts_。
     for (const auto& it : items) {
         if (it.text.empty()) continue;
         const UINT_PTR id = static_cast<UINT_PTR>(ids_.size() + 1);

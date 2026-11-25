@@ -31,6 +31,7 @@ import os
 import re
 import sys
 import time
+import atexit
 import fnmatch
 import argparse
 import hashlib
@@ -39,7 +40,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT / "tools"))   # objcache / reclaim 都在 tools/
 CLANG = Path(r"C:\Program Files\Windhawk\Compiler\bin\clang++.exe")
+LLD = Path(r"C:\Program Files\Windhawk\Compiler\bin\ld.lld.exe")
 WINDRES = Path(r"D:\MinGW\bin\windres.exe")
 SRC = ROOT / "src"
 OBJ = ROOT / "obj"
@@ -100,7 +103,39 @@ LIBS = [
     "-lole32", "-loleaut32", "-luuid", "-luser32", "-lgdi32", "-lshell32",
     "-lshlwapi", "-lcomctl32", "-ldwmapi", "-luxtheme", "-ladvapi32", "-lpropsys",
     "-luiautomationcore", "-lbcrypt",
+    # 形态 A（D13）：AI 面板自己发 HTTPS 请求。WinHTTP 是 Windows 系统库，
+    # 不新增任何运行时依赖（仍是单 exe、零安装）。
+    # 密钥走 DPAPI（CryptProtectData / CryptUnprotectData），这两个在 Crypt32.dll。
+    "-lwinhttp", "-lcrypt32",
+    # AI 面板的 WebSocket 通道（aichat_webview.cpp）走 winsock：
+    # socket/connect/htons/closesocket 都在 Ws2_32.dll。同样是系统库，零新增依赖。
+    "-lws2_32",
 ]
+
+
+def default_jobs():
+    """自适应并行度：吃满 CPU，但高并发多会话时自动分摊，避免互抢核。
+
+    【为什么不是固定 8】实测 16 核机器上冷编译 -j8=37.2s、-j16=30.7s，固定 8 白白
+    浪费一半核。但高并发下若每个会话都吃满 16 线程，N 个会话就是 16N 个进程抢 16 核，
+    上下文切换反而更慢。所以按"当前活跃构建数"把核数平分。
+
+    活跃构建数取自各会话写在自己 obj 目录的 .reclaim-lock（take_lock 在 main 里写，
+    这里数的是别的会话已经写下的），与回收器同一套判据，不另造状态。
+    -j 显式指定时本函数不参与；EXBAR_JOBS 环境变量可整体钉住（CI / 排障用）。
+    """
+    env = os.environ.get("EXBAR_JOBS", "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    cpu = os.cpu_count() or 4
+    cap = max(4, min(cpu, 16))              # 上限 16：再多核也别让单会话占满
+    try:
+        # 别的会话的锁：直接子目录(如 tmp_x/obj 下的两层)与 obj/ 本体
+        locks = set(ROOT.glob("*/.reclaim-lock")) | set(ROOT.glob("*/*/.reclaim-lock"))
+        active = len(locks)
+    except OSError:
+        active = 0
+    return max(4, cap // max(1, active + 1))  # +1 = 本会话自己
 
 
 def signature(flags, libs, use_pch):
@@ -153,8 +188,11 @@ def pch_needed(use_pch):
     2026-11-21 实测踩到：临时测试 obj 目录里的 PCH 是上一轮留下的，
     str.h 之后被换过内容但时间戳更早，于是整轮测试构建失败，报错却指向 str.h。
 
-    所以这里改成**内容指纹**：把 PCH 依赖集里每个文件的内容哈希写进 sidecar，
-    对不上就重建。哈希 15 个小头文件不到 1ms，比重新生成 PCH（5s）便宜两个数量级。
+    所以这里改成**依赖指纹**：路径 + 内容哈希 + mtime_ns。内容哈希抓
+    "内容变了但时间戳没变新"；mtime 抓 clang 自己的 PCH 校验口径
+    （头文件被 touch 后内容相同也会拒绝旧 PCH）。两者缺一都会让整轮构建
+    以"PCH 失效"告终，而报错指向无辜的 str.h。哈希 15 个小头文件不到 1ms，
+    比重新生成 PCH（3~5s）便宜两个数量级。
     """
     if not use_pch:
         return False
@@ -170,7 +208,7 @@ def pch_needed(use_pch):
 
 
 def pch_deps_hash():
-    """PCH 依赖集的内容指纹（路径 + 内容，一处改动就变）。"""
+    """PCH 依赖集的指纹（路径 + 内容 + mtime_ns，任一变化就重建）。"""
     h = hashlib.sha256()
     for f in sorted(pch_deps()):
         try:
@@ -181,6 +219,7 @@ def pch_deps_hash():
         h.update(b"\0")
         try:
             h.update(hashlib.sha256(f.read_bytes()).digest())
+            h.update(str(f.stat().st_mtime_ns).encode("ascii"))
         except OSError:
             h.update(b"<missing>")
         h.update(b"\0")
@@ -280,7 +319,7 @@ def build_resource():
     return dt
 
 
-def compile_one(src_rel, flags, use_pch):
+def compile_one(src_rel, flags, use_pch, sig="", pch_hash=""):
     obj_path, dep_path = obj_path_for(src_rel)
     obj_path.parent.mkdir(parents=True, exist_ok=True)
     cflags = list(flags) + ["-MMD", "-MF", str(dep_path)]
@@ -292,6 +331,14 @@ def compile_one(src_rel, flags, use_pch):
     dt = time.time() - t0
     if r.returncode != 0:
         return src_rel, False, dt, r.stderr[-1500:]
+    # 编译成功 → 回写共享缓存（失败不写；写缓存失败不影响构建结论）
+    if sig:
+        try:
+            import objcache
+            key = objcache.cache_key(SRC / Path(src_rel).name, sig, pch_hash, dep_path)
+            objcache.store(key, obj_path, dep_path)
+        except Exception:                                  # noqa: BLE001 —— 缓存是加速，不该影响构建
+            pass
     return src_rel, True, dt, ""
 
 
@@ -304,8 +351,12 @@ def link_all(out_path):
     if RES_OBJ.exists():
         objs.append(str(RES_OBJ))
     # 链接必须显式带 -target：clang 本机默认是 i686，不带会与 x64 的 obj 冲突。
-    cmd = [str(CLANG), "-mwindows", "-target", "x86_64-w64-mingw32"] + objs + \
-          ["-o", str(out_path)] + LIBS
+    cmd = [str(CLANG), "-mwindows", "-target", "x86_64-w64-mingw32"]
+    # lld 比 GNU ld 快约 40%（实测 0.5s -> 0.31s）。链接器不进配置签名——
+    # 换链接器不改变目标代码语义，不该触发 165 个 TU 全量重编。
+    if LLD.exists():
+        cmd.append("-fuse-ld=lld")
+    cmd += objs + ["-o", str(out_path)] + LIBS
     t0 = time.time()
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     dt = time.time() - t0
@@ -323,19 +374,90 @@ def deploy(staged=None):
         return False, str(e)
 
 
+def reclaim(min_age_minutes=15):
+    """构建收尾回收：删掉会话残留的 obj_*/ tN/ 与冗余 exe。
+
+    【为什么要挂在构建里】隔离构建（--objdir/--out）每轮留下 100 MB+ 的中间目录和
+    一个 54 MB 的 exe，没有任何环节回收它们 —— 实测一个上午堆出 5 个 obj_sN 把
+    当轮清掉的 607 MB 全抵掉还倒涨。人工 `rm -rf` 又不敢跑：它会抽走正在构建的那份。
+
+    判据全在 tools/reclaim.py（唯一实现），这里只负责"每次构建末尾问一遍"。它自己会：
+      - 跳过正在运行的 exe（按进程表）
+      - 跳过 15 分钟内还在写的目录（这次构建自己写的那份天然被保护）
+      - 跳过持有 .reclaim-lock 的目录（卡住的构建也能保护自己）
+      - 跳过 git 跟踪的任何项
+    所以挂在这里是安全的：本轮的产物刚写完，必定落在保护期内。
+
+    失败绝不打断构建 —— 回收是保洁，不是验收项。
+    """
+    try:
+        sys.path.insert(0, str(ROOT / "tools"))
+        # 注意模块名不能叫 gc —— 那是 Python 内建模块，import 只会拿到内建的，
+        # 于是 sweep 不存在、回收静默失效（已实测踩过一次）。
+        import reclaim as reclaimmod
+        freed, removed, _kept = reclaimmod.sweep(min_age_minutes, apply=True, quiet=True,
+                                                 out=lambda _m: None)
+    except Exception as e:                              # noqa: BLE001 —— 保洁不许影响构建结论
+        print(f"[回收] 跳过（{type(e).__name__}: {e}）", flush=True)
+        return
+    if removed:
+        print(f"[回收] 清掉 {removed} 项历史残留，释放 {freed / 1048576:.1f} MB", flush=True)
+
+
+def take_lock(lock_dir):
+    """在中间目录写 .reclaim-lock，声明"这个目录正在被构建使用"。
+
+    【为什么 mtime 不够】mtime 只证明"最近写过"，不证明"仍然持有"。一个卡住的
+    构建（实测 windres 遇损坏 .ico 会静默挂 20 分钟）期间不写任何文件，窗口一过
+    就被判成陈旧，回收器把它的中间目录抽走，链接期报成 undefined symbol。
+    锁是显式的"我还在用"，比推断可靠。
+
+    返回锁文件路径（供 release_lock 用）；写不进去返回 None —— 构建照常继续，
+    只是失去显式保护（mtime 判据仍在）。
+    """
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        f = lock_dir / ".reclaim-lock"
+        f.write_text(f"pid={os.getpid()}\nstarted={time.strftime('%Y-%m-%d %H:%M:%S')}\n",
+                     encoding="utf-8")
+        return f
+    except OSError:
+        return None
+
+
+def release_lock(lock_file):
+    """释放构建锁。放在 finally 里调 —— 编译失败/异常也必须放，否则锁成永久的。"""
+    if lock_file is None:
+        return
+    try:
+        lock_file.unlink()
+    except OSError:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description="ExBarBrowser 增量构建（主编译入口）")
-    ap.add_argument("-j", type=int, default=8, help="并行编译数（默认 8）")
+    ap.add_argument("-j", type=int, default=0,
+                    help="并行编译数（默认 0=自适应：按 CPU 核数并参考并发会话数；"
+                         "EXBAR_JOBS 可钉住）")
     ap.add_argument("--clean", action="store_true", help="清空 obj 后全量重建")
     ap.add_argument("--no-pch", action="store_true", help="禁用 PCH")
     ap.add_argument("--stats", action="store_true", help="打印各 TU 编译耗时")
     ap.add_argument("--out", help="输出 exe 路径（默认 ExBarBrowser.exe）")
     ap.add_argument("--objdir", help="中间目录（obj/pch/资源对象），默认 obj/；"
                                      "多会话并行时各用一套，避免互相覆盖 obj 与 PCH")
+    ap.add_argument("--no-gc", action="store_true",
+                    help="本次构建结束后不做残留回收（排障/复现残留问题时用）")
+    ap.add_argument("--no-objcache", action="store_true",
+                    help="禁用跨会话 obj 缓存（默认开启；命中即硬链接复用，省去重复编译）")
+    ap.add_argument("--gc-age", type=int, default=15,
+                    help="回收的活跃保护窗口（分钟，默认 15）：此时间内被写过的目录视为在用")
     args = ap.parse_args()
+    if args.j <= 0:
+        args.j = default_jobs()
 
     if not CLANG.exists():
         print("找不到 clang:", CLANG)
@@ -356,6 +478,12 @@ def main():
     use_pch = not args.no_pch
     cur_sig = signature(COMPILE_FLAGS, LIBS, use_pch)
     OBJ.mkdir(parents=True, exist_ok=True)
+
+    # 持锁：从这一刻到进程退出，tools/reclaim.py 都不会回收本目录。
+    # 用 atexit 而不是 try/finally —— main 里有多个 return 点，挨个包会漏掉一处，
+    # 而漏掉的那处留着锁文件，回收器就永远跳过这个目录（比漏回收更糟）。
+    _lock = take_lock(OBJ)
+    atexit.register(release_lock, _lock)
 
     if args.clean:
         for p in OBJ.glob("*.obj"):
@@ -408,13 +536,47 @@ def main():
         if len(todo) > 6:
             print(f"        ... 还有 {len(todo) - 6} 个")
 
-    # 3) 并行编译
+    # 3) 查共享缓存：命中的 TU 硬链接复用，只有未命中的才真正编译。
+    #    缓存是加速手段，任何异常都降级为"没命中 → 走正常编译"，绝不影响构建结论。
+    use_cache = not args.no_objcache
+    pch_hash = ""
+    if use_cache and use_pch:
+        # 用 PCH 依赖源的哈希作语义代表，不用 PCH 二进制哈希：各会话独立生成的
+        # common.h.gch 因内嵌路径/时间戳而二进制不同，但语义（声明集）相同。
+        # 用二进制哈希会让每个会话的 key 都不同 → 缓存形同虚设（实测踩过）。
+        try:
+            pch_hash = pch_deps_hash()
+        except Exception:                                  # noqa: BLE001
+            use_cache = False
+
+    compile_todo = list(todo)
+    cache_hits = 0
+    if use_cache and todo:
+        try:
+            import objcache
+            still = []
+            for s in todo:
+                obj_path, dep_path = obj_path_for(s)
+                key = objcache.cache_key(SRC / Path(s).name, cur_sig, pch_hash, dep_path)
+                if objcache.lookup(key, obj_path, dep_path):
+                    cache_hits += 1
+                else:
+                    still.append(s)
+            compile_todo = still
+        except Exception:                                  # noqa: BLE001 —— 缓存故障全量回退
+            compile_todo = list(todo)
+            cache_hits = 0
+    if todo:
+        print(f"[缓存] 命中 {cache_hits}/{len(todo)}，需真编译 {len(compile_todo)}", flush=True)
+
+    # 4) 并行编译（仅未命中的 TU）
     timings = []
     failed = False
-    if todo:
-        workers = max(1, min(args.j, len(todo)))
+    if compile_todo:
+        workers = max(1, min(args.j, len(compile_todo)))
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = {ex.submit(compile_one, s, COMPILE_FLAGS, use_pch): s for s in todo}
+            futs = {ex.submit(compile_one, s, COMPILE_FLAGS, use_pch, cur_sig, pch_hash): s
+                    for s in compile_todo}
             for fut in as_completed(futs):
                 s, ok, dt, err = fut.result()
                 timings.append((s, dt))
@@ -423,6 +585,10 @@ def main():
                     print(f"[编译失败] {s}\n{err}", flush=True)
     if failed:
         print("编译失败，未链接。")
+        # 失败构建同样留下上一轮的 obj_*/tN/ 残留，所以这里也回收一次。
+        # 不用 return 提前退出，就是为了不在失败路径上再抄一遍回收调用。
+        if not args.no_gc:
+            reclaim(args.gc_age)
         return 1
 
     SIG.write_text(cur_sig, encoding="utf-8")
@@ -452,6 +618,11 @@ def main():
         print("\n[各 TU 耗时]")
         for s, dt in sorted(timings, key=lambda x: -x[1]):
             print(f"  {dt:5.2f}s  {Path(s).name}")
+
+    # 5) 收尾回收（见 reclaim 的说明：本轮自己的产物在保护期内，删不到它）
+    if not args.no_gc:
+        reclaim(args.gc_age)
+
     return 0
 
 

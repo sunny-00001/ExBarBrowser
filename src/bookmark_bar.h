@@ -11,6 +11,15 @@
 #include "tooltip_host.h"
 #include "theme.h"
 
+// 一次落点的完整语义：顶层插入线 / 拖入分类，两者互斥。
+// valid=false 表示落在栏外（或没有可用栏窗口），调用方按"取消"处理。
+struct BookmarkDropSpot {
+    bool valid = false;
+    int index = -1;         // 顶层插入线（items_ 下标，0..size）
+    int folderIndex = -1;   // 悬停分类的可见项下标（用于画描边）
+    std::wstring folderId;  // 非空 = 拖进该分类
+};
+
 class BookmarkBar {
 public:
     void Create(HWND parent, const Theme& theme);
@@ -31,7 +40,11 @@ public:
     void FocusBar();
 
     // OLE 拖放支持（bookmark_drop 调用）：
-    int FolderItemAt(POINT screen) const;            // 屏幕点 → 可见项索引，-1=无
+    BookmarkDropSpot DropSpotAt(POINT screen) const;  // 屏幕点 → 插入线 / 目标分类
+    void PreviewDrop(const BookmarkDropSpot& spot);   // 外部拖放预览（与内部拖动共用绘制）
+    void ClearDropPreview();
+    // 把外部拖入的路径写成命令（审计/撤销/AI 同源）。返回成功条数。
+    int ApplyDroppedPaths(const std::vector<std::wstring>& paths, const BookmarkDropSpot& spot);
     std::wstring FolderIdAt(int index) const;        // 项索引 → 文件夹书签 id（非文件夹=空）
     void ReloadExternal();                           // 拖放完成后的外部触发的刷新
 
@@ -55,10 +68,14 @@ private:
     int HitItem(int x, int y) const;
     int HitIcon(int x, int y) const;
     bool HitOverflow(int x, int y) const;
+    BookmarkDropSpot DropSpotAtClient(int x, int y) const;  // 内外拖动共用落点算法
     HICON IconFor(const BookmarkNode& n);
     void ShowItemMenu(int index, POINT screen);
     void ShowEmptyMenu(POINT screen);
     void ShowFolderMenu(int index, POINT screen);
+    // 分类内容弹层（可拖动排序 + 行内右键），实现见 bookmark_category_popup.cpp
+    void ShowFolderContents(const std::wstring& folderId, POINT screen);
+    void ShowCategoryItemMenu(const std::wstring& folderId, int row, POINT screen);
     void ShowChildTree(int index);   // 图标：列该路径的子目录，可就地逐级展开
     void ShowOverflowMenu(POINT screen);
     void Navigate(int index);
@@ -84,6 +101,7 @@ private:
     int dragIdx_ = -1;         // 起始项
     int dropIdx_ = -1;         // 插入线位置（绘制到 dropIdx_ 左缘）
     int dropInto_ = -1;        // 拖到某个分类"内部"时该分类的项索引（-1 = 无）
+    bool dropPreview_ = false; // 落点预览可见（内部拖动 / 外部 OLE 拖放共用）
     POINT dragStart_{};
 
     // ---- 键盘访问 ----

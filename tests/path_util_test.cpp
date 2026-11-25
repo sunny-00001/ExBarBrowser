@@ -107,6 +107,46 @@ int main() {
     CHECK(pathutil::ToShellPath(L"").empty(), "空串仍是空串");
     CHECK(pathutil::ToShellPath(L"notapath") == L"notapath", "不含分隔符的原样返回");
 
+    // ---- ToParsingName：命名空间解析名补 shell: 前缀 ----
+    //
+    // 守的是一个**实测过的**失败：SIGDN_DESKTOPABSOLUTEPARSING 对命名空间项
+    // 返回裸 `::{GUID}`，而裸形式对"主页"（679F85CB-…）返回 E_INVALIDARG。
+    // 实机症状是会话恢复后右窗格一直空白（[nav] parse hr=0x80070057）。
+    printf("\nToParsingName：裸 ::{GUID} 补 shell: 前缀、其余原样\n");
+    {
+        const std::wstring home = L"::{679F85CB-0220-4080-B29B-5540CC05AAB6}";
+        CHECK(pathutil::ToParsingName(home) ==
+                  L"shell:::{679F85CB-0220-4080-B29B-5540CC05AAB6}",
+              "裸 ::{GUID} 补上 shell: 前缀");
+        // 已带前缀必须原样 —— 再补一次会变成 shell::shell:::{…}，一样解析失败
+        // 而且更难看出原因。
+        const std::wstring already = L"shell:::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+        CHECK(pathutil::ToParsingName(already) == already, "已带 shell: 的不重复加");
+        CHECK(pathutil::ToParsingName(pathutil::ToParsingName(home)) ==
+                  pathutil::ToParsingName(home),
+              "归一化是幂等的");
+        // 文件系统路径绝不能被套前缀：shell:C:\Windows 全线失败。
+        CHECK(pathutil::ToParsingName(L"C:\\Windows") == L"C:\\Windows",
+              "文件系统路径原样返回");
+        CHECK(pathutil::ToParsingName(L"D:\\") == L"D:\\", "盘根原样返回");
+        CHECK(pathutil::ToParsingName(L"shell:Downloads") == L"shell:Downloads",
+              "shell: 别名原样返回");
+        CHECK(pathutil::ToParsingName(L"").empty(), "空串原样返回空");
+    }
+
+    // ---- 两个归一化叠加：先分隔符、再命名空间前缀 ----
+    printf("\n组合：导航层对会话路径同时过两个归一化\n");
+    {
+        // 会话里存的是裸 ::{GUID}：ToShellPath 不动它，ToParsingName 补前缀。
+        const std::wstring raw = L"::{679F85CB-0220-4080-B29B-5540CC05AAB6}";
+        const std::wstring nav = pathutil::ToParsingName(pathutil::ToShellPath(raw));
+        CHECK(nav == L"shell:::{679F85CB-0220-4080-B29B-5540CC05AAB6}",
+              "裸命名空间经两步归一后可直接解析");
+        // 文件系统路径经两步后仍不含 shell: 前缀。
+        const std::wstring fs = pathutil::ToParsingName(pathutil::ToShellPath(L"C:/Windows//"));
+        CHECK(fs == L"C:\\Windows", "文件系统路径经两步归一后仍是纯路径");
+    }
+
     printf(fails ? "\nFAILED %d\n" : "\nPASS\n", fails);
     return fails ? 1 : 0;
 }

@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "job.h"
 #include "scan_ctl.h"
@@ -211,6 +212,23 @@ int main() {
         Check(svc.WaitFinished(id, 5000), "作业最终能等到");
         svc.WaitFinished(id, 5000);   // 幂等：再等一次不该出事
         Check(true, "重复等待是安全的");
+    }
+
+    // ---------------------------------------------------------------
+    std::printf("\n完成记录保留上限\n");
+    {
+        std::vector<std::wstring> ids;
+        for (unsigned i = 0; i < job::Service::kMaxRetainedRecords + 8; ++i)
+            ids.push_back(svc.Start(L"hash", L"cap", OkBody()));
+        for (const auto& id : ids) Check(svc.WaitFinished(id, 5000), "上限测试作业都收工");
+
+        const auto list = svc.List();
+        Check(list.size() <= job::Service::kMaxRetainedRecords,
+              "已完成且 join 的记录不会无限增长");
+        job::Status st;
+        Check(!svc.Get(ids.front(), &st), "最旧的完成记录被淘汰");
+        Check(svc.Get(ids.back(), &st), "最近的完成记录仍可查");
+        Check(st.result.Find(L"answer") != nullptr, "保留记录的结果仍完整");
     }
 
     // ---------------------------------------------------------------

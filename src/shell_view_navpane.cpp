@@ -5,8 +5,6 @@
 // 重排（SetRect），不能只 SW_HIDE —— 那样树占的那列宽度不会还给文件列表。
 #include "shell_view.h"
 
-#include "config.h"
-
 namespace {
 
 BOOL CALLBACK FindTreeProc(HWND h, LPARAM p) {
@@ -76,12 +74,8 @@ void ShellView::ToggleNavPane() {
     // 所以真实显隐直接操作窗格子窗口，并自己记账。
     navPaneWanted_ = !navPaneWanted_;
     ApplyNavPaneWanted();
-    // 用户显式切换 = 改变偏好：写回配置，下次启动/新标签沿用。
-    Settings& s = Config::Get().mutableSettings();
-    if (s.showNavPane != navPaneWanted_) {
-        s.showNavPane = navPaneWanted_;
-        Config::Get().Save();
-    }
+    // 用户显式切换 = 改变偏好：经 App 注入的回调写回配置（R16：本层不碰 Config）。
+    if (panePrefs_) panePrefs_.setNavPane(navPaneWanted_);
 }
 
 // 按"当前记账值"把导航窗格真实显隐落地（不写配置）。

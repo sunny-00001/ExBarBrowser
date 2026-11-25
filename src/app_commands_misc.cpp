@@ -4,8 +4,7 @@
 #include "app.h"
 
 #include "app_commands.h"
-#include "bookmark_io.h"
-#include "clipboard.h"
+#include "config_apply.h"   // 设置项 -> 落地动作的判据表（纯函数，可单测）
 #include "hotkey_manager.h"
 #include "bookmarks.h"
 #include "icon_resolve.h"
@@ -27,25 +26,11 @@ void RunTerminal(HWND owner, const std::wstring& dir, bool admin) {
                   SW_SHOWNORMAL);
 }
 
-
-// 这些设置项决定"当前标签的视图长什么样"。config.set 写完它们必须套用到
-// 活动视图，否则用户/AI 改完屏幕上没有任何变化 —— 只能等下次启动才看见。
-//
-// 为什么这份名单不在注册表里：注册表描述的是"值与类型"，而"写完要推给谁"
-// 是界面知识（视图、窗口、栏各自不同）。放在命令层，是因为只有这一层同时
-// 知道设置项与窗口。
-static bool AffectsActiveView(const std::wstring& key) {
-    return key == L"viewMode" || key == L"sortMode" || key == L"sortAscending" ||
-           key == L"groupBy";
-}
-
-// 状态栏两项（显隐 + 段集合）写完后必须重建状态栏：
-// 过去只有右键菜单能改它们，菜单自己调 Layout()/SetEnabledSegments()，
-// 所以从 config.set 走时不会即时生效 —— 这正是它们过去被标只读的理由。
-// 现在把刷新收进命令层，键表和 UI 共用一条写路径（FULL-COVERAGE §10.1）。
-static bool AffectsStatusBar(const std::wstring& key) {
-    return key == L"statusbar" || key == L"statusSegs";
-}
+// 视图/布局/状态栏/主题/历史的落地判据收在 config_apply.h（纯函数、可单测）。
+// 【为什么不是这里的文件级 static】这套判据以前散在本文件的一串 if/else if 里，
+// 漏一个键的后果是"命令 ok=true、界面没变"（实测：config.set bookmark=false
+// 写盘成功、书签栏仍 visible=True）。抽成纯函数之后，单测能拿**全部可写键**
+// 逐个问"它被哪个落地类别覆盖"，漏项就从"运行期玄学"变成"编译期用例红"。
 
 void App::NotifyBookmarkSave(bool ok) {
     if (ok) return;
@@ -114,9 +99,9 @@ void App::RegisterMiscCommands() {
     // 首选项面板本身早就存在，但只有一条入口：导航栏右键 →「设置…」。
     // 于是命令面板里搜不到它、键位绑不上、Agent 更看不到 —— 用户被告知
     // "有首选项"却只能靠右键碰运气。这里补的是**入口**，不是新面板：
-    // 锚点也复用导航栏那一个（NavBar::SettingsAnchor），两条路径弹在同一处。
+    // 现在是独立的设置窗口，与导航栏那一条路径弹的是同一个窗口实例。
     reg(CmdId::Preferences, [this](const Args&) {
-        ShowSettingsPanel(navBar_.SettingsAnchor());
+        ShowSettingsDialog();
         return true;
     });
     reg(CmdId::FocusAddress, [this](const Args&) { navBar_.FocusAddress(); return true; });
@@ -130,493 +115,10 @@ void App::RegisterMiscCommands() {
         RunTerminal(hwnd_, ActivePath(), true);
         return true;
     });
-    // 面包屑右键「在此打开终端」此前直接调 RunTerminal —— 键盘/面板/AI 都够不到。
-    // 现在与 ext.terminal 共用同一函数，区别只在目录来自参数还是当前标签。
-    reg(CmdId::ExtTerminalAt, [this](const Args& args) {
-        const std::wstring path = args.Str(L"path");
-        if (path.empty()) {
-            CommandBus::Get().NoteFailure(L"缺少必填参数：path");
-            return false;
-        }
-        RunTerminal(hwnd_, path, false);
-        return true;
-    });
-    // 任意文本写剪贴板：书签「复制路径」与面包屑「复制此路径」的共同后端。
-    // 路径类复制命令（path.copy.*）作用于选中项；这条由参数点名文本，适合机器调用。
-    regR(CmdId::ClipboardCopy, [this](const Args& args, json::Value* out) -> bool {
-        const std::wstring text = args.Str(L"text");
-        if (!SetClipboardText(hwnd_, text)) {
-            CommandBus::Get().NoteFailure(L"写入剪贴板失败（被其它程序占用？）");
-            return false;
-        }
-        if (out) {
-            json::Value root = json::Value::MakeObject();
-            root.Set(L"text", json::Value::MakeStr(text));
-            *out = std::move(root);
-        }
-        return true;
-    });
-
     // ---------------- 书签 ----------------
-    regR(CmdId::BmkAddCurrent, [this](const Args&, json::Value* out) -> bool {
-        std::wstring path = ActivePath();
-        if (path.empty()) {
-            CommandBus::Get().NoteFailure(L"当前没有活动目录");
-            return false;
-        }
-        BookmarkStore& store = BookmarkStore::Get();
-        // 已经收藏过就给出**明确反馈**而不是静默成功。
-        // 原实现里 `if (!ContainsPath) AddPath(...)` 之后照样 Save + return true：
-        // 用户按 Ctrl+D 两次，第二次什么都没发生，也没有任何提示 ——
-        // 看起来像"快捷键坏了"。重复收藏本身也不该静默（可能想加到别的分类）。
-        // AI 侧不弹窗（会卡住管道线程），如实报失败 + 原因。
-        const BookmarkNode* existing = store.FindByPath(path);
-        if (existing) {
-            if (CommandBus::Get().fromMachine()) {
-                CommandBus::Get().NoteFailure(L"已收藏：" + existing->name);
-                return false;
-            }
-            MessageBeep(MB_ICONASTERISK);
-            MessageBoxW(hwnd_,
-                        (L"“" + existing->name + L"” 已经收藏过了。\n\n"
-                         L"要放到别的分类里，可直接把这条书签拖到分类上。").c_str(),
-                        id::kBrandShort, MB_OK | MB_ICONINFORMATION);
-            return true;
-        }
-        // 命名空间的 LeafOf 就是裸 "::{GUID}"；显示名统一走 ico::DisplayName。
-        const std::wstring name =
-            nav::IsNamespace(path) ? ico::DisplayName(path) : LeafOf(path);
-        std::wstring id = store.AddPath(name, path);
-        bool saved = store.Save();
-        // Save 内部已触发 saveNotify_（App::NotifyBookmarkSave），不要在这里重复提示。
-        LogDbg(L"[bmk] add path=%s id=%s saved=%d file=%s", path.c_str(), id.c_str(), saved ? 1 : 0,
-               store.file().c_str());
-        bookmarkBar_.Reload();
-        // 返回值契约（OPERATION-MODEL 第 5 步）：声明了 outputSchema 就真返回。
-        if (out) {
-            json::Value root = json::Value::MakeObject();
-            root.Set(L"id", json::Value::MakeStr(id));
-            *out = std::move(root);
-        }
-        return true;
-    });
-    // 收藏**选中的**文件夹（可多选）。与 bmk.add.current 的"当前目录"是两个意图：
-    // current = 我正在看的目录；selection = 我框选的条目。只收文件夹，文件与
-    // 已收藏项跳过 —— 批量动作必须可预期：AI 从观测面预知 selectionCount 与
-    // selectionFolders，执行后用 bmk.list 验证，不在这里引入第三份口径。
-    reg(CmdId::BmkAddSelection, [this](const Args&) {
-        Tab* t = Active();
-        if (!t || !t->view) return false;
-        std::vector<ShellView::SelectionItem> sel;
-        t->view->SelectionPaths(256, sel);   // 与状态快照同一上限，口径一致
-        if (sel.empty()) return false;       // HasSelection 前置已挡一层，双保险
-        BookmarkStore& store = BookmarkStore::Get();
-        bool any = false;
-        for (const auto& si : sel) {
-            if (!si.isFolder || si.path.empty()) continue;   // 文件不是书签目标
-            if (store.FindByPath(si.path)) continue;         // 已收藏：跳过，不静默重复
-            const std::wstring name =
-                nav::IsNamespace(si.path) ? ico::DisplayName(si.path) : LeafOf(si.path);
-            if (!store.AddPath(name, si.path).empty()) any = true;
-        }
-        if (!any) return false;   // 全部跳过（无新增）：如实失败，调用方回观测面查原因
-        store.Save();
-        bookmarkBar_.Reload();
-        return true;
-    });
-    // 收藏**所有打开标签页**的目录。与 add.current（只收当前目录）互补：
-    // "把今天打开的一组目录存成书签"。已收藏/空路径跳过（skipped 计数），
-    // 一条没加也如实返回 added=0 —— 批量动作的可预期性靠响应数字，不靠猜。
-    // 返回 ids（顺序同标签顺序）：补上"新条目不返回 id"这个调用方一直缺的东西。
-    regR(CmdId::BmkAddTabs, [this](const Args&, json::Value* out) -> bool {
-        BookmarkStore& store = BookmarkStore::Get();
-        int added = 0, skipped = 0;
-        json::Value ids = json::Value::MakeArray();
-        for (const auto& kv : tabs_) {
-            const std::wstring path = kv.second->path();
-            if (path.empty()) { ++skipped; continue; }        // 新建空标签无目录可收藏
-            if (store.FindByPath(path)) { ++skipped; continue; }  // 已收藏：不静默重复
-            const std::wstring name =
-                nav::IsNamespace(path) ? ico::DisplayName(path) : LeafOf(path);
-            const std::wstring id = store.AddPath(name, path);
-            if (id.empty()) { ++skipped; continue; }
-            ids.arr.push_back(json::Value::MakeStr(id));
-            ++added;
-        }
-        if (added > 0) {
-            store.Save();
-            bookmarkBar_.Reload();
-        }
-        if (out) {
-            json::Value root = json::Value::MakeObject();
-            root.Set(L"added", json::Value::MakeInt(added));
-            root.Set(L"skipped", json::Value::MakeInt(skipped));
-            root.Set(L"ids", std::move(ids));
-            *out = std::move(root);
-        }
-        return true;
-    });
-    // 复制书签（分类连子树深拷贝，id 全部重分配）。新 id 返回给调用方：
-    // 复制之后的下一步（编辑副本指向别的目录）没有 id 就做不了。
-    regR(CmdId::BmkCopy, [this](const Args& args, json::Value* out) -> bool {
-        BookmarkStore& store = BookmarkStore::Get();
-        const std::wstring newId = store.Copy(args.Str(L"id"));
-        if (newId.empty()) {
-            CommandBus::Get().NoteFailure(L"要复制的书签不存在：" + args.Str(L"id"));
-            return false;
-        }
-        store.Save();
-        bookmarkBar_.Reload();
-        if (out) {
-            json::Value root = json::Value::MakeObject();
-            root.Set(L"id", json::Value::MakeStr(newId));
-            *out = std::move(root);
-        }
-        return true;
-    });
-    reg(CmdId::BmkToggleBar, [this](const Args&) {
-        Settings& s = Config::Get().mutableSettings();
-        s.showBookmark = !s.showBookmark;
-        Config::Get().Save();
-        Layout();
-        return true;
-    });
-    reg(CmdId::BmkShowBar, [this](const Args&) {
-        Config::Get().mutableSettings().showBookmark = true;
-        Config::Get().Save();
-        Layout();
-        return true;
-    });
-    reg(CmdId::BmkHideBar, [this](const Args&) {
-        Config::Get().mutableSettings().showBookmark = false;
-        Config::Get().Save();
-        Layout();
-        return true;
-    });
-
-    // ---- 书签编辑族 ----
-    //
-    // 这些动作原先只存在于书签栏右键菜单里。补成命令不是为了"多几条命令"，
-    // 而是因为菜单里那份实现**没有任何非鼠标入口**：
-    // 键盘用户、命令面板、AI 都做不到 —— 而 R20 要的是"同一件事人能做"。
-    // 菜单现在也改为调这些命令，于是只有一份实现。
-    reg(CmdId::BmkEdit, [this](const Args& args) {
-        const std::wstring id = args.Str(L"id");
-        if (id.empty()) {
-            CommandBus::Get().NoteFailure(L"缺少 id 参数");
-            return false;
-        }
-        BookmarkStore& store = BookmarkStore::Get();
-        if (!store.Find(id)) {
-            CommandBus::Get().NoteFailure(L"书签不存在：" + id);
-            return false;
-        }
-        // name/path 都没有 = 不修改任何东西（不是"清空"）。要清空路径请显式传 path:""。
-        const bool hasName = args.Has(L"name");
-        const bool hasPath = args.Has(L"path");
-        if (!hasName && !hasPath) {
-            CommandBus::Get().NoteFailure(L"没有给出要修改的字段（name/path）");
-            return false;
-        }
-        const std::wstring name = args.Str(L"name");
-        const std::wstring path = args.Str(L"path");
-        // shell 命名空间路径入口校验：缺 } 的 CLSID 落盘后"打不开+通用图标"
-        // 两头排查（2026-11-21 真实踩坑两次）。
-        if (hasPath && !path.empty() && !IsValidShellNamespacePath(path)) {
-            CommandBus::Get().NoteFailure(
-                L"shell 命名空间路径不完整（应为 ::{8-4-4-4-12} 共 40 字符）：" + path);
-            return false;
-        }
-        bool ok;
-        if (hasPath)
-            ok = store.SetNameAndPath(id, name, path);   // 显式给了 path：空串就是清空
-        else
-            ok = store.Rename(id, name);
-        if (ok) {
-            store.Save();
-            bookmarkBar_.Reload();
-        }
-        return ok;
-    });
-    reg(CmdId::BmkRemove, [this](const Args& args) {
-        const std::wstring id = args.Str(L"id");
-        if (id.empty()) {
-            CommandBus::Get().NoteFailure(L"缺少 id 参数");
-            return false;
-        }
-        BookmarkStore& store = BookmarkStore::Get();
-        if (!store.Find(id)) {
-            CommandBus::Get().NoteFailure(L"书签不存在：" + id);
-            return false;
-        }
-        const bool ok = store.Remove(id);
-        if (ok) {
-            store.Save();
-            bookmarkBar_.Reload();
-        }
-        return ok;
-    });
-    regR(CmdId::BmkNewFolder, [this](const Args& args, json::Value* out) -> bool {
-        BookmarkStore& store = BookmarkStore::Get();
-        const std::wstring name = args.Str(L"name", L"新建分类");
-        const std::wstring parent = args.Str(L"parentId");
-        const std::wstring id = store.AddFolder(name, parent);
-        if (id.empty()) {
-            CommandBus::Get().NoteFailure(L"parentId 不是分类或不存在：" + parent);
-            return false;
-        }
-        store.Save();
-        bookmarkBar_.Reload();
-        if (out) {
-            json::Value root = json::Value::MakeObject();
-            root.Set(L"id", json::Value::MakeStr(id));
-            *out = std::move(root);
-        }
-        return true;
-    });
-    reg(CmdId::BmkFocus, [this](const Args&) {
-        bookmarkBar_.FocusBar();
-        // 栏为空时也算成功（栏拿到了焦点，只是没有项可走）—— 若返回 false，
-        // 调用方会以为"命令失败"，而实际是"书签栏是空的"。
-        return true;
-    });
-    reg(CmdId::BmkUndo, [this](const Args&) {
-        BookmarkStore& store = BookmarkStore::Get();
-        if (!store.CanUndo()) {
-            CommandBus::Get().NoteFailure(L"没有可撤销的操作");
-            return false;
-        }
-        // AI 的撤销只到自己的上一次修改为止，不穿透界面操作。
-        // 否则机器侧一次批量 undo 会把用户几天前的手工整理全部滚掉
-        // （2026-11-21 结构化审计实测：40 次 undo 穿透回滚全部历史）。
-        if (CommandBus::Get().fromMachine() && !store.TopUndoFromMachine()) {
-            CommandBus::Get().NoteFailure(L"上一次修改来自界面操作，AI 撤销到此为止");
-            return false;
-        }
-        store.Undo();
-        store.Save();
-        bookmarkBar_.Reload();
-        return true;
-    });
-    reg(CmdId::BmkClearAll, [this](const Args&) {
-        BookmarkStore& store = BookmarkStore::Get();
-        if (store.roots().empty()) {
-            CommandBus::Get().NoteFailure(L"书签栏为空，无事可清");
-            return false;
-        }
-        store.ReplaceAll(BookmarkList{});
-        store.Save();
-        bookmarkBar_.Reload();
-        return true;
-    });
-    reg(CmdId::BmkSort, [this](const Args& args) {
-        BookmarkStore& store = BookmarkStore::Get();
-        // recursive 默认 true：菜单上的"按名称排序"用户预期是整棵都排，
-        // 只排顶层等于"排了一半" —— 原实现就是这样，分类里的顺序纹丝不动。
-        const bool recursive = !args.Has(L"recursive") || args.Bool(L"recursive", true);
-        const bool ascending = !args.Has(L"ascending") || args.Bool(L"ascending", true);
-        store.SortRecursive(true, ascending, recursive);
-        store.Save();
-        bookmarkBar_.Reload();
-        return true;
-    });
-    reg(CmdId::BmkDedupe, [this](const Args&) {
-        BookmarkStore& store = BookmarkStore::Get();
-        const size_t n = store.RemoveDuplicatePaths();
-        if (!n) return true;   // 没有重复不是失败，只是无事可做
-        store.Save();
-        bookmarkBar_.Reload();
-        LogDbg(L"[bmk] 清理重复：删除 %zu 条", n);
-        return true;
-    });
-
-    // 添加指定路径（拖放/脚本/AI 的共同入口）。与 bmk.add.current 的区别是
-    // **目标由参数点名**，不读"当前目录" —— 机器侧不能假设前台标签就是它想的那个。
-    regR(CmdId::BmkAdd, [this](const Args& args, json::Value* out) -> bool {
-        const std::wstring path = args.Str(L"path");
-        if (path.empty()) {
-            CommandBus::Get().NoteFailure(L"缺少 path 参数");
-            return false;
-        }
-        // shell 命名空间路径入口校验（与 bmk.edit 同一规则、同一句话）。
-        if (!IsValidShellNamespacePath(path)) {
-            CommandBus::Get().NoteFailure(
-                L"shell 命名空间路径不完整（应为 ::{8-4-4-4-12} 共 40 字符）：" + path);
-            return false;
-        }
-        BookmarkStore& store = BookmarkStore::Get();
-        const std::wstring parentId = args.Str(L"parentId");
-        const std::wstring name = args.Str(L"name", LeafOf(path));
-
-        // 已存在同路径：若给了 parentId 就移动过去（拖放语义），否则如实报失败
-        // + 原因。静默成功会让调用方以为"加了一条新的"，而实际什么都没变。
-        if (const BookmarkNode* existing = store.FindByPath(path)) {
-            if (!parentId.empty() && store.MoveTo(existing->id, parentId)) {
-                store.Save();
-                bookmarkBar_.Reload();
-                if (out) {
-                    json::Value root = json::Value::MakeObject();
-                    root.Set(L"id", json::Value::MakeStr(existing->id));
-                    root.Set(L"moved", json::Value::MakeBool(true));
-                    *out = std::move(root);
-                }
-                return true;
-            }
-            CommandBus::Get().NoteFailure(L"路径已收藏：" + existing->name);
-            return false;
-        }
-        const std::wstring id = store.AddPath(name, path, parentId);
-        if (id.empty()) {
-            CommandBus::Get().NoteFailure(L"parentId 不是分类或不存在：" + parentId);
-            return false;
-        }
-        store.Save();
-        bookmarkBar_.Reload();
-        if (out) {
-            json::Value root = json::Value::MakeObject();
-            root.Set(L"id", json::Value::MakeStr(id));
-            *out = std::move(root);
-        }
-        return true;
-    });
-
-    // 移动（拖拽重排/移入分类的结构化版本）：toId 给目标容器，toIndex 给位置。
-    reg(CmdId::BmkMove, [this](const Args& args) {
-        const std::wstring id = args.Str(L"id");
-        if (id.empty()) {
-            CommandBus::Get().NoteFailure(L"缺少 id 参数");
-            return false;
-        }
-        BookmarkStore& store = BookmarkStore::Get();
-        if (!store.Find(id)) {
-            CommandBus::Get().NoteFailure(L"书签不存在：" + id);
-            return false;
-        }
-        const std::wstring toId = args.Str(L"toId");
-        const int toIndex = args.Has(L"toIndex") ? args.Int(L"toIndex", -1) : -1;
-        // toId 省略 = 目标为顶层；给了 toId 但为空串也按顶层处理（与 bmk.edit 的
-        // "显式空串 = 清空"不同：这里没有"清空容器"这种概念，只有"移到顶层"）。
-        const bool ok = store.MoveTo(id, toId, toIndex);
-        if (!ok) CommandBus::Get().NoteFailure(L"目标分类不存在或移动被拒：" + toId);
-        if (ok) {
-            store.Save();
-            bookmarkBar_.Reload();
-        }
-        return ok;
-    });
-
-    // 列出书签（读）。其余 bmk.* 要的 id 由此获得 —— 没有它，
-    // "删除书签"这类命令对机器侧是断的：知道能做，但不知道对哪一条做。
-    regR(CmdId::BmkList, [](const Args& args, json::Value* out) -> bool {
-        BookmarkStore& store = BookmarkStore::Get();
-        const std::wstring parentId = args.Str(L"parentId");
-        json::Value arr = json::Value::MakeArray();
-        std::function<void(const BookmarkList&, const std::wstring&)> walk =
-            [&](const BookmarkList& list, const std::wstring& parent) {
-                for (const auto& n : list) {
-                    json::Value o = json::Value::MakeObject();
-                    o.Set(L"id", json::Value::MakeStr(n.id));
-                    o.Set(L"name", json::Value::MakeStr(n.name));
-                    o.Set(L"path", json::Value::MakeStr(n.path));
-                    o.Set(L"isFolder", json::Value::MakeBool(n.isFolder));
-                    o.Set(L"parentId", json::Value::MakeStr(parent));
-                    arr.arr.push_back(std::move(o));
-                    walk(n.children, n.id);
-                }
-            };
-        if (parentId.empty()) {
-            walk(store.roots(), L"");
-        } else if (const BookmarkNode* folder = store.Find(parentId)) {
-            if (!folder->isFolder) return false;   // 不是分类，没有"子项"可列
-            walk(folder->children, parentId);
-        } else {
-            return false;   // id 写错：如实报失败，而不是返回空列表（那会像"没有书签"）
-        }
-        if (out) {
-            json::Value root = json::Value::MakeObject();
-            root.Set(L"entries", std::move(arr));
-            *out = std::move(root);
-        }
-        return true;
-    });
-
-    // 书签文件 IO 三条（全量覆盖 Batch 2）：
-    // 人侧空参数 → 文件对话框/模式弹层（Bmk*Html 适配器）；
-    // 机器侧带参数 → 确定式后端（Bmk*HtmlFromFile/To），两边共用同一份读写实现。
-    regR(CmdId::BmkImport, [this](const Args& args, json::Value* out) -> bool {
-        int n = -1;
-        if (IsHumanCall(args)) {
-            n = BmkImportHtml(hwnd_, theme_);
-            if (n == -1) {
-                CommandBus::Get().NoteFailure(L"用户取消导入", FailKind::CanceledByUser);
-                return false;
-            }
-        } else {
-            const std::wstring path = args.Str(L"path");
-            if (path.empty()) {
-                CommandBus::Get().NoteFailure(L"缺少必填参数：path");
-                return false;
-            }
-            const int mode = args.Int(L"mode", -1);
-            if (mode != 0 && mode != 1) {
-                CommandBus::Get().NoteFailure(L"mode 只能是 0（追加）或 1（覆盖）");
-                return false;
-            }
-            n = BmkImportHtmlFromFile(path, mode);
-        }
-        if (n < 0) {
-            if (n == -2) CommandBus::Get().NoteFailure(L"文件无效或没有可导入的书签");
-            else if (n == -3) CommandBus::Get().NoteFailure(
-                L"书签文件已被其它程序修改，请先重新载入再导入", FailKind::LockConflict);
-            else CommandBus::Get().NoteFailure(L"无法打开导入文件");
-            return false;
-        }
-        bookmarkBar_.ReloadExternal();
-        if (out) {
-            json::Value root = json::Value::MakeObject();
-            root.Set(L"imported", json::Value::MakeInt(n));
-            *out = std::move(root);
-        }
-        return true;
-    });
-
-    regR(CmdId::BmkExport, [this](const Args& args, json::Value* out) -> bool {
-        int n = -1;
-        if (IsHumanCall(args)) {
-            n = BmkExportHtml(hwnd_, theme_);
-        } else {
-            const std::wstring path = args.Str(L"path");
-            if (path.empty()) {
-                CommandBus::Get().NoteFailure(L"缺少必填参数：path");
-                return false;
-            }
-            n = BmkExportHtmlTo(path);
-        }
-        if (n < 0) {
-            if (n == -1) {
-                CommandBus::Get().NoteFailure(L"用户取消导出", FailKind::CanceledByUser);
-            } else {
-                CommandBus::Get().NoteFailure(L"写入文件失败（路径无效或文件被占用？）");
-            }
-            return false;
-        }
-        if (out) {
-            json::Value root = json::Value::MakeObject();
-            root.Set(L"exported", json::Value::MakeInt(n));
-            *out = std::move(root);
-        }
-        return true;
-    });
-
-    reg(CmdId::BmkReload, [this](const Args&) {
-        BookmarkStore& store = BookmarkStore::Get();
-        bookmarkBar_.ReloadFromDisk();
-        if (store.LoadFailed()) {
-            CommandBus::Get().NoteFailure(L"书签文件读取失败，已保留内存中的书签");
-            return false;
-        }
-        return true;
-    });
+    // 书签这一族（收藏夹增删改查、拖放/重排的结构化入口）自成一体，
+    // 注册实现见 app_commands_misc_bookmarks.cpp。
+    RegisterBookmarkCommands();
 
     // ---------------- 设置域 ----------------
     // 这三条是「AI 调试某个设置项」的入口。之前设置是编译期 struct，
@@ -665,19 +167,62 @@ void App::RegisterMiscCommands() {
             CommandBus::Get().NoteFailure(err);   // 原因直达 UI / AI / 审计
             return false;
         }
-        Config::Get().Save();
-        // 刷新依赖设置的界面。只有这里知道该刷什么，
-        // 所以刷新放命令层，而不是让注册表自己去找窗口。
+        // 写盘失败不是"命令失败"：值**已经**改了、也已经生效了，只是下次启动会
+        // 变回去。所以走告警通道（NoteWarning）而不是 NoteFailure —— 报成失败会
+        // 让调用方以为改动没生效、去重试或回滚，那是另一种撒谎。
+        if (!Config::Get().Save())
+            CommandBus::Get().NoteWarning(L"已在本次运行中生效，但没能写盘：" +
+                                          Config::Get().lastSaveError());
+        // 刷新放在命令层：只有这里同时知道设置项和窗口。
         //
-        // 视图那几项必须套到当前标签：只写配置的话，改完屏幕上毫无变化 ——
-        // 正是"改了看不见效果、重启才发现"那类 bug。套用走启动时同一个
-        // ApplyPersistedViewState，不另写一份。
-        if (AffectsActiveView(key)) ApplyPersistedViewState(Active() ? Active()->view.get() : nullptr);
-        if (AffectsStatusBar(key)) {
-            statusBar_.SetEnabledSegments(Config::Get().s().statusSegs);
-            Layout();
+        // 【两条分支，不是一串 else if】"套用"分两类：
+        //   · 有副作用的（SetDualPane 要建右视图、ApplyTheme 要重建字体画刷）——
+        //     这些必须先做，且各自不能漏；
+        //   · 只改布局的（栏显隐 / 宽度 / 分栏比例）—— 统一收在 AffectsLayout，
+        //     最后一次性 Layout()。
+        // 以前全是 else if 链，两条以上的键同时相关时只有第一条会跑，
+        // 而漏掉的那项表现为"命令 ok=true、界面没变"（见 AffectsLayout 的实测记录）。
+        // 栏高：先推给 Theme，后面的 SyncChrome/Layout 才会按新高度算。
+        // 与启动时走同一个 App::ApplyBarHeights，避免两条路各写一次。
+        if (cfgapply::AffectsLayout(key)) ApplyBarHeights();
+        // 导航栏内宽与导航栏搜索框由 NavBar::Layout 现读配置；ReloadTheme 会
+        // 重排它（顺带刷新 tooltip 宽度），不需要重建整条栏。
+        if (key == L"navBarSearchWidth" || key == L"navBarAddressMinWidth") navBar_.ReloadTheme();
+        // 导航树行距/缩进：TVM_* 可直接改，不必重建树。
+        if (key == L"navPaneItemHeight" || key == L"navPaneIndent") navPane_.RefreshTreeMetrics();
+        // 两条栏的提示窗最大宽：tooltip 在 ReloadTheme 里按配置重建。
+        if (key == L"bookmarkBarTooltipWidth") bookmarkBar_.ReloadTheme();
+        if (key == L"statusBarTooltipWidth") statusBar_.ReloadTheme();
+        if (cfgapply::AffectsActiveView(key)) {
+            ApplyPersistedViewState(ActiveShellViewHost());
+            ApplyPaneChrome();
         }
+        // 有副作用的套用（互不排斥，所以不是 else if 链）。
+        // 双栏/分栏：SetDualPane 与 SetPaneSplit 内部各自 Save+Layout，按值设定幂等。
+        if (key == L"dualPane") SetDualPane(Config::Get().s().dualPane);
+        if (key == L"paneSplit") SetPaneSplit(Config::Get().s().paneSplit);
+        // 方向：SetPaneVertical 是翻转语义（同值就短路），而这里新值**已经**写进
+        // Settings 了 —— 调它等于什么都不做，所以走"按当前值落地"那个入口。
+        if (key == L"paneVertical") ApplyPaneVertical();
+        // 全局导航树的显隐只有一个开关（showNavPane）：它不再挂在任何窗格上，
+        // 所以必须在这里落地 —— 否则改了设置要重启才看见。
+        if (key == L"showNavPane") ApplyNavPane();
+        // 深浅色档位：改完立刻重套主题（字体/画刷/四条栏配色全换）。
+        // 与"系统切了深浅色"走同一条 ApplyTheme —— 两条路各写一份重建逻辑，
+        // 迟早出现"跟随系统能换、强制档换不了"这种半截效果。
+        if (cfgapply::AffectsTheme(key)) ApplyTheme();
+        // 历史上限：三个上限都要推到各自的持有者（recent/search 在 Config，
+        // closedTab 在 TabSet），并顺手把已有条目裁到新上限。
+        // 以前 closedTabLimit 是一条独立分支，与另两条各写一遍 —— 收进判据表后
+        // 只有一处，”新加第四种历史“只会漏在明面上。
+        if (cfgapply::AffectsHistoryLimits(key)) ApplyHistoryLimits();
+        // 状态栏段显隐：段集变了要重新喂给栏（Layout 由下面统一做）。
+        if (cfgapply::AffectsStatusBar(key)) statusBar_.SetEnabledSegments(Config::Get().s().statusSegs);
+
         SyncChrome();
+        // 布局最后做：它读的是 Settings 的**最终值**（上面的分支可能又改了字段，
+        // 比如 SetDualPane 会再写一次 dualPane），早做一次就白排、还可能排错。
+        if (cfgapply::AffectsLayout(key)) Layout();
         // AI 通道热插拔：设置已落盘，真正启停交给独立的 WM_APP_SYNC_AI。
         // 不能在这里直接 StopServer —— 关闭请求本身可能来自该通道，
         // 同步 join 监听线程会让响应写不回去。人的显式设置优先于 --ai 强制开关。
@@ -685,6 +230,15 @@ void App::RegisterMiscCommands() {
             Config::Get().SetAiForceEnabled(false);
             PostMessageW(hwnd_, WM_APP_SYNC_AI, 0, 0);
         }
+        // 设置面板回灌：外部（AI / 命令面板 / 状态栏右键菜单 / 快捷键）改了配置，
+        // 已经打开的面板必须跟上 —— 否则它显示的是**上一轮**的值，用户看到的
+        // 下拉写着 system、实际已经是 dark。
+        //
+        // 【面板自己的写入也会走到这里，那没关系】OnConfigChangedExternally 只做
+        // 三件事：重读值、Layout()（只 MoveWindow 行内编辑框，不碰它的文字与焦点）、
+        // 重绘。所以它不会打断"输到一半的数字"—— 面板自己 RefreshValues 之后
+        // 再走一遍是幂等的。不必为此加"跳过自己"的判据。
+        settingsDialog_.OnConfigChangedExternally();
         return true;
     });
 
@@ -835,9 +389,9 @@ void App::RegisterMiscCommands() {
             const std::wstring msg = L"清除已保存的标签组？\r\n\r\n共 " + std::to_wstring(n) +
                                      L" 项。清除后 session.restore 没有可恢复的内容；"
                                      L"当前打开的标签不受影响。";
-            if (MessageBoxW(hwnd_, msg.c_str(), L"清除标签组",
+            if (!CommandBus::Get().IsCallConfirmed() && MessageBoxW(hwnd_, msg.c_str(), L"清除标签组",
                             MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
-                return false;   // 用户取消：什么都没做
+                return false;   // 用户取消：什么都没做（总线问过就别再问一遍：两道门）
             }
         }
 

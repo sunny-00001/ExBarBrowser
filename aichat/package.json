@@ -1,0 +1,27 @@
+{
+  "name": "exbar-ai-chat",
+  "version": "2.1.0",
+  "private": true,
+  "description": "ExBarBrowser 的 AI 聊天面板：本地 Node 服务 + WebView2 前端，工具后端是 ExBarBrowser 自己的 AI 命名管道",
+  "main": "service/server.js",
+  "scripts": {
+    "start": "node service/server.js",
+    "test": "node service/guard_test.js && node service/intents_test.js && node service/agent-stream_test.js && node service/server_security_test.js && node service/undo-groups_test.js && node service/turn-versions_test.js && node service/branch-state_test.js && node service/tools-fallback_test.js && node service/agent-preflight_test.js",
+    "test:knowledge": "node service/project-knowledge_test.js",
+    "test:protocols": "node service/protocols_test.js",
+    "test:turns": "node service/turn-state_test.js && node service/turn-versions_test.js && node service/branch-state_test.js",
+    "test:approval": "node service/approval-policy_test.js",
+    "test:preflight": "node service/agent-preflight_test.js",
+    "test:fallback": "node service/tools-fallback_test.js && node service/agent-preflight_test.js",
+    "test:cancel": "node service/pipe-cancel_test.js",
+    "test:ui": "node ../tools/verify_activity_view.js && node ../tools/verify_inline_ledger.js && node ../tools/verify_turn_guard.js && node ../tools/verify_turn_identity.js && node ../tools/verify_turn_versions.js && node ../tools/verify_window_actions.js && node ../tools/verify_ai_status.js",
+    "test:e2e": "node service/_e2e.js",
+    "test:policy": "node service/_guard_e2e.js",
+    "test:dryrun": "node service/_dryrun_e2e.js",
+    "verify": "node service/_verify2.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}

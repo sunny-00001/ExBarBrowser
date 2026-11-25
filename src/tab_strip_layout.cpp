@@ -174,8 +174,9 @@ void TabStrip::UpdateAutoScroll(int x, int step) {
         KillTimer(hwnd_, kDragScrollTimer);
         return;
     }
-    // 30ms 一跳：够快能持续滚，又不会一下冲过头。重复 SetTimer 只改间隔不叠加。
-    SetTimer(hwnd_, kDragScrollTimer, 30, nullptr);
+    // 步进周期来自设置 tabDragScrollMs（默认 30ms）：够快能持续滚、又不会一下冲过头。
+    // 重复 SetTimer 只改间隔不叠加。
+    SetTimer(hwnd_, kDragScrollTimer, static_cast<UINT>(Config::Get().s().tabDragScrollMs), nullptr);
 }
 
 void TabStrip::StopAutoScroll() {

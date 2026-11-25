@@ -1,4 +1,4 @@
-// 运行时键位表自测：确认能读 data/keymap.json（当前 100 热键 + 38 序列）。
+// 运行时键位表自测：确认能读 data/keymap.json（当前 102 热键 + 38 序列）。
 // 编译（在 ExBarBrowser/ 下）：
 //   clang++ -std=c++20 -O1 -DUNICODE -D_UNICODE -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 \
 //     -D_WIN32_IE=0x0A00 -Isrc tests/keymap_test.cpp src/keymap.cpp src/json.cpp \
@@ -42,8 +42,46 @@
 // 是 .gitignore 掉的个人配置（见 .gitignore "便携模式的用户数据"）。
 // 换一台机器跑这个测试，数字可能不同；那不是代码坏了，是个人键位不同。
 // 仓库里入库的 src/keymap.gen.h 才是"所有人共用的兜底表"。
-constexpr size_t kExpectedHotkeys = 100;
-constexpr size_t kExpectedSequences = 38;
+// 102 → 100（原文 98 → 100）之后又补了双栏两条：Ctrl+F6（切换双栏）、F6（切换窗格）。
+// 103 → 104（2026-11-23）：新增 Ctrl+J 开合右侧 AI 面板（ai.panel.toggle）。
+// 104 → 105（2026-11-23）：新增 Ctrl+Alt+J 在系统浏览器打开面板（ai.panel.web）——
+// 它是 WebView2 不可用时的退路，与 Ctrl+J 是一对（内嵌 / 外置）。
+// 这两条都是**新增能力**而不是改数字：命令表里有条目、有 handler、有状态回读
+// （aiPanelVisible），`check_commands.py` 的三方一致仍是绿的。
+// 保持这里的数字与 data/keymap.json 同步；src/keymap.gen.h 是所有人的兜底表。
+constexpr size_t kExpectedHotkeys = 105;
+// 207 序列（38 默认 + 169 命令覆盖，见 data/keymap.json）：
+// 前缀按命令组分配（b=书签 c=配置 d=开发 e=外部 f=文件 g=前往 n=导航 p=路径
+// q=搜索 s=会话 t=标签 v=视图 w=窗口 x=关闭族 y=复制族 z=工具）。
+//
+// 【不是"每条命令都有序列"了 —— 序列只绑无参命令】
+// 序列执行路径的 arg **恒为空**（InputRouter::FeedSequence →
+// InvokeByNameLegacy(cmd, L"") → ArgsFromLegacyArg(def, "") → Args::Empty()），
+// 所以**带必填参数的命令绑到序列上 = 每次按都注定失败**
+// （实测：q s 报「未知的搜索范围：」、q q 把搜索框清空 —— 语义正好相反）。
+// 因此这里的口径是：序列只覆盖**无必填参数**的命令；
+// 带参命令的入口是命令面板（按 schema 追问参数）、热键内联参数（"view.mode:3"）
+// 或界面菜单。
+//
+// 【209 → 207 的来历】（2026-11-22）删掉了两条**注定失败**的序列：
+//   q s → search.scope.set（必填 scope）、q q → search.query.set（必填 query）。
+//   它们的正确入口是命令面板与界面（范围菜单 / 历史下拉），不是序列。
+//   同一个 q 前缀下保留的两条（q h / q l）都是**无参**查询命令，不会踩这个坑。
+//
+// 【207 → 169 的来历】（2026-11-23）同一类缺陷的**全量清算**：
+//   上面那两条是"逐个发现、逐个删"的，剩下 38 条一直留着 —— 每按一次都注定失败。
+//   其中三条不是失败，而是"静默做了别的事"（比失败更坏）：
+//     t o → tab.color        空 color=0        → 标签被改成"无颜色"
+//     w w → win.move         空 x,y=0          → 窗口挪到屏幕左上角
+//     v r → view.pane.split  空 percent=50     → 分栏比例被重置成一半
+//   另外 5 条（bmk.import/bmk.export/file.rename.batch/session.named.save/tool.compare）
+//   在空参下会**弹出输入框**——序列按下去冒出一个模态框，同样是"按了没按预期的做"。
+//
+//   修法不是补内联参数（这些参数的合法值是运行时才知道的，没有可写死的确定值），
+//   而是删掉绑定：带参命令的正确入口是命令面板（按 schema 追问）或界面菜单。
+//   防复发已经机械化：`check_commands.py` 规则 C4 直接从 argsSchema 的 required
+//   判定"序列绑了必填参数却没有内联参数"，命中即报错 —— 下次新增命令不用有人记得。
+constexpr size_t kExpectedSequences = 169;
 
 int main(int argc, char** argv) {
     // 二进制没有宽字符命令行；用窄 argv 直接转（路径只含 ASCII）。

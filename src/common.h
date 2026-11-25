@@ -74,8 +74,6 @@ enum : UINT {
     WM_APP_TAB_CLOSE,
     WM_APP_TAB_NEW,
     WM_APP_TAB_MENU,     // wParam=index, lParam=screen POINT 打包（LOWORD x / HIWORD y 不可靠，用 lParam 指针）
-    WM_APP_TAB_COLOR,    // wParam=index, lParam=颜色下标（0=无颜色）。与 MENU 分开：
-                         // 一个是"选了哪个动作"，一个是"选了什么值"，混在一个 lParam 要位打包
     WM_APP_TAB_MOVED,    // wParam=from, lParam=to
     WM_APP_CHROME_MENU,  // 通用：wParam=区域 id，lParam=POINT*
     WM_APP_STATUS_MENU,
@@ -92,6 +90,61 @@ enum : UINT {
     // 派发后立刻释放 clickClaimed_，避免残留 claim 吞掉下一次组件点击。
     WM_APP_MOUSE_DOWN_NOUP = WM_APP + 30,
     WM_APP_MOUSE_UP_NOUP,
+    // 焦点事件观察（EVENT_OBJECT_FOCUS）回调里回投 UI 线程：双栏下焦点换了视图，
+    // 据此同步活动窗格与外壳（地址栏/标签/状态栏）。只读观察，不改变焦点。
+    WM_APP_FOCUS_CHANGED = WM_APP + 40,
+
+    // 导航根集的**发现**在工作线程上跑完了（见 nav_pane_root.h 的 Prefetch*）：
+    // 回到 UI 线程把根集换成完整清单。
+    // 【为什么必须是独立消息而不是 Sleep 轮询】轮询会把 UI 线程拖住，
+    // 正是本次要修的"启动半秒空白"。这里由工作线程 PostMessage，UI 线程
+    // 一有空就处理；lParam 不用（清单本身在 nav_pane_root 的缓存里）。
+    WM_APP_NAV_ROOTS_READY = WM_APP + 50,
+
+    // 首帧已经画出来了：启动期押后的活（建右窗格视图）现在补。
+    //
+    // 【为什么不在 Run 里直接调】要让首帧先落到屏幕上，必须让消息循环开始转
+    // （ShowWindow + UpdateWindow 之后 WM_PAINT 才被处理）。所以这里投一条消息：
+    // 它的处理时刻"必然在首帧之后"，比在 Run 里调更早不了、也更晚不了。
+    WM_APP_STARTUP_SETTLE = WM_APP + 51,
+
+    // AI 面板：把"创建 WebView2"推迟到消息循环空闲时。
+    //
+    // 【为什么必须推迟】WebView2 的环境/控制器创建是异步的，回调靠本线程的
+    // 消息循环派发。从命令处理器里同步调用 Start()，那一帧消息循环还没转回来，
+    // 回调无处可送 —— 实测表现是 CreateCoreWebView2EnvironmentWithOptions 返回
+    // S_OK，然后一片安静，永远等不到 OnEnvironmentReady。
+    // 投一条消息，处理时刻必然在循环空闲之后，回调就能正常送到。
+    WM_APP_AI_PANEL_CREATE = WM_APP + 52,
+
+    // 关闭的标签页：视图已从界面摘掉，真正销毁推迟到这里。
+    //
+    // 【为什么延后】探针 84 实测 ShellView::Destroy（IExplorerBrowser::Destroy +
+    // Release + DestroyWindow）= 20~69 ms per view，全在 UI 线程。关一个标签会
+    // 同步销毁 1~2 个视图，于是"点 X 到界面有反应"要 20~138 ms。
+    // 用户对"关闭"的期待是立刻消失，清理可以稍后做 —— 见 app.h 的 pendingDestroy_。
+    WM_APP_RECLAIM_VIEWS = WM_APP + 53,
+
+    // AI 面板：WebView2 就绪并可见后，投一条消息做一次"尺寸轻推"来强制呈现。
+    //
+    // 【为什么需要】WebView2 在父窗口已是最终尺寸时首次创建，内容会在内部
+    // 渲染好，但合成器不会把它呈现出来 —— 面板一片纯白（实测取样 100% 白）。
+    // 只要父窗口尺寸发生一次真实变化，合成器立刻重建可见表面并完成呈现
+    // （取样从 1 种颜色变成上百种）。这是 WebView2Feedback #5673 记录的行为。
+    // 就绪回调里 put_Bounds 用的是和已有值相同的矩形，不构成尺寸变化，
+    // 所以必须在稍后的消息循环里把宿主缩小 2px 再还原，制造一次真实变化。
+    WM_APP_AI_WEBVIEW_PRESENT = WM_APP + 54,
+
+    // 导航窗格空白区右键：NSTC 的事件回调里不能跑模态弹层（会重入 shell），
+    // 由占位 IContextMenu 投这条消息，回到正常消息循环后走 ui::Menu::Show。
+    // lParam = 鼠标屏幕坐标（MAKEPOINT），wParam 不用。
+    WM_APP_NAV_BLANK_MENU = WM_APP + 55,
+
+    // 文件视图自动刷新（M7）：shell 变更通知从 NavPane 的宿主窗口回投到主窗口。
+    // 【为什么投消息而不是 NavPane 直接调 App】依赖方向是 app → nav_pane，
+    // 下层不能反向 include 上层；投消息让 App 自己决定何时刷哪个窗格。
+    // App 侧用 300ms 合并定时器去抖：批量文件操作会连发几十条通知，只刷一次。
+    WM_APP_VIEW_AUTO_REFRESH = WM_APP + 56,
 };
 
 // 鼠标事件汇入 InputRouter（组件 -> App）。返回 true = 规则已接管，组件跳过默认行为。
@@ -101,6 +154,13 @@ enum : UINT {
 using MouseSink = std::function<bool(int target, UINT msg, int button, int mods, POINT screen)>;
 
 // 路径转发（WM_COPYDATA）。已有窗口收到后在新标签里打开；没有窗口则调用方新开进程。
+//
+// 【跨软件契约：magic 与 path 的位置/大小永不改】
+// /select 要选中的目标作为**变长尾随数据**跟在 path 的 NUL 之后，不占结构字段：
+// 发送端按"结构头 + path 实际字符 + 可选 select 实际字符"分配连续缓冲，
+// 接收端先读 path 到 NUL，再从 NUL 之后按 cbData 剩余长度读 select。
+// 这样新→老（老实例只读 path、忽略尾部）与老→新（cbData 只够 path、无 select）
+// 都天然兼容 —— 这正是接收端"按 cbData 实际长度读"设计的本意。
 using id::kCopyDataMagic;
 struct CopyDataPayload {
     ULONG_PTR magic;

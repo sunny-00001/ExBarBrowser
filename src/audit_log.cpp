@@ -17,17 +17,15 @@ namespace {
 // 审计文件的位置与轮转阈值。
 //
 // 【为什么两个文件、两套阈值】
-// audit.jsonl 是规范格式：机器读，按大小轮转（2 MB）。
-// audit.log 是旧文本镜像：既有脚本在读，按行数轮转（200 行，与旧行为一致）。
-// 两者的阈值不一样是历史原因，不是新设计 —— 但因为都从同一条 Record 渲染，
-// 内容不会对不上。
-constexpr unsigned long long kJsonlRotateBytes = 2ull << 20;
+// audit.jsonl 是规范格式：机器读，按大小轮转。
+// audit.log 是旧文本镜像：既有脚本在读，同样按大小轮转。
+// 两者阈值都来自同一个设置 auditRotateKB（默认 2048=2MB）—— 但因为是同一条
+// Record 渲染，内容不会对不上。轮转大小不再是写死的裸数字，合规场景可调大。
+// 检查频率（每多少条查一次文件大小）是内部调优常量，不暴露给用户。
 constexpr int kJsonlCheckEvery = 200;
-constexpr unsigned long long kTextRotateBytes = 2ull << 20;
 constexpr int kTextCheckEvery = 200;
 
-// 参数文本的显示上限（与旧 DescribeArgs 一致）。
-constexpr size_t kArgsTextLimit = 160;
+// 参数文本的显示上限来自设置 auditArgsTextLimit（默认 160，与旧 DescribeArgs 一致）。
 
 // 当前上下文。thread_local：AI 通道的命令全在 UI 线程上跑，
 // 但万一将来 JSON-RPC 路径挪到别的线程，也不会互相污染。
@@ -153,12 +151,16 @@ bool Write(const Record& r) {
     // 规范格式：audit.jsonl（R18 要求的文件名）。
     const std::wstring jsonl = tf::Join(dir, L"audit.jsonl");
     const std::string line = tf::ToUtf8(ToJsonLine(r)) + "\n";
-    const bool okJson = tf::AppendLine(jsonl, line, kJsonlRotateBytes, kJsonlCheckEvery);
+    // 轮转大小来自设置 auditRotateKB（默认 2048=2MB）：合规场景可调大以延长回溯。
+    // 检查频率是内部调优常量（见文件头），不暴露。
+    const unsigned long long rotateBytes =
+        static_cast<unsigned long long>(Config::Get().s().auditRotateKB) * 1024ull;
+    const bool okJson = tf::AppendLine(jsonl, line, rotateBytes, kJsonlCheckEvery);
 
     // 旧文本镜像：同一份 Record 的另一种投影。
     const std::wstring text = tf::Join(dir, L"audit.log");
     const std::string line2 = tf::ToUtf8(ToTextLine(r)) + "\r\n";
-    const bool okText = tf::AppendLine(text, line2, kTextRotateBytes, kTextCheckEvery);
+    const bool okText = tf::AppendLine(text, line2, rotateBytes, kTextCheckEvery);
 
     if (!okJson || !okText) {
         // 审计写不进去是事故，但不能让用户的操作失败 —— 记一条日志就够了。

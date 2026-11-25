@@ -5,15 +5,15 @@
 本仓库**自包含**（2026-11-20 起从 `D:\Windhawk` 主仓独立出来，见 §3.4）：不引用、不修改任何
 ExBar mod 分片，可并存、可整体拷走、可单独卸载。
 
-| 项 | 现状（2026-11-21 23:15，v0.2.2） |
+| 项 | 现状（2026-11-22 09:43，v0.2.2） |
 |---|---|
 | 阶段 | **P2 完成 + P3 起步**：标签/导航/书签/状态栏 + 键盘/序列/鼠标 + 命令契约 + AI 接口全部落地，日常浏览可用 |
-| 规模 | `src/` 约 3.14 万行（76 个 `.cpp` + 66 个 `.h`）；`tests/` 46 个单测、639 项断言（2026-11-21 实测；仓库在活跃并行开发，**行数每几分钟就变**，要看当前值见下方口径命令） |
+| 规模 | `src/` 约 3.91 万行（101 个 `.cpp` + 82 个 `.h`）；`tests/` 56 个单测、838 项断言（2026-11-22 实测；仓库在活跃并行开发，**行数每几分钟就变**，要看当前值见下方口径命令） |
 | 产物 | 单 exe 31.5 MB（含 `-g` 调试符号；`strip` 后约 1.9 MB），静态链接 libstdc++/libgcc |
 | 命令 | 由 `python tools/check_commands.py` 首行给出（目录 / 已实现 / 处理器），`check_ai_meta.py` 给出对 AI 暴露条数。**这三个数每加一条命令就变，本文不写死** |
 | 配置 | 便携模式，全部在 `<exe>\data`：`settings.json` / `bookmarks.html` / `keymap.json` / `mouse.json` / `audit.log` |
-| 验证 | clang++ 20.1.3 零警告；`build_fast.py --clean` 全量 **19.8s**（76 TU，默认 8 路并行）；冒烟改为**人工操作 + 只读证据**（日志 / `exbar/state` / 截图），不注入键鼠（`docs/MIGRATION-PLAN.md` §8.2、规则 R21） |
-| 检查 | 3 个静态检查全绿（2026-11-21 23:15 复核）：`check_components`（唯一性 / 禁令 / 接线 / 令牌消费 / **输入纪律 R21** 五类，条数以脚本末行为准）、`check_ai_meta`（24 组，含 R20 人机等价）、`check_commands`（三方对账，含 CmdId 顺序与 legacy 名基线） |
+| 验证 | clang++ 20.1.3 零警告；`build_fast.py --clean` 全量约 20s（101 TU，默认 8 路并行）；冒烟改为**人工操作 + 只读证据**（日志 / `exbar/state` / 截图），不注入键鼠（`docs/MIGRATION-PLAN.md` §8.2、规则 R21） |
+| 检查 | 3 个静态检查全绿（2026-11-22 复核，命令表 196 条 / 已实现 187）：`check_components`（唯一性 / 禁令 / 接线 / 令牌消费 / **输入纪律 R21** 六类，条数以脚本末行为准）、`check_ai_meta`（28 组，含 R20 人机等价）、`check_commands`（三方对账，含 CmdId 顺序与 legacy 名基线）。CI 强门见 `.github/workflows/ci.yml` |
 | 版本控制 | **独立仓库**（`E:\ExBarBrowser`，分支 `main`）：源码/脚本/文档/生成头入库，构建与运行产物由 `.gitignore` 排除 |
 
 > 本文所有路径均相对仓库根。文档基线：**2026-11-21 11:00**（代码仍在快速演进，
@@ -108,7 +108,7 @@ ExBarBrowser.exe（本进程）
 | 视图开关/排序/分组 | `src/shell_view.cpp` | 8 档模式、排序、分组、隐藏/系统/扩展名、隐藏三态、导航窗格、预览窗格开关（经 `IExplorerPaneVisibility` 跨目录强制保持用户意图） |
 | 文件操作 | `src/shell_ops.cpp` | 复制/剪切/粘贴/删除（回收站）/重命名/属性/打开/新建文件夹/新建文本/全选/定位首末项；含确定式 `SelectByPath`/`SelectNone`/`RenameTo` |
 | 键盘快捷键 | `src/keymap.cpp`、`src/chord.cpp`、`src/input_router.cpp` | 读 `data/keymap.json`（70 条，直接编辑该文件）；默认表由 `tools/gen_keymap.py` 生成到 `src/keymap.gen.h`，无双副本 |
-| 序列键 | `src/sequence.cpp`、`src/sequence_hint.cpp` | 38 条（`g g`/`g t`/`x l a`…）；前缀状态机 + 3000 ms 超时 + 候选弹层 + `Esc` 取消 |
+| 序列键 | `src/sequence.cpp`、`src/sequence_hint.cpp`、`src/sequence_overlay.cpp` | **209 条**（38 默认 + 171 全命令覆盖）；前缀状态机 + 3000 ms 超时 + 候选弹层 + `Esc` 取消；`/ ! # @ …` 唤起模式总览弹窗（命令/书签/标签/历史/跳转/…），打字过滤+上下导航+回车派发 |
 | 鼠标规则 | `src/mouse_rules.cpp`、`src/shell_input.cpp` | 目标区 × 按钮 × 触发（单击/双击/长按/四向滚轮）× 修饰键；shell 视图命中经子类 + UIA 汇入同一条规则引擎 |
 | 快捷键管理器 | `src/hotkey_manager.cpp` | 范围筛选、改键/清除/恢复默认、冲突/系统占用/未实现标记 |
 | 命令管线 | `src/commands.cpp` | 命令目录（与 mod 同 id 同组），参数对象化 `Invoke(id, Args, actor)`；`audit.log`；`tools/check_commands.py` 三方对账 |
@@ -288,7 +288,7 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
 | `Ctrl+Shift+1..8` | 8 档视图模式 |
 | `Ctrl+M` / `Ctrl+Shift+M` | 当前目录开终端 / 管理员终端 |
 | `Ctrl+Shift+P` / `Alt+K` | 命令面板 / 快捷键管理器 |
-| 序列 `g g` / `g t` / `x l a` … | 38 条（`data/keymap.json`；3000 ms 内连按） |
+| 序列 `g g` / `g t` / `x l a` … | **209 条**（`data/keymap.json`；前缀按命令组分配，每条已实现命令全覆盖；3000 ms 内连按） |
 | `Enter` / `Esc` / `Tab` | 地址栏提交 / 还原 / 同级补全 |
 | 鼠标中键点标签 / 滚轮在标签栏 | 关闭标签 / 切换标签 |
 | 双击书签栏空白 / 状态栏空白 | 切换书签栏 / 复制当前目录 |
@@ -435,7 +435,7 @@ ExBarBrowser/                       独立 git 仓库（main）
 ├─ tests/                           46 个单测（每个 .cpp 自带 main + Check；`bash tests/run_all.sh` 一键跑全量，数量自动枚举）
 ├─ tools/                           check_commands / check_ai_meta / check_components / gen_keymap / gen_icon / probe_highlight / probe_toggle
 ├─ scripts/                         shot.py / install.ps1 / uninstall.ps1
-├─ docs/                            见下表（15 篇）
+├─ docs/                            见下表（19 篇）
 ├─ resources/                       app.ico / app.rc / icon_preview.png
 ├─ data/                            运行期配置（**不入库**，首次启动自动生成）
 ├─ build.sh / build.bat             构建入口（薄包装，透传参数）
@@ -452,9 +452,14 @@ ExBarBrowser/                       独立 git 仓库（main）
 | [docs/ARCHITECTURE-RULES.md](docs/ARCHITECTURE-RULES.md) | 要写新代码的人 | **架构规则**：对象模型、目录与依赖、R1–R21 硬规则（组件/载体/输入端/管线/AI 安全/输入纪律）、机械校验清单 |
 | [docs/ARCHITECTURE-PROPOSAL.md](docs/ARCHITECTURE-PROPOSAL.md) | 要参与定架构的人 | 候选方案 A/B/C 对比、推荐理由、迁移批次与风险（含 Opus 调研后的修订） |
 | [docs/DOPUS-NOTES.md](docs/DOPUS-NOTES.md) | 想参考成熟产品的人 | Directory Opus 的公开契约（对象模型/命令/插件/外部调用）与"抄什么不抄什么" |
+| [docs/DOPUS-PARITY.md](docs/DOPUS-PARITY.md) | 要知道跟 Opus 还差什么的人 | **对 Directory Opus 的逐项能力对标**：机器接口（我们更强）vs 领域广度（Opus 更强）、缺口清单、该抄/不该抄、优先级与两处待拍板分叉 |
+| [docs/EXPLORER-GAP-AUDIT.md](docs/EXPLORER-GAP-AUDIT.md) | 要判断能不能替代 explorer 的人 | 与 Windows 11 资源管理器的逐项差距审计（错误/缺失/有意取舍三分法） |
+| [docs/COMPETITIVE-GAP-2026-11-21.md](docs/COMPETITIVE-GAP-2026-11-21.md) | 要看同类产品对比的人 | 与 13 款同类资源管理器的对标、真错误清单、优先级建议 |
+| [docs/REFERENCE-ASSETS-MAP.md](docs/REFERENCE-ASSETS-MAP.md) | 手里攒了一批参考素材的人 | 下载目录素材逐项映射到本仓命令位 / 模块 / 缺口，标出"可直接接 / 抄思路 / 看得见 / 无关" |
+| [docs/PRIORITY-STATUS.md](docs/PRIORITY-STATUS.md) | 要排下一步改进的人 | E1–E8 / M1–M8 的实跑复核（哪些已修 / 真缺）、真缺项排序、当前并行会话阻断说明 |
+| [docs/GAP-ANALYSIS-EXTERNAL.md](docs/GAP-ANALYSIS-EXTERNAL.md) | 要看外部产品差距的人 | 对外部成熟产品的能力差分析 |
 | [docs/MIGRATION-PLAN.md](docs/MIGRATION-PLAN.md) | 要迁移 mod 功能的人 | **迁移规格**：标签栏/导航栏/书签栏/状态栏/键盘/序列/鼠标的功能清单、可移植性分级、数据资产、顺序与估时 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 要构建/调试的人 | 工具链、构建、日志、截图、注册脚本、常见故障、扩展步骤 |
-| [docs/FULL-COVERAGE.md](docs/FULL-COVERAGE.md) | 要回答"是不是所有操作都能程序化"的人 | **全覆盖模型**：操作覆盖的判据、三平面闭环（执行/观测/改进）、为什么不能靠模拟输入 |
 | [docs/PARITY.md](docs/PARITY.md) | 要判断"能不能替代 explorer"的人 | 与 ExBar mod 127 条命令的逐组对照（已实现 / 未实现）、差异根因 |
 | [docs/INPUT.md](docs/INPUT.md) | 要改键位/序列/鼠标规则的人 | 输入端主线、keymap/mouse 文件格式、时序语义、管理器用法、排查 |
 | [docs/AI-INTERFACE.md](docs/AI-INTERFACE.md) | 要接 AI / 写 MCP 封装的人 | **AI 操作接口**（已实现）：命令白名单规则、JSON-RPC 管道协议、stdio 入口（`--mcp-stdio`）、令牌与双门授权、错误码 |

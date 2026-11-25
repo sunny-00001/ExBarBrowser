@@ -41,6 +41,20 @@ inline constexpr ViewMode kModes[] = {
 
 inline constexpr int kCount = static_cast<int>(sizeof(kModes) / sizeof(kModes[0]));
 
+// 排序 / 分组维度的标签表（4 档，下标与 Config::sortMode / groupBy 一一对应）。
+//
+// 【为什么也放在这里】视图档位表原本只有一处，但排序/分组的 8 个中文名
+// 此前住在 nav_bar_actions.cpp 的文件私有静态数组里 —— 于是设置对话框
+// （要把它们显示成下拉项）只能再抄一份。两份表迟早不同步，而不同步的表现
+// 是"下拉里写'按日期排序'、写进去的值却是'按大小'"——没有任何检查会报。
+//
+// 维度表与档位表放一起的理由相同：它们都是"下标即契约"的维度表。
+inline constexpr int kSortGroupCount = 4;
+inline constexpr const wchar_t* kSortLabels[kSortGroupCount] = {L"按名称排序", L"按日期排序",
+                                                                 L"按类型排序", L"按大小排序"};
+inline constexpr const wchar_t* kGroupLabels[kSortGroupCount] = {L"不分组", L"按类型分组",
+                                                                  L"按日期分组", L"按大小分组"};
+
 // Ctrl+滚轮的图标尺寸步进。两侧都夹在 16..256，避免 shell 收到 0 或超大值后
 // 直接忽略整次设置（表现为“按了没反应”，最难查的一种失败）。
 inline constexpr int kMinIconPx = 16;

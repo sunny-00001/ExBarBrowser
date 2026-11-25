@@ -240,4 +240,41 @@ bool ShouldYieldToEdit(unsigned vk, int mods) {
     return false;
 }
 
+wchar_t CharOfVk(unsigned vk, bool shift) {
+    // US 布局的确定性映射（见 chord.h 的说明）：
+    // 不用 ToUnicodeEx —— 中文输入法会把字母吃进拼音组合（返回 0），还会把
+    // 桌面级输入法状态卡死；也不用 WM_CHAR —— 那是"输入法转好字之后"的结果，
+    // 中文态下要等用户提交组合才有。这里按物理键直接给字符：输入法看不到
+    // 这些键（宿主在按键层就吞掉），所以也不会有拼音组合。
+    if (vk >= 'A' && vk <= 'Z') {
+        // CapsLock 与 Shift 互相反转（与系统一致）。
+        const bool caps = (GetKeyState(VK_CAPITAL) & 1) != 0;
+        const wchar_t base = static_cast<wchar_t>(vk);
+        return (shift != caps) ? base : static_cast<wchar_t>(towlower(base));
+    }
+    if (vk >= '0' && vk <= '9') {
+        if (!shift) return static_cast<wchar_t>(vk);
+        static const wchar_t kShiftDigits[] = L")!@#$%^&*(";
+        return kShiftDigits[vk - '0'];
+    }
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9)
+        return static_cast<wchar_t>(L'0' + (vk - VK_NUMPAD0));
+    switch (vk) {
+    case VK_SPACE: return L' ';
+    case VK_OEM_1: return shift ? L':' : L';';
+    case VK_OEM_PLUS: return shift ? L'+' : L'=';
+    case VK_OEM_COMMA: return shift ? L'<' : L',';
+    case VK_OEM_MINUS: return shift ? L'_' : L'-';
+    case VK_OEM_PERIOD: return shift ? L'>' : L'.';
+    case VK_OEM_2: return shift ? L'?' : L'/';
+    case VK_OEM_3: return shift ? L'~' : L'`';
+    case VK_OEM_4: return shift ? L'{' : L'[';
+    case VK_OEM_5: return shift ? L'|' : L'\\';
+    case VK_OEM_6: return shift ? L'}' : L']';
+    case VK_OEM_7: return shift ? L'"' : L'\'';
+    case VK_DECIMAL: return L'.';
+    default: return 0;
+    }
+}
+
 }  // namespace chord

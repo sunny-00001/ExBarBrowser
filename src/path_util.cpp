@@ -47,6 +47,18 @@ std::wstring ToShellPath(const std::wstring& path) {
     return CollapseSeparators(p);
 }
 
+// 裸 ::{GUID} -> shell:::{GUID}。理由见头文件。
+//
+// 只补这一种形态：`::` 开头但**不是** `shell:` 前缀的解析名。
+// `shell:` 开头说明调用方已经归一化过（例如 nav_pane::PathOfItem 的出口），
+// 再补一次会变成 `shell::shell:::{…}` —— 那种串一样解析失败，而且更难看出原因。
+std::wstring ToParsingName(const std::wstring& raw) {
+    if (raw.empty()) return raw;
+    if (raw.rfind(L"shell:", 0) == 0) return raw;   // 已归一化，幂等
+    if (raw.rfind(L"::", 0) == 0) return L"shell:" + raw;
+    return raw;
+}
+
 std::vector<std::wstring> ToShellPaths(const std::vector<std::wstring>& paths) {
     std::vector<std::wstring> out;
     out.reserve(paths.size());

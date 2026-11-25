@@ -1,4 +1,5 @@
 #include "shell_ops.h"
+#include "shell_ops_internal.h"
 #include "str.h"
 
 #include <propkey.h>
@@ -24,10 +25,9 @@ ComPtr<IShellFolder> ShellFolder(IFolderView2* fv2) {
 }
 namespace {
 
-// 实现在本文件的公开区（见下方 FolderView2 / ShellFolder）；这里只放别名，
-// 让本文件内既有调用点零改动。
-ComPtr<IFolderView2> GetFv2(IShellView* view) { return FolderView2(view); }
-ComPtr<IShellFolder> GetFolder(IFolderView2* fv2) { return ShellFolder(fv2); }
+// GetFv2 / GetFolder / HiddenFlags 与 ItemFullPath / SamePath 现在收在
+// shell_ops_internal.h 的 shellops::detail，与本文件及 shell_ops_query.cpp 共用。
+// 本文件内的调用点统一写 detail:: 前缀，避免再出现同名的匿名命名空间别名。
 
 // IFileOperation 的执行与判成败在 shell_op_exec.cpp（唯一实现）——
 // 本文件与 shell_ops_path.cpp 共用同一份，不再各写一遍。
@@ -65,12 +65,12 @@ bool Invoke(IContextMenu* cm, HWND owner, const char* verb) {
 }
 
 bool InvokeOnSelection(IShellView* view, HWND owner, const char* verb) {
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
 
     // 显示的文件夹本身就是选中项的父文件夹（不要 SHBindToParent+BindToObject：
     // 那会拿到"选中项自己的文件夹"，再用兄弟项的 PIDL 去 GetUIObjectOf 就全错了）。
-    ComPtr<IShellFolder> folder = GetFolder(fv2.get());
+    ComPtr<IShellFolder> folder = detail::GetFolder(fv2.get());
     if (!folder) return false;
 
     // 用 GetSelection 而不是 GetSelectionMarkedItem：Shift 多选时标记项只代表焦点项，
@@ -209,7 +209,7 @@ bool CopyPaths(const std::vector<std::wstring>& paths, bool cut) {
             const std::wstring parent0 = ParentOf(sp[0]);
             for (size_t i = 1; i < sp.size(); ++i) {
                 const std::wstring pi = ParentOf(sp[i]);
-                // CompareStringOrdinal + 忽略大小写：与 SamePath（本文件后部）同口径，
+                // CompareStringOrdinal + 忽略大小写：与 detail::SamePath 同口径，
                 // 这里不能用 _wcsicmp —— 它依赖 locale，土耳其语等区域会把 i/I 判错。
                 if (CompareStringOrdinal(pi.c_str(), -1, parent0.c_str(), -1, TRUE) != CSTR_EQUAL) {
                     LogDbg(L"[shell] CopyPaths: 跨目录多选不支持（%s 与 %s 不同父）",
@@ -276,9 +276,9 @@ bool CopyPaths(const std::vector<std::wstring>& paths, bool cut) {
 }
 
 bool Paste(IShellView* view, HWND owner) {
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
-    ComPtr<IShellFolder> folder = GetFolder(fv2.get());
+    ComPtr<IShellFolder> folder = detail::GetFolder(fv2.get());
     if (!folder) return false;
     ComPtr<IContextMenu> cm;
     if (FAILED(folder->CreateViewObject(owner, IID_IContextMenu, reinterpret_cast<void**>(&cm))) ||
@@ -292,7 +292,7 @@ namespace {
 // DeleteSelection 与 DeleteSelectionPermanently 的唯一差别是 FOF_ALLOWUNDO。
 // 抽成一份实现，避免"回收站版"和"永久版"日后在选中集/错误处理上分叉。
 bool DeleteSelectionImpl(IShellView* view, HWND owner, bool permanent) {
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
     ComPtr<IShellItemArray> sel;
     if (FAILED(fv2->GetSelection(FALSE, &sel)) || !sel) return false;
@@ -333,9 +333,9 @@ bool InvokeSelectionVerb(IShellView* view, HWND owner, const char* verb) {
 }
 
 bool InvokeFolderVerb(IShellView* view, HWND owner, const char* verb) {
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
-    ComPtr<IShellFolder> folder = GetFolder(fv2.get());
+    ComPtr<IShellFolder> folder = detail::GetFolder(fv2.get());
     if (!folder) return false;
     ComPtr<IContextMenu> cm;
     if (FAILED(folder->CreateViewObject(owner, IID_IContextMenu, reinterpret_cast<void**>(&cm))) ||
@@ -398,7 +398,7 @@ std::wstring LocalizedNewTextName() {
 }  // namespace
 
 bool NewFolder(IShellView* view, HWND owner) {
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
     ComPtr<IShellItem2> folder;
     if (FAILED(fv2->GetFolder(IID_IShellItem2, reinterpret_cast<void**>(&folder))) || !folder)
@@ -419,7 +419,7 @@ bool NewFolder(IShellView* view, HWND owner) {
 
 bool TransferToFolder(IShellView* view, HWND owner, const std::wstring& target, bool move) {
     if (!view || target.empty()) return false;
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
     ComPtr<IShellItemArray> sel;
     if (FAILED(fv2->GetSelection(FALSE, &sel)) || !sel) return false;
@@ -452,7 +452,7 @@ bool NewTextFile(IShellView* view, HWND owner, std::wstring* created) {
     // 优先 IFileOperation::NewItem：与"新建文件夹"同一条链路，可以 Ctrl+Z 撤销、
     // 冲突由 shell 按 FOF_RENAMEONCOLLISION 处理。以前裸 CreateFileW 建出来的文件
     // 不在撤销栈里，用户误建只能自己删。
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     ComPtr<IShellItem2> folder;
     if (fv2 && SUCCEEDED(fv2->GetFolder(IID_IShellItem2, reinterpret_cast<void**>(&folder))) &&
         folder) {
@@ -523,7 +523,7 @@ bool NewTextFile(IShellView* view, HWND owner, std::wstring* created) {
 bool FirstFolderSelection(IShellView* view, std::wstring* path) {
     if (!path) return false;
     path->clear();
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
     ComPtr<IShellItemArray> sel;
     if (FAILED(fv2->GetSelection(FALSE, &sel)) || !sel) return false;
@@ -544,7 +544,7 @@ bool FirstFolderSelection(IShellView* view, std::wstring* path) {
 bool SelectAll(IShellView* view) {
     // IShellView::SelectItem(nullptr) 是"全选"的旧写法，在 IFolderView2 视图上不生效。
     // 逐项 SelectItem，去掉 DESELECTOTHERS。
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
     int count = 0;
     if (FAILED(fv2->ItemCount(SVGIO_ALLVIEW, &count)) || count <= 0) return false;
@@ -559,7 +559,7 @@ bool SelectAll(IShellView* view) {
 }
 
 bool SelectIndex(IShellView* view, int index) {
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2 || index < 0) return false;
     PITEMID_CHILD pidl = nullptr;
     if (FAILED(fv2->Item(index, &pidl)) || !pidl) return false;
@@ -569,183 +569,12 @@ bool SelectIndex(IShellView* view, int index) {
     return SUCCEEDED(hr);
 }
 
-bool SetSortByKey(IShellView* view, const PROPERTYKEY& key, int ascending) {
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
-    if (!fv2) return false;
-    int dir = 1;
-    if (ascending >= 0) {
-        dir = ascending ? 1 : -1;
-    } else {
-        int cols = 0;
-        if (SUCCEEDED(fv2->GetSortColumnCount(&cols)) && cols > 0) {
-            cols = std::min(cols, 8);
-            std::vector<SORTCOLUMN> cur(static_cast<size_t>(cols));
-            if (SUCCEEDED(fv2->GetSortColumns(cur.data(), cols)) &&
-                IsEqualGUID(cur[0].propkey.fmtid, key.fmtid) && cur[0].propkey.pid == key.pid &&
-                cur[0].direction > 0)
-                dir = -1;
-        }
-    }
-    SORTCOLUMN col{};
-    col.propkey = key;
-    col.direction = dir;
-    return SUCCEEDED(fv2->SetSortColumns(&col, 1));
-}
-
-bool SetSort(IShellView* view, int mode, int ascending) {
-    const PROPERTYKEY* key = &PKEY_ItemNameDisplay;
-    switch (mode) {
-    case 1: key = &PKEY_DateModified; break;
-    case 2: key = &PKEY_ItemTypeText; break;
-    case 3: key = &PKEY_Size; break;
-    default: break;
-    }
-    return SetSortByKey(view, *key, ascending);
-}
-
-bool GetSort(IShellView* view, int* mode, bool* ascending) {
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
-    if (!fv2) return false;
-    int cols = 0;
-    if (FAILED(fv2->GetSortColumnCount(&cols)) || cols <= 0) return false;
-    cols = std::min(cols, 8);
-    std::vector<SORTCOLUMN> cur(static_cast<size_t>(cols));
-    int got = cols;
-    if (FAILED(fv2->GetSortColumns(cur.data(), got)) || got <= 0) return false;
-
-    // 只认本工程能表达的四列；其它列返回 false，让调用方保留原配置。
-    const PROPERTYKEY& k = cur[0].propkey;
-    int m = -1;
-    if (IsEqualGUID(k.fmtid, PKEY_ItemNameDisplay.fmtid) && k.pid == PKEY_ItemNameDisplay.pid)
-        m = 0;
-    else if (IsEqualGUID(k.fmtid, PKEY_DateModified.fmtid) && k.pid == PKEY_DateModified.pid)
-        m = 1;
-    else if (IsEqualGUID(k.fmtid, PKEY_ItemTypeText.fmtid) && k.pid == PKEY_ItemTypeText.pid)
-        m = 2;
-    else if (IsEqualGUID(k.fmtid, PKEY_Size.fmtid) && k.pid == PKEY_Size.pid)
-        m = 3;
-    if (m < 0) return false;
-
-    if (mode) *mode = m;
-    if (ascending) *ascending = cur[0].direction >= 0;
-    return true;
-}
-
-bool GetSortKey(IShellView* view, PROPERTYKEY* out, bool* ascending) {
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
-    if (!fv2) return false;
-    int cols = 0;
-    if (FAILED(fv2->GetSortColumnCount(&cols)) || cols <= 0) return false;
-    cols = std::min(cols, 8);
-    std::vector<SORTCOLUMN> cur(static_cast<size_t>(cols));
-    int got = cols;
-    if (FAILED(fv2->GetSortColumns(cur.data(), got)) || got <= 0) return false;
-    if (out) *out = cur[0].propkey;
-    if (ascending) *ascending = cur[0].direction >= 0;
-    return true;
-}
-
-bool SetGroupByKey(IShellView* view, const PROPERTYKEY& key) {
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
-    if (!fv2) return false;
-    return SUCCEEDED(fv2->SetGroupBy(key, TRUE));
-}
-
-bool GetGroupKey(IShellView* view, PROPERTYKEY* out) {
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
-    if (!fv2) return false;
-    BOOL asc = FALSE;
-    PROPERTYKEY k{};
-    if (FAILED(fv2->GetGroupBy(&k, &asc))) return false;
-    if (out) *out = k;
-    return true;
-}
-
-bool SetGroup(IShellView* view, int mode) {
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
-    if (!fv2) return false;
-    HRESULT hr = S_OK;
-    if (mode == 0) {
-        PROPERTYKEY none{};
-        hr = fv2->SetGroupBy(none, FALSE);
-    } else {
-        const PROPERTYKEY* key = &PKEY_ItemTypeText;
-        if (mode == 2) key = &PKEY_DateModified;
-        if (mode == 3) key = &PKEY_Size;
-        hr = fv2->SetGroupBy(*key, TRUE);
-    }
-    return SUCCEEDED(hr);
-}
-
-namespace {
-
-DWORD HiddenFlags() { return SSF_SHOWALLOBJECTS | SSF_SHOWSUPERHIDDEN | SSF_SHOWEXTENSIONS; }
-
-}  // namespace
-
-bool ToggleHidden(IShellView* view, int which, HWND owner) {
-    (void)owner;
-    SHELLSTATE ss{};
-    SHGetSetSettings(&ss, HiddenFlags(), FALSE);
-    if (which == 0)
-        ss.fShowAllObjects = ss.fShowAllObjects ? FALSE : TRUE;
-    else if (which == 1)
-        ss.fShowSuperHidden = ss.fShowSuperHidden ? FALSE : TRUE;
-    else
-        ss.fShowExtensions = ss.fShowExtensions ? FALSE : TRUE;
-    SHGetSetSettings(&ss, HiddenFlags(), TRUE);
-    // SHCNE_ASSOCCHANGED 会让整个 shell 重建关联/图标缓存（系统级抖动）。
-    // 这里只影响"当前目录显示哪些项"，用 UPDATEDIR 即可。
-    const std::wstring dir = ViewFolderPath(view);
-    if (!dir.empty())
-        SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, dir.c_str(), nullptr);
-    if (view) view->Refresh();
-    return true;
-}
-
-int CycleHiddenState(IShellView* view, HWND owner) {
-    SHELLSTATE ss{};
-    SHGetSetSettings(&ss, HiddenFlags(), FALSE);
-    int state = 0;  // 0 全显 / 1 隐系统 / 2 隐全部
-    if (!ss.fShowAllObjects)
-        state = 2;
-    else if (!ss.fShowSuperHidden)
-        state = 1;
-    int next = (state + 1) % 3;
-    ss.fShowAllObjects = next == 2 ? FALSE : TRUE;
-    ss.fShowSuperHidden = next == 0 ? TRUE : FALSE;
-    SHGetSetSettings(&ss, HiddenFlags(), TRUE);
-    const std::wstring dir = ViewFolderPath(view);
-    if (!dir.empty())
-        SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, dir.c_str(), nullptr);
-    (void)owner;
-    if (view) view->Refresh();
-    return next;
-}
-
-HiddenFlagsState GetHiddenFlags() {
-    // 与 ToggleHidden / CycleHiddenState **同一个掩码**（HiddenFlags 在上面，
-    // 同一 TU 内共用）。掩码不一致就会出现"读到的是另一个开关"。
-    SHELLSTATE ss{};
-    SHGetSetSettings(&ss, HiddenFlags(), FALSE);
-    HiddenFlagsState st;
-    st.showAllObjects = ss.fShowAllObjects != FALSE;
-    st.showSuperHidden = ss.fShowSuperHidden != FALSE;
-    st.showExtensions = ss.fShowExtensions != FALSE;
-    // 三态口径与 CycleHiddenState 的编码完全一致（否则读到的三态与写出的三态
-    // 不是同一个刻度，断言 view.cycle.hidden=$changed 就会误判）。
-    st.triState = !st.showAllObjects ? 2 : (!st.showSuperHidden ? 1 : 0);
-    return st;
-}
-
 // ---------------------------------------------------------------- 显式目标
-
-namespace {
 
 // 取某个子项（PITEMID_CHILD）的完整文件系统路径。
 // 非文件系统项（命名空间扩展、搜索结果里的虚拟项）返回 false —— 这类项
 // 没有稳定路径，按路径定位本来就不适用，调用方应改用索引或拒绝。
-bool ItemFullPath(IShellFolder* folder, PCUITEMID_CHILD pidl, std::wstring* out) {
+bool detail::ItemFullPath(IShellFolder* folder, PCUITEMID_CHILD pidl, std::wstring* out) {
     if (!folder || !pidl || !out) return false;
     STRRET sr{};
     if (FAILED(folder->GetDisplayNameOf(pidl, SHGDN_FORPARSING, &sr))) return false;
@@ -768,7 +597,7 @@ bool ItemFullPath(IShellFolder* folder, PCUITEMID_CHILD pidl, std::wstring* out)
     return true;
 }
 
-bool SamePath(const std::wstring& a, const std::wstring& b) {
+bool detail::SamePath(const std::wstring& a, const std::wstring& b) {
     // 大小写不敏感比较：Windows 路径语义。用 CompareStringOrdinal 而不是 _wcsicmp，
     // 后者依赖当前 locale，在土耳其语等区域会错。
     //
@@ -788,8 +617,6 @@ bool SamePath(const std::wstring& a, const std::wstring& b) {
     return CompareStringOrdinal(na.c_str(), -1, nb2.c_str(), -1, TRUE) == CSTR_EQUAL;
 }
 
-}  // namespace
-
 bool SelectNone(IShellView* view) {
     if (!view) return false;
     // SelectItem(nullptr) 在 IFolderView2 视图上是"全选"，不是"清空"。
@@ -799,7 +626,7 @@ bool SelectNone(IShellView* view) {
     // 的 i 是**视图全局索引** —— 两者不能混用。若第 5、9 项被选中，
     // 混用会去取消第 0、1 项（取消错的项）。正确做法是用 Items() 直接
     // 拿到选中项那组 PIDL，不必自己按下标去够。
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
 
     ComPtr<IShellItemArray> sel;
@@ -833,9 +660,9 @@ bool SelectNone(IShellView* view) {
 
 bool SelectByPath(IShellView* view, const std::wstring& fullPath) {
     if (!view || fullPath.empty()) return false;
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
-    ComPtr<IShellFolder> folder = GetFolder(fv2.get());
+    ComPtr<IShellFolder> folder = detail::GetFolder(fv2.get());
     if (!folder) return false;
 
     // 这里用 SVGIO_ALLVIEW 配 Item(i) 是**正确**的：同一个索引空间
@@ -848,8 +675,8 @@ bool SelectByPath(IShellView* view, const std::wstring& fullPath) {
         PITEMID_CHILD pidl = nullptr;
         if (FAILED(fv2->Item(i, &pidl)) || !pidl) continue;
         std::wstring p;
-        const bool got = ItemFullPath(folder.get(), pidl, &p);
-        if (got && SamePath(p, fullPath)) {
+        const bool got = detail::ItemFullPath(folder.get(), pidl, &p);
+        if (got && detail::SamePath(p, fullPath)) {
             // DESELECTOTHERS 保证"就选这一个"——调用方要的是精确目标，
             // 不是"在用户已有选中里再加一个"。
             HRESULT hr = view->SelectItem(pidl, SVSI_SELECT | SVSI_DESELECTOTHERS |
@@ -864,7 +691,7 @@ bool SelectByPath(IShellView* view, const std::wstring& fullPath) {
 
 bool SelectedSinglePath(IShellView* view, std::wstring* fullPath) {
     if (!view || !fullPath) return false;
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
 
     // 同 SelectNone：用 Items(SVGIO_SELECTION) 拿选中项，而不是拿
@@ -891,9 +718,9 @@ bool SelectedSinglePath(IShellView* view, std::wstring* fullPath) {
 
 int SelectByPaths(IShellView* view, const std::vector<std::wstring>& paths) {
     if (!view || paths.empty()) return 0;
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return 0;
-    ComPtr<IShellFolder> folder = GetFolder(fv2.get());
+    ComPtr<IShellFolder> folder = detail::GetFolder(fv2.get());
     if (!folder) return 0;
 
     int count = 0;
@@ -909,12 +736,12 @@ int SelectByPaths(IShellView* view, const std::vector<std::wstring>& paths) {
         PITEMID_CHILD pidl = nullptr;
         if (FAILED(fv2->Item(i, &pidl)) || !pidl) continue;
         std::wstring p;
-        if (!ItemFullPath(folder.get(), pidl, &p)) {
+        if (!detail::ItemFullPath(folder.get(), pidl, &p)) {
             CoTaskMemFree(pidl);
             continue;
         }
         for (size_t k = 0; k < remaining.size(); ++k) {
-            if (!SamePath(remaining[k], p)) continue;
+            if (!detail::SamePath(remaining[k], p)) continue;
             // 第一个用 DESELECTOTHERS 清掉用户原有选中，后续叠加。
             SVSIF flags = SVSI_SELECT | SVSI_ENSUREVISIBLE;
             if (first) flags |= SVSI_DESELECTOTHERS;
@@ -957,9 +784,9 @@ int SelectWhere(IShellView* view, const std::function<bool(const DirEntry&)>& pr
     if (mode == SelectMode::Add) {
         // 追加：先不清空。SelectByPaths 的 first 分支会 DESELECTOTHERS，
         // 所以追加要单独处理 —— 直接逐项 SVSI_SELECT（不清别人）。
-        ComPtr<IFolderView2> fv2 = GetFv2(view);
+        ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
         if (!fv2) return 0;
-        ComPtr<IShellFolder> folder = GetFolder(fv2.get());
+        ComPtr<IShellFolder> folder = detail::GetFolder(fv2.get());
         if (!folder) return 0;
         int count = 0;
         if (FAILED(fv2->ItemCount(SVGIO_ALLVIEW, &count)) || count <= 0) return 0;
@@ -968,10 +795,10 @@ int SelectWhere(IShellView* view, const std::function<bool(const DirEntry&)>& pr
             PITEMID_CHILD pidl = nullptr;
             if (FAILED(fv2->Item(i, &pidl)) || !pidl) continue;
             std::wstring p;
-            const bool got = ItemFullPath(folder.get(), pidl, &p);
+            const bool got = detail::ItemFullPath(folder.get(), pidl, &p);
             if (got) {
                 for (const auto& h : hits) {
-                    if (!SamePath(h, p)) continue;
+                    if (!detail::SamePath(h, p)) continue;
                     if (SUCCEEDED(view->SelectItem(pidl, SVSI_SELECT))) ++hitsN;
                     break;
                 }
@@ -1032,7 +859,7 @@ int SelectByPattern(IShellView* view, const std::wstring& patterns, const Patter
 std::vector<std::wstring> SelectedPaths(IShellView* view) {
     std::vector<std::wstring> out;
     if (!view) return out;
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
+    ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return out;
 
     // 用 Items(SVGIO_SELECTION) 拿选中项，而不是拿"选中个数"当索引去 Item()。
@@ -1175,9 +1002,9 @@ bool RenameTo(IShellView* view, HWND owner, const std::wstring& fullPath,
     // 这里改成"只读地确认目标存在"，不动选中。
     bool inView = false;
     {
-        ComPtr<IFolderView2> fv2 = GetFv2(view);
+        ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
         if (fv2) {
-            ComPtr<IShellFolder> folder = GetFolder(fv2.get());
+            ComPtr<IShellFolder> folder = detail::GetFolder(fv2.get());
             if (folder) {
                 int count = 0;
                 if (SUCCEEDED(fv2->ItemCount(SVGIO_ALLVIEW, &count))) {
@@ -1185,7 +1012,8 @@ bool RenameTo(IShellView* view, HWND owner, const std::wstring& fullPath,
                         PITEMID_CHILD pidl = nullptr;
                         if (FAILED(fv2->Item(i, &pidl)) || !pidl) continue;
                         std::wstring p;
-                        inView = ItemFullPath(folder.get(), pidl, &p) && SamePath(p, path);
+                        inView = detail::ItemFullPath(folder.get(), pidl, &p) &&
+                                 detail::SamePath(p, path);
                         CoTaskMemFree(pidl);
                     }
                 }
@@ -1203,7 +1031,7 @@ bool RenameTo(IShellView* view, HWND owner, const std::wstring& fullPath,
 
     // 冲突检测：目标已存在则拒绝。IFileOperation 默认会问用户，
     // 但"确定式"调用不该弹框 —— 明确的失败比弹出对话框更可预期。
-    if (tf::Exists(dest) && !SamePath(dest, path)) {
+    if (tf::Exists(dest) && !detail::SamePath(dest, path)) {
         if (why) *why = L"目标已存在：" + dest;
         LogDbg(L"[shellops] RenameTo：目标已存在 %s", dest.c_str());
         return false;
@@ -1245,121 +1073,6 @@ bool RenameTo(IShellView* view, HWND owner, const std::wstring& fullPath,
         return false;
     }
     return true;
-}
-
-// ---------------------------------------------------------------- 只读查询
-
-namespace {
-
-// 从 IShellItem 读一组只读属性。失败项保持"未知"，不用 0 冒充。
-void FillItemInfo(IShellItem* item, ItemInfo* info) {
-    if (!item || !info) return;
-
-    PWSTR p = nullptr;
-    if (SUCCEEDED(item->GetDisplayName(SIGDN_NORMALDISPLAY, &p)) && p) {
-        info->name = p;
-        CoTaskMemFree(p);
-    }
-    p = nullptr;
-    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &p)) && p) {
-        info->path = p;
-        CoTaskMemFree(p);
-    }
-
-    SFGAOF attrs = 0;
-    if (SUCCEEDED(item->GetAttributes(SFGAO_FOLDER | SFGAO_HIDDEN | SFGAO_READONLY, &attrs))) {
-        info->isFolder = (attrs & SFGAO_FOLDER) != 0;
-        info->hidden = (attrs & SFGAO_HIDDEN) != 0;
-        info->readonly_ = (attrs & SFGAO_READONLY) != 0;
-    }
-
-    ComPtr<IShellItem2> i2;
-    if (SUCCEEDED(item->QueryInterface(IID_IShellItem2, reinterpret_cast<void**>(&i2))) && i2) {
-        UINT64 sz = 0;
-        // 文件夹的 PKEY_Size 是"内容大小"，语义与文件不同 —— 只对文件报 size。
-        if (!info->isFolder && SUCCEEDED(i2->GetUInt64(PKEY_Size, &sz))) {
-            info->size = sz;
-            info->sizeKnown = true;
-        }
-        FILETIME ft{};
-        if (SUCCEEDED(i2->GetFileTime(PKEY_DateModified, &ft)) && ft.dwLowDateTime) {
-            FileTimeToSystemTime(&ft, &info->modified);
-            info->hasModified = true;
-        }
-        PWSTR t = nullptr;
-        if (SUCCEEDED(i2->GetString(PKEY_ItemTypeText, &t)) && t) {
-            info->typeName = t;
-            CoTaskMemFree(t);
-        }
-    }
-}
-
-}  // namespace
-
-bool ListView(IShellView* view, int limit, DirListing* out) {
-    if (!view || !out) return false;
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
-    if (!fv2) return false;
-
-    out->path = ViewFolderPath(view);
-    out->entries.clear();
-    out->truncated = false;
-
-    int count = 0;
-    if (FAILED(fv2->ItemCount(SVGIO_ALLVIEW, &count)) || count <= 0) return true;  // 空目录是合法结果
-
-    for (int i = 0; i < count; ++i) {
-        if (limit > 0 && static_cast<int>(out->entries.size()) >= limit) {
-            out->truncated = true;
-            break;
-        }
-        ComPtr<IShellItem> item;
-        if (FAILED(fv2->GetItem(i, IID_IShellItem, reinterpret_cast<void**>(&item))) || !item)
-            continue;
-        DirEntry e;
-        // DirEntry 是 ItemInfo 的子集，复用同一套读取再把要的字段搬过来。
-        ItemInfo info;
-        FillItemInfo(item.get(), &info);
-        e.name = info.name;
-        e.path = info.path;
-        e.isFolder = info.isFolder;
-        e.size = info.size;
-        e.sizeKnown = info.sizeKnown;
-        e.hidden = info.hidden;
-        out->entries.push_back(std::move(e));
-    }
-    return true;
-}
-
-bool StatItem(IShellView* view, const std::wstring& fullPath, ItemInfo* out) {
-    if (!view || fullPath.empty() || !out) return false;
-    ComPtr<IFolderView2> fv2 = GetFv2(view);
-    if (!fv2) return false;
-    ComPtr<IShellFolder> folder = GetFolder(fv2.get());
-    if (!folder) return false;
-
-    int count = 0;
-    if (FAILED(fv2->ItemCount(SVGIO_ALLVIEW, &count)) || count <= 0) return false;
-
-    for (int i = 0; i < count; ++i) {
-        PITEMID_CHILD pidl = nullptr;
-        if (FAILED(fv2->Item(i, &pidl)) || !pidl) continue;
-        std::wstring p;
-        const bool got = ItemFullPath(folder.get(), pidl, &p);
-        if (got && SamePath(p, fullPath)) {
-            *out = ItemInfo{};
-            // 用 pidl -> IShellItem，避免再按路径 Create（会有规范化差异）
-            ComPtr<IShellItem> item;
-            if (SUCCEEDED(SHCreateItemWithParent(nullptr, folder.get(), pidl, IID_IShellItem,
-                                                 reinterpret_cast<void**>(&item))) &&
-                item)
-                FillItemInfo(item.get(), out);
-            CoTaskMemFree(pidl);
-            return !out->name.empty();
-        }
-        CoTaskMemFree(pidl);
-    }
-    return false;
 }
 
 }  // namespace shellops

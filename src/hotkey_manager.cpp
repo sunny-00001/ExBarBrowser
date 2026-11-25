@@ -4,7 +4,6 @@
 
 #include "chord.h"
 #include "commands.h"
-#include "config.h"
 
 #include <commctrl.h>
 

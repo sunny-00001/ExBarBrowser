@@ -24,7 +24,7 @@ void Check(bool ok, const char* what) {
     if (!ok) ++g_fail;
 }
 
-void CheckEq(const std::wstring& got, const wchar_t* want, const char* what) {
+void CheckEq(const std::wstring& got, const std::wstring& want, const char* what) {
     const bool ok = got == want;
     std::printf("  %s  %s（得到 \"%ls\"）\n", ok ? "PASS" : "FAIL", what, got.c_str());
     if (!ok) ++g_fail;
@@ -162,6 +162,46 @@ int main() {
         const auto fwd = h.forward();
         Check(back.size() == 1 && back[0] == L"C:\\a", "后退列表 = [C:\\a]");
         Check(fwd.size() == 1 && fwd[0] == L"C:\\c", "前进列表 = [C:\\c]");
+    }
+
+    std::printf("\n历史上限（Push / Restore 都裁剪）\n");
+    {
+        nav::History h;
+        for (size_t i = 0; i < nav::History::kDefaultMaxEntries + 8; ++i)
+            h.Request(L"C:\\p" + std::to_wstring(i), true);
+        Check(h.size() == nav::History::kDefaultMaxEntries, "Push 后不超过上限");
+        Check(h.idx() == static_cast<int>(nav::History::kDefaultMaxEntries) - 1, "游标同步指向末尾");
+        CheckEq(h.here(), L"C:\\p" + std::to_wstring(nav::History::kDefaultMaxEntries + 7),
+                "当前路径没有被裁掉（需要可比较的 wstring）");
+
+        std::vector<std::wstring> big;
+        for (size_t i = 0; i < nav::History::kDefaultMaxEntries + 16; ++i)
+            big.push_back(L"C:\\r" + std::to_wstring(i));
+        h.Restore(big, static_cast<int>(big.size()) - 1);
+        Check(h.size() == nav::History::kDefaultMaxEntries, "Restore 旧配置也裁到上限");
+        CheckEq(h.here(), big.back(), "Restore 后当前路径仍是最后一条");
+        Check(h.canBack(), "裁剪后仍能后退");
+    }
+
+    std::printf("\n可配置深度（构造注入 / SetMaxEntries 立即裁剪）\n");
+    {
+        // 自定义深度：构造时注入，Push 按它裁剪而非默认 512。
+        nav::History h(5);
+        for (size_t i = 0; i < 12; ++i) h.Request(L"C:\\d" + std::to_wstring(i), true);
+        Check(h.size() == 5, "自定义深度：Push 裁到注入的上限");
+        CheckEq(h.here(), L"C:\\d11", "自定义深度：当前路径未被裁掉");
+
+        // 运行中调小：SetMaxEntries 立即裁剪，游标左移后仍指向最后一条。
+        h.SetMaxEntries(3);
+        Check(h.size() == 3, "SetMaxEntries：立即裁到新上限");
+        CheckEq(h.here(), L"C:\\d11", "SetMaxEntries：游标仍指向最后一条");
+        Check(h.canBack(), "SetMaxEntries：裁剪后仍能后退");
+
+        // 调大不丢历史；传 0 回落默认值（防手改配置写出 0 让历史永远空着）。
+        h.SetMaxEntries(10);
+        Check(h.maxEntries() == 10, "SetMaxEntries：调大生效");
+        h.SetMaxEntries(0);
+        Check(h.maxEntries() == nav::History::kDefaultMaxEntries, "SetMaxEntries(0) 回落默认值");
     }
 
     std::printf("\n%s（失败 %d 项）\n", g_fail == 0 ? "全部通过" : "有失败", g_fail);

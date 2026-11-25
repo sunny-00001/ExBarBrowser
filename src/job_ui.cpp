@@ -5,6 +5,7 @@
 // 且结束后要把焦点还给视图，否则 type-ahead 与 Delete 全失效。
 #include "job_ui.h"
 
+#include "config.h"   // jobMachineTimeoutMs：机器作业兜底等待（可调）
 #include "identity.h"
 #include "job.h"
 #include "modal.h"
@@ -25,7 +26,8 @@ constexpr int kIdCancel = 101;
 // 人侧不用它：人侧有进度条和「取消」按钮，用户随时能叫停；
 // 而"等超时就把窗口关掉"是最坏的处理 —— 作业还在后台跑，用户却以为"停了"，
 // 于是既看不到结果，也不敢做别的事（他不知道到底还在不在跑）。
-constexpr unsigned kSafetyTimeoutMs = 120000;
+// 具体值来自设置 jobMachineTimeoutMs（默认 120000）—— 大目录哈希/查重常超 2 分钟，
+// 调用方可按自己的作业耗时调大。
 
 struct ProgState {
     HWND hwnd = nullptr;
@@ -36,7 +38,9 @@ struct ProgState {
     unsigned long long doneCount = 0;
     unsigned long long totalCount = 0;
     ULONGLONG startedAt = 0;
-    unsigned limitMs = kSafetyTimeoutMs;   // 本次最多等多久；0 = 不限时（只给人侧用）
+    // 本次最多等多久；0 = 不限时（只给人侧用）。默认取设置 jobMachineTimeoutMs，
+    // 单次调用可用 WaitQuiet(timeoutMs) 覆盖（见下方赋值）。
+    unsigned limitMs = static_cast<unsigned>(Config::Get().s().jobMachineTimeoutMs);
     bool isHuman = false;                  // 人侧：窗口可见、可取消
     bool done = false;
     bool cancelRequested = false;
@@ -201,7 +205,7 @@ bool WaitWithWindow(HWND owner, const Theme& theme, const std::wstring& title,
     st.jobId = jobId;
     st.startedAt = GetTickCount64();
     st.isHuman = true;
-    // 人侧不限时：进度条一直在动，用户想停就按「取消」。理由见 kSafetyTimeoutMs。
+    // 人侧不限时：进度条一直在动，用户想停就按「取消」。理由见文件头的安全时限说明。
     st.limitMs = 0;
 
     RECT orc{};

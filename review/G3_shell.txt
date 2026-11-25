@@ -1,0 +1,15 @@
+src/shell_columns.cpp
+src/shell_columns.h
+src/shell_input.cpp
+src/shell_input.h
+src/shell_op_exec.cpp
+src/shell_op_exec.h
+src/shell_ops.cpp
+src/shell_ops.h
+src/shell_ops_path.cpp
+src/shell_ops_path.h
+src/shell_view.cpp
+src/shell_view.h
+src/shell_view_preview.cpp
+src/shell_view_search.cpp
+src/shell_view_theme.cpp

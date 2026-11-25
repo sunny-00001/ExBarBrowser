@@ -98,6 +98,10 @@ void ShellView::FinishThemeSwitch() {
     // 实测保留旧容器并不会更快（1.3~1.4s vs 0.9~1.0s）：旧 DirectUI 状态
     // 会让新 EBC 做更多清理。连容器一起重建仍是最快且最稳的路径。
     RebuildBrowserForTheme(true);
+    // 主题重建才需要全子树擦除重绘；普通导航由 OnViewCreated 的轻量失效即可。
+    if (container_)
+        RedrawWindow(container_, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE);
 }
 
 bool ShellView::RebuildBrowserForTheme(bool recreateContainer) {
@@ -328,7 +332,9 @@ void ShellView::OnViewCreated(IShellView* view) {
     }
     // ExplorerBrowserControl 层：这是唯一应该设主题的地方
     ApplyShellTheme(container_, theme_.dark);
-    RedrawWindow(container_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE);
+    // 普通导航/视图重建不做全子树擦除重绘（RDW_ALLCHILDREN|RDW_ERASE 会让
+    // DirectUI 同步重排整棵子树）。主题切换的全量重绘由 FinishThemeSwitch 负责。
+    if (container_) InvalidateRect(container_, nullptr, FALSE);
     // 主题重建后的状态回灌：OnViewCreated 比 GetCurrentView 就绪更早，
     // 这里先试一次，不成就挂短定时器重试（见 RestoreThemeState）。
     if (themePendingFvm_ >= 0 || !themeRestorePidls_.empty() ||

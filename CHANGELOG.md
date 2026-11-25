@@ -1,5 +1,465 @@
 ## [Unreleased]
 
+### 书签：分类可解散、分类内可拖动排序
+
+分类原先**只能读不能组织** —— 顶层那条自绘横条早就能拖动重排，而分类里的条目
+只能点，右键菜单也只有顶层那一套。这一轮把分类补成和顶层同一套规则。
+
+**解散分类**（`bmk.dissolve`，新增命令，编号 219）
+
+- 书签栏分类右键菜单新增「解散分类」：把该分类的**直接子项**提到它所在的上一层
+  （顶层分类 → 书签栏），分类本身消失。嵌套分类解散只降一层，不一次拍平。
+- 子项**带着自己的子树**一起走 —— 散掉的是"这一层壳"，不是把整棵树摊平。
+- 空分类解散 = 分类自己消失；叶子不是分类，没有壳可散，拒绝。
+- 走 `CommandBus`（同 `bmk.move` / `bmk.remove` 一条路），因此有审计、有撤销栈，
+  也满足 R20 人机等价：菜单动作与 AI 调用是同一件事。
+- 改树**之前**拍快照（`PushUndo`），一次能挪动很多条，点错一步退回来。
+
+**分类内拖动排序**（`bmk.move` 复用）
+
+- 分类内容弹层支持按住条目拖动改顺序，落点语义与顶层那条栏一致
+  （"插到第几行之前"），命令也是同一条 `bmk.move`。
+- 落点之后**就地刷新**弹层（宿主重读 store → 重建行），窗口不关，
+  用户不会看到"拖了没动"。
+- 行号 ↔ 子项下标必须一一对应，所以弹层改为列出分类的**全部**直接子项
+  （早先的实现会跳过没有路径的叶子，那会让落点错一位，把条目放到隔壁）。
+
+**分类内行内右键菜单**（新增）
+
+- 打开 / 复制路径 / 编辑 / 复制书签 / 上移 / 下移 / 移到书签栏 / 删除；
+  子分类另有「解散分类」。上移下移给的是**拖不动时**的键盘等价路径。
+
+**排序本分类**（`bmk.sort` 带 `parentId`）
+
+- 只排这个分类的直接子项，不动别的层；与「按名称排序（含分类内）」的
+  递归排序是两条不同的路。参数缺失时行为不变（仍递归排整棵树）。
+
+**实现落点**
+
+- 新增 `src/bookmarks_ops.cpp`（65 行）：`Dissolve` / `SortChildren` —— 层级重组
+  与日常增删改查的失败口径、撤销口径都不同，分文件才读得动。
+- 新增 `src/bookmarks_internal.h`：`ListContaining`（找父列表）与 `BookmarkLess`
+  （排序规则）各只有一份。整树排序与"只排某个分类"共用同一个比较器，
+  不会在"大小写怎么处理"上分叉。
+- 新增 `src/bookmark_category_popup.cpp`（263 行）：可拖动的分类内容弹层。
+- 新增 `src/bookmark_bar_popup.cpp`（345 行）：从 `bookmark_bar.cpp` 拆出的四套旧弹层
+  （项右键 / 空白区 / 溢出 / 图标子目录树）。
+- 新增 `src/bookmark_bar_drag.cpp`：顶层拖动的落点计算与提交。
+- `bookmark_bar.cpp` 864 → 441 行（行数棘轮销账）。
+- 通用弹层新增一条**可选**拖放通道 `PopupReorder`（`canDrag` / `onReorder` /
+  `rebuildRows` / `onRowRightClick`）。共用机制只有一份：模态循环、鼠标捕获、
+  type-ahead、惰性加载仍然只有弹层这一处实现，业务侧不自己造第二套弹层。
+
+**顺带修掉两处真问题**（都是这轮改动照出来的，不是新功能本身）
+
+- `MoveTo` 的"同容器内移动"分支**没有下标上界检查** —— `insert()` 不会自己检查，
+  传一个超出末位的 `toIndex` 就是往 vector 之外写（未定义行为）。
+  顶层那条路走 `Move()`，它有检查；嵌套这条以前没有。
+  现在在 store 里拒（`index > 容器大小` → 返回 false）。
+  命令侧不夹取 —— 夹取会把"位置非法"与"移到末尾"混成同一个结果。
+- `Menu::Show` 在弹层**就地重建行**之后，仍用**重排之前**那份行把选中的行号
+  映射成动作号。行序变了、动作号也跟着变，于是用户拖完之后点的那一行会被
+  映射成旧顺序的动作号：**点 A 打开 C**。现在改成"用当前显示的那份行做映射"
+  （新增纯函数 `PopupActionFor`，可单测）。
+
+**验证**
+
+- `bash build.sh` 全量通过；`check_commands.py`（219 条命令 / 211 已实现 / 211 处理器）
+  与 `check_ai_meta.py`（28 项全绿）通过。
+- `tests/run_all.sh`：**70 通过 / 1 无法运行（`clipboard_test` 需交互桌面）/ 0 失败**。
+- 新增单测（`tests/test_store.cpp`）：`Dissolve`（子项提层 / 子树跟着走 /
+  嵌套只降一层 / 叶子与空 id 被拒 / 可撤销）、`SortChildren`（只排一层 /
+  不动别的层 / 升降序 / 单子项不留撤销快照）、`MoveTo` 同容器越界下标被拒。
+  新增 `tests/popup_layout_test.cpp`：`PopupDropIndex` 落点换算、
+  `PopupActionFor` 重排后的动作号映射（钉住"点 A 打开 C"那个形状）。
+
+### 重构（行数棘轮）：导航栏拆出布局、命中与输入状态机
+
+`nav_bar.cpp` 565 → 172 行，主文件只留生命周期与对外状态入口：
+
+- 新增 `src/nav_bar_layout.cpp`（125 行）：按钮 / 地址框 / 搜索框 / 面包屑段的全部矩形，
+  以及宽度夹取与 `RebuildTooltip` 热区同步。绘制与命中读的是这一份矩形。
+- 新增 `src/nav_bar_hit.cpp`（62 行）：`HitButton` / `HitArrow` / `HitMore` / `HitDrop` /
+  `HitSeg` / `HitChev` / `NavTargetAt`。只读布局产物，不改状态。
+- 新增 `src/nav_bar_input.cpp`（259 行）：窗口过程、地址框子类、鼠标捕获与键盘输入。
+  **时序原样保留**：DOWN 只记 `downBtn_` 并 `SetCapture`；动作在 UP 执行且抬起点必须
+  仍落在同一按钮；先清 `downBtn_` 再 `ReleaseCapture`，避免 `WM_CAPTURECHANGED`
+  同步复位把下一次点击误触发成导航。
+- `g_oldEditProc` 随之收进 `nav_bar_input.cpp` 单一 TU：新增私有 `InstallEditSubclass()`，
+  由 `Create` 调用，生命周期文件不再持有子类回调的旧过程指针。
+- 顺手修掉一处隐藏依赖：`BuildButtons()` 用的 `ico::Glyph` 原先靠 `ui_draw.h` 间接带进来；
+  拆布局时改为直接包含 `icon_glyph.h`，不再依赖 transitive include。
+- 头文件只加分工注释与 `InstallEditSubclass()` 声明；类的数据成员未改。
+- 基线 `nav_bar.cpp` 记账 565 → 172（只收紧）。
+
+**验证**：`bash build.sh --no-gc --objdir ... --out ...` 隔离构建 176 TU 零错误零警告；
+`check_commands.py` / `check_ai_meta.py` 全绿。`check_components.py` 仍只被并行会话
+改动的 `app.h` / `nav_pane.cpp` 与未重签的评估面卡住，本轮没有动
+`data/eval-surface.json`。`run_all.sh` 70 通过 / 1 失败 / 0 编译失败，唯一失败
+`config_roundtrip_test` 的键是 `tabNewPos`，属配置边界改动；上一轮全量同项是 71/71
+通过，导航相关 `nav_input_test` / `nav_root_test` / `upnav_test` 均通过。
+单独复跑 `config_roundtrip` 被 `obj_cache` 的 safe-delete fail-closed 挡在构建阶段，
+不是测试结论。
+
+补记：本轮收尾核对时，工作树又被并行改动推着走：`popup_list.h` 与
+`popup_list_input.cpp` 的 `ShowPopupList` 签名短暂不一致，随后一次增量构建链接失败；
+命令表同时涨到 219 条，`check_ai_meta.py` 因新增的 `bmk.dissolve` 缺撤销机制转红。
+这些变动发生在导航拆分验证通过之后，本轮没有触碰，也没有代修。
+
+### 重构（行数棘轮）：设置对话框拆出布局与命中，模型只留可见行与当前值
+
+`settings_dialog_model.cpp` 632 → 213 行：
+
+- 新增 `src/settings_dialog_layout.cpp`（435 行）：布局常量、三栏宽夹取、
+  `MinClientSize` / `Layout` / `LayoutRows` / `LayoutRight` / `PlaceValueEdit`，
+  以及 `HitGroup` / `HitItem` / `HitRightAction` / `HitHeadAction`。排布产出的
+  `RowLayout` / `RightLayout` 与命中读的是同一批矩形，两者同文件，避免
+  "绘制一份、命中另一份"再次分叉。
+- `UnitOf` / `RowHeight` / `CtrlHeight` / `EditLineHeight` 也归布局文件；绘制侧
+  （`PaintNumber` / `PaintStatus` / `PaintSectionHeader`）仍通过唯一实现读取，
+  没有复制单位表或行高表。
+- 模型文件只留 `DisplayOf` / `Matches` / `RebuildModel` / `RefreshValues` /
+  `RightDescText` 与搜索状态。`RightDescText` 特意不跟布局走：`LayoutRight` 量块高、
+  `PaintRight` 画文本，必须共用同一份说明文本。
+- `settings_dialog.cpp` / `settings_dialog.h` / `settings_dialog_draw.cpp` 的分工注释
+  同步到新文件；类声明零改动，成员函数跨 TU 的布局不变。
+- 基线 `settings_dialog_model.cpp` 记账 632 → 213（只收紧）。
+
+**验证**：`bash build.sh --no-gc --objdir ... --out ...` 隔离构建 173 TU 零错误零警告；
+`check_commands.py` / `check_ai_meta.py` 全绿。`check_components.py` 仍只被并行会话
+改动的 `app.h` / `nav_pane.cpp` 与未重签的评估面卡住；本轮没有动
+`data/eval-surface.json`。`EXBAR_TEST_OUT=... bash tests/run_all.sh` 71 通过 /
+0 失败 / 0 编译失败，含 `settings_reg_test`、`config_roundtrip_test` 与
+`popup_layout_test` / `popup_toggle_test`。
+
+### 重构（行数棘轮）：AI 通道拆出协议分派，令牌比较只留一份
+
+`ai_server.cpp` 790 → 429 行：
+
+- 新增 `src/ai_server_rpc.cpp`（377 行）：简格式与 JSON-RPC 2.0（MCP）的方法分派、
+  `tools/call` 结果/自断言、事件方法与能力面。`ai_server.cpp` 只留管道、发现文件、
+  监听线程、UI 队列与启停。
+- `CheckToken` 与 `RpcHasToken` 原先各有一份定长比较；现在统一走 `TokenMatches()`，
+  经 `ai::CurrentToken()` 读传输层唯一的 `g_token`。空令牌在两条协议上都判失败。
+- `tools/check_ai_meta.py` 的通道判据原先只读 `ai_server.cpp`；拆片后按逻辑模块读
+  `ai_server.cpp + ai_server_rpc.cpp`，判据本身没有放松。**这是 `tools/` 改动，
+  评估面需要人确认后重签；本轮没有动 `data/eval-surface.json`。**
+- 基线 `ai_server.cpp` 记账 790 → 429（只收紧）。
+
+**验证**：`bash build.sh --no-gc --objdir ... --out ...` 隔离构建 172 TU 零错误零警告；
+`check_commands.py` / `check_ai_meta.py` 全绿。`run_all.sh` 70 通过 / 1 失败 /
+0 编译失败，唯一失败 `config_roundtrip_test` 的键是 `settingsGroupWidth`，
+属并行会话的配置边界改动；`ai_server_test` / `rpc_test` / `pipe_e2e_test` 均通过。
+
+### 重构（行数棘轮）：弹层拆出树几何与输入状态机，主文件只留窗口外壳
+
+`popup_list.cpp` 849 → 343 行，三个作用域彻底分开：
+
+- 新增 `src/popup_list_tree.cpp`（152 行）：可见节点收集/懒加载、行高与总高、
+  hover 重算、自适应尺寸、树节点展开/收回。它不处理捕获，也不决定"选行后导航到哪"。
+- 新增 `src/popup_list_input.cpp`（320 行）：type-ahead、鼠标捕获语义、键盘导航、
+  选中提交。**捕获顺序原样保留**：外部按下只记状态，等 UP 再关窗，避免同一下
+  点击落到锚点控件（这条时序错了就是"点一下收菜单顺带打开书签"）。
+- 新增 `src/popup_list_internal.h`（70 行）：`PopupState` 唯一定义 + 跨 TU 辅助声明。
+  状态机字段（捕获、type-ahead、懒加载、toggleKey）只能有一份；各文件抄字段迟早
+  会在"新增一个字段却漏改另一处"时把弹层行为分叉。
+- 基线 `popup_list.cpp` 记账 849 → 343（只收紧）。
+
+**验证**：`bash build.sh --no-gc --objdir ... --out ...` 隔离构建 171 TU 零错误零警告；
+`check_commands.py` / `check_ai_meta.py` 全绿，`check_components.py` 仍只被并行会话
+改动的 `app.h` / `nav_pane.cpp` 与评估面重签卡住。`run_all.sh` 70 通过 / 1 失败 /
+0 编译失败，唯一失败 `config_roundtrip_test` 的键是 `navBarAddressMinWidth`，
+属并行会话的配置边界改动，与弹层拆分无关（弹层相关 `popup_layout_test` /
+`popup_toggle_test` 均通过）。
+
+### 重构（行数棘轮）：书签 store 拆出 Netscape IO，树模型只留内存操作
+
+`bookmarks.cpp` 893 → 595 行，仍超 500，但"文件级语义"已经整体搬走：
+
+- 新增 `src/bookmarks_io.cpp`（319 行）：内部 store 的 Netscape 解析/序列化
+  （`ParseLevel` / `Serialize` / `SerializeDocument`）、磁盘读写（`Load` / `Save`）、
+  外部变更检测（`LastWriteOf` / `SizeOf` / `FileChanged`）、路径校验与 URL 编解码
+  （`IsValidShellNamespacePath` / `BookmarkPathToUrl` / `BookmarkUrlToPath`）。
+  `Load` 先解析到临时树再整体换入、`Save` 的 `loadFailed` / 外部改动两道护栏原样保留，
+  拆分没有改判据。
+- 新增 `src/bookmarks_internal.h`：`AssignIds` 声明在此、实现唯一留在树模型文件。
+  内部文件解析与树模型新增都要给空 id 发号；若各写一份，导入文件已带 id 时
+  `Find()` 会命中错节点，删除/改名作用到别人身上。
+- **没有合并两个 `ParseLevel`**：这里读 `EXBAR_ID` 是跨软件稳定 id，
+  `bookmark_io.cpp::ParseLevel` 故意不读，避免外部导入撞 id；两套语义仍分居两文件。
+- 基线 `bookmarks.cpp` 记账 893 → 595（只收紧）。
+
+**验证**：`bash build.sh --no-gc --objdir ... --out ...` 隔离构建 169 TU 零错误零警告；
+`python tools/check_commands.py` / `check_ai_meta.py` 全绿，`check_components.py`
+仍只被并行会话改动的 `app.h` / `nav_pane.cpp` 与评估面重签卡住，与本次拆分无关。
+`EXBAR_TEST_OUT=... bash tests/run_all.sh` 71 通过 / 0 失败 / 0 编译失败（含
+`test_store` / `encoding_test` / `config_roundtrip_test`）。
+
+### 重构（行数棘轮）：shell_ops 拆出查询作用域，QI/路径辅助收进唯一内部头
+
+`shell_ops.cpp` 1365 → 1078 行，仍超 500，但"只读查询/视图设置"作用域已单列：
+
+- 新增 `src/shell_ops_query.cpp`（292 行）：排序/分组（`SetSort*` / `GetSort*` /
+  `SetGroup*` / `Get*Key`）、隐藏项开关与读面（`ToggleHidden` / `CycleHiddenState` /
+  `GetHiddenFlags`）、只读取数（`FillItemInfo` / `ListView` / `StatItem`）。
+- 新增 `src/shell_ops_internal.h`：`GetFv2` / `GetFolder` / `HiddenFlags` 是薄包装与
+  掩码，inline 在此；`ItemFullPath` / `SamePath` 有实质逻辑，声明在此、唯一实现仍在
+  `shell_ops.cpp`。此前匿名命名空间里的这些辅助只能被单 TU 用，拆片后若各抄一份就
+  会在 QI 的 `ComPtr::Reset` 细节与路径 ordinal 比较上分叉 —— 收进头文件保证一份。
+- 写面与读面的隐藏项掩码同源（`HiddenFlags()` 唯一），避免"读到的是另一个开关"。
+- 基线 `shell_ops.cpp` 记账 1365 → 1078（只收紧）。
+
+**验证**：`bash build.sh --objdir` 隔离构建零错误零警告（168 TU 缓存一致）。
+全量单测见本文件上一节（书签栏拆分）说明，唯一失败 `config_roundtrip_test` 属并行
+会话的配置边界改动，与本次拆分无关。
+
+### 重构（行数棘轮）：书签栏按职责拆出绘制与命中两片
+
+`bookmark_bar.cpp` 1077 → 864 行，仍超 500，但绘制/命中两个作用域已经带走：
+
+- 新增 `src/bookmark_bar_draw.cpp`（183 行）：`Layout` / `RebuildTooltip` / `Paint` /
+  `PaintFocusRing` —— 只读 `items_` 与主题，不处理输入。几何令牌（`iconW` / `padX`）
+  与绘制共用同一处，注释同步到新文件。
+- 新增 `src/bookmark_bar_hit.cpp`（43 行）：`HitItem` / `HitIcon` / `HitOverflow` /
+  `FolderItemAt` / `FolderIdAt` —— 客户区/屏幕点映射，不写状态、不弹菜单。
+- `bookmark_bar.cpp` 只留生命周期、消息分发、输入、拖放、菜单与导航。
+- 头文件零改动（成员函数分散到多个 TU 是合法 C++，`BookmarkBar` 声明不变）。
+- 基线 `bookmark_bar.cpp` 记账 1077 → 864（只收紧，不追认其它文件的并行涨债）。
+
+**验证**：`bash build.sh --out` 零错误零警告；`check_commands.py` / `check_ai_meta.py`
+全绿；71 个单测 70 通过，唯一失败 `config_roundtrip_test`（`bookmarkBarTooltipWidth`
+边界值，属并行会话的配置改动，与本次拆分无关，未改）。`check_components.py` 当前硬红
+（`app.h` / `nav_pane.cpp` 涨过记账 + 评估面未重签）均来自并行会话，未替人处理。
+
+### 新增（M7）：文件视图自动刷新 —— shell 变更不再需要手动 F5
+
+**症状**：外部程序在该目录增删改文件后，视图不更新，必须手动 F5（COMPETITIVE-GAP M7）。
+
+**做法**：复用导航窗格已有的 `SHChangeNotifyRegister`（原来只订阅目录结构事件刷树），
+把文件级事件也纳入订阅，回投主窗口刷文件视图。
+- `nav_pane_shell.cpp`：新增 `kViewShellEvents`（CREATE/DELETE/UPDATEITEM/RENAMEITEM +
+  目录结构事件）；收到后 `PostMessage(root, WM_APP_VIEW_AUTO_REFRESH)`。
+  与刷树的 `kNavShellEvents` 分开处理，文件级频繁事件不去推后导航树的 300ms 定时器。
+  依赖方向保持 app → nav_pane：下层只投消息，不反向调 App。
+- `common.h`：新增 `WM_APP_VIEW_AUTO_REFRESH = WM_APP + 56`（跨进程消息号，只加在末尾）。
+- `app.cpp` / `app_wnd.cpp` / `app_nav.cpp`：主窗口收到消息后用 `kViewRefreshTimer`
+  300ms 合并去抖（批量操作连发几十条通知只刷一次），到点调 `RefreshActive()`；
+  OnDestroy 停表。
+
+**验证**：`bash build.sh --out` 零错误零警告（165 TU）。**未跑** `check_components` / 单测——
+评估面 `data/eval-surface.json` 因并行会话未重签而 fail-closed，重签须人确认。
+
+### 修复（M6）：`/select,<文件>` 现在真选中文件，不再只打开父目录
+
+**症状**：`ExBarBrowser.exe /select,C:\a\b.txt` 只打开 `C:\a`，`b.txt` 不选中；
+转发到已有窗口时同样只开目录（COMPETITIVE-GAP M6）。
+
+**做法**：复用会话选中恢复已有的 `pendingSelPath_` / `pendingSelItems_` 机制
+（`app_nav.cpp` 导航完成回调里按路径匹配调 `SelectPaths`），启动前挂起选中目标即可。
+- `main.cpp`：`InitialPath()` 增输出参数 `selectTarget` 填完整路径；`/select` 与 `/select,` 两种写法都认。
+- 新进程路：`App::Run(hInst, path, selectTarget)` 在 `NewTab` 之前写 pendingSel。
+- 转发路：`CopyDataPayload` **零改动**（跨软件契约）；`select` 作为变长尾随数据跟在
+  `path` 的 NUL 之后，发送端按实际长度打包、接收端按 `cbData` 剩余长度读。
+  新→老（老实例忽略尾部）/ 老→新（cbData 只够 path）天然兼容。
+- `common.h` 只补注释说明契约；`app_wnd.cpp` WM_COPYDATA 接收端读出 select 传 `OpenExternal`。
+
+**验证**：`bash build.sh --out` 零错误零警告（165 TU）；打包/解包对称性 4 组边界
+（普通 / 盘根 / UNC / 无 select）全过。**未跑** `check_components` 与单测——
+评估面 `data/eval-surface.json` 因并行会话改了 9 个 tests/tools 文件未重签而 fail-closed，
+重签须人确认；本次不宣称"测试通过"。
+
+### 构建提速：并行度自适应 + 跨会话 obj 缓存
+
+**症状**：16 核机器默认只用 8 路编译；高并发多会话各用独立 objdir，同一批 165 个 TU
+被每个会话重复编译一遍（冷编 ~30s × 会话数）。链接与日常增量其实很快，不是瓶颈。
+
+**做法**：
+
+- `build_fast.py` 的 `-j` 默认改为自适应：单会话吃满 CPU（clamp 16），多会话按
+  `.reclaim-lock` 活跃数平分，避免互抢核；`EXBAR_JOBS` 可钉住。实测 2 会话降到 5。
+- 有 `ld.lld.exe` 时用 lld 链接（0.49s→0.31s）；链接器不进配置签名，不触发全量重编。
+- 新增 `tools/objcache.py`：按 (源内容 + 配置签名 + `pch_deps_hash`) 内容寻址的跨会话
+  obj 缓存，命中即硬链接复用、零额外磁盘；并发写用 `os.replace` 原子落键；缓存是加速
+  非资产，`obj_cache/` 进 `reclaim.py` 的 KEEP_DIRS，陈旧条目由 `prune()` 自管。
+  `--no-objcache` 可关闭；任何缓存异常降级为正常编译，不影响构建结论。
+- 评估后决定**不拆 PCH**：真实依赖面只有 5 个头，且缓存已按语义键正确处理公共头变更；
+  拆出反而因重复解析变慢并可能破坏头文件自足约定。详见 `docs/BUILD-PERFORMANCE.md`。
+
+**验证**：冷编 -j16 29.5s（旧 -j8 37.2s）；全新会话命中 165/165、总耗时 4.6s（提速 ~6×）；
+改 `str.h` 内容 → 0/165 命中全量重编、改回后重新命中（内容寻址安全）；两会话 exe 大小一致。
+`check_commands` / `check_ai_meta` 全过；`check_components` 的超限与评估面重签项均为并发
+会话的既有工作区状态，非本轮改动引入。
+
+### 测试产物根治：从 %TEMP% 搬进工程内、exe 跑完即删
+
+**症状**：高并发开发时 `tests/run_all.sh` 每跑一次全量，就在 `%TEMP%/ebb_tests` 留下
+70+ 个独立静态链接的 ~55 MB 测试 exe（~4 GB）。`tools/reclaim.py` 的 ROOT 是工程根、
+扫不到系统临时目录，于是不回收；多会话各用一份前缀叠到 9.6 GB，占满临时盘。
+
+**做法**：
+
+- `tests/run_all.sh` 的 `OUT` 从 `${TMPDIR:-/tmp}/ebb_tests` 改为工程根 `tmp_tests/`，
+  高并发会话可用 `EXBAR_TEST_OUT` 指到工程内其它子目录，产物绝不外溢到 `%TEMP%`。
+- 每个测试 exe 编完跑完当场删除（含编译失败/NORUN 出口），只留 KB 级 `.log` 供排查；
+  `build.sh --out` 的 `ExBarBrowser.test.exe` 测试本身不用，构建后即删。峰值占用从
+  ~4 GB 降到 1 个 exe（~55 MB）。
+- `tmp_tests/` 名字符合 `reclaim.py` 的 `^tmp.*$` 会话目录规则，闲置 15 分钟后由
+  `build_fast.py` 收尾回收整目录（含 obj 缓存），复用既有回收设施，不新增清理脚本。
+- `.gitignore` 增 `tmp*/` 整目录忽略；`docs/DEVELOPMENT.md` 同步落点说明。
+
+**验证**：`bash -n tests/run_all.sh` 通过；`bash tests/run_all.sh keymap` PASS，
+`tmp_tests/` 下 exe 残留 0、日志保留、obj 缓存 105 MB 复用；`reclaim.py` dry-run 将
+`tmp_tests` 识别为 SESSION_DIR 且因刚写入受保护。
+
+### AI 面板：WebView2 就绪前状态栏显示原生启动态
+
+**症状**：面板占位页会画"准备中 / 创建中 / 加载界面"，但状态栏 chip 在此之前
+只有页面 WebMessage 一个来源；WebView2 还没创建、页面脚本还没跑、或运行时
+缺失时，chip 一直显示"AI · 空闲"。用户收起面板时看不出 AI 通道正在启动，
+也看不出它已经失败。
+
+**做法**：
+
+- `ai_status_peek.{h,cpp}` 新增 `starting → 准备中` 与
+  `ResolveAiNativeActivity()`：按 AI 通道开关、WebView2 三态和错误原因解析出
+  `idle / starting / error`，文案与 chip 共用同一套口径。
+- `Panel` 在展开、服务未启动、创建中、失败、重试、端口变化时回调宿主；
+  `App::RefreshAiNativeStatus()` 把原生态落到同一个 chip / tooltip。
+- 页面第一条合法状态到达后原生启动态让位；`starting` 会让页面状态观察标志
+  归零，WebView2 重建后由新页面重新接管。页面不能伪造 `starting`，白名单
+  仍只接受原有五态。
+- `starting` 不产生未读；原生失败按既有 `error` 口径处理。
+- `ai::StateSnapshot` / `StateToJson()` 新增 `aiState`，与 chip 同源。
+- 决策记录 D27。
+
+**验证**：`ai_status_peek_test.cpp` 覆盖准备中文案、非终态判定与原生状态解析；
+`webview_actions_test.cpp` 钉住页面不能上报 `starting`；`ai_api_test.cpp` 通过。
+全量 C++ 与服务测试见本轮验证记录。
+
+### AI 面板：首轮工具桥忙时做一次受控回退
+
+**症状**：并行开发或程序刚重启时，旧命名管道刚退场、新管道还没建好。首轮
+`tools/list` 失败或返回空表后，模型会被明确告知"本轮没有工具"，用户不得不重发
+提示词；而稍等片刻重连本来就能拿到完整命令表。
+
+**做法**：
+
+- `tools-exbar.js` 新增 `EnsureReadyWithFallback()`：首轮失败或工具表为空时只重探
+  一次连接，返回是否恢复、工具数、是否回退与原因；连接失败时清空旧工具清单，
+  工具数为 0 时不再输出"已连接"提示。
+- `agent-stream.js` 改为在第一次模型请求前调用回退预检。恢复时状态流提示
+  "工具桥已恢复"；持续失败时提示"未连接 / 已回退重探一次"，system prompt 仍如实写
+  `no tools this turn`。
+- 回退只重连，不执行命令、不重放被拒操作；`denyCommands / dryRun / allowedRoots`
+  与危险确认仍只在 `dispatch()` 唯一出口生效，未知工具继续 fail closed。
+- 新增 `tools-fallback_test.js`，扩展 `agent-preflight_test.js`，并把两者纳入默认
+  `npm test` 与 `test:fallback`。
+- 决策记录 D26。
+
+**验证**：`npm test` 全过；`tools-fallback_test.js` 18/18，覆盖持续失败、重探恢复、
+deny 不连桥与未知工具审批；`agent-preflight_test.js` 14/14，覆盖
+`ensure → retry → ensure → fetch` 的顺序、恢复/降级状态与工具清单如实上报。
+
+### 性能审查：绘制原语的 GDI 句柄复用
+
+**做法**：
+
+- `ui::FillRectColor()` / `FrameRectColor()` / `FillRound()` / `DrawSeparator()`
+  不再每次绘制都 `CreateSolidBrush` / `CreatePen` + `DeleteObject`；按 `COLORREF`
+  与 `(COLORREF, 线宽)` 缓存到进程级表，命中后直接借用。
+- 新增 `ui::ClearGdiCaches()`，在 `App::Run()` 返回后统一释放字体池、实色画刷
+  与画笔缓存；这些句柄只在对应绘制调用期间被选中，退出时没有在绘制的窗口。
+- 这组原语全项目只有一份实现，因此 92 处调用点无需各自改造。
+
+**验证**：`ui_draw.cpp` / `main.cpp` 在完整警告集下单独编译通过；全量单测与
+隔离构建在并发源码稳定后复跑。
+
+### 性能审查：作业与导航历史的无界增长收口
+
+**做法**：
+
+- `job::Service` 新增 `kMaxRetainedRecords = 32`：只淘汰"已完成且已 join"的旧记录，
+  从 `jobs_` 头部开始保留最近 32 条。`tool.job.get` 在紧随其后的 `CollectResult` 中
+  仍能查到刚完成的作业；更早的扫描/哈希结果不再常驻到进程退出。
+- `nav::History` 新增 `kMaxEntries = 512`：`Push()` 超限时从头部裁剪并同步左移 `idx_`；
+  `Restore()` 也裁一次，避免旧 settings.json 里已攒出的上万条历史继续放大配置文件。
+- `ui::PaintBuffered()` 修掉 GDI 失败路径的 bitmap 泄漏：`CreateCompatibleDC` /
+  `CreateCompatibleBitmap` / `SelectObject` 任一失败都按已取得的资源逐个释放并 `EndPaint`。
+- `BookmarkBar::Create()` 不再在 `BookmarkStore::Load()` 之前空跑一次 `Reload()`。
+- `TooltipHost::SetTools()` 文本未变时改用 `MoveTools()` 只更新热区；状态栏 800ms
+  定时刷新和标签栏滚动不再每次发 2N 条 TTM_DELTOOLW/ADDTOOLW。
+
+**验证**：`job_test` 覆盖保留上限与最近结果可读性；`nav_history_test` 覆盖
+`Push` / `Restore` 两条裁剪路径与游标同步。全量构建/单测在并发源码稳定后复跑。
+
+### 性能审查：启动、导航与重绘的同步热点收口
+
+**做法**：
+
+- 启动：`main.cpp` 用 `Local\ExBarBrowser.StartupMarker` 事件对象判断"是否已有更早实例"。
+  只有后进者为"首实例还没建出窗口"保留 400ms 等待；冷启动以 0 超时直接判定，
+  不再为一个不存在的窗口固定空等。标记不是单实例锁，仍允许显式多开。
+- 地址栏：`NavBar::UpdateLeadIcon()` 从 `ico::Resolve()` 改为 `ico::Cached()`；
+  HICON 归进程级图标缓存持有，`NavBar` 不再自行 `DestroyIcon`，避免每次导航/切标签
+  都重做 `SHParseDisplayName` + `SHGetFileInfoW`，也避免与书签栏共享图标时被误销毁。
+- Shell 视图：普通导航/视图重建只做 `InvalidateRect()`，不再每次
+  `RDW_ALLCHILDREN | RDW_ERASE` 全子树同步重绘；主题切换的全量重绘移到
+  `ShellView::FinishThemeSwitch()`，只在真正重建 EBC 后做一次。
+- 去掉两处热路径日志成本：每次导航仅为日志调用的
+  `IShellItem::GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)`，以及
+  `IExplorerPaneVisibility::GetPaneState()` 的逐窗格 GUID 诊断输出。
+
+**验证**：隔离 exe / profile / TEMP 构建通过；启动日志中 `[ai] 通道已启动` 为
+578ms（上一轮基线约 859ms），`ShowWindow → 窗口已显示` 约 94ms（上一轮约 359ms）。
+全量单测 70 通过、1 项因本机剪贴板权限无法运行、0 失败；
+`check_commands.py` / `gen_keymap.py --check` / `check_ai_meta.py` 全部通过。
+
+### AI 面板：收起期间的新结果有未读标记
+
+**症状**：D24 的 peek 会在终态到达时自动弹出，但用户离开电脑一会儿回来时，
+状态栏只显示最后一次状态，无法区分"这是新到的结果"还是"早就看过的旧结果"。
+
+**做法**：
+
+- `ai_status_peek.{h,cpp}` 收口状态显示名、终态判定、未读判定与 chip 文案：
+  `approval / done / error` 在面板收起时点亮未读，`busy / idle` 不点亮。
+- 状态栏 chip 在未读时追加 `●`，tooltip 补"有未读结果，点击 chip 查看"。
+  自动弹 peek 不算已读；点 chip、关闭气泡、打开对话、撤销或展开面板才清。
+- 修正 chip 点击口径：按 D24 切换 peek（而不是直接切面板），真正打开对话走
+  peek 的"打开对话"按钮或 `Ctrl+J`。
+- `ai::StateSnapshot` 与 `StateToJson()` 新增 `aiUnread`，与 chip 同源；
+  这是观测字段，不提供 AI 清除命令。
+- 决策记录 D25。
+
+**验证**：`ai_status_peek_test.cpp` 覆盖终态判定、面板可见性门闩、状态文案与
+未读圆点；`ToggleAiPanel()` / `ToggleAiPeek()` 覆盖消费路径。全量测试与构建
+结果见本轮验证记录。
+
+### AI 面板：收起后仍有状态（状态栏 chip + peek 气泡）
+
+**症状**：面板默认收起，后台回合仍在跑，但界面上没有任何"运行中 / 待确认 /
+已完成 / 失败"的落点；用户只能重新展开面板才知道结果，也无法在不展开面板
+的情况下撤销一次可回退的写操作。
+
+**做法**：
+
+- `ui/app.js` 在关键 SSE 事件上向宿主发 `type=status` 的 WebMessage；状态、
+  摘要、详情、撤销域都有上限。工具事件补 `undoGroup / undoDomain`，只有成功
+  且 `undoGroup=join` 的工具才进入 `state.lastUndo`。
+- `aichat_webview_msg.h` 把 WebMessage 白名单从单一 `window` 扩成
+  `window + status`，沿用 origin 校验；状态字段与撤销域在宿主侧再校验一次。
+- 状态栏新增常驻 `Seg_Ai` chip：`AI · 空闲 / 运行中 / 待确认 / 完成 / 失败`，
+  异步事件直接写段文本，`RefreshStats()` 重建模型时带回现值；`statusSegs`
+  不再能把它藏掉。
+- 新增 `aiui::StatusPeek`：点击 chip 弹出气泡，显示完成摘要，并提供
+  "打开对话 / 撤销 / 关闭"；面板展开、窗口布局变化、主窗口销毁时收起。
+  撤销按域派发 `file.undo` 或 `bmk.undo`，仍用 `Actor::Ai()` 保持人工边界。
+- 文档记录 D24。
+
+**验证**：主构建通过；`npm test` 与 `test:ui` 全过（新增 verify_ai_status
+13 项）；C++ 定向单测 `status_bar_test` / `webview_actions_test` /
+`ai_status_peek_test` 通过。评估面重签仍需人工执行。
+
 ### AI 面板：重新审查后的生命周期与安全边界加固
 
 **做法**：
@@ -22,6 +482,142 @@
 `gen_keymap.py --check` 通过；`npm test` 52+25+8+19 条全过，`test:ui`
 17+24+16 条全过。`check_components.py` 仍有并行改动带来的行数/评估面欠账，
 本轮只把自己的两个 WebView/Panel 文件行数同步到棘轮基线，未替人重签评估面。
+
+### AI 面板：回合身份与确认语义收口（P0）
+
+**症状**：历史截断或「新对话」后活动流会把不同对话并回同一个「第 N 轮」；
+同一会话两个回合重叠时会读写同一份历史快照；停止后旧 SSE 的 `done/error`
+还能清掉新回合的 busy 与审批卡；`undoable` 让可撤销的破坏性命令免确认；
+「自动执行」文案让人以为危险命令会被自动批准。
+
+**做法**：
+
+- 新增 `service/turn-state.js`：`.turn.json` 持久记录单调回合号，旧会话从历史
+  最大 `turn` 续号；同会话用 promise 链串行整段 SSE 回合，异常也释放锁。
+- `server.js` 在锁内分配 `turnId` → 读历史 → 写回；每个 SSE 事件都带
+  `turn` / `turnId`。历史与每条工具记录都落盘权威回合号。
+- `ui/app.js` 用 `generation + activeTurn` 双身份过滤事件：`stop()` 与每次
+  `send()` 都夺权，迟到事件不能写回答、清审批、改 busy 或写 EOF 警告。
+- `service/approval-policy.js` 统一三模式：confirm 问所有写；auto 只免普通写，
+  **危险命令任何模式都问**；readonly 拦所有写；未知工具 fail closed。
+  `ApprovalOf()` 补 `readOnly`，`agent-stream.js` 不再在 auto 模式跳过审批卡，
+  也不会把会话级免确认伪造成 `approve=true`。
+- `commands_confirm.cpp` 删除 `undoable → 免确认`；可撤销只影响事后补救，
+  不免除事前知情权。宿主侧 `aiAllowDanger + approve` 双门保持不变。
+- composer 模式文案改为「自动（危险确认）」，tooltip 明示普通写自动、
+  危险仍需确认且受 `denyCommands` 与宿主开关约束。
+
+**验证**：`turn-state` 14/14、`approval-policy` 11/11、`verify_turn_guard`
+16/16 通过；活动流 17/17、内联台账 24/24、guard 52/52、intents 25/25、
+知识 14/14、协议 12/12 全过。新增 `commands_confirm_test.cpp`；
+完整 C++ 套件 67/67 通过（独立临时目录，未抢占其他会话的测试锁）。
+
+### AI 面板：窗口动作不再空点击（P1）
+
+**症状**：页面自定义标题栏的 `postWindow(action)` 没有宿主消费者；最小化、关闭、
+置顶点了没反应。`drag` 即使接上也无法安全拖动作为子窗口的面板。
+
+**做法**：
+
+- 新增 `aichat_webview_msg.h`：补齐 `WebMessageReceived` 处理器所需的 GUID、
+  args vtable 与窄动作白名单；来源必须是启动 URL 的 origin，消息必须是
+  `type=window`，动作只能是 `minimize / close / maximize / pin / unpin`。
+- `aichat_webview.cpp` 的 `ICore` vtable 延到 `remove_WebMessageReceived`；
+  在首次导航前注册处理器，`Stop()`/替换 core 时注销；页面动作回调转发给宿主。
+- `App::InitAiPanel()` 落地动作：`close` 收起面板并重排，`minimize/maximize`
+  操作主窗口，`pin/unpin` 用 `HWND_TOPMOST/NOTOPMOST + SWP_NOACTIVATE`。
+- `ui/app.js` 在 WebView2 模式不再发 `drag`，close 文案改为「收起 AI 面板」；
+  浏览器直开时隐藏无宿主的窗口按钮。
+
+**验证**：隔离构建通过；`webview_actions_test.cpp` 17 项、`verify_window_actions.js`
+10 项通过；`test:ui` 合计 67 项通过。新增决策 D19。
+
+### AI 工具：撤销组元数据与纯模型（P1）
+
+**症状**：AI 一次「复制 → 重命名 → 移动」是多步写，现有 `fileundo::Stack`
+一条记录一步撤销；直接接线会让用户按多次 Ctrl+Z 才撤完一次任务。命令名本身
+也不能可靠判断能否合并：`tab.close` 虽可撤销，却没有同域撤销栈。
+
+**做法**：
+
+- `ai_api.h/.cpp/.json` 给 `ToolSpec` 增加 `UndoGroupPolicy` 与 `undoDomain`；
+  只有 `effects.undoable` 且属于 `File` / `Bookmark` 的命令才声明
+  `undoGroup=join` 及对应域，`tools/list` 同步暴露 annotations。
+- 新增 `service/undo-groups.js`：组 ID / 域校验、元数据准入、最多 20 步、
+  `undoRef` 唯一、逆序撤销计划、失败关闭不生成计划；机器代撤遇到人工步骤
+  整组拒绝。模型不发命令、不写文件、不碰 UI。
+- 新增 `undo-groups_test.js`（33 项）与 `ai_api_test.cpp` 断言；修正
+  `UndoDomainOfGroup()` 对无域分组返回空串指针导致 `tab.close` 被误判 join 的问题。
+
+**验证**：隔离构建通过；完整 C++ 套件 69/69 通过；Node 侧撤销组 33/33，
+连同 guard / intents / agent-stream / server-security / turn-state / approval-policy /
+preflight / pipe-cancel / knowledge / protocols 全过。新增决策 D20。
+**尚未接线**：真实 `fileundo::Stack` 与书签栈仍是单步撤销，本次只交付契约与模型。
+
+### AI 面板：活动流与回答台账共享权威回合号（P2）
+
+**症状**：服务端已给 SSE 事件写 `turnId`，但活动流按 `turn` 分组，回答气泡
+自己不带身份。活动流显示「第 N 轮」时无法可靠定位回对应回答；历史里同时
+存在冲突的 `turn` / `turnId` 时，两个视图可能显示不同轮号。
+
+**做法**：
+
+- `ui/app.js` 统一用 `turnIdOf()` 读取身份：`turnId` 优先、旧 `turn` 回落。
+  事件归属、活动流分组、历史重建都走同一口径。
+- 回答气泡和内联 `.step-ledger` 同步落 `data-turn-id`；实时由 `start` 写入，
+  历史由落盘条目写入，工具事件到达时补写。台账头显示「第 N 轮」。
+- 活动流分组保存同一 `turnId`，轮次标题变成按钮；点击后切回聊天、按身份找到
+  回答、展开台账并滚动过去。旧数据没有 `turnId` 时只保留展示，不生成反查按钮。
+- 新增 `tools/verify_turn_identity.js`（17 项），并接入 `npm run test:ui`。
+
+**验证**：`test:ui` 合计 84 项通过（活动流 17 / 内联台账 24 / 事件归属 16 /
+回合身份 17 / 窗口动作 10）。原有事件归属测试仍全过，共享身份没有削弱旧事件隔离。
+新增决策 D21。
+
+### AI 面板：重试与编辑重试走分叉回合（P2）
+
+**症状**：失败/停止的回合只能整段重发；改一句提示词再问会把旧回答一起塞进
+上下文，或者直接截断历史，丢掉审计链。旧 `turn` 是从消息条数推算的，不能
+当分叉坐标。
+
+**做法**：
+
+- 新增 `service/turn-versions.js`：同 root 只保留最大 attempt 的活动分支；
+  `retryOf` 从旧用户条目之前分叉；生成 `rootTurnId / attempt / supersededBy`
+  血缘，旧尝试保留在历史里。
+- `server.js` 新增 `historyForChat()`：普通 send 只看活动分支，retry 取分叉点
+  之前的历史；无效 `retryOf` 返回 400 且不消耗回合号。新回合的事件、历史、
+  工具记录都带版本字段，旧记录加 `supersededBy`。
+- `ui/app.js` 在失败/停止回答上显示“重试 / 编辑重试”；前者用原提示词发新回合，
+  后者预填输入框并把下一次 send 标成 `retryOf`。活动流显示尝试号与“旧版本”。
+
+**验证**：`npm test` 全过（guard 52 / intents 25 / agent-stream 8 /
+server-security 24 / undo-groups 33 / turn-versions 19）；`test:ui` 合计 97 项
+（活动流 17 / 内联台账 24 / 事件归属 16 / 回合身份 17 / 版本 UI 13 / 窗口动作 10）。
+新增决策 D22。**尚未交付**：任意旧分支的切换与回看，目前只标记旧版本。
+
+### AI 面板：旧版本可切换，父链收窄上下文（P2）
+
+**症状**：分叉后默认总是最大 attempt 为活动分支，用户切回旧版本下一次发送又
+跳回最新；即使只改选中回合，挂在其他分支后面的普通回合还会混进上下文，
+形成“旧版本 + 另一分支后半截”的假对话。
+
+**做法**：
+
+- 新增 `service/branch-state.js`：按会话把 `rootTurnId -> selectedTurnId`
+  持久化到 `<session>.branches.json`，`/api/clear` 同步清空。
+- `turn-versions.js` 的 `activeHistory()` 接受 selection；新回合记录
+  `parentTurnId`，retry 复用分叉目标的父节点，普通 send 挂当前最后一个回合。
+  活动分支只启用选中回合及其已启用的后代，跨分支后继一并排除。
+- `server.js` 新增 `GET /api/branches` / `POST /api/branch`，在会话锁内校验
+  同血缘后写选择；新回合自动成为对应 root 的活动分支。
+- `ui/app.js` 在版本化活动组提供“切换”按钮，成功后重载历史；活动流与回答
+  台账继续共享 D21 的 turnId 锚点。
+
+**验证**：`npm test` 全过（guard 52 / intents 25 / agent-stream 8 /
+server-security 30 / undo-groups 33 / turn-versions 24 / branch-state 9）；
+`test:turns` 14+24+9 全过；`test:ui` 合计 101 项（活动流 17 / 内联台账 24 /
+事件归属 16 / 回合身份 17 / 版本 UI 17 / 窗口动作 10）。新增决策 D23。
 
 ### 导航树：撤销展开符像素搬移，消除悬浮闪烁/截断
 

@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <thread>
 
 namespace job {
@@ -132,6 +133,7 @@ std::wstring Service::Start(const std::wstring& kind, const std::wstring& target
     {
         std::lock_guard<std::mutex> lk(mu_);
         jobs_.push_back(rec);
+        PruneLocked();
     }
     return rec->id;
 }
@@ -195,7 +197,33 @@ bool Service::WaitFinished(const std::wstring& id, unsigned timeoutMs) {
     // join 必须在**锁外**做：工作线程收工时要拿同一把锁写状态，
     // 拿着锁 join 就是自己等自己。
     JoinRecord(rec);
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        // 刚 join 的记录是当前最新的，不会被淘汰；CollectResult 随后还要 Get 它。
+        PruneLocked();
+    }
     return true;
+}
+
+void Service::PruneLocked() {
+    if (jobs_.size() <= kMaxRetainedRecords) return;
+
+    std::size_t finished = 0;
+    for (const auto& rec : jobs_) {
+        if (rec->done && rec->joined) ++finished;
+    }
+    std::size_t drop = finished > kMaxRetainedRecords ? finished - kMaxRetainedRecords : 0;
+    if (!drop) return;
+
+    // jobs_ 是"新的在后"：从头部淘汰，保住最近的作业 id 与结果。
+    for (auto it = jobs_.begin(); it != jobs_.end() && drop > 0;) {
+        if ((*it)->done && (*it)->joined) {
+            it = jobs_.erase(it);
+            --drop;
+        } else {
+            ++it;
+        }
+    }
 }
 
 void Service::JoinRecord(const std::shared_ptr<Record>& rec) {

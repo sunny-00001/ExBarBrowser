@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cwchar>
+#include <cwctype>
 
 namespace {
 
@@ -92,9 +93,44 @@ std::wstring ItemPath(IShellItem* item) {
     return s;
 }
 
+// 选中项的扩展名（小写，含点，如 ".txt"）。无扩展名返回空串。
+//
+// PKEY_FileExtension 是正规来源，但虚拟项（此电脑、库、网络）没有这个属性 ——
+// 那时退回显示名的末段扩展名。两条路都取不到就返回空（"无扩展名"也是一种类型）。
+std::wstring ItemExtension(IShellItem* item) {
+    if (!item) return std::wstring();
+    ComPtr<IShellItem2> i2;
+    if (SUCCEEDED(item->QueryInterface(IID_IShellItem2, reinterpret_cast<void**>(&i2))) && i2) {
+        PWSTR p = nullptr;
+        if (SUCCEEDED(i2->GetString(PKEY_FileExtension, &p)) && p) {
+            std::wstring s(p);
+            CoTaskMemFree(p);
+            if (!s.empty()) {
+                if (s[0] != L'.') s.insert(s.begin(), L'.');
+                for (wchar_t& c : s) c = towlower(c);
+                return s;
+            }
+        }
+    }
+    PWSTR dn = nullptr;
+    if (SUCCEEDED(item->GetDisplayName(SIGDN_NORMALDISPLAY, &dn)) && dn) {
+        std::wstring s(dn);
+        CoTaskMemFree(dn);
+        const size_t dot = s.rfind(L'.');
+        // dot > 0：排除 ".git" 这种整名就是点的隐藏文件。
+        if (dot != std::wstring::npos && dot > 0 && dot + 1 < s.size()) {
+            std::wstring ext = s.substr(dot);
+            for (wchar_t& c : ext) c = towlower(c);
+            return ext;
+        }
+    }
+    return std::wstring();
+}
+
 }  // namespace
 
-bool CollectViewStats(IShellView* view, ViewStats* out, SplitCache* cache) {
+bool CollectViewStats(IShellView* view, ViewStats* out, SplitCache* cache,
+                      const std::wstring& ownerPath, bool allowSplit, bool lightOnly) {
     if (!view || !out) return false;
     *out = ViewStats{};
 
@@ -107,15 +143,32 @@ bool CollectViewStats(IShellView* view, ViewStats* out, SplitCache* cache) {
     if (SUCCEEDED(fv2->ItemCount(SVGIO_ALLVIEW, &total)) && total > 0)
         out->total = static_cast<unsigned>(total);
 
+    // 轻量判据：只回答"状态栏要不要重算"。两次 COM 调用，不碰逐项属性、
+    // 容器属性、排序方向与磁盘空间（后者在离线网络盘上能卡几十秒）。
+    if (lightOnly) {
+        ComPtr<IShellItemArray> sel;
+        if (SUCCEEDED(fv2->GetSelection(FALSE, &sel)) && sel) {
+            DWORD n = 0;
+            sel->GetCount(&n);
+            out->selCount = n;
+            out->hasSelection = n > 0;
+        }
+        return true;
+    }
+
     // 分类（文件夹/文件）：上限 8000，超出只给总数
     const int kSplitCap = 8000;
-    const bool cached = cache && cache->valid &&
+    // 【缓存键 = 路径（不是 total）】旧实现只比 total，两个不同目录项数相同时
+    // 会命中对方缓存，状态栏显示另一个目录的文件/文件夹数 —— 见 view_stats.h
+    // 里 SplitCache 的说明。ownerPath 为空时视为"不能判归属"，直接不用缓存。
+    const bool cacheUsable = cache && !ownerPath.empty();
+    const bool cached = cacheUsable && cache->valid && cache->path == ownerPath &&
                         cache->total == static_cast<unsigned>(total > 0 ? total : 0);
     if (cached) {
         out->folders = cache->folders;
         out->files = cache->files;
         out->splitKnown = true;
-    } else if (total > 0 && total <= kSplitCap) {
+    } else if (allowSplit && total > 0 && total <= kSplitCap) {
         bool ok = true;
         // 一次 Items() 拿整数组，而不是逐项 fv2->Item(i) + SHCreateItemFromIDList：
         // 后者在 C://Windows//System32（5003 项）上每 800ms 要做两万次 COM 调用 + 5000 次
@@ -160,7 +213,8 @@ bool CollectViewStats(IShellView* view, ViewStats* out, SplitCache* cache) {
             }
         }
         out->splitKnown = ok;
-        if (cache && ok) {
+        if (cacheUsable && ok) {
+            cache->path = ownerPath;   // 键是路径，见上面 cacheUsable 的说明
             cache->total = static_cast<unsigned>(total);
             cache->folders = out->folders;
             cache->files = out->files;
@@ -177,6 +231,9 @@ bool CollectViewStats(IShellView* view, ViewStats* out, SplitCache* cache) {
         out->hasSelection = n > 0;
         FILETIME newest{};
         bool haveNewest = false;
+        // 类型统计：记出现过的扩展名集合（去重，上限 32 种 —— 够判"单/多种"，
+        // 又不让内存随选中数无界增长）。
+        std::vector<std::wstring> exts;
         // 上限：Ctrl+A 选中上万个文件时，逐项取大小/日期会让 UI 线程卡死好几秒。
         // 与 Exbar.cpp:58979 的 kSizeCap 同口径：只统计前 500 项，超出就明说"已截断"。
         constexpr DWORD kSelCap = 500;
@@ -185,10 +242,20 @@ bool CollectViewStats(IShellView* view, ViewStats* out, SplitCache* cache) {
         for (DWORD i = 0; i < scan; ++i) {
             ComPtr<IShellItem> item;
             if (FAILED(sel->GetItemAt(i, &item)) || !item) continue;
-            if (IsFolderItem(item.get()))
+            const bool isFolder = IsFolderItem(item.get());
+            if (isFolder) {
                 ++out->selFolders;
-            else
+            } else {
                 ++out->selFiles;
+                // 类型只看文件：文件夹没有"扩展名"，把它算进来会让类型段永远"多种类型"。
+                const std::wstring ext = ItemExtension(item.get());
+                if (!ext.empty()) {
+                    bool known = false;
+                    for (const auto& e : exts)
+                        if (e == ext) { known = true; break; }
+                    if (!known && exts.size() < 32) exts.push_back(ext);
+                }
+            }
             unsigned long long size = 0;
             if (ItemSize(item.get(), &size)) {
                 out->selBytes += size;
@@ -202,6 +269,8 @@ bool CollectViewStats(IShellView* view, ViewStats* out, SplitCache* cache) {
                 }
             }
         }
+        out->selExtKinds = static_cast<int>(exts.size());
+        if (exts.size() == 1) out->selExt = exts[0];
         if (haveNewest) {
             FILETIME local{};
             if (!FileTimeToLocalFileTime(&newest, &local)) local = newest;

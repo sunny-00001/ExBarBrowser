@@ -49,13 +49,8 @@ static bool ParseArgsSchema(const CommandDef& d, json::Value* schema) {
     return true;
 }
 
-// 是否声明了必填参数。没有 schema / 没有 required 数组 / 数组为空 → false。
-static bool HasRequiredParams(const CommandDef& d) {
-    json::Value schema;
-    if (!ParseArgsSchema(d, &schema)) return false;
-    const json::Value* req = schema.Find(L"required");
-    return req && req->IsArray() && !req->arr.empty();
-}
+// 是否声明了必填参数。收口到 HasRequiredArgs（命令面板与菜单键位共用同一答案）。
+static bool HasRequiredParams(const CommandDef& d) { return HasRequiredArgs(d); }
 
 // 把一段文本按参数类型解释成 JSON 值。
 // 失败返回 false（面板会就此取消，绝不把一个空值塞进命令）。
@@ -173,8 +168,8 @@ static bool CollectParamsInteractive(HWND owner, const Theme& theme, const Comma
 }  // namespace
 
 IShellView* App::ActiveView() {
-    Tab* t = Active();
-    return t && t->view ? t->view->CurrentView() : nullptr;
+    ShellView* host = ActiveShellViewHost();
+    return host ? host->CurrentView() : nullptr;
 }
 
 bool App::CopyText(const std::wstring& text) {
@@ -229,9 +224,9 @@ void App::OpenPathInNewWindow(const std::wstring& path) {
 
 void App::ApplyViewMode(int index) {
     if (index < 0 || index >= static_cast<int>(kViewModeCount)) return;
-    Tab* t = Active();
-    if (!t || !t->view) return;
-    t->view->SetViewMode(kViewModes[index].fvm, kViewModes[index].icon);
+    ShellView* host = ActiveShellViewHost();
+    if (!host) return;
+    host->SetViewMode(kViewModes[index].fvm, kViewModes[index].icon);
     viewMode_ = index;
     // 视图模式是用户偏好（不是某个目录的状态），改了就落盘，下次启动直接套用。
     Settings& s = Config::Get().mutableSettings();
@@ -277,7 +272,6 @@ bool App::WithView(const std::function<bool(IShellView*)>& fn, const wchar_t* wh
     }
     return ok;
 }
-
 
 bool App::TransferTargets(const Args& args, bool move) {
     // 路径归一化（正斜杠→反斜杠、折叠连续分隔符）：
@@ -340,7 +334,6 @@ bool App::TransferTargets(const Args& args, bool move) {
     }, move ? L"移动到" : L"复制到");
 }
 
-
 int App::ViewModeCount() { return static_cast<int>(kViewModeCount); }
 
 int App::ViewModeIndexFor(int fvm, int iconPx) {
@@ -357,18 +350,23 @@ int App::ViewModeIndexFor(int fvm, int iconPx) {
 void App::RegisterCommands() {
     RegisterTabCommands();
     RegisterFileCommands();
+    RegisterViewPaneCommands();
     RegisterScanCommands();
     RegisterCompareCommands();
     RegisterJobCommands();
     RegisterMiscCommands();
+    RegisterExternalCommands();
+    RegisterBookmarkIoCommands();
+    RegisterWindowCommands();
     RegisterDevCommands();
     RegisterArchiveCommands();
+    RegisterSearchCommands();
+    RegisterAiPanelCommands();
 }
 
 // ---------------------------------------------------------------- 菜单
-// 标签切换器：与"溢出 » 菜单"同源的列表，但它是全局入口（Ctrl+Shift+A），
-// 并且预选当前标签、支持键入前缀定位（PopupList 的 type-ahead）。
-// 不新写一套浮层：同一份渲染/键盘/取消语义，行为才不会与菜单分叉。
+// 标签切换器：与"溢出 » 菜单"同源的全局入口（Ctrl+Shift+A），预选当前标签、
+// 支持键入前缀定位（PopupList 的 type-ahead）；同一份浮层，行为才不与菜单分叉。
 void App::ShowTabSwitcher() {
     const int n = tabSet_.Count();
     if (n <= 0) return;
@@ -447,14 +445,6 @@ void App::ShowTabMenu(int index, int action) {
     }
 }
 
-// 标签颜色：从 WM_APP_TAB_COLOR 来（颜色是"值"，不是"动作"）。
-// index 越界（菜单期间标签被关掉）时静默返回 —— SetColor 自己也会夹取值域。
-void App::ShowTabColor(int index, int color) {
-    const int id = tabSet_.IdAt(index);
-    if (!id) return;
-    SetTabColor(id, color);
-}
-
 void App::ShowStatusMenu(POINT screen) {
     static const wchar_t* kSegNames[Seg_Count] = {
         L"文件夹计数", L"文件计数", L"已选/总数", L"修改日期", L"路径",
@@ -470,11 +460,14 @@ void App::ShowStatusMenu(POINT screen) {
     const auto& enabled = Config::Get().s().statusSegs;
     for (int i = 0; i < Seg_Count; ++i) {
         const bool on = std::find(enabled.begin(), enabled.end(), i) != enabled.end();
-        // 勾选前缀由组件统一拼；段图标与状态栏本体共用同一份映射。
-        menu.AddChecked(kSegNames[i], on, i, StatusSegmentIcon(i));
+        // 勾选前缀由组件统一拼；段图标与状态栏本体共用同一份映射 ——
+        // 优先系统默认位图，取不到退字形（两处长得一样）。
+        menu.AddSystemIcon(kSegNames[i], on, i, sysicon::Get(StatusSegmentSysId(i)),
+                           StatusSegmentIcon(i));
     }
+    // 快捷键由键位表自动推出（见 menu.h）。「隐藏状态栏」只是配置键，无对应命令。
     menu.Separator()
-        .Add(L"复制当前路径", kCopyPath, ico::IconId::Copy)
+        .Add(L"复制当前路径", kCopyPath, ico::IconId::Copy).Cmd(CmdId::PathCopyDir)
         .Add(L"隐藏状态栏", kHideStatusBar, ico::IconId::Eye);
 
     ui::MenuOptions opt;
@@ -516,53 +509,27 @@ void App::ShowStatusMenu(POINT screen) {
     CommandBus::Get().Invoke(CmdId::ConfigSet, Args::FromJson(args), Actor::Ui());
 }
 
-void App::ShowCommandPalette() {
-    // 面板要分两类：无必填参数的（点选即执行）与带必填参数的（选中后追问参数）。
+void App::InvokeFromPalette(const CommandDef& d) {
+    // 破坏性命令的确认**收口在 CommandBus::Dispatch**（所有人工入口统一一道门：
+    // 命令面板 / 序列 / 弹层菜单 / 快捷键 / 鼠标）。以前这道门只写在这个函数里，
+    // 于是序列与弹层菜单能绕过它直接执行 —— 实测：序列 q x 直接清空 19 条
+    // 搜索历史，一道确认都没有。
     //
-    // 以前是**整条跳过带参命令** —— 理由是"面板只能给空参，带参命令空参调用会静默
-    // 清空别名/颜色"。但那条判据只证明了"不能空参调用"，没证明"带参命令人不能触发"。
-    // 结果是 config.get / config.set / file.rename 这类命令在人类侧**只有 AI 能触发**，
-    // 违反 R20（人机等价）—— 面板跳过的每个带参命令，都是一条只有机器能做的动作。
-    //
-    // 正确做法：面板里**列出**带参命令，选中后按 schema **追问必填参数**（标签名/输入框），
-    // 追问够了才调用，所以绝不出现空参调用。追问失败（用户取消）就什么都不做。
-    std::vector<const CommandDef*> defs;
-    ui::Menu menu;
-    for (const auto& d : CommandTable()) {
-        if (!d.implemented) continue;
-        std::wstring label = std::wstring(d.title) + L"    [" + d.group + L"]";
-        // 带必填参数的命令标出"需参数"，让用户在点之前就知道会追问。
-        if (HasRequiredParams(d)) label += L"  (…)";
-        menu.Add(label, static_cast<int>(defs.size()), ico::IconId::Search);
-        defs.push_back(&d);
-    }
-    RECT rc;
-    GetWindowRect(hwnd_, &rc);
-    POINT at{rc.left + theme_.S(80), rc.top + theme_.S(120)};
-    // 命令面板是键盘触发的固定入口（不是某一项的右键），键固定即可：
-    // 连按两次快捷键 → 第一次开、第二次收起，与所有下拉同一契约。
-    ui::MenuOptions opt;
-    opt.minWidthPx = theme_.S(360);
-    opt.toggleKey = L"cmd.palette";
-    const int idx = menu.Show(hwnd_, theme_, at, opt);
-    if (idx < 0 || idx >= static_cast<int>(defs.size())) return;
-    const CommandDef& d = *defs[static_cast<size_t>(idx)];
-
-    // 破坏性命令在人侧也要确认。AI 侧的 approve 由 ai::Call 管，
-    // 面板直接走 CommandBus，少了这一步就成了"绕过批准的后门"。
-    if (d.effects.destructive) {
+    // 这里只为 NeedsConfirm() 明确放行的**日常白名单**保留原确认框
+    // （关标签、跑构建/测试这类高频且可恢复的动作）。命令面板历来对每条
+    // 破坏性命令都问一遍，这个行为不该因为收口而变松。
+    // NeedsConfirm 现在只在白名单上返回 false；undoable 本身不再是豁免。
+    if (d.effects.destructive && !CommandBus::Get().NeedsConfirm(d)) {
         const int yes = MessageBoxW(hwnd_,
             (L"「" + std::wstring(d.title) + L"」会覆盖现有内容。确定执行吗？").c_str(),
             L"确认执行", MB_YESNO | MB_ICONWARNING);
         if (yes != IDYES) return;
     }
-
-    // 无必填参数：直接以空参调用（与原来一致）。
+    // 无必填参数：直接以空参调用。
     if (!HasRequiredParams(d)) {
         CommandBus::Get().Invoke(d.id, Args::Empty(), Actor::Palette());
         return;
     }
-
     // 有必填参数：先追问，再调用。**绝不空参调用** —— 空参会让 tab.rename 变成
     // "清空别名"、tab.color 变成"设成无颜色"，都是静默丢用户数据。
     json::Value args = json::Value::MakeObject();
@@ -572,6 +539,21 @@ void App::ShowCommandPalette() {
         return;   // 用户取消/参数被拒：不调用，什么也不做
     }
     CommandBus::Get().Invoke(d.id, Args::FromJson(args), Actor::Palette());
+}
+
+void App::ShowCommandPalette() {
+    // 命令面板 = 序列总览弹窗的**唤起态**：一张模式列表
+    // （序号│名称(含前缀)│说明），回车进入某个模式；命令清单在「命令 (!)」模式里。
+    //
+    // 【为什么不直接列命令】原版 SeqUiUserOpenOnHookThread：Ctrl+Shift+P 唤起时
+    // g_seqMode=-1、**图标不亮** —— 而"图标不在"正是"模式列表"的判据
+    // （SeqShowingModeList）。原版的命令列表是 `!` 前缀进的模式（SeqListCmd），
+    // 不是唤起态的默认页。复刻后：Ctrl+Shift+P → 模式列表 → 回车进「命令 (!)」
+    // → 207 条命令（打字过滤 + 分组 + 触发键），路径与原版一致。
+    //
+    // 过去这里另起一个 ui::Menu，与序列提示弹层是两套 UI/两套交互；
+    // 现在统一走同一个弹层，"序列键弹窗"与"命令面板"是同一份代码的两种入口。
+    ShowSequenceOverlay(SequenceOverlay::kUserMode);
 }
 
 void App::ShowViewMenuAt() { navBar_.ShowViewMenuNow(); }

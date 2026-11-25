@@ -28,6 +28,11 @@
 
 namespace ai {
 
+// 撤销组契约：join = 命令可作为一步加入同域撤销组；none = 不支持。
+// 【为什么放在 ToolSpec 之前】ToolSpec 要引用它；协议取值集中在这里，避免
+// tools/list、Node 桥与后续 fileundo::Stack 各写一份字符串。
+enum class UndoGroupPolicy { None, Join };
+
 // 工具描述：把 CommandDef 的 AI 元数据投影成 tools/list 的一项。
 //
 // 用 Effects 而非单个 risk：调用方需要区分"幂等的写"（可安全重试）与
@@ -53,7 +58,43 @@ struct ToolSpec {
     // 不知道的话，它会把 ok=true 当成"效果确实达成"，而这条命令恰好是那种
     // "handler 说成了、但没人能核对"的情况。知道之后它可以自己补一次核对。
     std::wstring assertionExempt;
+    // 单次调用的软超时（毫秒）。客户端据此设置 JSON-RPC 请求定时器；
+    // 90s 是现有行为的默认值，长命令（build/test）可单独调高。
+    int timeoutMs = 90000;
+    // 撤销组契约。join = 这条命令可以作为一步加入同域撤销组；none = 不支持。
+    // 当前只由 effects.undoable + 命令 group 推导，后续接 fileundo::Stack 时
+    // 仍以这里为唯一元数据来源，不给 AI 第二套手写名单。
+    UndoGroupPolicy undoGroup = UndoGroupPolicy::None;
+    std::wstring undoDomain;   // "file" / "bookmark"；空 = 不参与撤销组
 };
+
+// 撤销组的域。文件栈与书签栈是两套独立实现，不能混在一个组里撤销。
+inline const wchar_t* UndoGroupPolicyName(UndoGroupPolicy p) {
+    return p == UndoGroupPolicy::Join ? L"join" : L"none";
+}
+
+inline const wchar_t* UndoDomainOfGroup(const std::wstring& group) {
+    if (group == L"File") return L"file";
+    if (group == L"Bookmark") return L"bookmark";
+    return nullptr;   // 空串指针非 null，会让调用方误判"有域"
+}
+
+// 组 ID 是调用方给的短标识（建议用回合号，如 "turn-12"）。只接受
+// [A-Za-z0-9] 开头、1..64 位的 [A-Za-z0-9._:-]，避免进日志/文件名时转义。
+inline bool IsValidUndoGroupId(const std::wstring& id) {
+    if (id.empty() || id.size() > 64) return false;
+    const wchar_t first = id[0];
+    const bool alnumFirst = (first >= L'0' && first <= L'9')
+        || (first >= L'A' && first <= L'Z') || (first >= L'a' && first <= L'z');
+    if (!alnumFirst) return false;
+    for (size_t i = 1; i < id.size(); ++i) {
+        const wchar_t c = id[i];
+        const bool alnum = (c >= L'0' && c <= L'9') || (c >= L'A' && c <= L'Z')
+            || (c >= L'a' && c <= L'z');
+        if (!alnum && c != L'.' && c != L'_' && c != L':' && c != L'-') return false;
+    }
+    return true;
+}
 
 // 风险的三个档位名（read / write / danger）。给机器读的稳定标识。
 //
@@ -199,6 +240,19 @@ struct StateSnapshot {
     bool navPaneVisible = false;          // view.toggle.nav 改写
     bool previewPaneVisible = false;      // view.toggle.preview 改写
 
+    // ---- 双栏观测面 ----
+    bool dualPane = false;                // 当前是否显示两个窗格
+    int activePane = 0;                   // 0 主窗格 / 1 第二窗格；单栏恒为 0
+    int paneSplit = 50;                   // 主窗格占比百分比（左右=左栏宽度，上下=上栏高度）
+    // 双栏方向：false = 左右并排，true = 上下堆叠（垂直双栏）。
+    // leftPanePath/rightPanePath 是**槽位**语义：左右模式是左/右，上下模式是上/下。
+    bool paneVertical = false;
+    // 左右窗格各自的目录（不含活动窗格判定）。双栏下两个视图可以完全不同，
+    // 只给 activePath 的话，调用方无法复查"另一栏到底在哪" —— 也就无法验证
+    // 导航确实只打到了活动窗格、没把另一栏一起带走。
+    std::wstring leftPanePath;
+    std::wstring rightPanePath;
+
     // ---- 当前是否在搜索结果里（search.find 改写）----
     // 只有写没有读时，"搜索成功"就只能靠命令自己的回执来证明 —— 而回执
     // 恰恰是最容易说假话的地方（宿主没换视图也会返回 ok）。这三个字段是
@@ -206,6 +260,19 @@ struct StateSnapshot {
     bool searching = false;               // 正在显示搜索结果
     std::wstring searchScope;             // 搜索来源目录（空 = 不在搜索里）
     std::wstring searchQuery;             // 当前生效的搜索词
+
+    // ---- 搜索域的设置面（与上面三个字段**不是一回事**，别混）----
+    //
+    // searchScope 说的是"这次搜索从哪儿发起"（搜索视图的上一级）；
+    // 下面四个说的是"搜索框现在配成什么样"—— 搜索框左侧的「范围」菜单
+    // 与右侧的「历史」下拉改的就是它们。
+    //
+    // 为什么范围用字符串 id 而不是数字档位：id（current/subtree/thispc/custom）
+    // 自带语义，AI 读回执不用去查表；数字还得回来问"1 是什么意思"。
+    std::wstring searchRange;             // 当前范围档位（空 = 未知）
+    std::wstring searchRangePath;         // 自定义范围的路径（仅 custom 档有意义）
+    int searchHistoryCount = 0;           // 搜索历史条数（内容由 search.history.list 给）
+    std::wstring searchInput;             // 输入框里现在是什么（**还没提交**）
 
     // ---- 选中与焦点（观测面：AI 要能回答"用户此刻选中了什么、焦点在哪"）----
     // selectionPaths 与 selectionCount 同源（同一条 shell 枚举路径）；
@@ -281,6 +348,42 @@ struct StateSnapshot {
     bool showSystemFiles = true;          // 显示系统文件
     bool showExtensions = true;           // 显示文件扩展名
     int shellHiddenState = 0;             // 三态：0 全显 / 1 隐系统 / 2 隐全部
+
+    // ---- AI 面板可见性 ----
+    //
+    // ai.panel.toggle 声明了断言 "aiPanelVisible=$changed"，但快照里没有这个字段 ——
+    // 断言不可求值，等于这条命令的"效果对了"永远无法判定（第 18 项会红）。
+    // 面板自己也报了 NotSupported（WebView2 缺失时），那种情况下 false 是**真值**：
+    // 面板确实没显示，不是"读不到"。
+    bool aiPanelVisible = false;
+
+    // ---- AI 活动状态观测面 ----
+    //
+    // chip 上显示的状态：idle / starting / busy / approval / done / error。
+    // starting 是宿主在页面上报前显示的原生启动态，WebMessage 不接受它。
+    // 与 chip 同源，AI 读回时看到的必须是用户看到的那一档。
+    std::wstring aiState = L"idle";
+
+    // ---- AI 未读观测面 ----
+    //
+    // 面板收起期间到达的终态结果（完成 / 失败 / 待确认）是否被用户看过。
+    // chip 上的圆点、peek 与这个字段同源；打开面板或消费 peek 后为 false。
+    // 观测面而非可写状态：没有 ai.unread.clear 命令，用户动作才是写入口。
+    bool aiUnread = false;
+
+    // ---- AI 面板的排查面 ----
+    //
+    // 面板白屏时，"面板到底卡在哪一步"过去只能翻 %TEMP% 的日志。
+    // 这三个字段把它变成可查询的状态，与 aiPanelVisible 同一个快照出口：
+    //   · aiPanelPort    —— 面板拉起的 node 服务端口（0 = 没起来）。
+    //     有了它就能直接用浏览器访问 http://127.0.0.1:<port>/ 用同一份 UI，
+    //     不必等 WebView2 可用 —— 这是"面板不可用时的可用路径"。
+    //   · aiPanelError   —— 不可用的原因（空 = 没出错）。
+    //   · aiPanelWebView —— 浏览器视图状态："ready" / "creating" / "none"。
+    //     三者组合起来能唯一定位：端口 0 → 服务没起；端口有值但视图 none → WebView2 没建。
+    unsigned aiPanelPort = 0;
+    std::wstring aiPanelError;
+    std::wstring aiPanelWebView;
 };
 using StateFn = std::function<StateSnapshot()>;
 void SetStateProvider(StateFn fn);

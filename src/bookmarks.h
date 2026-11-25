@@ -59,9 +59,10 @@ public:
     // 调用方知道"存在"却拿不到"是哪一条"，于是只能放弃这次拖放（静默无反应）。
     const BookmarkNode* FindByPath(const std::wstring& path) const;
 
-    // 返回新节点 id（失败为空）
+    // 返回新节点 id（失败为空）。index >= 0 时插到目标容器的该位置；
+    // 省略（或 < 0 / 越界）= 追加到末尾（与外部拖放的插入线语义一致）。
     std::wstring AddPath(const std::wstring& name, const std::wstring& path,
-                         const std::wstring& parentId = L"");
+                         const std::wstring& parentId = L"", int index = -1);
     std::wstring AddFolder(const std::wstring& name, const std::wstring& parentId = L"");
     // 复制一条书签（分类则连子树深拷贝），插到原条目后面。返回新条目 id（失败为空）。
     // 子树所有 id（含根）重新分配 —— 原样拷贝会让副本与原件撞 id，
@@ -98,6 +99,25 @@ public:
     //   · 目标是自己的子孙（把 A 拖进 A\B 会让整棵子树从树上脱落 —— 这是一条
     //     "数据消失"的路径，必须在 store 里拦住，而不是指望 UI 不这么调）。
     bool MoveTo(const std::wstring& id, const std::wstring& targetFolderId, int index = -1);
+
+    // 解散分类：把分类里的**直接子项**提到它所在的上一层，分类本身消失。
+    //
+    // 顶层分类解散 = 子项回到书签栏（用户要的"解散到书签栏"）；
+    // 嵌套分类解散 = 子项回到它的上级分类（层级只降一层，不一次拍平）。
+    // 空分类解散 = 分类自己消失（没有子项可提，只剩一层空壳）。
+    //
+    // 分类的**子树**不散：子项带着自己的子项一起走（"解散"掉的是这一层壳，
+    // 不是把整棵树摊平）。
+    // 返回被提升的条目 id 列表（失败时为空；空分类成功但列表也为空）。
+    std::vector<std::wstring> Dissolve(const std::wstring& id);
+
+    // 只排某个分类的**直接子项**（不递归、不动别的层）。
+    //
+    // 为什么要有它：SortRecursive 是"整棵树一起排"，用户整理一个分类时
+    // 想要的是"就这个分类里排一下"。递归排序会顺手动到别的分类 ——
+    // 那不是用户点的那个动作。
+    // 返回 false = 目标不是分类 / 不存在；只有一个子项时返回 true（无事可做）。
+    bool SortChildren(const std::wstring& folderId, bool foldersFirst, bool ascending);
 
     // 递归排序（空书签菜单的"按名称排序"）。
     // 递归而不是只排顶层：用户点"按名称排序"看到的是"分类里的顺序纹丝不动"，
@@ -201,7 +221,7 @@ private:
 std::wstring BookmarkPathToUrl(const std::wstring& path);
 std::wstring BookmarkUrlToPath(const std::wstring& url);
 
-// shell 命名空间路径的纯格式校验（::{8-4-4-4-12}）。实现见 bookmarks.cpp。
+// shell 命名空间路径的纯格式校验（::{8-4-4-4-12}）。实现见 bookmarks_io.cpp。
 // bmk.add.path / bmk.edit 的入口必须过它：缺 } 的 CLSID 曾经照单落盘，
 // 之后"打不开 + 通用图标"两头排查（2026-11-21 真实踩坑两次）。
 bool IsValidShellNamespacePath(const std::wstring& path);

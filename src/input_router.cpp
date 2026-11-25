@@ -2,68 +2,54 @@
 #include "str.h"
 
 #include "commands.h"
-#include "config.h"
-#include "mouse_rules.h"   // CurrentMods（输入端唯一实现）
+#include "mouse_rules.h"   // CurrentMods（输入端唯一实现）—— 配置经 InputConfig 注入，不直接 include config.h（R15）
 
 #include <algorithm>
 #include <cstdlib>
 #include <map>
 
-void InputRouter::Init(HWND main, const Theme& theme) {
+void InputRouter::Init(HWND main, const Theme& theme, InputConfig& cfg) {
     main_ = main;
     theme_ = &theme;
+    cfg_ = &cfg;
     hint_.Create(main, theme);
     Reload();
 }
 
 void InputRouter::Reload() {
-    LoadKeymap(Config::Get().KeymapPath(), &keymap_);
+    LoadKeymap(cfg_->KeymapPath(), &keymap_);
     BuildBindings();
 
-    MouseRules::Get().Load(Config::Get().MousePath());
+    MouseRules::Get().Load(cfg_->MousePath());
 
     seq_.SetEntries(keymap_.sequences);
-    seq_.SetUniqueAuto(Config::Get().s().seqUniqueAuto);
-    seq_.SetSingleInstant(Config::Get().s().seqSingleInstant);
+    seq_.SetUniqueAuto(cfg_->SeqUniqueAuto());
+    seq_.SetSingleInstant(cfg_->SeqSingleInstant());
     seq_.Reset();
     hint_.Hide();
     BuildRows();
 }
 
 void InputRouter::BuildBindings() {
-    chords_.clear();
-    auto add = [this](const KeyChord& c, const std::wstring& spec, const std::wstring& setting,
-                      const std::wstring& scope) {
-        if (!c.valid()) return;
-        if (chord::IsReserved(c)) return;
-        for (const auto& b : chords_)
-            if (b.chord == c) return;  // 先到先得（与 mod 的 orderDispatch 口径一致）
-        chords_.push_back({c, spec, setting, scope});
-    };
-
-    const Settings& s = Config::Get().s();
-    for (const auto& hk : keymap_.hotkeys) {
-        std::wstring key = Config::Get().HasHotkeyOverride(hk.setting)
-                               ? Config::Get().HotkeyOverride(hk.setting)
-                               : hk.key;
-        // 哨兵值 = 用户在管理器里点了"清除"：这是"显式解绑"，不能再退到系统默认键。
-        if (key == kHotkeyDisabled) continue;
-        if (key.empty()) key = SystemKeyFor(hk.setting);
-        if (key.empty()) continue;
-        // 命令规格可能带内联参数（"ViewMode:3"），查目录前先拆名字。
-        std::wstring name, arg;
-        SplitCommandSpec(hk.command, &name, &arg);
-        const CommandDef* def = FindCommand(name);
-        if (!def || !def->implemented) continue;
-        KeyChord c;
-        if (!chord::Parse(key, &c)) continue;
-        add(c, hk.command, hk.setting, def->scopeUi);
-    }
+    // 推导**本体**在 keybinding::Effective（唯一实现）：菜单行右端的快捷键文案
+    // 也读它，于是"显示的键"与"按得出来的键"同源。这里只负责喂当前配置。
+    chords_ = keybinding::Effective(keymap_, cfg_->HotkeyOverrides());
 
     // 应用内补充分配已于 2026-11-21 收编进 data/keymap.json：
     // F2 / Ctrl+L / Ctrl+Shift+1..8 现在和所有键位一样可见可配，且走同一份
     // 先到先得逻辑。以前这里的 kExtra 是第二套真相：用户改键会静默失效。
-    (void)s;
+}
+
+std::wstring InputRouter::ShortcutText(const std::wstring& spec) const {
+    // 序列键的显示受 seqEnabled 控制：关掉之后序列根本不触发，
+    // 这时还显示 "T B" 就是"按了没反应"的谎。
+    return keybinding::TextFor(spec, keymap_, chords_, cfg_->SeqEnabled());
+}
+
+std::wstring InputRouter::ShortcutText(CmdId id, const std::wstring& arg) const {
+    // 与上面那条**同一个**推导（keybinding::TextForCmd 内部就是反查名字再调 TextFor）。
+    // 两条入口共用一份实现，于是"按名字查"与"按身份查"永远同结果。
+    return keybinding::TextForCmd(id, arg, keymap_, chords_, cfg_->SeqEnabled());
 }
 
 void InputRouter::BuildRows() {
@@ -82,13 +68,11 @@ void InputRouter::BuildRows() {
         row.group = def ? def->group : L"?";
         row.scope = def ? def->scopeUi : L"全局";
         row.implemented = def && def->implemented;
-        std::wstring key = Config::Get().HasHotkeyOverride(hk.setting)
-                               ? Config::Get().HotkeyOverride(hk.setting)
-                               : hk.key;
-        if (key.empty()) {
-            std::wstring sys = SystemKeyFor(hk.setting);
-            if (!sys.empty()) key = sys;
-        }
+        // 生效键文本同样走唯一解析（覆盖 → 表内 → 系统原生键；"-" = 显式解绑）。
+        // 这里以前是就地复制的一份同规则代码 —— 两份的结局是"管理器说绑了 X、
+        // 实际生效的是 Y"。
+        const std::wstring key = keybinding::ResolveKey(
+            hk.setting, hk.key, cfg_->HotkeyOverrides());
         row.key = key == kHotkeyDisabled ? std::wstring(L"（未绑定）") : key;
         KeyChord c;
         // 哨兵 "-" 会被 chord::Parse 当成 VK_OEM_MINUS 解析成功，于是所有"未绑定"
@@ -162,55 +146,6 @@ int InputRouter::CurrentMods() const {
     return ::CurrentMods();
 }
 
-std::wstring InputRouter::TokenOf(WPARAM vk) {
-    // 这里 vk 都是已判定过范围的虚拟键码（'A'..'Z' / '0'..'9' / VK_NUMPAD0..9），
-    // 全部 < 128，转 wint_t（= wchar_t 宽度）是明确的收窄。
-    if (vk >= 'A' && vk <= 'Z')
-        return std::wstring(1, static_cast<wchar_t>(towlower(static_cast<wint_t>(vk))));
-    if (vk >= '0' && vk <= '9') return std::wstring(1, static_cast<wchar_t>(vk));
-    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9)
-        return std::wstring(1, static_cast<wchar_t>(L'0' + (vk - VK_NUMPAD0)));
-    return std::wstring();
-}
-
-bool InputRouter::FeedSequence(const std::wstring& token) {
-    if (!Config::Get().s().seqEnabled) {  // 用户关掉序列后，字母键应原样交给视图（type-ahead）
-        Cancel();
-        return false;
-    }
-    std::wstring cmd;
-    SequenceMachine::Result r = seq_.Feed(token, &cmd);
-    LogDbg(L"[seq] token=%s prefix='%s' result=%d cmd=%s", token.c_str(), seq_.prefix().c_str(),
-           static_cast<int>(r), cmd.c_str());
-    switch (r) {
-    case SequenceMachine::kMatched:
-        hint_.Hide();
-        KillTimer(main_, kSeqTimer);
-        CommandBus::Get().InvokeByNameLegacy(cmd, L"", Actor::Seq());
-        return true;
-    case SequenceMachine::kPending:
-        ShowSequenceHint();
-        SetTimer(main_, kSeqTimer, static_cast<UINT>(Config::Get().s().seqTimeoutMs), nullptr);
-        return true;
-    case SequenceMachine::kAborted:
-        hint_.Hide();
-        KillTimer(main_, kSeqTimer);
-        return true;
-    default:
-        return false;
-    }
-}
-
-void InputRouter::ShowSequenceHint() {
-    if (!Config::Get().s().seqShowHints) return;
-    std::vector<std::pair<std::wstring, std::wstring>> items;
-    for (const auto& h : seq_.Hints()) {
-        const CommandDef* d = FindCommand(h.command);
-        items.emplace_back(h.token, d ? d->title : h.command);
-    }
-    hint_.Show(seq_.prefix(), items);
-}
-
 namespace {
 
 // 地址框获得焦点时仍然必须生效的少数"全局"组合。
@@ -230,13 +165,52 @@ bool GlobalWhileEditing(const KeyChord& c) {
 
 }  // namespace
 
-bool InputRouter::HandleKey(WPARAM vk, HWND focus, LPARAM keyInfo) {
+bool InputRouter::InTextEntry(HWND focus) const {
+    return textEntryRoot_ && focus &&
+           (focus == textEntryRoot_ || IsChild(textEntryRoot_, focus));
+}
+
+bool InputRouter::HandleKey(WPARAM vk, HWND focus, LPARAM keyInfo, int modsOverride) {
+    // 修饰键来源：低层钩子路径给的是事件流推导值（更准）；普通 WM_KEYDOWN 路径
+    // 只能用 GetKeyState（此时按键消息可能尚未出队，Shift 位偶尔还没刷新）。
+    const int mods = (modsOverride >= 0) ? modsOverride : CurrentMods();
+
+    // WebView2 的聊天输入框不是 EDIT 类，之前打 g / x 会被当成序列前缀。
+    // 焦点进面板后先把可能残留的候选弹窗收掉，再按"文本输入区"放行所有裸键。
+    const bool inTextEntry = InTextEntry(focus);
+    if (inTextEntry && overlay_.visible()) Cancel();
+
+    // 弹窗开着时：所有键都归它（序列 + 弹层作用域见 input_router_overlay.cpp）。
+    if (overlay_.visible()) return HandleOverlayKey(vk, keyInfo, mods);
+
     wchar_t focusClass[32] = L"";
     if (focus) GetClassNameW(focus, focusClass, 32);
-    const bool inEdit = str::IEquals(focusClass, L"EDIT");
+    const bool inEdit = inTextEntry || str::IEquals(focusClass, L"EDIT");
     const bool inTabStrip = str::IEquals(focusClass, kTabStripClass);
     const bool repeat = (keyInfo & (1LL << 30)) != 0;
     if (inEdit && seq_.pending()) Cancel();
+
+    // 模式前缀键（与 mod 一致）：弹窗外按 / ! # @ … 直接唤起对应模式。
+    // 只在无 Ctrl/Alt（允许 Shift，符号前缀要按 Shift）、非编辑框、非重复时生效，
+    // 避免抢走地址栏/搜索框的 typing。
+    if (!inEdit && !repeat && !seq_.pending() && modeOpener_) {
+        const int m0 = mods;
+        if ((m0 & (chord::kCtrl | chord::kAlt)) == 0) {
+            // 修饰键状态以**本线程实测**为准（与参考 mod 的 SeqCharFromVk 同款）：
+            // GetKeyboardState 的 Shift 位在按键消息尚未出队时可能还没刷新，
+            // 直接按 CurrentMods() 补上，符号键（? ! ~）才认得出。
+            const wchar_t c = chord::CharOfVk(static_cast<unsigned>(vk),
+                                              (m0 & chord::kShift) != 0);
+            if (c != 0) {
+                for (const auto& m : SequenceOverlay::Modes()) {
+                    if (c == m.prefix) {
+                        modeOpener_(m.name);
+                        return true;
+                    }
+                }
+            }
+        }
+    }
 
     // 序列进行中：Esc 取消；带修饰键则取消后按普通组合键处理
     if (seq_.pending()) {
@@ -249,7 +223,7 @@ bool InputRouter::HandleKey(WPARAM vk, HWND focus, LPARAM keyInfo) {
             Cancel();
             return true;
         }
-        if (CurrentMods() == 0) {
+        if (mods == 0) {
             std::wstring token = TokenOf(vk);
             if (!token.empty()) return FeedSequence(token);
             Cancel();
@@ -258,8 +232,11 @@ bool InputRouter::HandleKey(WPARAM vk, HWND focus, LPARAM keyInfo) {
         Cancel();
     }
 
-    const int mods = CurrentMods();
     KeyChord c = chord::FromKey(static_cast<unsigned>(vk));
+    // 钩子路径：修饰键以**事件流**为准。FromKey 读的是 GetKeyState ——
+    // 按键消息是异步投递的，等 UI 线程处理时物理按键可能已经松开，
+    // 那样会读到"Shift 已放开"的错状态（于是 Shift+1 这类组合被判成裸键）。
+    if (modsOverride >= 0) c.mods = mods;
 
     // 地址框里只放行"全局组合"，其余全交给 EDIT（含裸键、Ctrl+A/C/V、Delete…）
     if (inEdit && !GlobalWhileEditing(c)) return false;
@@ -278,8 +255,10 @@ bool InputRouter::HandleKey(WPARAM vk, HWND focus, LPARAM keyInfo) {
             const bool tabCycle = c.vk == VK_TAB && (mods & ~chord::kShift) == chord::kCtrl;
             if (!tabCycle) return true;
         }
-        LogDbg(L"[key] %s -> %s", b.setting.c_str(), b.command.c_str());
-        CommandBus::Get().InvokeByNameLegacy(b.command, L"", Actor::Key());
+        // keybinding::Binding 的字段是 spec（命令规格，可带内联参数 :3），
+        // 不是 command —— 后者是 Keymap/HotkeyRow 那套结构的字段名。
+        LogDbg(L"[key] %s -> %s", b.setting.c_str(), b.spec.c_str());
+        CommandBus::Get().InvokeByNameLegacy(b.spec, L"", Actor::Key());
         return true;
     }
 
@@ -386,7 +365,7 @@ bool InputRouter::OnMouseDown(int target, int button, int mods, POINT screen, bo
         SetTimer(main_, kSingleTimer, static_cast<UINT>(dblMs), nullptr);
     }
     if (hasHold) {
-        int hold = Config::Get().s().holdDelayMs;
+        int hold = cfg_->HoldDelayMs();
         if (hold < dblMs + 50) hold = dblMs + 50;  // 长按阈值必须大于双击时间
         SetTimer(main_, kHoldTimer, static_cast<UINT>(hold), nullptr);
     }
@@ -471,6 +450,14 @@ void InputRouter::OnTimer(UINT_PTR id) {
         return;
     }
     if (id == kSeqTimer) {
+        // 钉住态：超时**既不关窗也不自动执行**（原版 HandleSequenceTimeout 分支）。
+        // 否则用户只是停下来想一下，命令就被抢跑且弹层凭空消失，与「常驻控制台」
+        // 的预期完全相反。改为续期，等用户显式 Esc / 点击别处。
+        if (overlay_.pinned()) {
+            SetTimer(main_, kSeqTimer, static_cast<UINT>(cfg_->SeqTimeoutMs()),
+                     nullptr);
+            return;
+        }
         // 超时：若刚好处在一个"完整匹配但还有更长候选"的前缀，执行它；否则取消。
         std::wstring cmd;
         if (seq_.TakePendingExact(&cmd)) {
@@ -485,6 +472,7 @@ void InputRouter::OnTimer(UINT_PTR id) {
 void InputRouter::Cancel() {
     seq_.Reset();
     hint_.Hide();
+    overlay_.Close();   // 序列键候选弹窗与序列状态同生命周期
     if (main_) KillTimer(main_, kSeqTimer);
 }
 
@@ -499,11 +487,11 @@ bool InputRouter::SetKeyForCommand(const std::wstring& command, const std::wstri
         if (key.empty()) {
             // "清除" = 显式解绑（写哨兵）。不能删覆盖项：删掉之后 BuildBindings 会
             // 回落到 hk.key / SystemKeyFor，用户看到的是"清不掉"。
-            Config::Get().SetHotkeyOverride(r.setting, kHotkeyDisabled);
+            cfg_->SetHotkeyOverride(r.setting, kHotkeyDisabled);
         } else {
-            Config::Get().SetHotkeyOverride(r.setting, key);
+            cfg_->SetHotkeyOverride(r.setting, key);
         }
-        Config::Get().Save();
+        cfg_->Save();
         Reload();
         return true;
     }
@@ -511,7 +499,7 @@ bool InputRouter::SetKeyForCommand(const std::wstring& command, const std::wstri
 }
 
 void InputRouter::ResetDefaults() {
-    Config::Get().mutableSettings().hotkeyOverrides.clear();
-    Config::Get().Save();
+    cfg_->ClearAllHotkeyOverrides();
+    cfg_->Save();
     Reload();
 }

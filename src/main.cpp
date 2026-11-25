@@ -14,9 +14,15 @@
 #include "icon_resolve.h"
 #include "mcp_stdio.h"   // --mcp-stdio：以 MCP 服务器身份启动
 #include "text_file.h"
+#include "ui_draw.h"
 #include "str.h"
 
 namespace {
+
+struct ScopedHandle {
+    HANDLE h = nullptr;
+    ~ScopedHandle() { if (h) CloseHandle(h); }
+};
 
 void EnableDpiAwareness() {
     HMODULE u32 = GetModuleHandleW(L"user32.dll");
@@ -80,8 +86,12 @@ std::wstring NormalizePath(const std::wstring& p) {
     return std::wstring(buf);
 }
 
-std::wstring InitialPath() {
+// selectTarget 输出：/select,<文件> 时要选中的**完整路径**（不是文件名）。
+// 与 path（父目录）分开返回，是因为 ShellView::SelectPaths 要完整路径解析 PIDL，
+// 而导航目标必须是父目录 —— 两个语义塞进一个返回值会丢信息。
+std::wstring InitialPath(std::wstring* selectTarget) {
     std::wstring path;
+    if (selectTarget) selectTarget->clear();
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv) {
@@ -93,12 +103,14 @@ std::wstring InitialPath() {
                 // 盘根/UNC 根没有父级：直接打开它自己（以前会退化成"打开主目录"）
                 path = ParentOf(full);
                 if (path.empty()) path = full;
+                if (selectTarget) *selectTarget = full;
                 break;
             }
             if (a.rfind(L"/select,", 0) == 0) {
                 const std::wstring full = NormalizePath(StripQuotes(a.substr(8)));
                 path = ParentOf(full);
                 if (path.empty()) path = full;
+                if (selectTarget) *selectTarget = full;
                 break;
             }
             if (a[0] == L'/' || a[0] == L'-') continue;  // 其他开关忽略（含 --ai）
@@ -126,7 +138,8 @@ HWND FindMainWindow(DWORD timeoutMs) {
 // 已有实例：把路径转发过去，由它开新标签（360 行为）。
 // 必须用 SendMessageTimeout 并校验处理结果：目标卡在模态框时 SendMessage 会无限挂起，
 // 而"无条件返回 true"会让调用方误以为已转发而退出（用户点了打开却什么都没发生）。
-bool ForwardToExisting(const std::wstring& path, DWORD findTimeoutMs) {
+bool ForwardToExisting(const std::wstring& path, const std::wstring& selectTarget,
+                       DWORD findTimeoutMs) {
     HWND target = FindMainWindow(findTimeoutMs);
     if (!target) return false;
 
@@ -138,10 +151,17 @@ bool ForwardToExisting(const std::wstring& path, DWORD findTimeoutMs) {
     // 接收端（app_wnd.cpp 的 WM_COPYDATA）本来就是按 cbData 与 NUL 长度读的，
     // 所以这里只需把 payload 扩成"头 + 实际字符数"的连续缓冲。
     const size_t pathChars = path.size() + 1;   // 含 NUL
-    std::vector<BYTE> buf(offsetof(CopyDataPayload, path) + pathChars * sizeof(wchar_t));
+    // select 是变长尾随数据，跟在 path 的 NUL 之后；为空时不算进 cbData。
+    // 注意不能直接写 payload->select —— 那是固定结构偏移（path 之后 1024 个 wchar），
+    // 而这里的缓冲按实际长度连续打包，写到结构偏移会越界。
+    const size_t selectChars = selectTarget.empty() ? 0 : selectTarget.size() + 1;
+    std::vector<BYTE> buf(offsetof(CopyDataPayload, path) +
+                          (pathChars + selectChars) * sizeof(wchar_t));
     auto* payload = reinterpret_cast<CopyDataPayload*>(buf.data());
     payload->magic = kCopyDataMagic;
-    memcpy(payload->path, path.c_str(), pathChars * sizeof(wchar_t));
+    wchar_t* tail = reinterpret_cast<wchar_t*>(buf.data() + offsetof(CopyDataPayload, path));
+    memcpy(tail, path.c_str(), pathChars * sizeof(wchar_t));
+    if (selectChars) memcpy(tail + pathChars, selectTarget.c_str(), selectChars * sizeof(wchar_t));
 
     COPYDATASTRUCT cd{};
     cd.dwData = kCopyDataMagic;
@@ -167,14 +187,22 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_TREEVIEW_CLASSES | ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&icc);
 
-    ApplyProcessDarkMode(SystemIsDark());  // 必须在任何窗口创建之前
     // 必须是 OLE 初始化（内部就是 CoInitializeEx(STA) + 剪贴板/拖放的消息过滤）：
     //  · 文件复制/剪切走 OleSetClipboard/OleFlushClipboard；
     //  · IExplorerBrowser 的 shell 视图要 RegisterDragDrop，拖放才有反应。
     // 只调 CoInitializeEx 时这两条链路会静默失败（复制没反应、拖不进文件）。
     if (FAILED(OleInitialize(nullptr))) return 1;
 
-    const std::wstring path = InitialPath();
+    std::wstring selectTarget;
+    const std::wstring path = InitialPath(&selectTarget);
+
+    // 启动竞态标记：不是单实例锁，只是"是否已有更早实例"的证据。
+    // 首实例创建它，后进者打开同一个对象并看到 ERROR_ALREADY_EXISTS。
+    // 这样只有后进者需要为"首实例还没建出窗口"等 400ms；冷启动不再空等。
+    HANDLE markerRaw = CreateEventW(nullptr, FALSE, FALSE, id::kStartupMarker);
+    const DWORD markerErr = GetLastError();
+    ScopedHandle startupMarker{markerRaw};
+    const bool hadEarlierInstance = markerRaw && markerErr == ERROR_ALREADY_EXISTS;
 
     // 显式多开（--new-window）或独立 profile（EXBARBROWSER_MULTI）：不查找、不转发。
     const bool multi = GetEnvironmentVariableW(id::kMultiInstanceEnv, nullptr, 0) > 0;
@@ -197,6 +225,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         Config::Get().SetProfileDir(tf::Join(tf::ExeDir(), L"data\\profile-multi"));
     }
 
+    // 【必须在任何窗口创建之前，且必须在 Config 选定 profile 之后】
+    // 进程级深浅色按用户档位（system/dark/light），不是裸 SystemIsDark()：
+    // 强制深色启动时若仍按系统浅色放行，IExplorerBrowser 一出生就是浅色。
+    // ThemePrefersDark() 会读刚选定的 profile，所以顺序不能换回来。
+    ApplyProcessDarkMode(ThemePrefersDark());
+
     // 强制开启 AI 通道的启动开关（--ai / EXBARBROWSER_AI）：只置进程内标志，
     // 不写 settings.json。必须在 App::Run（读 AiChannelEnabled）之前设好。
     //
@@ -209,15 +243,17 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         // 没有窗口则继续往下走，正常新开 —— 这里等不到窗口不会报错，更不会阻断。
         //
         // 400ms 只用来吃掉"双击第二次时首实例还没建好窗口"的窄窗口期；
-        // 超时就当没有实例，直接新起一个（多实例是允许的）。
-        if (ForwardToExisting(path, 400)) {
+        // 首实例没有更早实例可等，直接按 0 超时判定，省掉冷启动固定空等。
+        if (ForwardToExisting(path, selectTarget, hadEarlierInstance ? 400 : 0)) {
+            ui::ClearGdiCaches();
             ico::ClearCache();
             OleUninitialize();
             return 0;
         }
     }
 
-    int rc = App::Get().Run(hInst, path);
+    int rc = App::Get().Run(hInst, path, selectTarget);
+    ui::ClearGdiCaches();
     ico::ClearCache();
     OleUninitialize();
     return rc;

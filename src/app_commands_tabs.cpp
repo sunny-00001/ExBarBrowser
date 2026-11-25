@@ -34,13 +34,6 @@ std::wstring ToUnc(const std::wstring& p) {
 void App::RegisterTabCommands() {
     auto reg = cmd_reg::Register;
     auto regR = cmd_reg::RegisterWithResult;
-    // 少数带 index 的命令按序号取标签；省略时仍作用于当前标签。
-    auto tabIdFromArgs = [this](const Args& args) {
-        if (!args.Has(L"index")) return activeId_;
-        const int index = args.Int(L"index", -1);
-        return (index >= 0 && index < tabSet_.Count()) ? tabSet_.IdAt(index) : 0;
-    };
-
     // ---------------- 标签 ----------------
     reg(CmdId::TabNew, [this](const Args& args) {
         // 与"+"按钮（WM_APP_TAB_NEW）同一口径：省略 path 时打开此电脑，
@@ -98,10 +91,17 @@ void App::RegisterTabCommands() {
         return true;
     });
     reg(CmdId::TabSetColor, [this](const Args& args) {
-        if (!tabSet_.Find(activeId_)) return false;
+        // index 可选，省略 = 当前活动标签（与 tab.pin / tab.copy.title / tab.move.window
+        // 同一口径）。【为什么必须支持 index】标签右键菜单的色板作用于**被右键的那个**
+        // 标签，而"当前活动标签"在右键非活动标签时是另一个 —— 只认 activeId_ 的话，
+        // 色板选完会给错误的标签上色。菜单侧传 index，命令面板/AI 省略即当前。
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        const int id = tabSet_.IdAt(idx);
+        if (!id) return false;
         const int color = args.Int(L"color", 0);
         if (color < 0 || color >= Theme::kTabColorCount) return false;  // 越界如实报错
-        SetTabColor(activeId_, color);
+        SetTabColor(id, color);
         return true;
     });
     reg(CmdId::TabCloseDuplicates, [this](const Args&) {
@@ -318,7 +318,12 @@ void App::RegisterTabCommands() {
     reg(CmdId::NavBack, [this](const Args&) { GoBack(); return true; });
     reg(CmdId::NavForward, [this](const Args&) { GoForward(); return true; });
     reg(CmdId::NavUp, [this](const Args&) { GoUp(); return true; });
-    reg(CmdId::NavRefresh, [this](const Args&) { RefreshActive(); return true; });
+    reg(CmdId::NavRefresh, [this](const Args&) {
+        RefreshActive();
+        // 空白区菜单也挂这条命令：刷新既有活动视图，也要让导航树自己重发现。
+        if (navPane_.ok() && navPane_.visible()) navPane_.Refresh();
+        return true;
+    });
     reg(CmdId::CmdRefresh, [this](const Args&) { RefreshActive(); return true; });
     reg(CmdId::NavViewMenu, [this](const Args&) { ShowViewMenuAt(); return true; });
 

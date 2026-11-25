@@ -83,19 +83,38 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 
 ### 2.1 错误（声明与实现不符 —— 最严重的一条）
 
-#### **F1：`search.find` 是假能力，恒失败**
+#### **F1：`search.find` 是假能力，恒失败** —— ✅ 已修（2026-11-22）
 
 | 项 | 内容 |
 |---|---|
-| 声明 | `src/commands.cpp` 里 `CmdId::OpSearch` → `search.find`，**`implemented=true`**、`aiExposed=true`，`docs/PARITY.md` §3.12 也记为"已实现" |
-| 实现 | `App::RunSearch`（`src/app_nav.cpp`）拼 `search-ms:` URL 后调 `t->view->Navigate(u)`；而 `ShellView::DoNavigate`（`src/shell_view.cpp`）**明确拒绝 `search-ms:` 前缀并 return false**（注释写明：`IExplorerBrowser` 没有搜索带，`BrowseToObject` 对它返回 `S_OK` 却把视图留在原地） |
-| 实测 | `agentctl.py call search.find '{"query":"test"}'` → `ok=false`，`error="搜索视图没有接受这个查询：search-ms:query=test&crumb=location:..."` |
-| 后果 | ①人类侧：导航栏搜索框提交后**必然失败**并 `MessageBeep` ②AI 侧：`search.find` 是 140 个暴露工具之一，调用方拿到的是**每次都失败的承诺** ③文档：`docs/PARITY.md` §3.12 的"已实现"与实现同源错误 |
-| 修法 | 二选一：**A** 换宿主（用真 Explorer 的 `IExplorerBrowser` 搜索带）或接 `ISearchQueryHelper`，让搜索真能落地；**B** 把命令表改 `implemented=false`、撤掉搜索框、在 `docs/PARITY.md` 注明"宿主不支持 search-ms"。**不要维持现状** —— 现在是"宣称可用、实际全败"，比明确标未实现更坏 |
+| 原声明 | `src/commands.cpp` 里 `CmdId::OpSearch` → `search.find`，**`implemented=true`**、`aiExposed=true`，`docs/PARITY.md` §3.12 也记为"已实现" |
+| 原实现 | `App::RunSearch`（`src/app_nav.cpp`）拼 `search-ms:` URL 后调 `t->view->Navigate(u)`；而 `ShellView::DoNavigate`（`src/shell_view.cpp`）**明确拒绝 `search-ms:` 前缀并 return false**（注释写明：`IExplorerBrowser` 没有搜索带，`BrowseToObject` 对它返回 `S_OK` 却把视图留在原地） |
+| 原实测 | `agentctl.py call search.find '{"query":"test"}'` → `ok=false`，`error="搜索视图没有接受这个查询：search-ms:query=test&crumb=location:..."` |
+| **修法** | **走原生搜索文件夹**：`ISearchFolderItemFactory`（`CLSID_SearchFolderItemFactory`）造 PIDL → `ShellView::NavigatePid` 以 **PIDL** 形式导航。`DoNavigate` 拒绝的是**字符串前缀**，不是文件夹类型 —— 同一个文件夹以 PIDL 交出去，shell 能绑定，导航过去就是**真的搜索结果视图**（排序 / 右键 / 拖放照旧可用）。同一套做法见 `D:\Windhawk\exbar.cpp:26215 RunSystemSearchFolder`。实现见 `src/search_folder.{h,cpp}`、`src/shell_view_search.cpp` |
+| 现实测 | `search.find {"query":"a"}` → `ok=true`，断言 `searchQuery=$arg:query.trim` 通过；日志 `[nav] browse(pidl) hr=0x00000000` → `[nav] complete pidl=搜索: a · E:\ExBarBrowser（含子目录）`；结果条目数按范围变化（仅本层 19 条 / 含子目录 1371 条） |
+| 结果视图 | 默认**详细信息**（`IFolderView2::SetViewModeAndIconSize(FVM_DETAILS, 16)`），日志 `[search] 详情视图 hr=0x00000000 now=4 icon=16`。原生搜索文件夹的视图是**异步**创建的，所以挂 120ms 定时器等新视图就位再补设（`ShellView::OnSearchViewTimer`，最多 ~3 秒） |
 
 > 这条也说明 `docs/PARITY.md` §3.12 的自述不可尽信：它写"结果落在同一个 `IShellView` 里，所以排序 / 右键 / 拖放照旧可用"，但事实上根本没有结果。
 
-#### **F2：`search.everything` 未实现** —— 这条**是对的**（`implemented=false`、不暴露），不算缺陷。但意味着 **AI 侧目前没有任何可用搜索能力**，文档应明示，避免调用方反复试探。
+##### F1 遗留：「此电脑」这一档在本宿主做不到（不是假能力，是明确报错）
+
+原生搜索文件夹的**作用域只能是一个普通文件系统目录**（全部实测，2026-11-22，详见 `src/search_folder.h` 头注释）：
+
+| 作用域 | 结果 |
+|---|---|
+| `C:\Windows\`、`C:\Program Files\`、`C:\ProgramData\`、`C:\Users\X\Documents\`、`E:\某目录\` | ✅ 能绑、能出结果 |
+| `C:\Users\X`（**不带尾斜杠**） | ❌ 被 `SHParseDisplayName` 规范化成 CSIDL_PROFILE 那个命名空间项 → 绑不上（所以作用域一律补尾斜杠） |
+| `C:\`、`D:\`（卷根） | ❌ 绑上了但查不到东西（卷根不是 crawl scope） |
+| `::{20D04FE0-3AEA-1069-A2D8-08002B30309D}`（此电脑命名空间） | ❌ 绑不上 |
+| 多个目录组成的 `IShellItemArray` | ❌ 绑不上（哪怕每个单独都能用） |
+| **不给作用域** | ❌ 绑不上 —— 整机范围正是靠它 |
+
+「整台电脑」要的是 **Explorer 进程内**的 `search-ms:` 全局查询宿主；本宿主是自托管的 `IExplorerBrowser`，没有那个宿主。所以这一档的处理是**明确报错**（`search.scope.set` 直接拒绝、范围菜单里那一行摆成灰字"（本宿主暂不可用）"），**不悄悄退回别的档** —— 退回的话用户以为搜了整台电脑，实际只搜了当前目录。
+
+真正的整机搜索有两条路，都还没做：①接 Windows Search 的**查询 API**（`ISearchQueryHelper`，`searchapi.h` 本编译器没有）；②自己做**混合虚拟文件夹**（像 Everything 的结果文件夹那样，把多个作用域的结果并到一个视图里）。
+
+
+#### **F2：`search.everything` 未实现** —— 这条**是对的**（`implemented=false`、不暴露），不算缺陷。F1 修好之后 **AI 侧已有可用搜索能力**（`search.find` 走系统索引）；缺的只是"能搜未编入索引的位置"（Everything 那套），文档应明示，避免调用方反复试探。
 
 ### 2.2 已核实的"真能力"（实测通过，不算缺口）
 
@@ -206,7 +225,7 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 
 | 序 | 项 | 涉及文件 | 状态 |
 |---|---|---|---|
-| 1 | **F1 `search.find`**：改 `implemented=false` + 撤处理器/AI 暴露，`docs/PARITY.md` 同步 | `src/commands.cpp`、`src/app_commands_files.cpp`、`docs/PARITY.md` | ✅ |
+| 1 | **F1 `search.find`**：~~改 `implemented=false` + 撤处理器/AI 暴露~~ → **改走原生搜索文件夹**（`ISearchFolderItemFactory` 造 PIDL + PIDL 形式导航），搜索真能执行；结果视图默认详细信息。遗留：「此电脑」档在本宿主做不到（作用域只能是一个普通目录），如实报错 | `src/search_folder.{h,cpp}`、`src/shell_view_search.cpp`、`src/app_nav.cpp`、`src/commands.cpp`、`docs/PARITY.md` | ✅ |
 | 2 | **K1 `Ctrl+Shift+A` 双绑**：`hotkeyTabSwitcher` 改 `Ctrl+Shift+G` | `data/keymap.json` + `src/keymap.gen.h` | ✅ |
 | 3 | **K3 `Ctrl+9`**：改绑 `GoTab9`，`TabLast` 移到 `Ctrl+0` | `data/keymap.json` + `src/keymap.gen.h` | ✅ |
 | 4 | **G1/G2/G3/G5 数字漂移** | `docs/PARITY.md`、`docs/ROADMAP.md`、本审计 | ✅ |

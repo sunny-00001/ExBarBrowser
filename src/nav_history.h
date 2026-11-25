@@ -17,6 +17,23 @@ namespace nav {
 
 class History {
 public:
+    // 每窗格历史栈的默认上限。实际深度由外部（App 从设置 historyDepth）注入：
+    // 本类是纯逻辑组件，不读 Config —— 单测单独编本 TU 时不应拖入配置层。
+    // 无上限时 browsing 一天就会让配置和内存一起膨胀。
+    static constexpr size_t kDefaultMaxEntries = 512;
+
+    explicit History(size_t maxEntries = kDefaultMaxEntries) : maxEntries_(maxEntries) {}
+
+    // 运行中改深度（config.set historyDepth）：立即把已有栈裁到新上限。
+    // 传 0 视为默认值，防止手改配置写出 0 让历史永远空着。
+    void SetMaxEntries(size_t maxEntries) {
+        maxEntries_ = maxEntries ? maxEntries : kDefaultMaxEntries;
+        const size_t drop = Trim();
+        if (drop) idx_ -= static_cast<int>(drop);   // 裁剪后原游标整体左移
+        ClampIdx();
+    }
+    size_t maxEntries() const { return maxEntries_; }
+
     // 一次导航的待确认状态。
     //
     // 为什么需要它：Shell 的导航是异步的，且可能**重定向**（文档 → OneDrive\文档）
@@ -88,10 +105,15 @@ private:
     void Push(const std::wstring& path);
 
     void ClampIdx();
+    // 把栈裁到 maxEntries_，返回从头部丢弃了几条。**不碰 idx_** ——
+    // 调用方按各自语义调整游标（Push 落在末尾、SetMaxEntries/Restore 左移 drop）。
+    // 裁剪口径只有这一份，Push 与 Restore/SetMaxEntries 都走它。
+    size_t Trim();
 
     std::vector<std::wstring> hist_;
     int idx_ = -1;
     Pending pending_;
+    size_t maxEntries_ = kDefaultMaxEntries;
 };
 
 }  // namespace nav

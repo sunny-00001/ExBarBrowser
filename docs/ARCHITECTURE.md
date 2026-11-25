@@ -155,7 +155,8 @@ ExBarBrowser_Popup                   WS_POPUP | WS_EX_TOOLWINDOW | CS_DROPSHADOW
 | `keymap.h/.cpp` | 读 `data/keymap.json` + 系统原生键参考；兜底默认表来自生成头 `keymap.gen.h` | 绑定策略 | `json.h`、`keymap.gen.h` |
 | `keymap.gen.h`（生成） | `data/keymap.json` 的 C++ 镜像：`kHotkeys` / `kSeqs`。**勿手改**，跑 `tools/gen_keymap.py` | 业务 | — |
 | `sequence.h/.cpp` | 序列键状态机（纯逻辑） | UI | `keymap.h` |
-| `sequence_hint.h/.cpp` | 序列候选弹层（无激活、置顶） | 状态机 | `theme.h` |
+| `sequence_hint.h/.cpp` | 序列候选提示弹层（无激活、置顶） | 状态机 | `theme.h` |
+| `sequence_overlay.h/.cpp` | 序列模式总览弹层（打字过滤/导航/派发） | 注入的取数/派发回调 | `theme.h` |
 | `mouse_rules.h/.cpp` | 鼠标规则模型 + 内置默认 + `mouse.json` 解析 + **`CurrentMods()` 唯一实现**（含 AltGr 特判：右 Alt+左 Ctrl 是字符输入，返回 0），因它读 `GetKeyState` 属输入端（R15） | 时序、绘制 | `json.h` |
 | `input_router.h/.cpp` | 键盘/序列/鼠标总路由：单击延迟、双击、长按、滚轮、超时 | 业务状态 | `commands.h`、`mouse_rules.h` |
 | `hotkey_manager.h/.cpp` | 快捷键管理器（筛选/改键/清除/恢复默认） | 键位表实现 | `input_router.h` |
@@ -417,14 +418,22 @@ struct Tab {
 
 三层，缺一层就会出现"工具栏深、文件区白"的割裂：
 
-1. **进程级**：`ApplyProcessDarkMode` 调 uxtheme 序号 135 `SetPreferredAppMode(2=ForceDark / 3=ForceLight)`。
-   必须在任何窗口创建之前调用（`main.cpp` 里紧跟 `InitCommonControlsEx`）。
-2. **窗口级**：`AllowDarkForWindow`（序号 133）逐个窗口放行，配合 `SetWindowTheme(h, L"DarkMode_Explorer")`。
-   shell 视图创建后（`OnViewCreated`）要再对整棵子树做一遍。
-3. **补发通知**：主题切换后，shell 自己的窗口不会自动重取色。`PokeTheme` 只对
-   `ExplorerBrowserControl` / `SHELLDLL_DefView` / `DirectUIHWND` 三类窗口发 `WM_THEMECHANGED`，
-   然后 `RedrawWindow(..., RDW_ALLCHILDREN | RDW_ERASE)`。**不要改成全树递归**：shell 子树里有些窗口
-   收到 `WM_THEMECHANGED` 会重建内部对象，代价高且可能闪。
+1. **进程级**：`ApplyProcessDarkMode` 调 uxtheme 序号 135
+   `SetPreferredAppMode(2=ForceDark / 3=ForceLight)`。启动时必须在任何窗口创建之前调用
+   （`main.cpp` 里紧跟 profile 选择）；运行时深浅切换必须**先拆掉所有 EBC，再切模式，最后重建**。
+   顺序反了会让 shell 用旧 DirectUI 的颜色缓存创建新视图，表现就是"只有文件区不变，重启才好"。
+2. **窗口级**：`AllowDarkForWindow`（序号 133）逐个窗口放行，容器用
+   `SetWindowTheme(h, L"DarkMode_Explorer" / L"Explorer")`。只对 `ExplorerBrowserControl`
+   这一层设主题；**不要**给 `SHELLDLL_DefView` / `DirectUIHWND` 设主题或发 `WM_THEMECHANGED`，
+   实测会破坏选中高亮绘制（见 `shell_view.cpp` 的 `ApplyShellTheme` 注释与
+   `tools/probe_highlight.cpp` 的像素差分）。
+3. **运行时重建**：`App::ApplyTheme()` 三段式编排 ——
+   `ShellView::SuspendForThemeSwitch()`（保存 PIDL/视图模式/几何/搜索 PIDL，拆 EBC）→
+   `ApplyProcessDarkMode()` → `ShellView::ApplyTheme()` / `FinishThemeSwitch()`（连容器一起重建，
+   延迟回灌状态）。`RefreshImmersiveColorPolicyState` / `FlushMenuThemes` 只作为 uxtheme
+   缓存刷新的补充。**不要在运行时广播 `WM_SETTINGCHANGE("ImmersiveColorSet")`**：
+   `HWND_BROADCAST` 会逐个等所有顶层窗口，实测单次 2.7~3.5s；旧 EBC 已先拆掉，
+   广播不再是正确性的必要条件。
 
 取不到序号 135/133（旧系统、被安全软件拦）时静默降级：chrome 仍按 `Theme::dark` 自绘，shell 视图保持浅色。
 这是可接受的降级，不是 bug。
@@ -435,6 +444,12 @@ struct Tab {
   再退 `SetProcessDPIAware()`。
 - `Theme::dpi` 在 `Init` 时用 `DpiOf(hwnd)`（`GetDpiForWindow` 动态取，取不到按 96）。
 - 所有像素都过 `Theme::S(px) = MulDiv(px, dpi, 96)`。
+- 字体只跟 DPI/系统消息字体有关，与深/浅色无关：`Theme::Reload()` 在 DPI 未变时
+  **保留字体句柄**，只有 DPI 真的变了才重建并递增 `fontGeneration`。地址栏 EDIT
+  挂了 `SHAutoComplete`，收到新 `WM_SETFONT` 会重建补全列表（实测 110~170ms/次），
+  所以 `NavBar::ReloadTheme()` 会在 `fontGeneration` 没变时跳过 `WM_SETFONT`。
+  判据必须是代次而非 HFONT 值：GDI 删除对象后句柄会复用，句柄相同不代表字体没重建。
+  切主题因此不必重造字体。
 - `WM_DPICHANGED` 时：`ApplyTheme()`（重建令牌/字体/画刷 + 通知 shell）→ 按系统建议矩形 `SetWindowPos` → `Layout()`。
 - `WM_GETMINMAXINFO` 的最小尺寸也走 `S()`，避免高 DPI 下窗口小到 chrome 互相重叠。
 
@@ -443,20 +458,23 @@ struct Tab {
 ## 8. 启动形态与命令行
 
 ```
-WinMain
+ WinMain
  ├ EnableDpiAwareness
  ├ InitCommonControlsEx(ICC_TREEVIEW_CLASSES | ICC_STANDARD_CLASSES)
- ├ ApplyProcessDarkMode(SystemIsDark())
- ├ OleInitialize(nullptr)              剪贴板 + 拖放需要的 OLE
- ├ InitialPath()                       命令行解析
- ├ profile 判定（PROFILE > MULTI > 默认 data\）
- ├ forceNew = EXBARBROWSER_MULTI 或 --new-window
- └ !forceNew && ForwardToExisting(path, 400ms) ? 转发+激活后退出 : App::Run
++├ 创建 Local\ExBarBrowser.StartupMarker（只在进程期持有，不是单实例锁）
++├ OleInitialize(nullptr)              剪贴板 + 拖放需要的 OLE
++├ InitialPath()                       命令行解析
++├ profile 判定（PROFILE > MULTI > 默认 data\）
++├ ApplyProcessDarkMode(ThemePrefersDark())  必须在 profile 之后、任何窗口之前
++├ forceNew = EXBARBROWSER_MULTI 或 --new-window
++└ !forceNew && ForwardToExisting(path, hadEarlierInstance ? 400ms : 0) ? 转发+激活后退出 : App::Run
 ```
 
 - **没有单实例锁**：不存在"已在运行 → 拒绝启动"的分支。默认启动是**激活优先** —— 找得到已有
   主窗口就把路径经 `WM_COPYDATA` 转发过去开新标签并前置窗口，新进程随后退出（360 行为）；
-  找不到（最多等 400 ms 吃掉"双击时首实例还没建好窗口"的窄竞态）就直接新开实例。
+  找不到就直接新开实例。`Local\ExBarBrowser.StartupMarker` 只回答"是否已有更早实例"：
+  只有后进者为"首实例还没建好窗口"等最多 400ms，首实例用 0 超时，冷启动不空等。
+  句柄随进程退出关闭，因此对象不会跨会话残留。
 - **显式多开**：`--new-window`（"在新窗口打开"命令启动子进程时自动带上，共享同一份用户数据）
   或 `EXBARBROWSER_MULTI`（同时落到独立 `data\profile-multi`，用于与正跑着的实例隔离测试）。
 - **转发用 `SendMessageTimeout(SMTO_ABORTIFHUNG, 2s)`**：目标卡在模态框时不拖死新进程；
@@ -521,10 +539,24 @@ mingw 头只声明 1 个。多出的参数走寄存器、被忽略即可，**不
 - **禁止在 UI 线程做**：目录枚举（`NavModel::ChildFolders` 是例外——只在用户点开菜单时做一次，
   且只枚举直接子文件夹）、网络访问、`Sleep`、大文件 IO。
 - **绘制**：`WM_PAINT` 里建内存 DC + `BitBlt`，`WM_ERASEBKGND` 返回 1（不让系统刷背景，避免闪烁）。
-  画笔/画刷在绘制过程中创建并立即删除；`Theme` 里的画刷是长生命周期对象，只随主题重建。
+  实色画刷/画笔由 `ui_draw.cpp` 按 `COLORREF` / `(COLORREF, 线宽)` 缓存复用，不在每次绘制里创建销毁；
+  `Theme` 里的画刷是长生命周期对象，只随主题重建。所有绘制层 GDI 句柄在 `ui::ClearGdiCaches()`
+  中统一释放（主流程在 `App::Run()` 返回后调用）。
 - **日志**：`common.h` 的 `LogDbg` 每次 `CreateFileW`/`WriteFile`/`CloseHandle`（UTF-16 LE 追加，
   `%TEMP%\ExBarBrowser.log`）。这是排障用的低频路径，不要在热路径（`WM_MOUSEMOVE`、`WM_PAINT`）里调。
-  `shell_view.cpp` 里还留着一份功能重复的 `LogLine`（导航五步用它），P1.1 应合并到 `LogDbg`。
+  导航路径上不要仅为日志调用 `IShellItem::GetDisplayName()`；`GetPaneState()` 的逐窗格 GUID
+  诊断输出也已移除。`shell_view.cpp` 里还留着一份功能重复的 `LogLine`（导航五步用它），P1.1 应合并到 `LogDbg`。
+- **地址栏 lead icon**：`NavBar::UpdateLeadIcon()` 一律用 `ico::Cached()`，不自行销毁 HICON；
+  句柄归进程级缓存所有，和书签栏/弹层共享同一份。这样切标签/导航不会重复做 shell 解析。
+- **Shell 视图重绘**：普通导航/视图重建只 `InvalidateRect()`；`RDW_ALLCHILDREN | RDW_ERASE`
+  只留给 `ShellView::FinishThemeSwitch()`，在进程深浅色切换后真正重建 EBC 时做一次。
+- **常驻记录有上限**：`nav::History::kMaxEntries = 512`（超限时裁头部并同步 `idx_`，
+  `Restore()` 同样裁剪）；`job::Service::kMaxRetainedRecords = 32`（只淘汰已完成且已 join 的旧记录）。
+  这两类数据都会进 settings.json 或深拷贝进命令结果，不能随浏览时长无限增长。
+- **GDI 失败路径**：`PaintBuffered()` 在 `CreateCompatibleDC` / `CreateCompatibleBitmap` /
+  `SelectObject` 任一失败时，必须按已取得的资源逐个释放并 `EndPaint`；GDI 对象不在 RAII 里。
+- **Tooltip 高频更新**：`TooltipHost::SetTools()` 先比对非空文本；未变化时只调 `MoveTools()`
+  更新热区，不再反复 `TTM_DELTOOLW` / `TTM_ADDTOOLW`。状态栏 800ms 刷新与标签滚动走这条快路径。
 - **切标签**：O(N) 次 `ShowWindow` + 一次 `SyncChrome`。N 是标签数，目前没有上限，P2 要加溢出处理。
 - **弹层是嵌套消息循环**：打开期间主窗口的消息仍会被派发，等于在"菜单打开"这个时间窗口里重入了主循环。
   所以弹层打开前要把需要的状态拷进 `ui::Menu` 的行数据（不要持有指向 `model_` 的引用再在循环里读），

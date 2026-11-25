@@ -1,15 +1,13 @@
-// 导航栏的交互动作：地址编辑 / Tab 补全 / 自绘下拉菜单
-// （从 nav_bar.cpp 拆出，保持单文件 <=500 行）
+// 导航栏的交互动作：地址编辑 / Tab 补全 / 面包屑、历史、折叠、段菜单。
+// （从 nav_bar.cpp 拆出；视图菜单一族另见 nav_bar_view_menu.cpp）
 #include "nav_bar.h"
 #include "str.h"
 
 #include "folder_tree.h"
 #include "icon_resolve.h"
 #include "menu.h"
-#include "shell_columns.h"   // 属性键显示名（父菜单小结）
 #include "popup_toggle.h"
 #include "text_file.h"
-#include "view_modes.h"
 
 namespace {
 
@@ -25,31 +23,6 @@ HICON IconFor(const std::wstring& path) {
 // 普通路径仍显示完整路径（与资源管理器一致），"::{GUID}" 显示此电脑/回收站等本地化名。
 std::wstring LabelFor(const std::wstring& path) {
     return ico::DisplayName(path);
-}
-
-// 视图档位表在 view_modes.h（唯一来源）。这里原来有一份逐字相同的副本，
-// 而两份表的**下标**同时被菜单回传与配置持久化使用 —— 改一处忘另一处就是
-// "菜单显示的和实际切的不一致"，且无任何报错。
-inline constexpr const viewmode::ViewMode* kViews = viewmode::kModes;
-constexpr int kViewCount = viewmode::kCount;
-
-// 排序/分组维度表：父菜单的小结与二级子菜单都从这里取，避免两处文案/图标漂移。
-// 下标与 Config::sortMode / ViewState::sort / ViewState::group 一一对应（0..3）。
-constexpr int kSortGroupCount = 4;
-static const wchar_t* const kSortLabels[kSortGroupCount] = {L"按名称排序", L"按日期排序",
-                                                             L"按类型排序", L"按大小排序"};
-static const wchar_t* const kGroupLabels[kSortGroupCount] = {L"不分组", L"按类型分组",
-                                                              L"按日期分组", L"按大小分组"};
-static const ico::IconId kSortGlyphs[kSortGroupCount] = {
-    ico::IconId::Page, ico::IconId::Calendar, ico::IconId::Tag, ico::IconId::HardDrive};
-static const ico::IconId kGroupGlyphs[kSortGroupCount] = {
-    ico::IconId::Close, ico::IconId::Tag, ico::IconId::Calendar, ico::IconId::HardDrive};
-
-// 任意属性键的中文显示名（父菜单小结用）。查不到返回空串 —— 调用方退回档位标签。
-std::wstring PropertyTitle(const std::wstring& id) {
-    for (const auto& p : shellcolumns::KnownProperties())
-        if (p.id == id) return p.title;
-    return L"";
 }
 
 }  // namespace
@@ -237,13 +210,20 @@ void NavBar::ShowSegmentMenu(int partIndex, POINT screen) {
     // 用户右键 D:\ 却复制出 D:\Projects\foo 的路径，那是纯粹的错。
     // 菜单内容交给统一组件；这里只描述动作与分隔符。
     ui::Menu menu;
-    menu.Add(L"在新标签页打开", kSegOpenNewTab, ico::IconId::Add)
+    // 每行 `.Cmd(CmdId)` = 声明执行哪条命令，快捷键由键位表自动推出（见 menu.h）。
+    //
+    // 这五项在 App 侧全部转投命令总线（见 app.cpp 的 SetSegmentCmdFn），所以挂
+    // CmdId 是如实的。其中三项（open.window / clipboard.copy / fs.properties）
+    // 带必填 path/target，键位表按空参执行做不出这行的效果 —— key_binding 会在
+    // 解析层自动判空，不需要这里记得别写。
+    menu.Add(L"在新标签页打开", kSegOpenNewTab, ico::IconId::Add).Cmd(CmdId::TabNew)
         .Add(L"在新窗口打开", kSegOpenNewWindow, ico::IconId::NewWindow)
+        .Cmd(CmdId::FsOpenInNewWindow)
         .Separator()
-        .Add(L"复制此路径", kSegCopyPath, ico::IconId::Copy)
-        .Add(L"在此打开终端", kSegTerminal, ico::IconId::Terminal)
+        .Add(L"复制此路径", kSegCopyPath, ico::IconId::Copy).Cmd(CmdId::ClipboardCopy)
+        .Add(L"在此打开终端", kSegTerminal, ico::IconId::Terminal).Cmd(CmdId::ExtTerminalAt)
         .Separator()
-        .Add(L"属性", kSegProperties, ico::IconId::Settings);
+        .Add(L"属性", kSegProperties, ico::IconId::Settings).Cmd(CmdId::FsProperties);
 
     // 锚点 = 该段的文本区（与 chevron 菜单同一套定位逻辑，菜单不跟着鼠标漂）
     int k = partIndex - firstShown_;
@@ -352,7 +332,9 @@ void NavBar::ShowDropMenu(POINT screen) {
     }
 
     // 底部固定一条“清除历史记录”：它是作用于整个列表的动作，不与路径条目混排。
-    menu.Separator().Add(L"清除历史记录", 3000, ico::IconId::Close);
+    // 快捷键由键位表自动推出（NavHistoryClear 无必填参数，键就是这一行的动作）。
+    menu.Separator().Add(L"清除历史记录", 3000, ico::IconId::Close)
+        .Cmd(CmdId::NavHistoryClear);
 
     // 与地址栏左对齐、从字段底边展开，宽度不小于字段宽
     POINT at{fieldRc_.left, fieldRc_.bottom};
@@ -378,128 +360,4 @@ void NavBar::ShowDropMenu(POINT screen) {
     } else if (data >= 0 && historyJump_) {
         historyJump_(data, true);
     }
-}
-
-// 「设置…」面板的锚点：视图按钮的左下角，与右键菜单弹在同一处。
-//
-// 抽成函数的原因：鼠标路径（右键菜单 900 项）与命令路径（win.preferences）
-// 是两条独立入口，锚点各算一份就会在布局调整后指向不同按钮。
-POINT NavBar::SettingsAnchor() const {
-    RECT anchor = fieldRc_;
-    for (const auto& b : buttons_)
-        if (b.id == kView) anchor = b.rc;
-    POINT at{anchor.left, anchor.bottom};
-    ClientToScreen(hwnd_, &at);
-    return at;
-}
-
-void NavBar::ShowViewMenu(POINT screen) {
-    (void)screen;
-    // 视图菜单要回答"现在用的是哪一档、按什么排序、怎么分组"。
-    // 以前完全不标当前值 —— 菜单看起来像"设置向导"，用户点完不知道有没有生效。
-    // 资源管理器 / Opus / TC / XYplorer 的视图菜单都给当前项打点或打勾。
-    //
-    // 用"✓ "前缀打勾而不是高亮：高亮是"光标所在行"，会被误读成已选中
-    // （与标签颜色菜单同一取舍，见 tab_strip_actions.cpp）。
-    const ViewState vs = viewState_ ? viewState_() : ViewState{};
-
-    ui::Menu menu;
-    int initial = -1;
-    for (int i = 0; i < static_cast<int>(kViewCount); ++i) {
-        const int row = menu.AddChecked(kViews[i].label, vs.mode == i, i, kViews[i].glyph);
-        if (i == vs.mode) initial = row;
-    }
-    // 排序 / 分组收进二级层（与 Explorer 的「排序方式 →」「分组依据 →」一致）。
-    // 父层只显示当前值小结 + 右向 chevron，具体四档在子菜单里选 —— 平铺时
-    // 视图档位 + 4 排序 + 4 分组共 16 行，一屏放不下还混在一起。
-    // 小结里保留方向（升序/降序），这样不展开也知道当前排序方向。
-    // 小结优先用从 shell 现读的属性键中文名（能表达任意列，D2）；
-    // 键为空/查不到时退回 0..3 档位标签。方向总是在小结里显示。
-    std::wstring sortHint = L"排序方式";
-    std::wstring sortTitle = PropertyTitle(vs.sortKey);
-    if (!sortTitle.empty())
-        sortHint += L"：" + sortTitle;
-    else if (vs.sort >= 0 && vs.sort < kSortGroupCount)
-        sortHint += L"：" + std::wstring(kSortLabels[vs.sort]);
-    if (!sortTitle.empty() || (vs.sort >= 0 && vs.sort < kSortGroupCount))
-        sortHint += vs.ascending ? L"（升序）" : L"（降序）";
-    std::wstring groupHint = L"分组依据";
-    std::wstring groupTitle = PropertyTitle(vs.groupKey);
-    if (!groupTitle.empty())
-        groupHint += L"：" + groupTitle;
-    else if (vs.group >= 0 && vs.group < kSortGroupCount)
-        groupHint += L"：" + std::wstring(kGroupLabels[vs.group]);
-    menu.Separator();
-    menu.AddPath(sortHint, L"", 1100, /*folder=*/true);   // 右端 chevron = 有下一级
-    menu.AddPath(groupHint, L"", 1200, /*folder=*/true);
-
-    // 「选择详细信息…」「图标大小…」「设置…」放在最下面：它们是"其它可调项"的入口，
-    // 与上面三组（视图/排序/分组）不是同一层级的即时动作。
-    // 动作号 900/901/902 与 0..7 / 1xx / 2xx 分开，免得视图档位扩到 9 档时撞号。
-    menu.Separator();
-    menu.Add(L"选择详细信息…", 901, ico::IconId::DetailsView);
-    menu.Add(L"图标大小…", 902, ico::IconId::GridView);
-    menu.Add(L"设置…", 900, ico::IconId::Settings);
-
-    const POINT at = SettingsAnchor();
-    // 预选当前档位：键盘用户按 ↓ 从这里继续，鼠标用户一眼看到自己在哪一档。
-    ui::MenuOptions opt;
-    opt.toggleKey = L"nav.view";
-    opt.initialRow = initial;
-    const int data = menu.Show(hwnd_, *theme_, at, opt);
-    if (data == 1100 || data == 1200) {
-        // 二级层：从父菜单右上角落下，避免盖住父菜单当前行。
-        POINT sub{screen.x + 8, screen.y + 8};
-        ShowSortGroupSubMenu(data == 1100 ? 0 : 1, sub);
-    } else if (data == 901) {
-        if (onColumns_) onColumns_(at);
-    } else if (data == 902) {
-        if (onZoom_) onZoom_(at);
-    } else if (data == 900) {
-        // 面板自己会按同一锚点重新打开，这里只把位置交出去。
-        if (onSettings_) onSettings_(at);
-    } else if (data >= 0 && data < static_cast<int>(kViewCount) && onView_) {
-        onView_(kViews[data].fvm, kViews[data].icon);
-    }
-}
-
-void NavBar::ShowSortGroupSubMenu(int kind, POINT screen) {
-    const ViewState vs = viewState_ ? viewState_() : ViewState{};
-    const wchar_t* const* labels = kind == 0 ? kSortLabels : kGroupLabels;
-    const ico::IconId* glyphs = kind == 0 ? kSortGlyphs : kGroupGlyphs;
-    const int current = kind == 0 ? vs.sort : vs.group;
-
-    ui::Menu menu;
-    int initial = -1;
-    for (int i = 0; i < kSortGroupCount; ++i) {
-        const int row = menu.AddChecked(labels[i], current == i, i, glyphs[i]);
-        if (i == current) initial = row;
-    }
-    // 排序方向：二级层里放一条可点的切换项，而不是只读标注 ——
-    // 资源管理器在「排序方式」子菜单里也能直接改方向。arg 用 100 表示"翻转方向"，
-    // 与 0..3 的档位分开；App 侧据此调 ViewSort 的同列反向语义（ascending=-1）。
-    if (kind == 0) {
-        menu.Separator();
-        // 文案是"点下去会变成什么"，不是当前态（当前方向已在父菜单小结里）。
-        menu.Add(vs.ascending ? L"改为降序" : L"改为升序", 100, ico::IconId::Sort);
-    }
-
-    ui::MenuOptions opt;
-    opt.toggleKey = kind == 0 ? L"nav.sort.sub" : L"nav.group.sub";
-    opt.initialRow = initial;
-    const int pick = menu.Show(hwnd_, *theme_, screen, opt);
-    if (pick < 0 || !onSortGroup_) return;
-    if (pick == 100)
-        onSortGroup_(0, current >= 0 && current < kSortGroupCount ? current : 0);
-    else if (pick >= 0 && pick < kSortGroupCount)
-        onSortGroup_(kind, pick);
-}
-
-void NavBar::ShowViewMenuNow() {
-    RECT anchor = fieldRc_;
-    for (const auto& b : buttons_)
-        if (b.id == kView) anchor = b.rc;
-    POINT at{anchor.left, anchor.bottom};
-    ClientToScreen(hwnd_, &at);
-    ShowViewMenu(at);
 }

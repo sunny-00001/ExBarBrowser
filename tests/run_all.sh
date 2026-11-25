@@ -19,6 +19,10 @@
 # 重建 obj/ 不会把测试链接到一半的 obj 抽走（曾导致 25 个测试同时 COMPILE-FAIL）。
 # build_fast.py 已支持 --objdir / --out，这里只是用上它。
 #
+# 【产物落点与回收】OUT 默认在工程根 tmp_tests/（不是 %TEMP%），exe 跑完即删。
+# tmp 前缀让 tools/reclaim.py 认成会话目录，在 build_fast.py 收尾时兜底回收；
+# 高并发多会话各设 EXBAR_TEST_OUT 到自己的工程内子目录即可，绝不外溢到系统临时区。
+#
 # 用法：
 #   bash tests/run_all.sh            # 全量
 #   bash tests/run_all.sh keymap     # 只跑名字含 keymap 的
@@ -48,11 +52,27 @@ cd "$ROOT" || exit 2
 
 FLAGS="-std=c++20 -O1 -target x86_64-w64-mingw32 -DUNICODE -D_UNICODE \
 -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 -D_WIN32_IE=0x0A00 -Isrc"
+# 【必须与 build_fast.py 的 LIBS 逐项同集合】测试是拿主构建的 obj 直接链接的，
+# 少一个库就是"整套单测全 COMPILE-FAIL"，而报错长得像代码问题
+# （实测 2026-11-23：新增 aichat_service.cpp 用了 winsock，这里没跟 -lws2_32，
+# 于是 62 个测试一个都链不起来，报的却是 `undefined symbol: __declspec(dllimport) closesocket`）。
+# 加库时两处一起改：主构建是唯一真相源，这里是它的镜像。
+# 校验口径：python - <<'EOF' 里比对 build_fast.LIBS 与这里的 -l 列表。
 LIBS="-static -static-libstdc++ -static-libgcc \
--lole32 -luuid -lshell32 -lshlwapi -ladvapi32 -luxtheme -ldwmapi -lcomctl32 -lgdi32 -luser32 -loleaut32 -lbcrypt \
--luiautomationcore"
+-lole32 -loleaut32 -luuid -luser32 -lgdi32 -lshell32 -lshlwapi -lcomctl32 \
+-ldwmapi -luxtheme -ladvapi32 -lpropsys -luiautomationcore -lbcrypt \
+-lwinhttp -lcrypt32 -lws2_32"
 
-OUT="${TMPDIR:-/tmp}/ebb_tests"
+# 【输出目录为什么在工程内、不是 %TEMP%】
+# 每个测试都独立静态链接出一个 ~55 MB 的 exe，全量 70+ 个就是 ~4 GB。早先放在
+# %TEMP%/ebb_tests，而 tools/reclaim.py 的 ROOT 是工程根、扫不到系统临时目录 ——
+# 于是不回收，会话一多就堆到 9 GB+。改到工程根下 tmp_tests/：
+#   ① 目录名以 tmp 开头，reclaim.py 的 ^tmp.*$ 规则自动认成 SESSION_DIR，
+#      build_fast.py 每次构建收尾都会兜底回收（闲置 15 分钟后）；
+#   ② 每个测试 exe 跑完当场删除（见下方 for 循环），峰值只留 1 个 exe；
+#   ③ .gitignore 已排除，不会污染 git。
+# 高并发会话用 EXBAR_TEST_OUT 在工程内各自指定子目录做隔离（仍是工程内路径）。
+OUT="${EXBAR_TEST_OUT:-$ROOT/tmp_tests}"
 OBJDIR="$OUT/obj"                       # 测试专属中间目录，与主构建 obj/ 物理隔离
 mkdir -p "$OUT"
 
@@ -103,6 +123,9 @@ if ! bash build.sh --objdir "$OBJDIR" --out "$OUT/ExBarBrowser.test.exe" >"$OUT/
     grep -iE "error|warning" "$OUT/_build.log" | head -10
     exit 2
 fi
+# 链接产物 ExBarBrowser.test.exe 只是给 --out 一个落点；测试链接用的是 $OBJDIR/*.obj，
+# 它本身从不被运行，当场删掉（~55 MB）。obj 留在 $OBJDIR 供后续测试复用。
+rm -f "$OUT/ExBarBrowser.test.exe"
 
 # 2. 收集可复用的 obj（从测试专属目录，不读主构建的 obj/）
 #
@@ -154,6 +177,7 @@ for t in tests/*.cpp; do
         echo "COMPILE-FAIL $name"
         grep -oE "(undefined symbol: |duplicate symbol: )[A-Za-z_][A-Za-z0-9_:]*" \
             "$OUT/$name.build.log" | sort -u | head -4 | sed 's/^/    /'
+        rm -f "$exe"                      # 链接失败的半成品也不留
         cfail=$((cfail + 1)); failed_names="$failed_names $name"
         continue
     fi
@@ -176,6 +200,7 @@ for t in tests/*.cpp; do
             # 前置条件不满足：既没验证也没否定，单独列出来。
             echo "NORUN(run=77) $name"
             head -3 "$OUT/$name.run.log" | sed 's/^/    /'
+            rm -f "$exe"
             norun=$((norun + 1)); norun_names="$norun_names $name"
             continue
         fi
@@ -183,6 +208,9 @@ for t in tests/*.cpp; do
         tail -4 "$OUT/$name.run.log" | sed 's/^/    /'
         fail=$((fail + 1)); failed_names="$failed_names $name"
     fi
+    # 【及时清理】exe 是 55 MB 级的一次性产物，跑完立即删；只留 KB 级的 .log 供排查。
+    # 这也让"高并发多会话"下每个会话的峰值占用从 ~4 GB 降到 1 个 exe（~55 MB）。
+    rm -f "$exe"
 done
 
 echo

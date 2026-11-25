@@ -221,6 +221,75 @@ int main() {
         Check(allViewGlyphs, "8 档视图模式都在唯一表里带图标");
     }
 
+    // 11. 拖放落点换算：弹层只报"第几行"，换算规则必须是纯函数且有边界。
+    //
+    // 【为什么这条要单测】落点算错一位 = 条目被放到隔壁，整条拖拽路径就废了。
+    // 而落点计算里混着"上/下半区"与"越界"，正是最容易差一位的地方。
+    std::printf("\n拖放落点换算（PopupDropIndex）\n");
+    {
+        // 落在上半区 → 插到该行**之前**（行号不变）
+        Check(PopupDropIndex(0, false, 5) == 0, "第 0 行上半区 → 插到最前");
+        Check(PopupDropIndex(3, false, 5) == 3, "第 3 行上半区 → 插到第 3 行之前");
+        // 落在下半区 → 插到该行**之后**（行号 +1）
+        Check(PopupDropIndex(0, true, 5) == 1, "第 0 行下半区 → 插到第 1 行之前");
+        Check(PopupDropIndex(3, true, 5) == 4, "第 3 行下半区 → 插到第 4 行之前");
+        // 越界一律拒绝（-1 = 无落点）
+        Check(PopupDropIndex(-1, false, 5) == -1, "负行号被拒绝");
+        Check(PopupDropIndex(5, false, 5) == -1, "行号超出范围被拒绝");
+        Check(PopupDropIndex(0, false, 0) == -1, "空列表没有落点");
+    }
+
+    // 12. 选中行 → 动作号：必须用"当前显示的那份"行。
+    //
+    // 弹层支持就地重建行（分类内容弹层拖完一行后宿主重读数据再重建）。
+    // 重建之后行序变了、动作号也跟着变 —— 若还用重排之前那份行去查，
+    // 用户拖完之后点的那一行会被映射成**旧顺序**的动作号：点 A 打开 B。
+    // 这条错了不报错，只是"打开了隔壁那一项"，所以必须单测钉住。
+    std::printf("\n选中行 → 动作号映射\n");
+    {
+        std::vector<PopupRow> rows;
+        PopupRow a;
+        a.label = L"A";
+        a.data = 0;
+        PopupRow b;
+        b.label = L"B";
+        b.data = 1;
+        PopupRow c;
+        c.label = L"C";
+        c.data = 2;
+        rows.push_back(a);
+        rows.push_back(b);
+        rows.push_back(c);
+
+        Check(PopupActionFor(rows, 0) == 0, "第 0 行 → 动作号 0");
+        Check(PopupActionFor(rows, 2) == 2, "第 2 行 → 动作号 2");
+        Check(PopupActionFor(rows, -1) == -1, "没选中 → -1");
+        Check(PopupActionFor(rows, 3) == -1, "越界行号 → -1");
+
+        // 重排之后：宿主重建的行带着**新**动作号，必须用新的一份。
+        std::vector<PopupRow> after;
+        PopupRow nb;
+        nb.label = L"B";
+        nb.data = 0;
+        PopupRow nc;
+        nc.label = L"C";
+        nc.data = 1;
+        PopupRow na;
+        na.label = L"A";
+        na.data = 2;
+        after.push_back(nb);
+        after.push_back(nc);
+        after.push_back(na);
+
+        Check(PopupActionFor(after, 2) == 2, "重排后点 A（第 2 行）→ 动作号 2（新 A）");
+        Check(PopupActionFor(after, 0) == 0, "重排后点 B（第 0 行）→ 动作号 0（新 B）");
+        // 用**旧**的那份查就会错：旧 rows 的第 2 行是 C（动作号 2），
+        // 新 rows 的第 2 行是 A —— 两者都返回 2，但指向的条目完全不同。
+        // 这正是"点 A 打开 C"那个 bug 的形状。
+        Check(PopupActionFor(after, 0) != PopupActionFor(rows, 2),
+              "新旧两份的第 2 行映射到不同动作（旧=C，新=A）");
+    }
+
     std::printf("\n%s（失败 %d 项）\n", g_fail == 0 ? "全部通过" : "有失败", g_fail);
     return g_fail == 0 ? 0 : 1;
 }

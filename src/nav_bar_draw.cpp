@@ -114,6 +114,37 @@ void NavBar::DrawBreadcrumb(HDC dc, const RECT& rc) {
     RestoreDC(dc, save);
 }
 
+void NavBar::DrawSearchBox(HDC dc) {
+    if (!searchShown_) return;
+
+    // 整框先铺输入框底色：中间的输入条是 EDIT 子窗口，它自己也是这个底色，
+    // 两边同色才看不出接缝（exbar 靠 WS_CLIPCHILDREN 达到同样效果）。
+    ui::FillRectColor(dc, searchRc_, theme_->editBg);
+    // 悬停：整格高亮（与地址框内的下拉箭头同一套反馈）。
+    if (hotSearchMenu_) ui::FillRectColor(dc, searchMenuRc_, theme_->hover);
+    if (hotSearchHist_) ui::FillRectColor(dc, searchHistRc_, theme_->hover);
+
+    // 放大镜：iconSmall 档（16px，对齐 mod 的 SIID_FIND stock 图标尺寸）。
+    // 角上叠一个小箭头（Directory Opus 风格）—— 让用户看出这一带能点开菜单，
+    // 而不是一个纯图标（纯图标用户只能靠猜）。
+    // 尺寸走 iconChevron 档：主题里"分裂箭头"就归这一档（exbar 的 8px 是它自己的
+    // 私有数字，我们不引入第二套尺寸口径）。偏移量在调用外算好 —— 图标原语的
+    // 参数里不许出现裸 S(数字)（同一行三个图标各写一个数就是"大小不协调"的成因）。
+    const int isz = theme_->iconSmall();
+    const int ix = searchRc_.left + theme_->S(4);
+    const int iy = searchRc_.top + ((searchRc_.bottom - searchRc_.top) - isz) / 2;
+    const int ax = ix + isz - theme_->S(3);
+    const int ay = iy + isz - theme_->S(2);
+    RECT mag{ix, iy, ix + isz, iy + isz};
+    ui::DrawGlyph(dc, ico::IconId::Search, mag, isz, theme_->text);
+    ui::DrawChevron(dc, ax, ay, theme_->iconChevron(), theme_->text, 1);
+
+    // 右带：历史下拉箭头（尺寸走 iconChevron 令牌，与地址框内的 ⌄ 同一档）。
+    ui::DrawChevron(dc, (searchHistRc_.left + searchHistRc_.right) / 2,
+                    (searchHistRc_.top + searchHistRc_.bottom) / 2, theme_->iconChevron(),
+                    theme_->text, 1);
+}
+
 void NavBar::Paint(HWND h) {
     ui::PaintBuffered(h, theme_->bar, [&](HDC mem, const RECT& rc) {
         for (const auto& b : buttons_) DrawButton(mem, b, hoverBtn_ == b.id, downBtn_ == b.id);
@@ -137,8 +168,9 @@ void NavBar::Paint(HWND h) {
 
         // 边框最后描（否则被框内填充盖掉）
         ui::FrameRectColor(mem, fieldRc_, theme_->editBorder);
-        // 搜索框的边框由本栏画（EDIT 自己只有内容区，没有边框）。
+        // 搜索框由本栏画（EDIT 自己只有内容区，没有边框）。
         // 与地址框同色同粗：两个输入框并排时边框不一致会显得像坏了一个。
-        if (searchVisible_) ui::FrameRectColor(mem, searchRc_, theme_->editBorder);
+        DrawSearchBox(mem);
+        if (searchShown_) ui::FrameRectColor(mem, searchRc_, theme_->editBorder);
     });
 }

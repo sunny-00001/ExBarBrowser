@@ -104,6 +104,34 @@ int main() {
         Check(h.PopClosedAt(0, &got) && got == L"C", "PopClosedAt(0) = 最近关闭");
     }
 
+    // ---- 关闭历史上限可调（配置项 closedTabLimit）----
+    //
+    // 上限以前是代码里的裸 20：调大要重编译（"Ctrl+Shift+T 能退几步"是使用习惯
+    // 问题，不是性能问题）。现在由外面推进来 —— 这里钉住三件事：
+    //   · 默认仍是 20（旧行为不变，老用户不会突然发现历史变短）；
+    //   · 收紧上限时**立刻**裁掉超出的（不是等下一次 Push 才生效）；
+    //   · 上限调大之后能多存（证明它是可变的，不是只紧不松）。
+    {
+        core::TabSet c;
+        Check(c.closedLimit() == 20, "关闭历史上限默认 20（与旧硬编码一致）");
+        for (int i = 0; i < 30; ++i) c.PushClosed(L"P" + std::to_wstring(i));
+        Check(c.closed().size() == 20, "默认上限下只留 20 条");
+        Check(c.closed().front() == L"P29", "留下的最近一条是最后压入的");
+
+        c.SetClosedLimit(5);
+        Check(c.closedLimit() == 5, "上限可设");
+        Check(c.closed().size() == 5, "收紧上限时立刻裁掉超出的条目");
+        Check(c.closed().front() == L"P29", "裁剪从尾部丢，最近的仍在最前");
+
+        c.SetClosedLimit(50);
+        for (int i = 0; i < 30; ++i) c.PushClosed(L"Q" + std::to_wstring(i));
+        Check(c.closed().size() == 35, "调大上限后能存超过 20 条（旧硬编码做不到）");
+
+        // 0/负数按"不允许历史"处理，而不是"不限" —— 后者会让配置写错时无限膨胀。
+        c.SetClosedLimit(-3);
+        Check(c.closedLimit() == 0 && c.closed().empty(), "非法上限按 0 处理并清空");
+    }
+
     // ---- 固定标签：固定区始终在最前，取消固定回到第一个未固定位 ----
     {
         core::TabSet p;

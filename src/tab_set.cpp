@@ -178,7 +178,8 @@ void TabSet::PushClosed(const std::wstring& path) {
     if (path.empty()) return;
     closed_.erase(std::remove(closed_.begin(), closed_.end(), path), closed_.end());
     closed_.insert(closed_.begin(), path);
-    if (closed_.size() > 20) closed_.resize(20);
+    const size_t limit = closedLimit_ > 0 ? static_cast<size_t>(closedLimit_) : 0;
+    if (closed_.size() > limit) closed_.resize(limit);
 }
 
 bool TabSet::PopClosed(std::wstring* path) {
@@ -197,7 +198,20 @@ bool TabSet::PopClosedAt(int index, std::wstring* path) {
 
 void TabSet::SetClosed(const std::vector<std::wstring>& list) {
     closed_ = list;
-    if (closed_.size() > 20) closed_.resize(20);
+    const size_t limit = closedLimit_ > 0 ? static_cast<size_t>(closedLimit_) : 0;
+    if (closed_.size() > limit) closed_.resize(limit);
+}
+
+void TabSet::SetClosedLimit(int n) {
+    // 0/负数一律按"不允许历史"处理，而不是"不限" —— 后者会让配置写错时
+    // settings.json 无限膨胀。上限 100 与配置侧的夹取一致。
+    if (n < 0) n = 0;
+    if (n > 100) n = 100;
+    closedLimit_ = n;
+    // 收紧上限后立刻裁掉超出的部分：否则"改了设置但列表还那么长"，
+    // 下次 PushClosed 才动，看起来像没生效。
+    const size_t limit = static_cast<size_t>(closedLimit_);
+    if (closed_.size() > limit) closed_.resize(limit);
 }
 
 void TabSet::Clear() {

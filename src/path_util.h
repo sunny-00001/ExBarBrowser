@@ -50,6 +50,31 @@ std::wstring CollapseSeparators(const std::wstring& path);
 // 同一类输入在不同命令上表现不同，本身就是一种 bug。
 std::wstring ToShellPath(const std::wstring& path);
 
+// 把**命名空间解析名**归一化成 shell 能接受的形式：裸 `::{GUID}` 补 `shell:` 前缀。
+//
+// 【为什么单独一个函数、而不是并进 ToShellPath】
+// 两者作用域不同：
+//   · ToShellPath 管**文件系统**路径的分隔符（正斜杠、连续分隔符、尾分隔符）；
+//   · 本函数管**命名空间**解析串的前缀。文件系统路径**绝不能**被套上 `shell:`
+//     （`shell:C:\Windows` 全线失败），命名空间字符串也不需要动分隔符。
+// 混成一个函数，将来任何一个方向的新规则都会顺手改坏另一个方向。
+//
+// 【为什么必须有】SIGDN_DESKTOPABSOLUTEPARSING 对命名空间项返回的是**裸**
+// `::{GUID}`，而裸形式对"主页"（679F85CB-…，Win11 的快速访问/主页）返回
+// E_INVALIDARG(0x80070057)。实测（探针 49）：`shell:::{GUID}` 五种命名空间
+// 全部可解析，裸形式只有主页失败。不按 GUID 特判 —— 那样每加一个命名空间
+// 就要再赌一次哪种写法能用。
+//
+// 【为什么它必须在 pathutil 而不是 nav_pane_root】
+// 原实现在 navpane 命名空间里，只有导航窗格那一侧用。但**同一个 bug 存在于
+// 所有"外部字符串 -> shell"的入口**：会话恢复把 sessionPane2Paths 里的
+// 裸 `::{679F85CB-…}` 直接喂给 ShellView::DoNavigate，于是右窗格
+// `[nav] parse hr=0x80070057` 一次都没导航成功 —— 用户看到的是"右栏空白"。
+// 收口到 pathutil 之后，导航、树、ItemFromPath 三处共用同一份判据。
+//
+// 幂等：已带 `shell:` 前缀的原样返回（否则会变成 `shell::shell:::{…}`）。
+std::wstring ToParsingName(const std::wstring& raw);
+
 // 一组路径的 ToShellPath（逐项归一化，顺序与大小写都不变）。
 //
 // 为什么需要批量版本：fs.* 那组命令的 targets 参数本来就是数组，
