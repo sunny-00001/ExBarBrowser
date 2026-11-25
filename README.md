@@ -5,18 +5,18 @@
 本仓库**自包含**（2026-11-20 起从 `D:\Windhawk` 主仓独立出来，见 §3.4）：不引用、不修改任何
 ExBar mod 分片，可并存、可整体拷走、可单独卸载。
 
-| 项 | 现状（2026-11-22 09:43，v0.2.2） |
+| 项 | 现状（2026-11-25，发布构建入库当日） |
 |---|---|
-| 阶段 | **P2 完成 + P3 起步**：标签/导航/书签/状态栏 + 键盘/序列/鼠标 + 命令契约 + AI 接口全部落地，日常浏览可用 |
-| 规模 | `src/` 约 3.91 万行（101 个 `.cpp` + 82 个 `.h`）；`tests/` 56 个单测、838 项断言（2026-11-22 实测；仓库在活跃并行开发，**行数每几分钟就变**，要看当前值见下方口径命令） |
-| 产物 | 单 exe 31.5 MB（含 `-g` 调试符号；`strip` 后约 1.9 MB），静态链接 libstdc++/libgcc |
-| 命令 | 由 `python tools/check_commands.py` 首行给出（目录 / 已实现 / 处理器），`check_ai_meta.py` 给出对 AI 暴露条数。**这三个数每加一条命令就变，本文不写死** |
+| 阶段 | **P3 主体完成 + P4 起步**：标签/导航/书签/状态栏 + 键盘/序列/鼠标 + 命令契约 + AI 接口 + 搜索/预览/会话/AI 面板已落地，日常浏览可用 |
+| 规模 | `src/` 约 6.10 万行（181 个 `.cpp` + 125 个 `.h`）；`tests/` 71 个单测、1217 项断言（2026-11-25 实测；仓库在活跃并行开发，**行数每几分钟就变**，要看当前值见下方口径命令） |
+| 产物 | 调试 exe 59.7 MB（含 `-g`）；`--release` 发布 exe **3.0 MB**（-O2 + `-s` strip，无调试符号），静态链接 libstdc++/libgcc。两个文件名并存、互不覆盖 |
+| 命令 | `check_commands.py` 首行给出：命令表 219 条 / 已实现 211 / 处理器 211 / keymap 引用 237 条；`check_ai_meta.py` 给出对 AI 暴露 174 条。**这些数每加一条命令就变，本文不写死，以脚本输出为准** |
 | 配置 | 便携模式，全部在 `<exe>\data`：`settings.json` / `bookmarks.html` / `keymap.json` / `mouse.json` / `audit.log` |
-| 验证 | clang++ 20.1.3 零警告；`build_fast.py --clean` 全量约 20s（101 TU，默认 8 路并行）；冒烟改为**人工操作 + 只读证据**（日志 / `exbar/state` / 截图），不注入键鼠（`docs/MIGRATION-PLAN.md` §8.2、规则 R21） |
-| 检查 | 3 个静态检查全绿（2026-11-22 复核，命令表 196 条 / 已实现 187）：`check_components`（唯一性 / 禁令 / 接线 / 令牌消费 / **输入纪律 R21** 六类，条数以脚本末行为准）、`check_ai_meta`（28 组，含 R20 人机等价）、`check_commands`（三方对账，含 CmdId 顺序与 legacy 名基线）。CI 强门见 `.github/workflows/ci.yml` |
+| 验证 | clang++ 20.1.3 零警告；调试全量约 20s（181 TU，自适应并行；带跨会话 obj 缓存），发布 `--release --clean` 首次全量约 21min（-O2、独立 obj 目录、无缓存命中）；冒烟为**人工操作 + 只读证据**（日志 / `exbar/state` / 截图），不注入键鼠（`docs/MIGRATION-PLAN.md` §8.2、规则 R21） |
+| 检查 | `check_ai_meta`（28 组，含 R20 人机等价）与 `check_commands`（三方对账，含 CmdId 顺序与 legacy 名基线）通过；`check_components` 因并行开发中 3 个超限文件 + 评估面未重签而报 2 类，见本文末尾说明。CI 强门见 `.github/workflows/ci.yml` |
 | 版本控制 | **独立仓库**（`E:\ExBarBrowser`，分支 `main`）：源码/脚本/文档/生成头入库，构建与运行产物由 `.gitignore` 排除 |
 
-> 本文所有路径均相对仓库根。文档基线：**2026-11-21 11:00**（代码仍在快速演进，
+> 本文所有路径均相对仓库根。文档基线：**2026-11-25**（代码仍在快速演进，
 > `src/` 是唯一真相；发现文档与代码不符时先信代码，并顺手改文档）。
 > 规模数字的口径（可直接复制执行）：
 > ```bash
@@ -70,7 +70,7 @@ ExBarBrowser.exe（本进程）
 | 改造对象 | 系统资源管理器窗口 | 自己造窗口 |
 | 能做的事 | 改 explorer 的标签栏/导航栏/命令栏，加书签栏、搜索、命令面板、AI 面板 | 只能做自己窗口里的东西；改不了系统 explorer |
 | 崩溃面 | 崩了连带 explorer | 崩了只影响自己 |
-| 现状 | 约 7.7 万行（17 个分片）、127 条命令目录（`data/capabilities.json`） | 约 3.14 万行、命令目录见 `check_commands.py`（规模比 mod 小一个量级，命令反而更多） |
+| 现状 | 约 7.7 万行（17 个分片）、127 条命令目录（`data/capabilities.json`） | 约 6.1 万行、命令目录见 `check_commands.py`（219 条，规模接近但组织为真多文件，命令更多） |
 
 两者**共享设计口径而非代码**：主题色令牌、面包屑交互语义、标签栏视觉、快捷键习惯都对齐 ExBar mod
 （`ebnav` / `ebtab` / `ebstatus` 的行为），但一行代码都不互相引用，各自可独立演进、独立卸载。
@@ -107,8 +107,8 @@ ExBarBrowser.exe（本进程）
 | 状态栏 9 段 | `src/status_bar.cpp`、`src/view_stats.cpp` | 文件夹/文件/已选、修改日期（含排序箭头）、路径、选中容量、磁盘/容器、隐藏三态、类型；tooltip + 段点击 + 右键显隐 |
 | 视图开关/排序/分组 | `src/shell_view.cpp` | 8 档模式、排序、分组、隐藏/系统/扩展名、隐藏三态、导航窗格、预览窗格开关（经 `IExplorerPaneVisibility` 跨目录强制保持用户意图） |
 | 文件操作 | `src/shell_ops.cpp` | 复制/剪切/粘贴/删除（回收站）/重命名/属性/打开/新建文件夹/新建文本/全选/定位首末项；含确定式 `SelectByPath`/`SelectNone`/`RenameTo` |
-| 键盘快捷键 | `src/keymap.cpp`、`src/chord.cpp`、`src/input_router.cpp` | 读 `data/keymap.json`（70 条，直接编辑该文件）；默认表由 `tools/gen_keymap.py` 生成到 `src/keymap.gen.h`，无双副本 |
-| 序列键 | `src/sequence.cpp`、`src/sequence_hint.cpp`、`src/sequence_overlay.cpp` | **209 条**（38 默认 + 171 全命令覆盖）；前缀状态机 + 3000 ms 超时 + 候选弹层 + `Esc` 取消；`/ ! # @ …` 唤起模式总览弹窗（命令/书签/标签/历史/跳转/…），打字过滤+上下导航+回车派发 |
+| 键盘快捷键 | `src/keymap.cpp`、`src/chord.cpp`、`src/input_router.cpp` | 读 `data/keymap.json`（105 条热键，直接编辑该文件）；默认表由 `tools/gen_keymap.py` 生成到 `src/keymap.gen.h`，无双副本 |
+| 序列键 | `src/sequence.cpp`、`src/sequence_hint.cpp`、`src/sequence_overlay.cpp` | **169 条**（`data/keymap.json` 的 `sequences`）；前缀状态机 + 3000 ms 超时 + 候选弹层 + `Esc` 取消；`/ ! # @ …` 唤起模式总览弹窗（命令/书签/标签/历史/跳转/…），打字过滤+上下导航+回车派发 |
 | 鼠标规则 | `src/mouse_rules.cpp`、`src/shell_input.cpp` | 目标区 × 按钮 × 触发（单击/双击/长按/四向滚轮）× 修饰键；shell 视图命中经子类 + UIA 汇入同一条规则引擎 |
 | 快捷键管理器 | `src/hotkey_manager.cpp` | 范围筛选、改键/清除/恢复默认、冲突/系统占用/未实现标记 |
 | 命令管线 | `src/commands.cpp` | 命令目录（与 mod 同 id 同组），参数对象化 `Invoke(id, Args, actor)`；`audit.log`；`tools/check_commands.py` 三方对账 |
@@ -130,17 +130,19 @@ ExBarBrowser.exe（本进程）
 
 | 缺口 | 影响 | 计划 |
 |---|---|---|
-| 无搜索（Everything） | 找文件要回到 explorer 或 Everything | P3（复用 `evipc`） |
-| 无预览 / 详细信息窗格 | `IExplorerBrowser` 无公开接口 | P3（`IPreviewHandler` 自绘） |
-| 无复选框模式 | `IFolderView` 未接 | P3 |
-| 无会话管理 UI | `SessionList`/`SessionDelete` 未实现，只能存/取当前组 | P3 |
-| AI 面板未接 | 接口已通（JSON-RPC），但窗口内没有对话 UI | P4 |
+| 搜索仅当前目录 / 最近历史 | 无 Everything 式全盘索引（`evipc` 未接） | P3 可选：全盘 `evipc` |
+| 详细信息窗格 | 预览窗格已接（`view.toggle.preview` / `Alt+P`），但 Opus 式多列详细信息视图未做 | P3 |
 | 无 i18n | 文案硬编码中文 | 不做 |
 
-> 2026-11-21 已从本表移除：工具集（哈希 / 查重 / 文件夹比对）、选择族（含按类型选择）、
-> 撤销、批量重命名。
-> 撤销走 shell 自己的 `IFileOperation` 撤销栈（落盘操作都带 `FOF_ALLOWUNDO`），
-> 不是自建栈 —— 见 CHANGELOG 本轮条目。
+> 2026-11-25 更新：以下缺口已补齐，从本表移除 —— 搜索框（`Ctrl+F` /
+> `search.query.set` / 搜索范围 / 搜索历史）、预览窗格（`Alt+P` / `view.toggle.preview`）、
+> 复选框模式（`view.toggle.checkboxes`）、会话管理 UI（`session.list` / `session.named.*` /
+> `session.save` / `session.restore`）、AI 面板（WebView2 + Node 服务，见
+> [docs/DECISIONS.md](docs/DECISIONS.md) D14）。
+>
+> 更早（2026-11-21）已移除：工具集（哈希 / 查重 / 文件夹比对）、选择族（含按类型选择）、
+> 撤销、批量重命名。撤销走 shell 自己的 `IFileOperation` 撤销栈（落盘操作都带
+> `FOF_ALLOWUNDO`），不是自建栈 —— 见 CHANGELOG 本轮条目。
 
 完整对照表（按 ExBar mod 的 127 条能力逐组比对，本工程自研命令另计），见
 [docs/PARITY.md](docs/PARITY.md)。
@@ -172,12 +174,27 @@ bash build.sh          # 或 build.bat（cmd）
   未找到 windres 时跳过资源、exe 回退到系统默认图标。设计见 `resources/icon_preview.png`。
 - 清单（源文件/库）唯一真相源在 `build_fast.py` 顶部，新增文件只改这一处。详见 `docs/DEVELOPMENT.md`。
 
+**发布构建**（`--release`）：与调试构建并存，不覆盖 `ExBarBrowser.exe`：
+
+```bash
+bash build.sh --release          # -> ExBarBrowser.release.exe（3.0 MB），独立 obj_release/
+bash build.sh --release --clean  # 首次全量（-O2，约 21 min）；之后增量很快
+```
+
+- 发布标志由 `COMPILE_FLAGS` 推导（`RELEASE_COMPILE_FLAGS`）：`-O1`→`-O2`、去 `-g`、
+  加 `-DNDEBUG`（源码实测 0 处 `assert`，不改变行为）；链接期再 `-s` 剥符号。
+- 调试 exe 仍带 `-g`（59.7 MB），方便排查；两者文件名不同，可同时保留、可一起跑
+  （各自独立 profile 时设 `EXBARBROWSER_MULTI`）。发布模式默认输出到
+  `ExBarBrowser.release.exe`、中间目录 `obj_release/`；也可用 `--out` / `--objdir` 覆盖。
+- 配置签名含标志差异，调试与发布各自命中独立缓存；`--clean` 只清自己那套 obj。
+
 ### 3.2 运行
 
 ```bat
 ExBarBrowser.exe                      :: 默认打开用户主目录
 ExBarBrowser.exe "C:\Windows"         :: 打开指定目录
-ExBarBrowser.exe /select,"C:\a\b.txt" :: 打开所在目录（选中项暂未实现）
+ExBarBrowser.exe /select,"C:\a\b.txt" :: 打开所在目录并选中该文件
+ExBarBrowser.exe --ai                   :: 进程内开 AI 命名管道通道（不写 settings.json）
 ExBarBrowser.exe --mcp-stdio          :: 以 MCP 服务器方式启动（stdio 进、stdio 出）
 ```
 
@@ -288,7 +305,7 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
 | `Ctrl+Shift+1..8` | 8 档视图模式 |
 | `Ctrl+M` / `Ctrl+Shift+M` | 当前目录开终端 / 管理员终端 |
 | `Ctrl+Shift+P` / `Alt+K` | 命令面板 / 快捷键管理器 |
-| 序列 `g g` / `g t` / `x l a` … | **209 条**（`data/keymap.json`；前缀按命令组分配，每条已实现命令全覆盖；3000 ms 内连按） |
+| 序列 `g g` / `g t` / `x l a` … | **169 条**（`data/keymap.json` 的 `sequences`；前缀按命令组分配，每条已实现命令全覆盖；3000 ms 内连按） |
 | `Enter` / `Esc` / `Tab` | 地址栏提交 / 还原 / 同级补全 |
 | 鼠标中键点标签 / 滚轮在标签栏 | 关闭标签 / 切换标签 |
 | 双击书签栏空白 / 状态栏空白 | 切换书签栏 / 复制当前目录 |
@@ -408,7 +425,8 @@ main.cpp            进程级：DPI → COM(STA)/OLE → 转发或新开 → 命
 
 ```
 ExBarBrowser/                       独立 git 仓库（main）
-├─ src/                             按职责命名（平铺，76 .cpp / 66 .h，31,438 行）
+├─ src/                             按职责命名（平铺，181 .cpp / 125 .h，约 6.1 万行）
+│  ├─ aichat_panel / aichat_service / aichat_webview   AI 面板（WebView2 渲染 + Node 服务）
 │  ├─ main.cpp                      进程入口：DPI / COM+OLE / 转发或新开 / 命令行
 │  ├─ app.{h,cpp}                   装配：单例 / 窗口创建 / 生命周期 / 鼠标入口
 │  ├─ app_wnd / app_tabs / app_nav  主窗口过程、标签生命周期、导航与历史栈
@@ -432,15 +450,18 @@ ExBarBrowser/                       独立 git 仓库（main）
 │  ├─ platform_win / str / log / clipboard / tooltip_host   收编后的基础设施
 │  ├─ config / json / text_file                             配置、JSON、原子文本写
 │  └─ common.h                                              共享类型与常量（并转发 identity 的类名）
-├─ tests/                           46 个单测（每个 .cpp 自带 main + Check；`bash tests/run_all.sh` 一键跑全量，数量自动枚举）
-├─ tools/                           check_commands / check_ai_meta / check_components / gen_keymap / gen_icon / probe_highlight / probe_toggle
+├─ tests/                           71 个单测（每个 .cpp 自带 main + Check；`bash tests/run_all.sh` 一键跑全量，数量自动枚举）
+├─ tools/                           check_commands / check_ai_meta / check_components / gen_keymap / gen_icon / objcache / reclaim / probe_* …
 ├─ scripts/                         shot.py / install.ps1 / uninstall.ps1
-├─ docs/                            见下表（19 篇）
+├─ docs/                            见下表（23 篇）
+├─ aichat/                          AI 面板前端 + Node 服务（代码入库；model.json/config.json/logs 不入库）
 ├─ resources/                       app.ico / app.rc / icon_preview.png
 ├─ data/                            运行期配置（**不入库**，首次启动自动生成）
-├─ build.sh / build.bat             构建入口（薄包装，透传参数）
-├─ build_fast.py                    增量构建实现 + 清单唯一真相源
-└─ README.md / CHANGELOG.md / CONTRIBUTING.md
+├─ build.sh / build.bat             构建入口（薄包装，透传参数；`--release` 发布构建）
+├─ build_fast.py                    增量构建实现 + 清单唯一真相源（含 RELEASE_COMPILE_FLAGS）
+├─ ExBarBrowser.exe                 调试产物（带 -g，不入库）
+├─ ExBarBrowser.release.exe         发布产物（strip，3.0 MB，不入库；`bash build.sh --release` 生成）
+└─ README.md / CHANGELOG.md / CONTRIBUTING.md / AGENTS.md
 ```
 
 ## 7. 文档索引
@@ -505,11 +526,12 @@ ExBarBrowser/                       独立 git 仓库（main）
   前置条件、交互与确定分离、结构化返回值、点分命名空间、MCP 兼容层、内容补全、能力缺口补齐；
   AI 操作接口（JSON-RPC over 管道，当时 86 工具，现 139）；导航收口为组件（`nav_path` / `nav_history`）；
   存储改便携模式（`<exe>\data`）；基础设施收编（窗口类/字符串/日志/剪贴板/tooltip/字形）。
-- **P3（进行中）**：搜索（复用 `evipc`）、预览窗格、会话管理 UI、可选 Shell 扩展 DLL。
-  已提前落地：目录统计（`OpTopN` / `OpDiskUsage`）、文件集工具（`tool.hash` / `tool.dupfinder` /
-  `tool.compare`）、选择族五条、批量重命名（`Ctrl+Shift+R`）、撤销（`Ctrl+Z`）、
-  搜索框（`Ctrl+F`）、书签导入导出与拖放。
-- **P4**：UI 资产互通（`tokens.css` / WebView2 chrome）、AI 面板（接口已在，缺窗口内对话 UI）。
+- **P3（主体完成，2026-11-25）**：搜索（当前目录 + 历史，全盘 `evipc` 未接）、预览窗格、会话管理 UI、
+  复选框模式、可选 Shell 扩展 DLL。已落地：目录统计（`OpTopN` / `OpDiskUsage`）、文件集工具
+  （`tool.hash` / `tool.dupfinder` / `tool.compare`）、选择族五条、批量重命名（`Ctrl+Shift+R`）、
+  撤销（`Ctrl+Z`）、搜索框（`Ctrl+F`）、书签导入导出与拖放。
+- **P4（起步）**：UI 资产互通（`tokens.css`）；AI 面板已接（WebView2 + Node 服务，
+  `src/aichat_*` + `aichat/`），下一步是把 chrome 的色值令牌与 Web 侧统一。
 
 细节与验收标准见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
@@ -540,5 +562,18 @@ ExBarBrowser/                       独立 git 仓库（main）
 | `audit.log` | 每条命令的 `actor`（`user`/`ai`/`mouse`/`seq`/`key`）、参数、`ok=`、被拒原因（`blocked: …`） |
 | `ai-token.txt` / `ai-pipe.txt` | AI 通道运行期发现文件：管道名与一次性令牌；`ai::StopServer()` 停服即删除 |
 
-截图：`python scripts\shot.py out.png`（`PrintWindow` + `PW_RENDERFULLCONTENT`，窗口被遮挡也能抓，
-但抓不到 WebView2 的 GPU 合成内容 —— 本工程目前没有 WebView2，不受影响）。
+截图：`python scripts\shot.py out.png`（`PrintWindow` + `PW_RENDERFULLCONTENT`，窗口被遮挡也能抓；
+但抓不到 WebView2 的 GPU 合成内容 —— **AI 面板展开时**其中的网页部分是 WebView2，截图会缺那块，
+主界面其余 GDI chrome 正常可见）。
+
+---
+
+## 11. 静态检查现状（2026-11-25）
+
+| 检查 | 结果 | 说明 |
+|---|---|---|
+| `python tools/check_commands.py` | 通过 | 命令表 219 / 已实现 211 / 处理器 211 / keymap 引用 237，三方对账一致 |
+| `python tools/check_ai_meta.py` | 通过 | 28 组断言全过；AI 暴露 174 条（105 带自断言、69 显式豁免） |
+| `python tools/check_components.py` | 2 类待办 | ① 单文件 ≤500 行：并行开发新增 3 个超限文件（`aichat_panel.cpp` / `aichat_webview.cpp` / `nav_pane.cpp` 等，记在欠账里）；② 评估面基线：多个工具/测试文件改动后未重签。二者均为"待人工确认 + 重签"，非功能回退；确认有意后按脚本提示 `python tools/gen_eval_baseline.py --human-confirm` 重签、超限文件按职责拆分 |
+
+> 数字均为快照，最终以命令输出为准。仓库处于多会话并行开发，检查状态会随提交波动。

@@ -23,6 +23,7 @@ ExBarBrowser 主编译入口（Python 增量构建）
   python build_fast.py --no-pch      # 禁用 PCH
   python build_fast.py --stats       # 打印各 TU 编译耗时
   python build_fast.py --out <path>  # 输出到指定路径（不打断运行中的实例）
+  python build_fast.py --release    # 发布构建：-O2 / 去 -g / -DNDEBUG / 链接期 strip
 
 产物安全：默认先链接到 ExBarBrowser.new.exe，成功后原子替换 ExBarBrowser.exe。
   若 exe 正被运行中的进程占用而替换失败，保留 .new.exe 并提示，绝不破坏运行中的程序。
@@ -97,6 +98,13 @@ COMPILE_FLAGS = [
     #   · conversion -> int 下标传给收 WPARAM 的 ListBox 消息
     "-Wshadow", "-Wconversion",
 ]
+
+# 发布构建：在 COMPILE_FLAGS 基础上把 -O1/-g 换成 -O2、去掉调试符号、定义 NDEBUG。
+# 源码里没有 assert()（实测 0 处），所以 -DNDEBUG 不改变行为。用推导而非另抄一份，
+# 避免两份清单漂移；链接期再加 -s 剥符号，两者组合把 exe 从约 60 MB 压到约 3 MB。
+RELEASE_COMPILE_FLAGS = [
+    ("-O2" if f == "-O1" else f) for f in COMPILE_FLAGS if f != "-g"
+] + ["-DNDEBUG"]
 
 LIBS = [
     "-static-libstdc++", "-static-libgcc",
@@ -345,13 +353,17 @@ def compile_one(src_rel, flags, use_pch, sig="", pch_hash=""):
 # ---------------------------------------------------------------------------
 # 链接 / 部署
 # ---------------------------------------------------------------------------
-def link_all(out_path):
+def link_all(out_path, strip=False):
     objs = [str(obj_path_for(s)[0]) for s in SOURCES]
     # 图标资源对象（windres 编译的 COFF），随主程序一起链接进 exe。
     if RES_OBJ.exists():
         objs.append(str(RES_OBJ))
     # 链接必须显式带 -target：clang 本机默认是 i686，不带会与 x64 的 obj 冲突。
     cmd = [str(CLANG), "-mwindows", "-target", "x86_64-w64-mingw32"]
+    # 发布构建在链接期剥离符号表/调试信息（-s 对 GNU ld 与 lld 都成立）。
+    # 与 RELEASE_COMPILE_FLAGS 去 -g 组合：obj 里不带 DWARF，链接再剥符号 → 体积最小。
+    if strip:
+        cmd.append("-s")
     # lld 比 GNU ld 快约 40%（实测 0.5s -> 0.31s）。链接器不进配置签名——
     # 换链接器不改变目标代码语义，不该触发 165 个 TU 全量重编。
     if LLD.exists():
@@ -455,9 +467,21 @@ def main():
                     help="禁用跨会话 obj 缓存（默认开启；命中即硬链接复用，省去重复编译）")
     ap.add_argument("--gc-age", type=int, default=15,
                     help="回收的活跃保护窗口（分钟，默认 15）：此时间内被写过的目录视为在用")
+    ap.add_argument("--release", action="store_true",
+                    help="发布构建：-O2 / 去 -g / -DNDEBUG / 链接期 strip；"
+                         "默认输出到 ExBarBrowser.release.exe、独立 obj_release/，不碰调试 exe")
     args = ap.parse_args()
     if args.j <= 0:
         args.j = default_jobs()
+
+    # 发布与调试用不同的编译标志 → 不同的配置签名，天然分缓存。
+    # 再把发布构建的默认中间目录与输出名都隔开：同一棵树里调试/发布可并存，
+    # 各自 --clean/增量互不踩踏，也不会替换掉用户正在跑的调试 exe。
+    flags = RELEASE_COMPILE_FLAGS if args.release else COMPILE_FLAGS
+    if args.release and not args.objdir:
+        args.objdir = str(ROOT / "obj_release")
+    if args.release and not args.out:
+        args.out = str(ROOT / "ExBarBrowser.release.exe")
 
     if not CLANG.exists():
         print("找不到 clang:", CLANG)
@@ -476,7 +500,7 @@ def main():
     print(f"[清单] src/*.cpp 自动扫描：{len(SOURCES)} 个 TU（中间目录 {OBJ}）", flush=True)
 
     use_pch = not args.no_pch
-    cur_sig = signature(COMPILE_FLAGS, LIBS, use_pch)
+    cur_sig = signature(flags, LIBS, use_pch)
     OBJ.mkdir(parents=True, exist_ok=True)
 
     # 持锁：从这一刻到进程退出，tools/reclaim.py 都不会回收本目录。
@@ -499,7 +523,7 @@ def main():
     # 1) PCH
     if pch_needed(use_pch):
         print("[PCH] 生成预编译头 ...", flush=True)
-        pch_dt = build_pch(COMPILE_FLAGS)
+        pch_dt = build_pch(flags)
         PCH_DEPS_SIG.write_text(pch_deps_hash(), encoding="utf-8")
         print(f"[PCH] 完成 {pch_dt:.1f}s ({PCH.stat().st_size / 1e6:.0f} MB)", flush=True)
     elif use_pch:
@@ -575,7 +599,7 @@ def main():
     if compile_todo:
         workers = max(1, min(args.j, len(compile_todo)))
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = {ex.submit(compile_one, s, COMPILE_FLAGS, use_pch, cur_sig, pch_hash): s
+            futs = {ex.submit(compile_one, s, flags, use_pch, cur_sig, pch_hash): s
                     for s in compile_todo}
             for fut in as_completed(futs):
                 s, ok, dt, err = fut.result()
@@ -599,8 +623,9 @@ def main():
     custom_out = Path(args.out).resolve() if args.out else None
     staged = NEW_EXE if OBJ == ROOT / "obj" else OBJ.parent / f"ExBarBrowser.{OBJ.name}.exe"
     link_target = custom_out if custom_out else staged
-    link_dt = link_all(link_target)
-    print(f"[链接] {link_dt:.1f}s -> {link_target.name}", flush=True)
+    link_dt = link_all(link_target, strip=args.release)
+    mode = "发布" if args.release else "调试"
+    print(f"[链接] {mode} {link_dt:.1f}s -> {link_target.name}", flush=True)
 
     total = time.time() - t_start
     if custom_out:
