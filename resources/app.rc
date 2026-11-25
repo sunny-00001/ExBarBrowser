@@ -1,4 +1,57 @@
-// ExBarBrowser 应用图标资源
+// ExBarBrowser 应用资源
 // ID 1 对应 src/app.cpp 的 kAppIconId，被窗口类 hIcon 与 WM_SETICON 加载。
 // 图标文件由 tools/gen_icon.py 生成，包含 16/20/24/32/48/64/128/256 多尺寸。
+//
+// 版本信息由构建器从仓库根 VERSION 读出，经 windres -D 注入（见 build_fast.py）。
+// 这里的 #ifndef 兜底只服务于"手工单独编译 app.rc"的场景；正常构建永远走注入值。
+#ifdef EXBAR_HAS_GENERATED_VERSION
+#include "version.h"
+#endif
+#ifndef EXBAR_VERSION_MAJOR
+#define EXBAR_VERSION_MAJOR 0
+#define EXBAR_VERSION_MINOR 0
+#define EXBAR_VERSION_PATCH 0
+#define EXBAR_VERSION_BUILD 0
+#define EXBAR_VERSION_STR "0.0.0"
+#define EXBAR_FILE_VERSION_STR "0.0.0.0"
+#endif
+
 1 ICON "resources/app.ico"
+
+// windres 15.2 会把 `VS_VERSION_INFO VERSIONINFO` 编成 RT_VERSION 下的**命名资源**
+// "VS_VERSION_INFO"，而 Windows 的版本 API 只查数字 ID 1 —— 结果资源在 exe 里，
+// 但资源管理器/PowerShell 读不到。这里显式写 `1 VERSIONINFO`。
+1 VERSIONINFO
+ FILEVERSION EXBAR_VERSION_MAJOR,EXBAR_VERSION_MINOR,EXBAR_VERSION_PATCH,EXBAR_VERSION_BUILD
+ PRODUCTVERSION EXBAR_VERSION_MAJOR,EXBAR_VERSION_MINOR,EXBAR_VERSION_PATCH,EXBAR_VERSION_BUILD
+ FILEFLAGSMASK 0x3fL
+#ifdef EXBAR_VERSION_DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ // windres 15.2 的 rc 语法不认 VOS_*/VFT_* 符号常量，这里写数值：
+ // 0x00040004 = VOS_NT_WINDOWS32；0x1 = VFT_APP；0x0 = VFT2_UNKNOWN。
+ FILEOS 0x00040004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+ BLOCK "StringFileInfo"
+ BEGIN
+  BLOCK "080404B0"
+  BEGIN
+   VALUE "CompanyName", "ExBarBrowser"
+   VALUE "FileDescription", "ExBarBrowser - Windows file browser"
+   VALUE "FileVersion", EXBAR_FILE_VERSION_STR
+   VALUE "InternalName", "ExBarBrowser"
+   VALUE "LegalCopyright", "ExBarBrowser contributors"
+   VALUE "OriginalFilename", "ExBarBrowser.exe"
+   VALUE "ProductName", "ExBarBrowser"
+   VALUE "ProductVersion", EXBAR_VERSION_STR
+  END
+ END
+ BLOCK "VarFileInfo"
+ BEGIN
+  VALUE "Translation", 0x0804, 0x04B0
+ END
+END

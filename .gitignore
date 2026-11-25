@@ -5,11 +5,16 @@
 # 构建产物
 *.exe
 *.dll
+# 例外：AI 面板运行时加载的官方 WebView2 加载器，发布包必须自带。
+# 只放行仓库根这一份，其余 *.dll 仍一律忽略。
+!/WebView2Loader.dll
 *.obj
 *.o
 *.map
 *.pdb
 *.ilk
+# scripts/package_release.py 的发布暂存目录与压缩包
+dist/
 
 # 运行期 / 开发期产物
 *.log

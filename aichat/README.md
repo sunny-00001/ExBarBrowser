@@ -20,6 +20,10 @@ aichat/
 └── logs/                   运行日志
 ```
 
+`config.json` 与 `model.json` 是**用户私有文件**（后者含明文 API key），仓库和发布包都不带。
+发布包里放的是 `config.example.json` / `model.example.json`：首次用 AI 面板时复制成正式文件，
+在 `model.json` 里填自己的 `baseUrl` / `apiKey` / 模型 id。填好密钥的文件不要外发。
+
 ## 启动链路
 
 ```

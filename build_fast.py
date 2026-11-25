@@ -57,6 +57,8 @@ SIG = OBJ / ".build_sig"
 RES_RC = RES / "app.rc"
 RES_ICO = RES / "app.ico"
 RES_OBJ = OBJ / "app.res.obj"
+VERSION_FILE = ROOT / "VERSION"   # exe 版本资源与发布包的唯一版本号来源
+VERSION_H = OBJ / "version.h"     # 由 VERSION 生成，构建时经 -I 传给 windres
 
 # ---------------------------------------------------------------------------
 # 源文件清单：自动扫描 src/*.cpp，只需维护排除表
@@ -295,8 +297,50 @@ def obj_path_for(src_rel):
 # ---------------------------------------------------------------------------
 # 图标资源（windres: .rc + .ico -> COFF 对象）
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 版本号：仓库根 VERSION 是单一真相源
+# ---------------------------------------------------------------------------
+def read_version():
+    """返回 (版本字符串, major, minor, patch)；非法版本号直接中止构建。
+
+    语义化版本 x.y.z（允许 -pre/+build 后缀，但 VERSIONINFO 的四个数字段
+    只取 x.y.z，第四段固定 0，与 Windows 资源管理器显示习惯一致）。
+    """
+    raw = VERSION_FILE.read_text(encoding="utf-8").strip()
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?", raw)
+    if not m:
+        raise RuntimeError(f"VERSION 格式非法（应为 x.y.z）：{raw!r} @ {VERSION_FILE}")
+    major, minor, patch = (int(x) for x in m.groups())
+    if max(major, minor, patch) > 65535:
+        raise RuntimeError(f"VERSION 数值超出 VERSIONINFO 的 16 位字段：{raw!r}")
+    return raw, major, minor, patch
+
+
+def write_version_header():
+    """从 VERSION 生成 obj/version.h；内容不变时不写，避免无谓触发资源重编。
+
+    用头文件而不是 -D 传字符串宏：windres 会二次拼装 cpp 命令行，-D 里的引号
+    在 Windows 上容易被吃掉/转义成 \\"，生成 rc 语法错误。头文件经 -I 引用没有这个问题。
+    """
+    version, major, minor, patch = read_version()
+    text = "\n".join([
+        "// 由 build_fast.py 从 VERSION 自动生成，请勿手改。",
+        f"#define EXBAR_VERSION_MAJOR {major}",
+        f"#define EXBAR_VERSION_MINOR {minor}",
+        f"#define EXBAR_VERSION_PATCH {patch}",
+        "#define EXBAR_VERSION_BUILD 0",
+        f'#define EXBAR_VERSION_STR "{version}"',
+        f'#define EXBAR_FILE_VERSION_STR "{version}.0"',
+    ]) + "\n"
+    VERSION_H.parent.mkdir(parents=True, exist_ok=True)
+    if VERSION_H.exists() and VERSION_H.read_text(encoding="utf-8") == text:
+        return version
+    VERSION_H.write_text(text, encoding="utf-8")
+    return version
+
+
 def resource_needed(cur_sig):
-    """ico/rc 变动、签名变动或资源对象缺失时重编资源。"""
+    """ico/rc/VERSION 变动、签名变动或资源对象缺失时重编资源。"""
     if not WINDRES.exists():
         return False, ""  # 没 windres 就跳过，由调用方提示
     if not RES_OBJ.exists():
@@ -304,7 +348,7 @@ def resource_needed(cur_sig):
     if not SIG.exists() or SIG.read_text(encoding="utf-8").strip() != cur_sig:
         return True, "编译配置变化"
     obj_mt = RES_OBJ.stat().st_mtime_ns
-    for src in (RES_RC, RES_ICO):
+    for src in (RES_RC, RES_ICO, VERSION_FILE, VERSION_H):
         if not src.exists():
             return True, "资源文件缺失: " + src.name
         if src.stat().st_mtime_ns > obj_mt:
@@ -317,8 +361,13 @@ def build_resource():
         raise RuntimeError("找不到 windres: " + str(WINDRES))
     if not RES_RC.exists():
         raise RuntimeError("找不到资源脚本: " + str(RES_RC))
+    if not VERSION_H.exists():
+        raise RuntimeError("找不到版本头（应先调用 write_version_header）: " + str(VERSION_H))
     RES_OBJ.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [str(WINDRES), "-O", "coff", "-i", str(RES_RC), "-o", str(RES_OBJ)]
+    # app.rc 通过 -I 找到 obj/version.h，版本号的唯一来源仍是仓库根 VERSION。
+    # 只在构建注入 EXBAR_HAS_GENERATED_VERSION，手工单编 app.rc 时走 rc 内兜底值。
+    cmd = [str(WINDRES), "-O", "coff", "-DEXBAR_HAS_GENERATED_VERSION=1",
+           "-I", str(OBJ), "-i", str(RES_RC), "-o", str(RES_OBJ)]
     t0 = time.time()
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     dt = time.time() - t0
@@ -489,14 +538,17 @@ def main():
 
     # 中间目录隔离：两个会话共用 obj/ 时会互相把对方的 .obj 判成"过期/被改"，
     # 更糟的是 PCH 被一方重建、另一方正拿旧 PCH 编译。给每个会话一套即可。
-    global OBJ, PCH, PCH_DEPS_SIG, SIG, RES_OBJ
+    global OBJ, PCH, PCH_DEPS_SIG, SIG, RES_OBJ, VERSION_H
     if args.objdir:
         OBJ = Path(args.objdir).resolve()
         PCH = OBJ / "common.h.gch"
         PCH_DEPS_SIG = OBJ / "common.h.gch.deps"
         SIG = OBJ / ".build_sig"
         RES_OBJ = OBJ / "app.res.obj"
+        VERSION_H = OBJ / "version.h"
 
+    # 生成版本头（VERSION -> obj/version.h），随后资源编译会把它打进 exe。
+    write_version_header()
     print(f"[清单] src/*.cpp 自动扫描：{len(SOURCES)} 个 TU（中间目录 {OBJ}）", flush=True)
 
     use_pch = not args.no_pch
@@ -533,11 +585,11 @@ def main():
     if WINDRES.exists():
         need_res, res_why = resource_needed(cur_sig)
         if need_res:
-            print(f"[资源] 编译图标资源 ({res_why}) ...", flush=True)
+            print(f"[资源] 编译图标 + 版本资源 ({res_why}) ...", flush=True)
             res_dt = build_resource()
-            print(f"[资源] 完成 {res_dt:.1f}s -> {RES_OBJ.name}", flush=True)
+            print(f"[资源] 完成 {res_dt:.1f}s -> {RES_OBJ.name}（版本 {read_version()[0]}）", flush=True)
         else:
-            print("[资源] 复用已有 app.res.obj", flush=True)
+            print("[资源] 复用已有 app.res.obj（图标 + 版本）", flush=True)
     else:
         print("[资源] 跳过（未找到 windres，exe 将使用系统默认图标）", flush=True)
 

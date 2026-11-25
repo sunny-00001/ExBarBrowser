@@ -1,0 +1,63 @@
+# ExBarBrowser 版本发布（tag 触发）
+#
+# 与 ci.yml 的分工：
+#   ci.yml       —— 每次 push/PR 的强门（静态检查 + 原生编译 + 单测）
+#   release.yml  —— 只在 tag vX.Y.Z 推送时打发布包并上传资产
+#
+# 版本号只允许一个真相源：仓库根 VERSION。tag 必须与 v$(cat VERSION) 一致，
+# 否则直接失败，避免"tag 是 v0.3.0、exe 里是 0.2.2"这种发布事故。
+# 发布资产由 scripts/package_release.py 生成，和本地手动打包完全一致。
+#
+# 本工程的编译需要 Windhawk clang + MinGW windres，托管 runner 没有，
+# 因此复用 ci.yml 的 self-hosted native-build runner；runner 不在线时
+# GitHub 会把它标为 pending，而不是伪造一个绿。
+
+name: release bundle
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: [self-hosted, windows, native-build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 校验 tag 与 VERSION 一致
+        shell: bash
+        run: |
+          want="v$(tr -d '\r\n' < VERSION)"
+          test "${GITHUB_REF_NAME}" = "$want" || {
+            echo "tag=${GITHUB_REF_NAME}  VERSION=${want}（不一致，拒绝发布）"
+            exit 2
+          }
+
+      - name: 发布构建（-O2 / strip / VERSIONINFO）
+        shell: bash
+        run: bash build.sh --release --clean
+
+      - name: 打包可移植发布包
+        shell: bash
+        run: python scripts/package_release.py
+
+      - name: 上传 Release 资产
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.sha256
+            dist/RELEASE-MANIFEST-*.json
+          generate_release_notes: true
+          fail_on_unmatched_files: true

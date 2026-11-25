@@ -9,11 +9,11 @@ ExBar mod 分片，可并存、可整体拷走、可单独卸载。
 |---|---|
 | 阶段 | **P3 主体完成 + P4 起步**：标签/导航/书签/状态栏 + 键盘/序列/鼠标 + 命令契约 + AI 接口 + 搜索/预览/会话/AI 面板已落地，日常浏览可用 |
 | 规模 | `src/` 约 6.10 万行（181 个 `.cpp` + 125 个 `.h`）；`tests/` 71 个单测、1217 项断言（2026-11-25 实测；仓库在活跃并行开发，**行数每几分钟就变**，要看当前值见下方口径命令） |
-| 产物 | 调试 exe 59.7 MB（含 `-g`）；`--release` 发布 exe **3.0 MB**（-O2 + `-s` strip，无调试符号），静态链接 libstdc++/libgcc。两个文件名并存、互不覆盖 |
+| 产物 | 调试 exe 59.7 MB（含 `-g`）；`--release` 发布 exe **3.0 MB**（-O2 + `-s` strip，无调试符号，内嵌 `VS_VERSION_INFO`），静态链接 libstdc++/libgcc。两个文件名并存、互不覆盖；正式分发用 `scripts/package_release.py` 打成的 zip（含 WebView2Loader.dll 与 aichat/） |
 | 命令 | `check_commands.py` 首行给出：命令表 219 条 / 已实现 211 / 处理器 211 / keymap 引用 237 条；`check_ai_meta.py` 给出对 AI 暴露 174 条。**这些数每加一条命令就变，本文不写死，以脚本输出为准** |
 | 配置 | 便携模式，全部在 `<exe>\data`：`settings.json` / `bookmarks.html` / `keymap.json` / `mouse.json` / `audit.log` |
 | 验证 | clang++ 20.1.3 零警告；调试全量约 20s（181 TU，自适应并行；带跨会话 obj 缓存），发布 `--release --clean` 首次全量约 21min（-O2、独立 obj 目录、无缓存命中）；冒烟为**人工操作 + 只读证据**（日志 / `exbar/state` / 截图），不注入键鼠（`docs/MIGRATION-PLAN.md` §8.2、规则 R21） |
-| 检查 | `check_ai_meta`（28 组，含 R20 人机等价）与 `check_commands`（三方对账，含 CmdId 顺序与 legacy 名基线）通过；`check_components` 因并行开发中 3 个超限文件 + 评估面未重签而报 2 类，见本文末尾说明。CI 强门见 `.github/workflows/ci.yml` |
+| 检查 | `check_ai_meta`（28 组，含 R20 人机等价）与 `check_commands`（三方对账，含 CmdId 顺序与 legacy 名基线）通过；`check_components` 因并行开发中 11 个超限文件记在欠账里（未再新增长度），评估面已随本轮发布改动重签。CI 强门见 `.github/workflows/ci.yml`、发布门见 `.github/workflows/release.yml` |
 | 版本控制 | **独立仓库**（`E:\ExBarBrowser`，分支 `main`）：源码/脚本/文档/生成头入库，构建与运行产物由 `.gitignore` 排除 |
 
 > 本文所有路径均相对仓库根。文档基线：**2026-11-25**（代码仍在快速演进，
@@ -169,9 +169,11 @@ bash build.sh          # 或 build.bat（cmd）
 - 产物：`ExBarBrowser.exe`。先链到 `ExBarBrowser.new.exe` 再原子替换；若 exe 正被占用，保留
   `.new.exe` 并提示，不破坏运行中的程序（关掉实例后重跑一次即可，只需 ~0.3s）。
   只验证能否编过用 `bash build.sh --out /tmp/x.exe`。
-- 应用图标：`resources/app.ico`（8 档 16–256px）经 `D:\MinGW\bin\windres.exe` 编成 `obj/app.res.obj`
-  并链进 exe。改图标只需 `python tools/gen_icon.py` 重生成 ico，下次构建自动检测资源变更重编；
-  未找到 windres 时跳过资源、exe 回退到系统默认图标。设计见 `resources/icon_preview.png`。
+- 应用图标与版本信息：`resources/app.ico`（8 档 16–256px）+ `resources/app.rc` 经
+  `D:\MinGW\bin\windres.exe` 编成 `obj/app.res.obj` 并链进 exe。版本号来自仓库根 `VERSION`
+  （当前 `0.3.0`），构建时生成 `obj/version.h` 注入 `VS_VERSION_INFO`；改版本只改 `VERSION`，
+  改 ico/rc/VERSION 都会自动触发资源重编。未找到 windres 时跳过资源、exe 回退到系统默认图标。
+  设计见 `resources/icon_preview.png`。
 - 清单（源文件/库）唯一真相源在 `build_fast.py` 顶部，新增文件只改这一处。详见 `docs/DEVELOPMENT.md`。
 
 **发布构建**（`--release`）：与调试构建并存，不覆盖 `ExBarBrowser.exe`：
@@ -187,6 +189,26 @@ bash build.sh --release --clean  # 首次全量（-O2，约 21 min）；之后�
   （各自独立 profile 时设 `EXBARBROWSER_MULTI`）。发布模式默认输出到
   `ExBarBrowser.release.exe`、中间目录 `obj_release/`；也可用 `--out` / `--objdir` 覆盖。
 - 配置签名含标志差异，调试与发布各自命中独立缓存；`--clean` 只清自己那套 obj。
+
+**发布包**：单独一个 exe 不是完整交付物 —— AI 面板运行时还要 `WebView2Loader.dll`
+（必须与 exe 同目录）和 `aichat/`（Node 服务 + Web UI）；`data/` 是首次启动自动生成的
+**用户私有数据**，不能带开发机的设置/书签/密钥。打包器把这些约束固化下来：
+
+```bash
+python scripts/package_release.py
+# -> dist/ExBarBrowser-v<version>-win-x64.zip
+#    dist/ExBarBrowser-v<version>-win-x64.zip.sha256
+#    dist/RELEASE-MANIFEST-v<version>.json
+```
+
+- 版本号来自仓库根 `VERSION`，同时供 exe 版本资源、manifest、zip 文件名与 GitHub tag
+  使用；tag 必须是 `v$(cat VERSION)`。打包器会扫描 JSON 里的 `apiKey`，发现非占位符立即失败。
+- 包内 `aichat/service/{config,model}.example.json` 是**脱敏模板**：首次用 AI 面板时复制成
+  `config.json` / `model.json` 并填自己的密钥；填好的文件是私密数据，不要外发。
+- 系统前置条件只有两个，且**只在打开 AI 面板时需要**：WebView2 Runtime（Evergreen）、
+  Node.js >= 18（PATH 或 `EXBAR_NODE`）。没有它们，主浏览器照常可用。
+- 打 tag 推送会触发 `.github/workflows/release.yml`：复用同一套发布构建 + 打包脚本，
+  把 zip、sha256 与 manifest 上传到对应 Release。
 
 ### 3.2 运行
 
@@ -574,6 +596,6 @@ ExBarBrowser/                       独立 git 仓库（main）
 |---|---|---|
 | `python tools/check_commands.py` | 通过 | 命令表 219 / 已实现 211 / 处理器 211 / keymap 引用 237，三方对账一致 |
 | `python tools/check_ai_meta.py` | 通过 | 28 组断言全过；AI 暴露 174 条（105 带自断言、69 显式豁免） |
-| `python tools/check_components.py` | 2 类待办 | ① 单文件 ≤500 行：并行开发新增 3 个超限文件（`aichat_panel.cpp` / `aichat_webview.cpp` / `nav_pane.cpp` 等，记在欠账里）；② 评估面基线：多个工具/测试文件改动后未重签。二者均为"待人工确认 + 重签"，非功能回退；确认有意后按脚本提示 `python tools/gen_eval_baseline.py --human-confirm` 重签、超限文件按职责拆分 |
+| `python tools/check_components.py` | 1 类待办 | 单文件 ≤500 行：并行开发累计 11 个超限文件（含 `aichat_panel.cpp` / `aichat_webview.cpp` / `nav_pane.cpp`，均按记账行数棘轮看住，未新增）。评估面基线已随本轮发布改动重签并通过 `--check`；超限文件按职责拆分属后续欠账 |
 
 > 数字均为快照，最终以命令输出为准。仓库处于多会话并行开发，检查状态会随提交波动。

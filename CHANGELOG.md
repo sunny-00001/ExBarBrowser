@@ -1,5 +1,31 @@
 ## [Unreleased]
 
+### 发布流程：完整便携包 + exe 内嵌版本号
+
+原先 GitHub Release 只挂一个 `ExBarBrowser.release.exe`。它能跑主浏览器，但 AI 面板
+还缺 `WebView2Loader.dll` 与 `aichat/`；而 `data/` 里有开发机的真实设置、书签与 API key，
+又绝不能整目录发出去。这一轮把"怎么发"变成可重复的脚本：
+
+- 新增 `VERSION`（当前 `0.3.0`）作为**唯一版本号真相源**。构建器生成 `obj/version.h`，
+  经 `windres` 注入 `resources/app.rc` 的 `VS_VERSION_INFO`；资源管理器 / PowerShell 里
+  能看到 FileVersion、ProductVersion、ProductName。zip 名、manifest 与 Release tag 也读同一处。
+  踩过的坑：这套 `windres` 会把 `VS_VERSION_INFO VERSIONINFO` 编成 RT_VERSION 下的
+  **命名资源**而非数字 ID 1，Windows 版本 API 读不到；资源脚本已显式写成 `1 VERSIONINFO`。
+- 新增 `scripts/package_release.py`：产出 `dist/ExBarBrowser-v<ver>-win-x64.zip`、
+  `.sha256` 与 `RELEASE-MANIFEST-v<ver>.json`。包内是 `ExBarBrowser.exe` +
+  `WebView2Loader.dll` + `aichat/`（服务代码与 Web UI，排除测试/日志/备份）+
+  脱敏配置模板 + `data/README.md` + `START-HERE.txt` + manifest。
+- `aichat/service/model.example.json` 用 `YOUR_API_KEY_HERE` 占位；打包器会扫描所有
+  JSON 的 `apiKey`，出现非占位符直接失败，避免把真实密钥带进包里。
+- `.gitignore` 只放行仓库根的官方 `WebView2Loader.dll`，`dist/` 整体忽略；
+  新增 `.github/workflows/release.yml`：tag `vX.Y.Z` 与 `VERSION` 不一致就拒绝发布，
+  一致则复用发布构建 + 打包脚本并上传三个资产。
+- README 的构建/发布段落同步：明确 WebView2 Runtime 与 Node.js >= 18 只在 AI 面板时需要。
+
+**验证**：`python -m py_compile build_fast.py scripts/package_release.py` 通过；
+`python scripts/package_release.py --help` 正常；发布 exe 的 `VersionInfo` 与 `VERSION` 一致；
+发布包 zip 可从干净暂存目录解压启动。评估面清单因 `build_fast.py` 变更重新签发。
+
 ### 设置对话框：每个栏一个导航项，分组重梳
 
 设置面板的左栏是"分类"、中栏是"这一类的设置项"、右栏是"这一项的说明"。
