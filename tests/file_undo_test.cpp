@@ -281,6 +281,99 @@ int main() {
         Check(!s.CanRedo(), "成功后 redo 栈空");
     }
 
+    std::printf("\n步号口径（ByStepIndex）\n");
+    {
+        // 【为什么单测这个】对外的 index 是"从栈顶往回数"（0 = 下一步要撤的），
+        // 而栈内部是正序（槽位 0 = 最早）。两个口径相反，混用会撤错步 ——
+        // 而且命令照样返回成功，错得悄无声息。
+        // 这里把映射钉死：index 0 必须是**最后 push** 的那条。
+        fileundo::Stack s;
+        s.Push(MakeEntry(fileundo::Op::Rename, false, L"C:////a.txt", L"C:////b.txt"));
+        s.Push(MakeEntry(fileundo::Op::Move, false, L"C:////c.txt", L"D:////c.txt"));
+        s.Push(MakeEntry(fileundo::Op::Copy, false, L"C:////e.txt", L"D:////e.txt"));
+        const fileundo::Entry* top = s.ByStepIndex(0);
+        Check(top != nullptr && top->op == fileundo::Op::Copy, "index 0 = 栈顶（最后 push 的那条）");
+        const fileundo::Entry* mid = s.ByStepIndex(1);
+        Check(mid != nullptr && mid->op == fileundo::Op::Move, "index 1 = 往回数第二条");
+        const fileundo::Entry* old = s.ByStepIndex(2);
+        Check(old != nullptr && old->op == fileundo::Op::Rename, "index 2 = 最早那一条");
+        Check(s.ByStepIndex(3) == nullptr, "越界返回空（不是崩溃、也不是随便给一条）");
+        Check(s.Size() == 3, "取记录不动栈");
+        // redo 栈同口径：index 0 = 下一步要重做的那条。
+        std::wstring why;
+        size_t undone = 0;
+        s.UndoTo(2, false, [](fileundo::Entry& e, std::wstring*) { e.items.clear(); return true; },
+                 &why, &undone);
+        const fileundo::Entry* r0 = s.RedoByStepIndex(0);
+        Check(r0 != nullptr && r0->op == fileundo::Op::Rename, "redo index 0 = 第一个被撤的（最早那步）");
+        Check(s.RedoByStepIndex(3) == nullptr, "redo 越界返回空");
+    }
+
+    std::printf("\n撤到指定步（UndoTo）\n");
+    {
+        fileundo::Stack s;
+        s.Push(MakeEntry(fileundo::Op::Rename, false, L"C:////a.txt", L"C:////b.txt"));
+        s.Push(MakeEntry(fileundo::Op::Rename, false, L"C:////c.txt", L"C:////d.txt"));
+        s.Push(MakeEntry(fileundo::Op::Rename, false, L"C:////e.txt", L"C:////f.txt"));
+        std::wstring why;
+        size_t undone = 99;
+        // index=1 = 撤到"栈顶往下第 2 条" = 连撤 2 次。
+        const size_t got = s.UndoTo(1, false, [](fileundo::Entry& e, std::wstring*) {
+            e.items.clear(); return true;
+        }, &why, &undone);
+        Check(got == 2 && undone == 2, "撤到第 1 步 = 撤掉 2 条");
+        Check(s.Size() == 1, "栈里还剩 1 条");
+        Check(s.RedoSize() == 2, "两步都进了 redo 栈");
+    }
+    {
+        // 撤到越界：不许动栈，且要说清原因。
+        fileundo::Stack s;
+        s.Push(MakeEntry(fileundo::Op::Rename, false, L"C:////a.txt", L"C:////b.txt"));
+        std::wstring why;
+        size_t undone = 99;
+        const size_t got = s.UndoTo(5, false, [](fileundo::Entry&, std::wstring*) { return true; },
+                                    &why, &undone);
+        Check(got == 0 && undone == 0, "越界一步都没撤");
+        Check(s.Size() == 1, "越界不动栈");
+        Check(!why.empty(), "越界给出人可读的原因");
+    }
+    {
+        // 中途失败：已撤掉的**不回栈**，失败那步留在栈顶，还能再试。
+        fileundo::Stack s;
+        s.Push(MakeEntry(fileundo::Op::Rename, false, L"C:////a.txt", L"C:////b.txt"));
+        s.Push(MakeEntry(fileundo::Op::Rename, false, L"C:////c.txt", L"C:////d.txt"));
+        s.Push(MakeEntry(fileundo::Op::Rename, false, L"C:////e.txt", L"C:////f.txt"));
+        std::wstring why;
+        size_t undone = 99;
+        int calls = 0;
+        const size_t got = s.UndoTo(2, false, [&](fileundo::Entry& e, std::wstring* w) {
+            ++calls;
+            if (calls == 2) {           // 第二步失败
+                if (w) *w = L"目标被占用";
+                return false;
+            }
+            e.items.clear(); return true;
+        }, &why, &undone);
+        Check(got == 1 && undone == 1, "中途失败：如实报撤了 1 步");
+        Check(!why.empty(), "中途失败给出原因");
+        Check(s.Size() == 2, "已撤掉的那 1 条不回栈（栈剩 2 条）");
+        Check(s.CanUndo(), "失败那步还在栈里（能再试）");
+    }
+    {
+        // 机器撤到指定步：栈顶是人工操作时**整趟拒绝**（不穿透）。
+        fileundo::Stack s;
+        s.Push(MakeEntry(fileundo::Op::Rename, /*byMachine=*/false, L"C:////a.txt", L"C:////b.txt"));
+        s.Push(MakeEntry(fileundo::Op::Rename, /*byMachine=*/false, L"C:////c.txt", L"C:////d.txt"));
+        std::wstring why;
+        size_t undone = 99;
+        int applied = 0;
+        const size_t got = s.UndoTo(1, /*machineCaller=*/true, [&](fileundo::Entry&, std::wstring*) {
+            ++applied; return true;
+        }, &why, &undone);
+        Check(got == 0 && applied == 0, "机器撤人工操作被拒绝");
+        Check(s.Size() == 2, "被拒绝时栈没动");
+    }
+
     std::printf("\n%s（失败 %d 项）\n", g_fail == 0 ? "全部通过" : "有失败", g_fail);
     return g_fail == 0 ? 0 : 1;
 }

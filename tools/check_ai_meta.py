@@ -1926,6 +1926,9 @@ def main():
         # 设置面板的两处弹层：枚举档位下拉（options 来自键表，文案是变量）与
         # 行高档位。都是"改一个值"的菜单，与 config.set 同一族。
         'settings_dialog_actions.cpp': '设置',
+        # 撤销历史弹层（状态栏 chip 弹出的「撤销 N 步 / 重做」菜单）：
+        # 菜单项走 file.undo.to / cmd.redo，编号与 file.undo.to 同一口径。
+        'app_undo_history.cpp': '撤销历史',
     }
     # 判据是"**真的在这里构建菜单**"，不是"文件里出现过 ui::Menu 这个词"：
     # app_state.cpp 只是调 ui::Menu::SetShortcutResolver（把快捷键文案接给组件），
@@ -2095,6 +2098,81 @@ def main():
                  f'校验会直接拒收该参数，人侧却传得进去，形成人机不对称')
     else:
         print(f'  ok     {checked_args} 处参数读取全部在对应 argsSchema 里有声明')
+
+
+    # 16f. 有对应命令的界面回调必须真的到达那条命令。
+    #
+    # 【为什么单独一项】16d 只覆盖"菜单里挂了 .Cmd(CmdId) 的那一批"。
+    # 还有一类不在 16d 视野里：界面回调（Set*Fn）自己转投命令。
+    # 它们历史上也出过同样的假覆盖 —— 回调里直调 App 方法，
+    # 旁边挂着的命令根本没人调。
+    #
+    # 【为什么用登记表而不是"扫全部回调"】界面回调里有一大半是**管道/事件**：
+    # 焦点搬移（SetRefocusFn）、WebView2 就绪/出错（SetReadyCallback）、
+    # 数据供给（SetRecentFn / SetViewStateFn）、作业进度钩子……
+    # 它们不是用户动作，没有对应命令，硬要求"必须走总线"只会噪声淹没。
+    # 所以这里登记的是**有命令对应的那些**：逐条校验它的实现体里
+    # 确实出现了那条命令（直接 Invoke，或经一层 helper 转投）。
+    #
+    # 每项 = (区域名, 实现锚点, 必须出现的字面量列表)。
+    # 字面量可以是命令名（CmdId::X）或中间助手名 —— 两级连线都要能查出来：
+    # "回调调了助手" 与 "助手调了命令" 分开登记，改坏任一环都抓得到。
+    # 【为什么要分两跳登记，而不是要求回调体里直接出现 CmdId】
+    # 回调体里直接写 Invoke 会把实现撑大（app.cpp 曾为此超出行数棘轮 21 行），
+    # 而"回调 → helper → 命令"同样是到达命令，且 helper 有独立文件可读。
+    # 判据因此拆成两跳：改坏回调（不再调 helper）或改坏 helper（不再调命令），
+    # 两处都会红 —— 与"分栏拖动落盘"那条四跳链同一套办法。
+    # 锚点用函数名/注册片段，跨文件定位 —— 锚死文件名会在下一次拆分时整条失灵。
+    UI_CALLBACK_DISPATCH = {
+        '地址栏搜索提交': ('navBar_.SetSearchFn', ['RunSearchViaCommand']),
+        '搜索提交转投命令': ('void App::RunSearchViaCommand', ['CmdId::OpSearch']),
+        # 历史跳转是 SetHistoryFn 的**第二个** lambda（第一个是取列表的），
+        # 所以锚点要把第一个 lambda 整段带上，否则抓到的会是取列表那个体。
+        '地址框/后退下拉跳历史': ('navBar_.SetHistoryFn([this](bool back) { return HistoryList(back); },',
+                                 ['JumpHistoryViaCommand']),
+        '历史跳转转投命令': ('void App::JumpHistoryViaCommand', ['CmdId::NavHistoryJump']),
+        'AI 面板标题栏窗口动作': ('aiPanel_.SetWindowActionCallback', ['DispatchAiPanelWindowAction']),
+        'AI 面板窗口动作转投命令': ('void App::DispatchAiPanelWindowAction',
+                                 ['CmdId::AiPanelToggle', 'CmdId::WinMinimize', 'CmdId::WinMaximize',
+                                  'CmdId::WinRestore', 'CmdId::WinTopmost']),
+        'AI peek 打开完整面板': ('aiPeek_.SetOpenFn', ['CmdId::AiPanelToggle']),
+        '状态栏段点击': ('statusBar_.SetClickFn',
+                        ['CmdId::CmdSelectAll', 'CmdId::ViewSort', 'CmdId::PathCopyDir',
+                         'CmdId::CmdProps', 'CmdId::GoThisPC', 'CmdId::CycleHiddenSeg']),
+        # 拖动落盘：回调 → 拖动处理 → 提交助手 → config.set，逐跳登记。
+        # 每一跳单独一条，改坏任一环都抓得到（实测：把 CommitSetting 里的
+        # Invoke 换回直调 Config::Save() 时，最后一跳会红）。
+        '分栏比例拖动': ('panesBar_.SetDragFn', ['OnSplitterDragged']),
+        '导航栏宽度拖动': ('navEdge_.SetDragFn', ['OnNavEdgeDragged']),
+        'AI 面板宽度拖动': ('aiEdge_.SetDragFn', ['OnAiEdgeDragged']),
+        '分栏拖动落盘': ('void App::OnSplitterDragged', ['CommitSetting']),
+        '导航栏拖动落盘': ('void App::OnNavEdgeDragged', ['CommitSetting']),
+        'AI 栏拖动落盘': ('void App::OnAiEdgeDragged', ['CommitSetting']),
+        '拖动落盘提交': ('bool CommitSetting', ['CmdId::ConfigSet']),
+    }
+    print('\n16f. 界面回调必须转投到对应的命令')
+    cb_broken = []
+    cb_missing = []
+    cb_checked = 0
+    for area, (anchor, tokens) in UI_CALLBACK_DISPATCH.items():
+        body = _src_func_body(anchor) or _anchor_body(anchor)
+        if not body:
+            cb_missing.append((area, anchor))
+            continue
+        for tok in tokens:
+            cb_checked += 1
+            if tok not in body:
+                cb_broken.append((area, tok))
+    if cb_missing:
+        for area, anchor in cb_missing:
+            fail(f'{area} 的实现锚 {anchor} 取不到函数体 —— 锚已失效（改名/搬文件），'
+                 '本项结论不可信')
+    if cb_broken:
+        for area, tok in cb_broken:
+            fail(f'{area} 的实现体里没有「{tok}」 —— 界面回调绕过了命令总线：'
+                 '这一路没有审计、没有事件、不过破坏性确认门')
+    if not cb_missing and not cb_broken:
+        print(f'  ok     {cb_checked} 处界面回调全部转投到对应命令')
 
 
     # ---------------------------------------------------------------- 17

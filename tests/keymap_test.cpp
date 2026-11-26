@@ -61,7 +61,7 @@
 // 的方式接管。key 字段写 Backspace（非空串 = 真的占这个键），
 // 与 hotkeyCmdRedo 那种"key 留空、走 kSysKeys 兜底"是两种形态。
 // 保持这里的数字与 data/keymap.json 同步；src/keymap.gen.h 是所有人的兜底表。
-constexpr size_t kExpectedHotkeys = 107;
+constexpr size_t kExpectedHotkeys = 110;
 // 207 序列（38 默认 + 169 命令覆盖，见 data/keymap.json）：
 // 前缀按命令组分配（b=书签 c=配置 d=开发 e=外部 f=文件 g=前往 n=导航 p=路径
 // q=搜索 s=会话 t=标签 v=视图 w=窗口 x=关闭族 y=复制族 z=工具）。
