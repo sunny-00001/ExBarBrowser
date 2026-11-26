@@ -9,10 +9,6 @@
 
 #include "icon_resolve.h"
 
-namespace {
-
-}  // namespace
-
 void TabStrip::Create(HWND parent, const Theme& theme) {
     win::RegisterClassOnce(kTabStripClass, TabStrip::WndProc, CS_DBLCLKS);
     parent_ = parent;
@@ -42,6 +38,9 @@ HICON TabStrip::TabIcon(const std::wstring& path) {
     // 统一图标识别：此电脑/回收站/侧边栏/云存储等命名空间取准确图标。
     HICON icon = ico::Resolve(path, true);
     iconCache_.emplace(path, icon);
+    // 新装填了条目：通知缓存涨了（SetTabs 用它决定要不要顺手清理，
+    // 避免没涨也白扫一遍缓存 —— 长会话里 PruneIcons 每次全量 O(n·m)）。
+    iconCacheGrew_ = true;
     return icon;
 }
 
@@ -63,8 +62,12 @@ void TabStrip::PruneIcons(const std::vector<core::TabRef>& refs) {
 void TabStrip::SetTabs(const std::vector<core::TabRef>& refs, int active, bool canReopen,
                        const std::vector<std::wstring>& closed) {
     // 上限 256：HICON 是真实分配（非 stock 共享），长会话浏览上百目录会一直涨。
-    // 到顶才清，清的是本次不再展示的 path，热路径上图标仍复用。
-    if (iconCache_.size() >= 256) PruneIcons(refs);
+    // 只有缓存确实新装填过才值得清一次（grew 标志由 TabIcon 置位）；
+    // 清的是本次不再展示的 path，热路径上图标仍复用。
+    if (iconCacheGrew_ && iconCache_.size() >= 256) {
+        PruneIcons(refs);
+        iconCacheGrew_ = false;
+    }
     items_.clear();
     items_.reserve(refs.size());
     // 路径集先摊平一次：重复判定是 O(n²) 的两两比较，但 n 是标签数（几十），
@@ -94,10 +97,25 @@ void TabStrip::SetTabs(const std::vector<core::TabRef>& refs, int active, bool c
     closed_ = closed;
     // rapidClose 状态由 NotifyClose 设置、鼠标离开时取消，跨 SetTabs 保留 ——
     // 这正是"关闭后鼠标不动、连续点下一个关闭钮"能成立的前提。
-    if (hoverIndex_ >= static_cast<int>(items_.size())) hoverIndex_ = -1;
     // 不重置 scrollX_：切标签/新建标签时保持横向位置，避免溢出条每次跳回最左
     Layout();
     EnsureVisible(active_);
+    // hover 重建必须在 Layout() **之后**：UpdateHover 的命中测试读 tabRects_，
+    // 先重建等于拿旧矩形命中。也不按下标夹取 —— 布局重算后矩形全体位移，
+    // 旧 hoverIndex_ 指的可能是另一个标签；按当前光标重新命中才是对的
+    // （快速关闭能连续点，正是靠"重排后关闭钮仍在光标下"，hover 必须跟布局走）。
+    if (hwnd_) {
+        POINT cur{};
+        if (GetCursorPos(&cur)) {
+            ScreenToClient(hwnd_, &cur);
+            UpdateHover(hwnd_, cur.x, cur.y);
+        } else {
+            hoverKind_ = kNone;
+            hoverIndex_ = -1;
+        }
+    } else {
+        hoverIndex_ = -1;
+    }
     // 标签集变了才需要全量重建 tooltip（文本/数量都会变）。
     RebuildTooltip(hwnd_);
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);

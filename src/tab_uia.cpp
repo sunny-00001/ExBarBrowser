@@ -161,7 +161,12 @@ public:
         case UIA_IsContentElementPropertyId:
         case UIA_IsEnabledPropertyId:
         case UIA_IsKeyboardFocusablePropertyId: SetBool(pRetVal, TRUE); break;
-        case UIA_HasKeyboardFocusPropertyId: SetBool(pRetVal, info.selected); break;
+        // HasKeyboardFocus 是"键盘焦点在这个元素上"，不是"这是活动标签"。
+        // 活动标签在标签栏失去焦点时仍 selected，但焦点已在别处 ——
+        // 把 selected 当焦点报会让读屏软件把无焦点的项读成"当前焦点"。
+        case UIA_HasKeyboardFocusPropertyId:
+            SetBool(pRetVal, info.selected && GetFocus() == hwnd_);
+            break;
         default: VariantInit(pRetVal); break;   // 不支持 → VT_EMPTY
         }
         return S_OK;
@@ -395,10 +400,16 @@ private:
     uia::Traits traits_;   // 根名（"标签栏"/"书签栏"）来自这里
 };
 
+// Root()：查根 provider 并**带着引用返回**（锁内 AddRef，调用方用完要 Release）。
+// 原实现锁内只取裸指针、调用方锁外 AddRef —— 两步之间根窗口销毁、provider
+// 引用归零被 delete，AddRef 写的是已释放内存（UAF）。AddRef 必须在锁内完成，
+// 让"找到"与"留住"原子化。
 TabRootProvider* TabItemProvider::Root() {
     std::lock_guard<std::mutex> lock(g_mtx);
     auto it = g_roots.find(hwnd_);
-    return it == g_roots.end() ? nullptr : it->second;
+    if (it == g_roots.end()) return nullptr;
+    it->second->AddRef();
+    return it->second;
 }
 
 // 以下三个方法的实现放在 TabRootProvider 完整定义之后：
@@ -407,10 +418,10 @@ HRESULT TabItemProvider::Navigate(NavigateDirection dir, IRawElementProviderFrag
     if (!pRetVal) return E_INVALIDARG;
     *pRetVal = nullptr;
     if (dir == NavigateDirection_Parent) {
+        // Root() 已带引用返回，这里 AddRef 会凭空多出一层导致内存泄漏。
         TabRootProvider* root = Root();
         if (root) {
             *pRetVal = static_cast<IRawElementProviderFragment*>(root);
-            root->AddRef();
         }
         return S_OK;
     }
@@ -424,15 +435,14 @@ HRESULT TabItemProvider::Navigate(NavigateDirection dir, IRawElementProviderFrag
 
 HRESULT TabItemProvider::get_FragmentRoot(IRawElementProviderFragmentRoot** pRetVal) {
     if (!pRetVal) return E_INVALIDARG;
+    // Root() 带引用返回，转入接口指针不再额外 AddRef。
     *pRetVal = static_cast<IRawElementProviderFragmentRoot*>(Root());
-    if (*pRetVal) (*pRetVal)->AddRef();
     return S_OK;
 }
 
 HRESULT TabItemProvider::get_SelectionContainer(IRawElementProviderSimple** pRetVal) {
     if (!pRetVal) return E_INVALIDARG;
     *pRetVal = static_cast<IRawElementProviderSimple*>(Root());
-    if (*pRetVal) (*pRetVal)->AddRef();
     return S_OK;
 }
 
@@ -457,8 +467,11 @@ LRESULT HandleGetObject(const Traits& traits, HWND hwnd, WPARAM w, LPARAM l) {
         } else {
             root = it->second;
         }
+        root->AddRef();   // 锁内留住：与 Release(hwnd) 的竞态从这里开始被引用计数挡住
     }
-    return UiaReturnRawElementProvider(hwnd, w, l, root);
+    const LRESULT lr = UiaReturnRawElementProvider(hwnd, w, l, root);
+    root->Release();      // 归还借出引用；UIA 那份由它自己持有
+    return lr;
 }
 
 void Release(HWND hwnd) {

@@ -1,5 +1,34 @@
 ## [Unreleased]
 
+### 修复：标签栏复审报告 S1/S2/M2/M3 + 卫生项二次应用（2026-11-27）
+
+按 docs/REVIEW-TABBAR-RECHECK-2026-11-26.md 的优先级梯队重放（首轮修复于
+11-26 晚完成但未提交，被并行会话的大提交覆盖丢失；详见该报告 §6）。
+
+- **S1（崩溃级）**：`tab_strip_input.cpp` kMsgItem 只查 `items_.size()` 就取
+  `tabRects_[i]` —— 两个容器规模不同步时（读屏软件查询 vs 标签集合刚变、
+  重排未完成）越界读。补第二道边界检查。
+- **S2（UAF）**：`tab_uia.cpp` `Root()` 锁内取裸指针、调用方锁外 AddRef，
+  两步之间根 provider 可能已释放。改为锁内 AddRef 带引用返回；三个调用方
+  （Navigate/get_FragmentRoot/get_SelectionContainer）去掉锁外二次 AddRef；
+  HandleGetObject 锁内 AddRef、`UiaReturnRawElementProvider` 后归还借出引用。
+- **M2**：Layout 的 scrollX_ 夹取移到排矩形**之前**（原来先按越界偏移排完再夹，
+  矩形与状态脱节，关掉溢出区右侧标签后整排悬空、关闭钮命中错位）；取宽口径
+  收进唯一 `widthAt` lambda；`contentEnd` 从宽度表直接算，不再反推。
+- **M3**：SetTabs 的 hover 重建改在 Layout() 之后按 GetCursorPos 重新命中
+  （原按下标夹取：重排后矩形全体位移，旧下标指向另一个标签，快速关闭的
+  连续点击会被错误 hover 破坏）。
+- **L1**：EnsureVisible 左滚留出 margin（激活标签不再与栏缘粘连）。
+- **L3**：图标缓存加 `iconCacheGrew_` 标志，缓存没涨不做全量 PruneIcons。
+- **L4/L5/L6/L7**：删空匿名命名空间；删 `(void)0;`；HasKeyboardFocus 属性
+  改为"选中且窗口持有焦点"（原把"活动标签"当"键盘焦点"报给读屏软件）；
+  完全滚出可视区的标签对 UIA 不可见（不列幽灵项）。
+- 同批入库（11-26 晚首轮存活项）：L9 ConfirmExit 搬家 `app_commands_window.cpp`
+  + 品牌串 `id::kBrand`；L2 颜色二级菜单锚定被右键标签坐标；M1 unpin 注释
+  改 Chrome 语义。
+
+验证：tab 域单测 2/2 PASS（隔离 objdir）；与并行会话动画批次（tab_strip_anim）
+无交集冲突。
 ### 结构化交互缺口收口（§2b A1–A4 + B3）
 
 独立复审（`docs/PRIORITY-STATUS.md` §2b）按优先级实施的修复：
@@ -4606,3 +4635,4 @@ Shell 视图 + 自绘 chrome"这条路线跑通，并留下可继续生长的分
 
 一个版本号对应一次**可回退的交付**，不对应一次提交。版本内允许多次提交，
 但 `[Unreleased]` 只能在版本发布时整段下移，不要边做边改已发布的段落。
+

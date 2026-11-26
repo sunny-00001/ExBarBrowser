@@ -84,3 +84,47 @@
 - 复核命令：`grep -n` 于 HEAD=`09e4a88` 磁盘内容（关键符号：`uia::kMsgItem`、`TabItemProvider::Root`、`scrollX_ > maxScroll_`、`hoverIndex_ >= static_cast<int>(items_.size())`、`Move(id, pinned`、`退出 ExBarBrowser`）。
 - 调研产物：两份全网调研报告（浏览器/文件管理器/终端交互对照 + Win32 自绘实现检查清单）已在会话中归档，精华收进本文 §3。
 - 本地验证：三道静态检查全绿（check_commands / check_ai_meta / check_components）；单测 73 个（events_test 首跑偶发失败已排除，见 §2.3）。
+
+## 6. 修复应用记录（2026-11-27 追记）
+
+### 6.1 首轮修复（11-26 晚）与覆盖事件
+
+首轮修复（S1/S2/M1/M2/M3/L1-L7/L9）于 11-26 晚完成并通过全量构建与 tab 域单测，
+**但当时未提交**。并行会话随后的大提交（4cc6dbb、2a484c5）覆盖了工作区中这些
+未提交的改动 —— 11-27 复查发现：
+
+- **丢失**（磁盘回到修复前）：S1、S2、M2、M3、L3、L4、L5、L6、L7。
+- **存活**（已随提交入库）：
+  - L9：ConfirmExit 搬家到 `src/app_commands_window.cpp` + 品牌串 `id::kBrand`（2a484c5）。
+  - L2：颜色二级菜单锚定被右键标签的 screen 坐标（tab_strip_actions.cpp，随 4cc6dbb 或 2a484c5 入库）。
+  - M1：tab_set.h unpin 注释改为 Chrome 语义（tab_set.h 11-26 23:21 版本，未提交但未被覆盖）。
+- 修改前快照完好保留在 `backup/tabbar-20261126/`（11 个文件）。
+
+### 6.2 二次恢复（11-27）
+
+逐项重放丢失的修复（对照备份确认基线一致后，按当前 HEAD 重写）：
+
+| 项 | 文件 | 内容 |
+|---|---|---|
+| S1 | tab_strip_input.cpp | kMsgItem 补 `tabRects_.size()` 边界检查（items_ 与 tabRects_ 独立容器） |
+| L7 | tab_strip_input.cpp | 溢出时 `r.right <= 0` 的标签对 UIA 返回 FALSE（不列幽灵项） |
+| L5 | tab_strip_input.cpp | 删 UpdateHover 尾部 `(void)0;` |
+| S2 | tab_uia.cpp | `Root()` 锁内 AddRef 带引用返回；Navigate/get_FragmentRoot/get_SelectionContainer 去掉锁外二次 AddRef；HandleGetObject 锁内 AddRef、`UiaReturnRawElementProvider` 后 Release 借出引用 |
+| L6 | tab_uia.cpp | `UIA_HasKeyboardFocusPropertyId` 改为 `info.selected && GetFocus() == hwnd_` |
+| M2 | tab_strip_layout.cpp | 取宽收进唯一 `widthAt` lambda（共用机制唯一实现）；`contentEnd = margin + contentW`；scrollX_ 夹取移到排矩形**之前** |
+| L1 | tab_strip_layout.cpp | EnsureVisible 左滚留 margin |
+| M3 | tab_strip.cpp | SetTabs 在 Layout() **之后**按 GetCursorPos 重新命中 hover（不按下标夹取） |
+| L3 | tab_strip.cpp + tab_strip.h | 图标缓存 `iconCacheGrew_` 标志：缓存新装填过且 ≥256 才 PruneIcons（没涨不白扫） |
+| L4 | tab_strip.cpp | 删空匿名命名空间 |
+
+与并行会话动画批次（tab_strip_anim.cpp / TabAnimDx / tearOff 字段）的交集核对：
+动画接线只读 `tabRects_` 最终位置，`clientH_` 字段仅声明未赋值（并行会话半成品，
+本次不动）；M2 重排了 Layout 内部顺序但产出契约（tabRects_/lastWidths_/maxScroll_）不变，
+不冲突。
+
+验证：`EXBAR_TEST_OUT` 隔离输出目录跑 `tests/run_all.sh tab` 2/2 PASS；
+全量单测与构建另行记录（见 CHANGELOG [Unreleased]）。
+
+> 教训（写给后续批次）：**修复完成后必须立即提交**，多会话并行时未提交的工作区
+> 改动随时会被对方会话的 `git checkout`/大提交吞掉。本文件的 §1 总表在二次恢复
+> 后不再反映当前状态 —— 当前状态以本节与 CHANGELOG 为准。

@@ -10,8 +10,10 @@
 void TabStrip::EnsureVisible(int index) {
     if (!overflow_ || index < 0 || index >= static_cast<int>(tabRects_.size())) return;
     const RECT& r = tabRects_[static_cast<size_t>(index)];
-    if (r.left < 0)
-        ScrollBy(r.left);
+    // 留出左边距：贴边显示的激活标签与栏缘粘连，观感差一档。
+    const int margin = theme_->S(6);
+    if (r.left < margin)
+        ScrollBy(r.left - margin);
     else if (r.right > tabViewRight_)
         ScrollBy(r.right - tabViewRight_);
 }
@@ -110,17 +112,35 @@ void TabStrip::Layout() {
     // 标签可视右缘：裁切线。溢出时 »/+ 在它右边，非溢出时等于栏右缘。
     tabViewRight_ = rc.right - margin - rightReserve;
 
+    // 每个标签**实际排布**的宽度：rapid 沿用冻结表；pinned 固定宽；
+    // 溢出统一压到 minW；均分用 avail/n；内容宽模式用量出的宽。
+    // 取宽口径只有这一处 —— 排矩形、算 contentEnd、存 lastWidths_ 三处共用，
+    // 分散着写迟早只改其中一处（M2 复审发现的根因之一）。
+    const auto widthAt = [&](int i) -> int {
+        if (rapid) return widths[static_cast<size_t>(i)];
+        if (items_[static_cast<size_t>(i)].pinned) return widths[static_cast<size_t>(i)];
+        if (overflow_ || total > avail) return width;
+        return widths[static_cast<size_t>(i)];
+    };
+
+    // 滚动上限与夹取必须在排矩形**之前**完成：以前是先按越界的 scrollX_ 排完
+    // 再夹，矩形按旧偏移排、状态按新偏移记，两者脱节（关掉溢出区右侧的标签后，
+    // 残余偏移让整排标签悬空、关闭钮命中区跟着错位）。contentEnd 只依赖宽度表，
+    // 所以先算它、再夹 scrollX_、最后才排矩形。
+    int contentW = 0;
+    for (int i = 0; i < n; ++i) contentW += widthAt(i);
+    const int contentEnd = margin + contentW;
+    // 滚动上限按"内容末端 - 可视右缘"算：滚到最后时内容右缘刚好贴住裁切线。
+    // 右缘用 tabViewRight_ 而不是 ovfRc_.left —— 后者现在在 + 的右边，
+    // 用它会使最后几个标签滚到 +/» 底下仍算"没滚到底"。
+    maxScroll_ = overflow_ ? std::max(0, contentEnd - tabViewRight_) : 0;
+    if (scrollX_ > maxScroll_) scrollX_ = maxScroll_;
+
     int x = margin - (overflow_ ? scrollX_ : 0);
     lastWidths_.clear();
     lastWidths_.reserve(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i) {
-        const int w = rapid ? widths[static_cast<size_t>(i)]
-                            : (items_[static_cast<size_t>(i)].pinned
-                                   ? widths[static_cast<size_t>(i)]
-                                   : (overflow_ ? width
-                                                : (total <= avail
-                                                       ? widths[static_cast<size_t>(i)]
-                                                       : width)));
+        const int w = widthAt(i);
         lastWidths_.push_back(w);
         RECT r{x, 0, x + w, h};
         tabRects_.push_back(r);
@@ -137,13 +157,6 @@ void TabStrip::Layout() {
     newRect_ = {plusX, 0, plusX + plusW, h};
     // » 在 + 的右边（溢出才有）。两者紧邻、不重叠：+ 右缘 + gap = » 左缘。
     ovfRc_ = overflow_ ? RECT{plusX + plusW + gap, 0, plusX + plusW + gap + ovfW, h} : RECT{};
-
-    int contentEnd = x + (overflow_ ? scrollX_ : 0);
-    // 滚动上限按"内容末端 - 可视右缘"算：滚到最后时内容右缘刚好贴住裁切线。
-    // 右缘用 tabViewRight_ 而不是 ovfRc_.left —— 后者现在在 + 的右边，
-    // 用它会使最后几个标签滚到 +/» 底下仍算"没滚到底"。
-    maxScroll_ = overflow_ ? std::max(0, contentEnd - tabViewRight_) : 0;
-    if (scrollX_ > maxScroll_) scrollX_ = maxScroll_;
 
     ReleaseDC(hwnd_, dc);
 }

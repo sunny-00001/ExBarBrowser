@@ -222,6 +222,9 @@ private:
     std::vector<TabStripItem> items_;
     // path -> HICON（本类拥有，ReleaseIcons 统一销毁）。上限见 tab_strip.cpp TabIcon。
     std::map<std::wstring, HICON> iconCache_;
+    // 缓存自上次清理后是否新装填过条目（TabIcon 置位、SetTabs 清理后复位）：
+    // 没涨也全量扫一遍 PruneIcons 是白做的 O(n·m)。
+    bool iconCacheGrew_ = false;
     std::vector<RECT> tabRects_;
     std::vector<RECT> closeRects_;
     RECT newRect_{};

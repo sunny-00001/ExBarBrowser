@@ -298,10 +298,19 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
     case uia::kMsgItem: {
         auto* info = reinterpret_cast<uia::ItemInfo*>(l);
         const int i = static_cast<int>(w);
-        if (!info || i < 0 || i >= static_cast<int>(items_.size())) return FALSE;
+        // items_ 与 tabRects_ 是两个独立容器（Layout 可能还没跑，规模不同步）。
+        // 只查 items_ 就取 tabRects_[i] 是越界读 —— 崩溃窗口在
+        // 「读屏软件查询 vs 标签集合刚变、重排未完成」。两个都查。
+        if (!info || i < 0 || i >= static_cast<int>(items_.size()) ||
+            i >= static_cast<int>(tabRects_.size()))
+            return FALSE;
+        const RECT& r = tabRects_[static_cast<size_t>(i)];
+        // 完全滚出可视区左侧的标签对读屏软件不可见：矩形在窗口外，点也点不到，
+        // 列进可访问性树只会产生"幽灵项"（右侧由 maxScroll_ 保证不会滚出）。
+        if (overflow_ && r.right <= 0) return FALSE;
         info->name = items_[static_cast<size_t>(i)].title;
         info->path = items_[static_cast<size_t>(i)].path;
-        info->rect = tabRects_[static_cast<size_t>(i)];
+        info->rect = r;
         info->selected = (i == active_);
         return TRUE;
     }
@@ -344,7 +353,6 @@ void TabStrip::UpdateHover(HWND h, int x, int y) {
         hoverIndex_ = index;
         InvalidateRect(h, nullptr, FALSE);
     }
-    (void)0;
 }
 
 int TabStrip::HitTab(int x, int y) const {
