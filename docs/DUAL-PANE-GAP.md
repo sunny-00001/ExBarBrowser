@@ -55,22 +55,25 @@
 `win.focus.next`（焦点循环）不变 —— 业界 Tab 切栏与本项目键位表已满冲突，
 不迁键（避免破坏现有肌肉记忆），靠常驻着色补识别性。
 
-### P0-2 `fs.copy.pane` / `fs.move.pane`（对侧即目标）✅（已落地）
+### P0-2 `file.copy.pane` / `file.move.pane`（对侧即目标）✅（已落地）
 
 **根本改进**：此前复制/移动必须显式给 `to` 路径（`fs.copy.to/fs.move.to`）或弹
 目录选择框（`file.copy.to`），双栏的核心价值「选中即发往对侧、零路径输入」缺失。
 
 **实现（复用，不造新轮子）**：
-- 新命令 `fs.copy.pane` / `fs.move.pane`（无参），实现落在 `TransferTargets` 同一
-  TU 的相邻函数：取活动窗格选中集（`shellops::SelectedPaths`）+ 对侧窗格
-  `path()` 为目标，直接调 `shellops::TransferToFolder`，撤销记录走既有
-  `fileundo` 链路（与 `TransferTargets` 同一份写法，抽公共件 `TransferSelTo`）。
-- `fs.move.pane` 让源消失 → `destructive=1`，自动进总线层
+- 新命令 `file.copy.pane` / `file.move.pane`（无参）。【命名说明】曾用
+  `fs.copy.pane`，但 check_ai_meta 第 9 项强制 `fs.*` 组「目标由参数点名、
+  绝不读选中」，而这两条作用于当前选中 → 语义归属 `file.*` 组，改名才是正解
+  （枚举名 `FsCopyToPane` 不改：CmdId 的值一经分配不可变，见 commands_ids.h 注释）。
+- 实现落在 `app_commands.cpp`：`TransferTargets` 的「选中→转移→撤销记录→刷新」
+  链路抽成 `TransferSelTo` 唯一公共件；`TransferToOtherPane` 取活动窗格选中集
+  （`shellops::SelectedPaths`）+ 对侧窗格 `path()` 为目标，汇入同一链路。
+- `file.move.pane` 让源消失 → `destructive=1`，自动进总线层
   `ConfirmIfDestructive` 人工确认门（人侧弹一次确认；AI 侧走危险双门）——
-  正好落实调研的「移动=强确认」准则。
-- `fs.copy.pane` `destructive=0`，不打扰。
-- 两者 aiExposed=true：AI 拿到「把当前选中复制/移动到另一窗格」的确定式入口。
-- 键位：**F7 = 复制到对侧、F8 = 移动到对侧**（`data/keymap.json` 新增 setting
+  正好落实调研的「移动=强确认」准则。`file.copy.pane` `destructive=0`。
+- 两者 `aiExposed=true` + `needsSelection=true` + `Requirements{Req::HasSelection}`：
+  无选中时前置拒绝，不猜意图。
+- 键位：**F7 = 复制到对侧、F8 = 移动到对侧**（`data/keymap.json` setting
   `hotkeyCopyToPane`/`hotkeyMoveToPane`）。TC 的 F5 在本项目已被
   `NavRefresh` 占用（`keymap.cpp` 系统默认键表兜底）、F6 被焦点循环占用，
   均不迁键；F7/F8 裸键空闲（序列 `f 7`/`f 8` 是两段序列，与裸功能键不同 chord）。
@@ -83,9 +86,13 @@
   的当前目录）。对齐 TC Ctrl+U（cm_Exchange）。实现复用 `NavigateInPane`
   （指定窗格导航），两条导航各自进自己栏的历史栈。单栏时先开双栏
   （此时两栏同目录，交换后仍同目录 —— 合法幂等）。
+  实现文件：`src/app_panes_swap.cpp`（独立成文件：协同导航语义与「双栏编排」
+  分属两种职责，按 AGENTS.md §3「按作用域拆」落地）。
 - `view.pane.mirror`（无参）：对侧导航到活动栏当前目录（活动栏不动）。
   对齐 TC cm_MatchSrc / Ctrl+←→ 的目录版、DC Ctrl+←/→。单栏时先开双栏，
   效果即「对侧打开同目录」= `fs.open.pane` 无 path 版。
+  实现复用 `OpenPathInOtherPane`（「单栏先开双栏 + 不动焦点 + push 进对侧
+  历史」的前置整套已有，一行调用）。
 - 两者都是导航（异步落地）→ `assertionExempt = kExemptAsyncNav`，aiExposed=true。
 
 ### P2（本次不做，防蔓延）
@@ -97,25 +104,41 @@
 - **Ctrl+Q 对侧预览**：需要自建预览控件进对侧，与现有预览窗格
   （`shell_view_preview.cpp`）关系待理，不并轮做。
 
-## 3. 验收口径
+## 3. 验收口径（2026-11-26 实测结果）
 
-- 构建过、`tests/run_all.sh` 全绿、三静态检查（check_commands / check_ai_meta /
-  check_components）全绿。
-- P0-1：双栏下切换活动栏（Alt+F6 / 点击另一栏），分割条着色侧随动；
-  单栏/收窄时无残留。
-- P0-2：双栏下选中文件按 F7，确认后文件出现在对侧、源侧消失，且
-  `file.undo` 可撤；按 F5 复制，源侧保留。
-- P1：`view.pane.swap` 后两栏路径互换且各自历史栈各多一条；
+- 构建 ✅（`bash build.sh` 链接成功）、单测 ✅ **73/73 全过**
+  （`tests/run_all.sh`：通过 73 / 无法运行 0 / 运行失败 0 / 编译失败 0）、
+  三静态检查 ✅（check_commands 三方一致 241 条 / check_ai_meta 全过 /
+  check_components OK：33 唯一性 + 7 禁令 + 接线 + 令牌 + 输入纪律 + 评估面）。
+- P0-1：双栏下切换活动栏（Alt+F6 / 点击另一栏），分割条着色侧随动（accent 条
+  在活动侧）；单栏分割条隐藏无残留。**界面观感待用户复核**（自动化不发合成
+  输入，着色侧随动需人工看一眼）。
+- P0-2：双栏下选中文件按 F8（移动到对侧）→ 确认门 → 文件出现在对侧、源侧
+  消失，`file.undo` 可撤；按 F7（复制到对侧）源侧保留。无选中时前置拒绝
+  （Req::HasSelection）。
+- P1：`view.pane.swap` 后两栏路径互换且各自历史栈各多一条（可各自后退）；
   `view.pane.mirror` 后对侧=活动栏原目录、活动栏不变。
 
 ## 4. 实现落点（符号级，不写行号）
 
 | 改动 | 文件 | 复用 |
 |---|---|---|
-| 活动侧着色 | `split_bar.{h,cpp}`（SetActiviveSide/Paint 扩展）、`app_panes.cpp`（SyncChrome 链通知）、`app_layout.cpp`（几何不变） | SplitBar 真窗口、`theme_.accent` |
-| 对侧即目标 | `app_commands_fs.cpp`（注册）、`app.h`（声明 TransferSelTo）、`commands_ids.h` + `commands_table.cpp`（命令表）、`commands_table.h`（若需共享 schema 常量） | `shellops::TransferToFolder`、`shellops::SelectedPaths`、`fileundo`、`ConfirmIfDestructive` |
-| swap/mirror | `app_panes.cpp`（SwapPanes/MirrorPane）、`app_commands_panes.cpp`（注册）、命令表同上 | `NavigateInPane`、`EnsurePaneView`、`OpenPathInOtherPane` 的「单栏先开双栏」模式 |
-| 键位 | `data/keymap.json`（新增 4 行：F5/F7 + 2 条序列键若有合适位） | 既有 hotkey setting 链路（`keymap.gen.h` 由 `gen_keymap.py` 生成） |
+| 活动侧着色 | `split_bar.{h,cpp}`（`SetActiveSide`/Paint 扩展）、`app_tabs.cpp`（SyncChrome 链通知）、`app_layout.cpp`（几何不变） | SplitBar 真窗口、`theme_.accent` |
+| 对侧即目标 | `app_commands.cpp`（`TransferSelTo` 公共件 + `TransferToOtherPane`）、`app_commands_fs.cpp`（注册）、`app.h`（声明）、`commands_ids.h` + `commands_table.cpp`（命令表） | `shellops::TransferToFolder`、`shellops::SelectedPaths`、`fileundo`、`ConfirmIfDestructive` |
+| swap/mirror | `app_panes_swap.cpp`（SwapPanes/MirrorPane）、`app_commands_panes.cpp`（注册）、命令表同上 | `NavigateInPane`、`EnsurePaneView`、`OpenPathInOtherPane` 的「单栏先开双栏」模式 |
+| 键位 | `data/keymap.json`（hotkeyCopyToPane=F7 / hotkeyMoveToPane=F8） | 既有 hotkey setting 链路（`keymap.gen.h` 由 `gen_keymap.py` 生成） |
+
+## 4b. 过程备注（并行会话协作）
+
+本轮实现期间检测到**另一会话在同一工作树并行改动**（UIA 无障碍子系统、
+图标模块拆分、弹层入口命令化）。交界处理：
+- `SwapPanes/MirrorPane` 被并行会话从 `app_panes.cpp` 搬进专门的
+  `app_panes_swap.cpp`（符合「一文件一职责」），本会话补写时造成短暂重复定义，
+  已撤回原位版本、保留拆分版。
+- 命令名被并行会话从 `fs.copy.pane` 改为 `file.copy.pane`（check_ai_meta 第 9 项
+  对 fs.* 组「绝不读选中」的组级判据），keymap 与注释同步 —— 这是正确的修正，
+  予以保留并记录命名理由（见 commands_ids.h 注释）。
+- `keymap_test` 的 112 热键断言与 `eval-surface.json` 重签由提交统一收口。
 
 ## 5. 来源（主要）
 
