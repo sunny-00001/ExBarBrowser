@@ -153,7 +153,7 @@
     "tests/input_router_claim_test.cpp": "0e7af799ec5029f0722bc0275aa35902045f9ec1f6c02b3ec4a574115b31457b",
     "tests/job_test.cpp": "cff1c584dddfef75dc0dbfbf4f10b79906264ef4f7866c3857006c9e49f4edcf",
     "tests/json_bignum_test.cpp": "6e81b16883e199bb7006f6b2afbaf5de5ec853d7d072a6f165236e3041b0f358",
-    "tests/key_binding_test.cpp": "36d69eb3ae429f39f7f43c440dc4049104590f4d1ed1f82480fd6d832b2003d9",
+    "tests/key_binding_test.cpp": "b14f62f9370f59dec08a7e97096556f4e702b6ed99d2cbd60159092ae52ac24e",
     "tests/keymap_test.cpp": "aa7aaf571d61da4b50efe092abb70492e9d345afe8ea906ce7118bce6ac04623",
     "tests/longpath_test.cpp": "aa765a97d01f2fe23fc68d19a2a51e65b605fc3770239acdf499f781e2c23de7",
     "tests/menu_component_test.cpp": "d78f7b220b9fd30ea5150eac3c3ccffd72661047c05cbd320072294205d690b3",
@@ -192,7 +192,7 @@
     "tests/webview_actions_test.cpp": "d072c68f2a2cd586b7e7953a597030b1efdd267bbad920d17ba8325d32937f92",
     "tools/agentctl.py": "9ab01db056242915ea822827c5fa6f6fce9361d8cbac99e0baf9b1994eb44227",
     "tools/ai_call.py": "2893ab5bc49567fb5e6386a9c06a0ebf241bf6803a61b13363423bacc861c58f",
-    "tools/check_ai_meta.py": "2a3fdf7bccf0a353e70627f784b66e1c91fa22803a0c9cf01688e0a671aabe08",
+    "tools/check_ai_meta.py": "3cf0459c142bd7f0132923ac6ccd8e4d54bf7da45b3bb1b9fcf7d52125c92280",
     "tools/check_commands.py": "249929e8c5327a3ca837b9c785a77f82f9fd8d63e2f9a1954462b950cb7c7b76",
     "tools/check_components.py": "961f227503041bb94d53a3af44c74a8dba7854c8d113feb56ec3071fb451a14c",
     "tools/dumpinfo.py": "5cd390311cb4245356b456a624b167d17b358dd930b9ad1f27c48901f4d52238",
@@ -218,8 +218,8 @@
     "tools/probe_toggle.py": "b2a86e569ab57464bbbf6a5aef1754e546a2274153592d152dd699e574c0e5c0",
     "tools/reclaim.py": "def016c0b1f7afbe7611c94cc533863c81cfa355a8adfc264530a38f03f2485c"
   },
-  "generatedAt": "2026-11-27T00:03:41+08:00",
+  "generatedAt": "2026-11-27T07:01:12+08:00",
   "note": "评估面清单：构建器/测试/校验器。改动这些文件后必须重新签发。",
-  "selfSeal": "84bf99db76465921bdef8c1632edfa07187cb76cc3bf7d159dfa475e0cbf875c",
+  "selfSeal": "48486779eaa263dafb32a76a3e700ed0d5419222d598d1eeb16db1cd420e63d1",
   "version": 1
 }

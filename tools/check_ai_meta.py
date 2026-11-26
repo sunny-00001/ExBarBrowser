@@ -410,6 +410,17 @@ MENU_ACTIONS = {
     '视图·在新标签页打开': 'tab.new',
     '视图·在新窗口打开': 'fs.open.window',
     '视图·属性': 'fs.properties',
+    # 双栏族（视图菜单 13xx 动作号）。分栏比例三档文案随百分比变化，
+    # 但都是同一条带参命令 —— 与排序/分组二级菜单同一处理。
+    '视图·双栏': 'view.dualpane.toggle',
+    '视图·上下堆叠': 'view.pane.vertical',
+    '视图·分栏 30%': 'view.pane.split',
+    '视图·分栏 50%': 'view.pane.split',
+    '视图·分栏 70%': 'view.pane.split',
+    # 分割条右键菜单（app_pane_chips.cpp 的 ShowBarMenu）—— 与视图菜单同族，
+    # 文案是它独有的两条（视图菜单里没有）。
+    '视图·互换两栏目录': 'view.pane.swap',
+    '视图·对侧打开当前目录': 'view.pane.mirror',
     # ---- 书签右键菜单（bookmark_bar.cpp 的 ShowItemMenu）----
     '书签·添加当前目录为书签': 'bmk.add.current',
     '书签·新建分类': 'bmk.newfolder',
@@ -1941,6 +1952,9 @@ def main():
         'nav_bar_actions.cpp': '视图',
         'nav_bar_view_menu.cpp': '视图',
         'app_view_menus.cpp': '视图',
+        # 双栏族菜单（分割条右键 + 视图菜单接线）。菜单项归"视图"区域 ——
+        # 与 nav_bar_view_menu.cpp 里同一族命令是同一批文案。
+        'app_pane_chips.cpp': '视图',
         'app_commands.cpp': '状态栏',
         # 弹层与命令面板（从 app_commands.cpp 拆出）：标签切换器 / 标签菜单 /
         # 状态栏菜单 / 命令面板都在这里。区域名沿用 app_commands.cpp 的登记 ——
