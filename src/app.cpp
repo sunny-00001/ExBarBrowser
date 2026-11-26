@@ -11,6 +11,7 @@
 #include "commands.h"
 #include "kb_hook.h"        // 低层键盘钩子（救中文输入法吃掉的字母键）
 #include "mcp_stdio.h"      // --mcp-stdio：stdio ⇄ 命名管道 桥接
+#include "pane_ui.h"        // 双栏族：视图菜单接线 + 打勾状态（app_pane_chips.cpp）
 #include "search_scope.h"   // searchscope::RangeId（搜索范围档位 → id）
 #include "text_file.h"
 #include "mouse_rules.h"
@@ -158,7 +159,9 @@ void App::OnCreate() {
                 const Settings& s = Config::Get().s();
                 // 与 Layout() 共用同一个公式（Theme::ChromeHeight）：两处各算一遍
                 // 是整个"启动第一帧树是空白"问题的成因，见 theme.h 的栏高令牌说明。
-                viewH = rc.bottom - theme_.ChromeHeight(s.showTab, s.showNav, s.showBookmark,
+                // 与 Layout() 同一口径：TabBarVisible 是唯一语义来源。
+                const bool showTabBar = TabBarVisible(s, tabSet_.Count());
+                viewH = rc.bottom - theme_.ChromeHeight(showTabBar, s.showNav, s.showBookmark,
                                                         s.showStatus);
                 if (viewH < 100) viewH = 100;
             }
@@ -277,6 +280,8 @@ void App::OnCreate() {
         vs.sort = Config::Get().s().sortMode;
         vs.group = Config::Get().s().groupBy;
         vs.ascending = Config::Get().s().sortAscending;
+        // 双栏三态：布局没有 shell 侧的第二份真源，配置就是唯一真相（R19）。
+        paneui::FillState(&vs);
         if (ShellView* host = ActiveShellViewHost()) {
             if (IShellView* v = host->CurrentView()) {
                 int gotMode = -1;
@@ -327,6 +332,9 @@ void App::OnCreate() {
         else
             CommandBus::Get().InvokeLegacy(CmdId::ViewGroup, std::to_wstring(arg), Actor::Ui());
     });
+    // 视图菜单里的双栏族（开关 / 方向 / 比例预设）：与键位、命令面板、
+    // 分割条右键菜单走同一条命令总线 —— 前置检查、落盘、审计只有那一处。
+    paneui::WireMenu(navBar_);
 
     bookmarkBar_.SetNavigateFn([this](const std::wstring& p) { NavigateActive(p, true); });
     // 书签落盘失败（被外部改动 / 加载失败 / 文件被占用）时统一提示，
@@ -398,6 +406,10 @@ void App::OnCreate() {
         // 以前直调 ToggleAiPeek / ShowUndoHistory，这条路没有审计也没有事件。
         case Seg_Ai: CommandBus::Get().Invoke(CmdId::WinAiPeek, Args::Empty(), Actor::Ui()); break;
         case Seg_Undo: CommandBus::Get().Invoke(CmdId::WinUndoHistory, Args::Empty(), Actor::Ui()); break;
+        // 双栏协同的两个 chip：与 F7/F8、命令面板同一条总线。move 的确认门
+        // 在 ConfirmIfDestructive 里（人侧弹框），这里不必再问一次。
+        case Seg_CopyPane: (void)CommandBus::Get().Invoke(CmdId::FsCopyToPane, Args::Empty(), Actor::Ui()); break;
+        case Seg_MovePane: (void)CommandBus::Get().Invoke(CmdId::FsMoveToPane, Args::Empty(), Actor::Ui()); break;
         case Seg_Chk: CommandBus::Get().InvokeLegacy(CmdId::CmdSelectAll, L"", Actor::Ui()); break;
         case Seg_Date: CommandBus::Get().InvokeLegacy(CmdId::ViewSort, L"1", Actor::Ui()); break;
         case Seg_Path: CommandBus::Get().InvokeLegacy(CmdId::PathCopyDir, L"", Actor::Ui()); break;

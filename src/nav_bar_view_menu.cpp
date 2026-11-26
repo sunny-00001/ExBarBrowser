@@ -12,6 +12,7 @@
 // NavFn/ListFn）。按作用域切，读的人才不用翻到文件末尾才发现还有另一套语义。
 #include "nav_bar.h"
 
+#include "commands.h"        // CommandBus：双栏族兜底转投（菜单行已绑命令，这里只防漏）
 #include "menu.h"            // ui::Menu（行构建与右端快捷键列）
 #include "shell_columns.h"   // 属性键显示名（父菜单小结）
 #include "view_modes.h"      // 视图档位 / 排序分组维度表（唯一来源）
@@ -101,6 +102,24 @@ void NavBar::ShowViewMenu(POINT screen) {
     menu.AddPath(sortHint, L"", 1100, /*folder=*/true);   // 右端 chevron = 有下一级
     menu.AddPath(groupHint, L"", 1200, /*folder=*/true);
 
+    // 双栏族：与"显示导航/预览窗格"同组（都是**布局姿态**，低频切换）。
+    // 三态从配置现读（布局没有 shell 侧的第二份真源，配置就是唯一真相）。
+    // 动作号 13xx 与 0..7 / 1xx / 2xx / 9xx 分开，免得撞号。
+    menu.Separator();
+    int row = menu.AddChecked(L"双栏", vs.dualPane, 1300, ico::IconId::Dual);
+    menu.Cmd(row, CmdId::ViewToggleDualPane);
+    // 方向在单栏下也有意义（先切方向、再开双栏 = 上下两栏），故不置灰。
+    row = menu.AddChecked(L"上下堆叠", vs.paneVertical, 1301, ico::IconId::PaneVertical);
+    menu.Cmd(row, CmdId::ViewTogglePaneVertical);
+    // 比例预设：拖动是主界面，这里是"键盘/精确归位"的短路径。
+    // 三档都在 panesplit 的 20..80 合法区间内，不会出现"点了被夹回来"的跳变。
+    row = menu.AddChecked(L"分栏 30%", vs.paneSplit == 30, 1302, ico::IconId::Dual);
+    menu.Cmd(row, CmdId::ViewPaneSplitSet, L"30");
+    row = menu.AddChecked(L"分栏 50%", vs.paneSplit == 50, 1303, ico::IconId::Dual);
+    menu.Cmd(row, CmdId::ViewPaneSplitSet, L"50");
+    row = menu.AddChecked(L"分栏 70%", vs.paneSplit == 70, 1304, ico::IconId::Dual);
+    menu.Cmd(row, CmdId::ViewPaneSplitSet, L"70");
+
     // 「选择详细信息…」「图标大小…」「设置…」放在最下面：它们是"其它可调项"的入口，
     // 与上面三组（视图/排序/分组）不是同一层级的即时动作。
     // 动作号 900/901/902 与 0..7 / 1xx / 2xx 分开，免得视图档位扩到 9 档时撞号。
@@ -119,6 +138,17 @@ void NavBar::ShowViewMenu(POINT screen) {
         // 二级层：从父菜单右上角落下，避免盖住父菜单当前行。
         POINT sub{screen.x + 8, screen.y + 8};
         ShowSortGroupSubMenu(data == 1100 ? 0 : 1, sub);
+    } else if (data >= 1300 && data <= 1304) {
+        // 双栏族：菜单行已经通过 menu.Cmd 绑了命令，ui::Menu 会直接派发；
+        // 走到这里说明没绑上（例如 Cmd 未命中），转投一次兜底。
+        switch (data) {
+        case 1300: (void)CommandBus::Get().Invoke(CmdId::ViewToggleDualPane, Args::Empty(), Actor::Ui()); break;
+        case 1301: (void)CommandBus::Get().Invoke(CmdId::ViewTogglePaneVertical, Args::Empty(), Actor::Ui()); break;
+        case 1302: (void)CommandBus::Get().InvokeLegacy(CmdId::ViewPaneSplitSet, L"30", Actor::Ui()); break;
+        case 1303: (void)CommandBus::Get().InvokeLegacy(CmdId::ViewPaneSplitSet, L"50", Actor::Ui()); break;
+        case 1304: (void)CommandBus::Get().InvokeLegacy(CmdId::ViewPaneSplitSet, L"70", Actor::Ui()); break;
+        default: break;
+        }
     } else if (data == 901) {
         if (onColumns_) onColumns_(at);
     } else if (data == 902) {

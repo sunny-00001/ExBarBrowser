@@ -13,6 +13,7 @@
 #include "app_commands.h"
 #include "commands.h"   // CommandBus：拖动落盘转投 config.set
 #include "config.h"   // historyDepth：新窗格的历史栈深度来自设置
+#include "pane_ui.h"  // 双栏分割条的就地菜单（paneui::ShowBarMenu）
 
 namespace {
 
@@ -250,6 +251,13 @@ void App::CreateSplitBars() {
     panesBar_.SetDragFn([this](int percent, bool final) { OnSplitterDragged(percent, final); });
     navEdge_.SetDragFn([this](int centerX, bool final) { OnNavEdgeDragged(centerX, final); });
     aiEdge_.SetDragFn([this](int centerX, bool final) { OnAiEdgeDragged(centerX, final); });
+    // 双栏分割条的"就地动作"入口（只有这条边界有：侧栏边界没有"两侧"语义）。
+    // 右键 = 双栏族菜单；双击 = 比例归中（对标资源管理器/DOpus 双击分隔线）。
+    // 两者都只是把意图转投命令总线 —— 边界条不认识 Config，也不实现动作。
+    panesBar_.SetContextFn([this](POINT screen) { paneui::ShowBarMenu(hwnd_, theme_, screen); });
+    panesBar_.SetDoubleClickFn([] {
+        (void)CommandBus::Get().InvokeLegacy(CmdId::ViewPaneSplitSet, L"50", Actor::Ui());
+    });
 }
 
 // ---- 侧栏边界拖动：像素口径 ----
@@ -323,7 +331,22 @@ void App::NextPane() {
     if (!Config::Get().s().dualPane) return;
     Tab* t = Active();
     if (!t || !EnsurePaneView(t, 1)) return;
-    t->activePane = t->activePane == 0 ? 1 : 0;
+    const int next = t->activePane == 0 ? 1 : 0;
+    t->activePane = next;
+    // 【必须先把焦点搬到目标视图，再同步外壳】
+    //
+    // ActivePane() 的口径是"活动窗格 = 焦点所在视图"：焦点明确落在某个视图里时
+    // 它以焦点为准并**覆写** t->activePane 这个缓存。而 SyncTabIdentity /
+    // ActiveViewModeIndex / SyncChrome 内部都会调 ActivePane() —— 如果此刻焦点
+    // 还在旧视图里，它就把刚翻转的 activePane 覆写回去，随后 FocusActiveView()
+    // 又把焦点送回旧视图：整条命令净效果为零（Alt+F6 按了没反应），
+    // 但标签标题已经被 SyncTabIdentity 改成新窗格的路径 → 标题/地址栏/
+    // 分割条活动侧三者互相矛盾。
+    //
+    // 先 SetFocus 让"焦点"这个唯一真源指到目标窗格，后面所有 ActivePane() 才会
+    // 一致地读到新值。
+    Pane* target = PaneAt(t, next);
+    if (target && target->view && target->view->hwnd()) SetFocus(target->view->hwnd());
     // 标签、地址栏、模式指示都跟着活动窗格走；两个视图本身保持原样。
     SyncTabIdentity(t);
     viewMode_ = ActiveViewModeIndex();

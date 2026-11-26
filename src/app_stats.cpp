@@ -5,6 +5,7 @@
 #include "app.h"
 
 #include "icon_resolve.h"
+#include "pane_ui.h"   // 双栏 chip 的文案/可用态（paneui::SyncChips）
 
 // ---------------------------------------------------------------- 状态栏取数
 void App::MarkStatsDirty() { statsDirty_ = true; }
@@ -25,6 +26,21 @@ void App::RefreshStats() {
     // 撤销历史 chip：同一条思路 —— 撤销栈深浅与当前目录无关，放在取数最前面
     // 单独同步，免得被下面那些"目录没变就不重算"的短路漏掉。
     SyncUndoChip();
+
+    // 双栏 chip 同理：可用性只看"是否双栏 + 活动窗格选中数"，与目录内容无关。
+    // 放在短路之前，否则"只改了选中项"的那一帧会被 same 判据吞掉。
+    // 选中数优先用上一拍的快照（statsLastSelCount_）；走到全量取数后再用新值
+    // 同步一次（两处都调，幂等）。
+    auto syncPaneChips = [&](unsigned sel) {
+        const Settings& s = Config::Get().s();
+        std::wstring otherPath;
+        if (s.dualPane) {
+            const int other = t->activePane == 0 ? 1 : 0;
+            if (Pane* op = PaneAt(t, other)) otherPath = op->path();
+        }
+        paneui::SyncChips(statusBar_, s, otherPath, sel);
+    };
+    syncPaneChips(statsLastSelCount_);
 
     unsigned& tick = statsTick_;
     ++tick;
@@ -109,6 +125,9 @@ void App::RefreshStats() {
         statsLastHidden_ = hidden;
         statsLastView_ = viewHwnd;
         statsDirty_ = false;
+        // 选中数刚更新 → 双栏 chip 跟着刷新（幂等，与前面那次用旧快照的同步
+        // 合起来保证"每一帧都是最新的"）。
+        syncPaneChips(stats.selCount);
     }
 
     StatusModel m;

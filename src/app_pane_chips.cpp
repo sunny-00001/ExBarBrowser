@@ -12,7 +12,9 @@
 
 #include "commands.h"   // CommandBus（菜单族转投）
 #include "config.h"
-#include "pane_ui.h"    // 本文件实现的声明
+#include "icon_glyph.h"  // 双栏族菜单行图标
+#include "menu.h"        // ui::Menu：菜单组装
+#include "pane_ui.h"     // 本文件实现的声明
 
 namespace paneui {
 
@@ -57,6 +59,48 @@ void SyncChips(StatusBar& bar, const Settings& s, const std::wstring& otherPath,
     }
     bar.SetSegmentText(Seg_CopyPane, copyText, copyTip);
     bar.SetSegmentText(Seg_MovePane, moveText, moveTip);
+}
+
+// 双栏分割条右键菜单（"就地动作"）。锚点由 SplitBar 给（鼠标屏幕坐标）。
+//
+// 【为什么值得有】双栏六条命令此前只有键位与命令面板两个入口：前者"记得住才
+// 用得上"，后者"知道名字才用得上"。而用户想动双栏时，视线本来就在分割条上 ——
+// 就地右键是最短的路径，且**零新增界面面积**（分割条本来就是真窗口，
+// CS_DBLCLKS 与鼠标通路都是现成的）。
+//
+// 【为什么每一项都转投命令】与人机等价规则同源：前置检查、落盘、审计只有
+// 命令总线那一处。菜单这里只组装，不实现动作 —— 否则键位与菜单会各有一份
+// "开双栏要做什么"，迟早不一致。
+void ShowBarMenu(HWND owner, const Theme& theme, POINT screen) {
+    const Settings& s = Config::Get().s();
+    ui::Menu menu;
+    // 前两行是**勾选态**（当前姿态），不是"点一下变成什么" ——
+    // 与视图菜单把当前档位打勾同一口径，避免"点了才知道现在是什么"。
+    menu.AddChecked(L"双栏", s.dualPane, 1300, ico::IconId::Dual);
+    menu.Cmd(1300, CmdId::ViewToggleDualPane);
+    // 方向在单栏下也有意义（先切方向、再开双栏得到的就是上下两栏），故不禁用 ——
+    // 与命令表里 view.pane.vertical 的说明一致。
+    menu.AddChecked(L"上下堆叠", s.paneVertical, 1301, ico::IconId::PaneVertical);
+    menu.Cmd(1301, CmdId::ViewTogglePaneVertical);
+    menu.Separator();
+    menu.Add(L"互换两栏目录", 1305, ico::IconId::SwapPane);
+    menu.Cmd(1305, CmdId::ViewPaneSwap);
+    menu.Add(L"对侧打开当前目录", 1306, ico::IconId::Mirror);
+    menu.Cmd(1306, CmdId::ViewPaneMirror);
+    menu.Separator();
+    // 比例预设：拖动是主界面，这里给的是"键盘/精确归位"的短路径。
+    // 三档都落在 panesplit 的 20..80 合法区间内（30/50/70），
+    // 不存在"点了被夹回来"的跳变。
+    menu.AddChecked(L"分栏 30%", s.paneSplit == 30, 1302, ico::IconId::Dual);
+    menu.Cmd(1302, CmdId::ViewPaneSplitSet, L"30");
+    menu.AddChecked(L"分栏 50%", s.paneSplit == 50, 1303, ico::IconId::Dual);
+    menu.Cmd(1303, CmdId::ViewPaneSplitSet, L"50");
+    menu.AddChecked(L"分栏 70%", s.paneSplit == 70, 1304, ico::IconId::Dual);
+    menu.Cmd(1304, CmdId::ViewPaneSplitSet, L"70");
+    // 锚点键：再按一次同一锚点 = 收起（与其它菜单一致）。
+    ui::MenuOptions opt;
+    opt.toggleKey = L"pane.bar";
+    (void)menu.Show(owner, theme, screen, opt);
 }
 
 }  // namespace paneui
