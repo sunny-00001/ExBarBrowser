@@ -39,6 +39,17 @@ void App::RefreshStats() {
     const bool pathChanged = (path != statsLastPath_);
 
     IShellView* view = p->view->CurrentView();
+    // 视图的**稳定身份**用它的窗口句柄，而不是 IShellView* 指针。
+    //
+    // 【为什么不能用指针】CurrentView() 返回的是 GetCurrentView 给的**引用**，
+    // 本函数末尾会 Release 掉；存下来的裸指针因此是"借用地址"。视图重建（每次
+    // 导航都可能重建）后新对象很可能落在同一个地址上 —— 于是"换了视图"被误判成
+    // "同一个视图"，轻量短路直接 return，状态栏数字停在旧视图上不再刷新。
+    // 反过来，旧地址也可能已经被别的东西占用，比较两个都不指向同一对象。
+    // HWND 在视图重建后**必然不同**（旧窗口销毁、新窗口创建），且它是进程内
+    // 身份、不涉引用计数，比较它不会碰到已释放的 COM 对象。
+    HWND viewHwnd = nullptr;
+    if (view && FAILED(view->GetWindow(&viewHwnd))) viewHwnd = nullptr;
     SHELLSTATE ss{};
     SHGetSetSettings(&ss, SSF_SHOWALLOBJECTS | SSF_SHOWSUPERHIDDEN, FALSE);
     const int hidden = !ss.fShowAllObjects ? 2 : (!ss.fShowSuperHidden ? 1 : 0);
@@ -51,7 +62,7 @@ void App::RefreshStats() {
         if (CollectViewStats(view, &light, nullptr, {}, true, true)) {
             const bool same = !pathChanged && light.total == statsLastTotal_ &&
                               light.selCount == statsLastSelCount_ && hidden == statsLastHidden_ &&
-                              view == statsLastView_ && p->display == statsLastDisplay_;
+                              viewHwnd == statsLastView_ && p->display == statsLastDisplay_;
             if (same) {
                 view->Release();
                 return;
@@ -96,7 +107,7 @@ void App::RefreshStats() {
         statsLastTotal_ = stats.total;
         statsLastSelCount_ = stats.selCount;
         statsLastHidden_ = hidden;
-        statsLastView_ = view;
+        statsLastView_ = viewHwnd;
         statsDirty_ = false;
     }
 

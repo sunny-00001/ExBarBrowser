@@ -71,5 +71,8 @@ private:
     int stopIdx_ = 2;
     bool dragging_ = false;
     bool hot_ = false;
+    // 是否已向系统登记"鼠标离开时通知我"（TrackMouseEvent 是一次性的：
+    // 收到 WM_MOUSELEAVE 后系统就不再跟踪，必须重新登记）。
+    bool tracking_ = false;
     std::function<void(int)> onChange_;
 };

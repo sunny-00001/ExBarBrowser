@@ -174,6 +174,17 @@ LRESULT StatusZoomSlider::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         Paint(h);
         return 0;
     case WM_MOUSEMOVE: {
+        // 【必须登记 TME_LEAVE】窗口默认收不到 WM_MOUSELEAVE —— 系统不会主动
+        // 通知"鼠标离开窗口"，要由程序用 TrackMouseEvent 明确要求一次。
+        // 以前这里只置 hot_ = true 而不登记，于是下面的 WM_MOUSELEAVE 分支
+        // **永远不会执行**：hot_ 永久为真，滑块拇指一直画成加大的热态，
+        // 看起来像"鼠标还停在上面"。TrackMouseEvent 是一次性的，收到
+        // WM_MOUSELEAVE 后系统就停止跟踪，所以要在那里清 tracking_ 以便重新登记。
+        if (!tracking_) {
+            TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, h, 0};
+            TrackMouseEvent(&tme);
+            tracking_ = true;
+        }
         if (!hot_) {
             hot_ = true;
             InvalidateRect(h, nullptr, FALSE);
@@ -185,6 +196,7 @@ LRESULT StatusZoomSlider::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_MOUSELEAVE:
+        tracking_ = false;   // 系统已停止跟踪，下次进入要重新登记
         hot_ = false;
         InvalidateRect(h, nullptr, FALSE);
         return 0;

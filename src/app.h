@@ -573,7 +573,7 @@ private:
     unsigned statsLastTotal_ = 0;
     unsigned statsLastSelCount_ = 0;
     int statsLastHidden_ = -1;
-    IShellView* statsLastView_ = nullptr;
+    HWND statsLastView_ = nullptr;   // 上一帧统计依据的视图；用 HWND 而非借用指针
 
     // ---- 关标签时的视图延迟销毁队列 ----
     // 探针 84：ShellView::Destroy = 20~69 ms per view，全在 UI 线程；关一个标签

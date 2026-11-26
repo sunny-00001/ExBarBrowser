@@ -157,6 +157,22 @@
 - 撤销历史弹层登记进菜单→命令对账（app_undo_history.cpp → 撤销历史）。
 - `tests/file_undo_test.cpp` 扩充重做路径用例（redo 栈分离/失败不弹栈/机器边界）。
 
+### 悬停态与视图身份两处静默失效（审查 P1-U / P2-U）
+
+- **状态栏「图标大小」滑块的悬停态永久残留**：`WM_MOUSEMOVE` 里只置 `hot_ = true`
+  却从不调用 `TrackMouseEvent(TME_LEAVE)` —— 窗口**默认收不到** `WM_MOUSELEAVE`
+  （系统不会主动通知"鼠标离开"，要由程序明确要求一次），于是那个分支永远不执行，
+  `hot_` 一直是真、拇指一直画成加大的热态，看起来像"鼠标还停在上面"。
+  修法按项目既有写法（`split_bar` / `status_bar` 同款）：`tracking_` 标志 +
+  `TRACKMOUSEEVENT{sizeof, TME_LEAVE, h, 0}`，`WM_MOUSELEAVE` 里清 `tracking_`
+  以便下次重新登记（`TrackMouseEvent` 是一次性的）。
+- **状态栏统计拿已释放的 COM 指针做身份比较**：`statsLastView_` 存的是
+  `IShellView*`，而它是 `CurrentView()` 给的**借用指针**（`RefreshStats` 末尾就
+  `Release`）。视图重建后新对象很可能复用同一地址 ⇒ "换了视图"被误判成"同一个视图"，
+  轻量短路直接 return、状态栏数字停在旧视图上不再刷新；反过来旧地址也可能已被别处占用。
+  改为比视图的 **HWND**（`IShellView::GetWindow`）：视图重建后窗口必然不同，
+  且它是进程内身份、不涉引用计数，比较它不会碰到已释放的 COM 对象。
+
 ### 文档对账：命令表搬家之后，所有指旧位置的文档都指空了
 
 命令表从 `src/commands.cpp` 搬到了 `src/commands_table.cpp` + `src/commands_table_tools.cpp`
