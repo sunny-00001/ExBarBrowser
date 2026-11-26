@@ -77,6 +77,10 @@ static bool CoerceParam(const std::wstring& key, const std::wstring& type,
         wchar_t* end = nullptr;
         const long long v = std::wcstoll(digits.c_str(), &end, 10);
         if (errno != 0 || end == digits.c_str() || (end && *end != L'\0')) return false;
+        // 必须自己判范围：json::Value::MakeInt 收 int，超出 int 范围直接
+        // static_cast 是**实现定义**的截断 —— "9999999999" 会变成负数喂给
+        // config.set（比如把超时设成负值）。宁可拒绝，也不静默改成一个假值。
+        if (v < INT_MIN || v > INT_MAX) return false;
         *out = json::Value::MakeInt(static_cast<int>(v));
         return true;
     }

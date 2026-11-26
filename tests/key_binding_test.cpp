@@ -190,6 +190,37 @@ int main() {
         Check(keybinding::Effective(empty, noOv).empty(), "空键位表推不出绑定");
     }
 
+    // ---- 6. 「清除」与「还原此项默认」是两种不同的写，不能互相冒充 ----
+    //
+    // 快捷键管理器有两颗按钮，看起来都是"把键弄掉"，实际写的是两样东西：
+    //   清除        → 覆盖表写哨兵 "-"（显式解绑，**不**回落默认键）
+    //   还原此项默认 → 覆盖表里**删掉**这一项（回落到 keymap.json / 系统原生键）
+    // 如果实现里把"还原"写成"写空串"，BuildBindings 见到空键会跳过 ——
+    // 那条命令反而按不出来了，与"恢复默认"正好相反。而界面上完全看不出区别：
+    // 两处都只是"键位列变了一下"。所以这条判据必须钉在纯函数上。
+    {
+        Keymap km = Makemap({Hk(L"hotkeyTabClose", L"tab.close", L"Ctrl+W")});
+
+        // 清除：显式解绑
+        const keybinding::Overrides cleared = {{L"hotkeyTabClose", kHotkeyDisabled}};
+        Check(keybinding::ResolveKey(L"hotkeyTabClose", L"Ctrl+W", cleared) == kHotkeyDisabled,
+              "清除 = 覆盖表里的哨兵，解析结果就是哨兵（不回落默认键）");
+        Check(!HasKey(keybinding::Effective(km, cleared), L"tab.close"),
+              "清除后这条命令不进生效表（按不出来，这是「清除」的语义）");
+
+        // 还原此项：删掉覆盖项
+        const keybinding::Overrides none;
+        Check(keybinding::ResolveKey(L"hotkeyTabClose", L"Ctrl+W", none) == L"Ctrl+W",
+              "还原此项 = 没有覆盖项，解析回落到键位表的默认值");
+        Check(HasKey(keybinding::Effective(km, none), L"tab.close"),
+              "还原此项后这条命令重新进生效表（默认键又按得出来）");
+
+        // 反过来钉住那个错：如果"还原"被写成写空串，Effective 会静默丢掉这条。
+        const keybinding::Overrides emptied = {{L"hotkeyTabClose", L""}};
+        Check(!HasKey(keybinding::Effective(km, emptied), L"tab.close"),
+              "把「还原」写成「覆盖成空串」会丢掉这条命令 —— 所以两者不能混用");
+    }
+
     std::printf(g_fail ? "\n有 %d 项失败\n" : "\n全部通过\n", g_fail);
     return g_fail ? 1 : 0;
 }

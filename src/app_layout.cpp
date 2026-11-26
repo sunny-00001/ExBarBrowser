@@ -21,7 +21,10 @@ void App::Layout(bool force) {
 
     // 栏高只有一处出处（Theme::barTab/barNav/…）：以前四个数各写一份，
     // 改栏高要改五处（见 theme.h 的栏高令牌说明）。
-    const int tabH = s.showTab ? theme_.barTab() : 0;
+    // 标签栏此刻是否显示：语义只在 TabBarVisible 定义一次（config.h），
+    // 后面四处（栏高/指纹/ShowWindow/ChromeHeight）全用这个值。
+    const bool showTabBar = TabBarVisible(s, tabSet_.Count());
+    const int tabH = showTabBar ? theme_.barTab() : 0;
     const int navH = s.showNav ? theme_.barNav() : 0;
     const int bmkH = s.showBookmark ? theme_.barBookmark() : 0;
     const int stH = s.showStatus ? theme_.barStatus() : 0;
@@ -34,7 +37,8 @@ void App::Layout(bool force) {
     layout::LayoutKey key;
     key.w = rc.right;
     key.h = rc.bottom;
-    key.showBits = (s.showTab ? 1 : 0) | (s.showNav ? 2 : 0) | (s.showBookmark ? 4 : 0) |
+    // 标签数变化必须进指纹：切到单标签时标签栏要消失，那是真实的几何变化。
+    key.showBits = (showTabBar ? 1 : 0) | (s.showNav ? 2 : 0) | (s.showBookmark ? 4 : 0) |
                    (s.showStatus ? 8 : 0);
     key.barPx = tabH + navH + bmkH + stH;
     // AI 面板宽、导航宽的求解**只有一处**（side_layout）：窗口太窄时谁先让位、
@@ -83,7 +87,7 @@ void App::Layout(bool force) {
     if (widgetsReady) lastLayout_ = key;
 
     int y = 0;
-    if (s.showTab) {
+    if (showTabBar) {
         MoveWindow(tabStrip_.hwnd(), 0, y, rc.right, tabH, TRUE);
         ShowWindow(tabStrip_.hwnd(), SW_SHOW);
         y += tabH;
@@ -111,7 +115,8 @@ void App::Layout(bool force) {
     // 用另一套加法算出不同的 viewH，树就会被二次 Resize —— 而那次 Resize 之前
     // 树已经按错误高度画过一帧（实测：treeH=80 / 3 行全空白）。两处各算一遍就是
     // 那个"启动第一帧图标没渲染完"的成因，所以统一收到 ChromeHeight 一处。
-    const int chrome = theme_.ChromeHeight(s.showTab, s.showNav, s.showBookmark, s.showStatus);
+    const int chrome =
+        theme_.ChromeHeight(showTabBar, s.showNav, s.showBookmark, s.showStatus);
     int viewH = rc.bottom - chrome;
     if (viewH < 0) viewH = 0;
     MoveWindow(viewArea_, 0, y, rc.right, viewH, TRUE);

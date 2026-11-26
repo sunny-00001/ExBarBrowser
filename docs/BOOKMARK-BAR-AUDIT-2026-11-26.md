@@ -57,6 +57,20 @@
   （kMsgSelect = 键盘走到该项 + EnsureVisible，不导航），析构 `uia::Release`。
 - ✅ P3：`bookmark_bar_popup.cpp`（484→205 行）拆出 `bookmark_bar_itemmenu.cpp`
   （291 行，`ShowItemMenu` + `ShowMoveToMenu` + `CollectMoveTargets`）。
+- ✅ P4（追加，2026-11-27）：**OLE 外部拖入（从文件视图拖文件夹进书签栏）也具备边缘自动滚动**。
+  根因：外部拖放走 `IDropTarget::DragOver → UpdatePreview` 链路，不经过内部重排的
+  `DragUpdate`，且 `ScrollBy` 重算守卫 `dragging_` 对外部拖放恒为 false——滚动后落点
+  预览指旧项。根治手法（复用 P1 基础设施，不新增机制）：
+  - `EdgeAutoScroll(clientX, clientY)` 抽为**唯一入口**（bookmark_bar_drag.cpp）：
+    内部重排 `DragUpdate` 与外部拖放共同调用；缓存 `dragMouseX_/dragMouseY_` 成对坐标
+    （定时器拍没有鼠标坐标，落点重算需要整点）。
+  - `PreviewDropAt(POINT screen)`（bookmark_bar_drop.cpp）：落点预览 + 滚动起停一步做完，
+    `UpdatePreview` 直接传屏幕坐标（省去 ClientToScreen 二次转换）。
+  - `ScrollBy` 落点重算守卫统一为 `dropPreview_`（两条链路都写此标志）；
+    悬停重算统一用 `GetCursorPos`（内部拖拽 SetCapture、OLE 拖放光标归系统，
+    都无可靠 mousemove 兜底）。
+  - 停表收口：`ClearDropPreview` 一处负责（Drop 提交 / DragLeave / 拖进分类弹层三条路
+    都会走）；`WM_TIMER` 滚动拍守卫同时认 `dragging_ || dropPreview_`。
 - ✅ 验证（2026-11-26 22:49）：
   - `bash build.sh` 主程序构建通过（`ExBarBrowser.exe` 22:48）。
   - 全量单测 **73/73 通过**（此前后台跑挂的 keymap/shell_columns 均为并发会话
@@ -65,6 +79,15 @@
   - `check_components.py`（33 唯一性 + 7 禁令 + R21）全绿；
     `check_ai_meta.py` 全绿；`check_commands.py`（241 条三方一致）全绿。
   - 滚轮/拖拽自动滚动手感属 R21 禁合成输入域，交人工确认。
+- ✅ P4 验证（2026-11-27 07:01）：
+  - 书签域单测 `bookmark_bar_scroll_test` PASS；tab_strip 域 `tab_strip_rules_test` PASS
+    （隔离输出目录 `tmp_ole_test_out/`；首次链接失败系并发会话拆 `shell_input_uia.cpp`
+    中间态——新文件落盘晚于构建扫描，复跑即过，非代码问题）。
+  - `check_ai_meta.py` 全绿；`check_components.py` 唯一 FAIL 为并发会话当日新增的
+    `tests/key_binding_test.cpp` 判据（快捷键「清除」vs「还原默认」语义）待人工重签，
+    与书签域无关。
+  - `bash build.sh` 主构建通过（`ExBarBrowser.exe` 07:01，208 TU 全量增量）。
+  - 外部拖文件夹至栏边缘的滚动手感属 R21 禁合成输入域，交人工确认。
 
 ## 四、业界对标结论（全网调研，2026-11-26）
 

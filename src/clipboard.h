@@ -10,3 +10,10 @@
 #include <string>
 
 bool SetClipboardText(void* owner, const std::wstring& text);
+
+// 读剪贴板文本。没有文本内容（剪贴板里是图片/文件，或空）时返回空串。
+//
+// 【为什么和写放在同一个文件】读写共用同一套"全系统共享资源"的打开重试与
+// 失败语义。分成两个文件之后，重试策略迟早各写一份 —— 一份重试 5 次、
+// 一份不重试，表现为"复制偶尔失败、粘贴永远失败"。
+std::wstring GetClipboardText(void* owner);

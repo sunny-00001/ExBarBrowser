@@ -133,9 +133,11 @@ void App::RegisterUndoCommands() {
             const size_t want = static_cast<size_t>(index) + 1;
             const bool full = (undone == want);
             if (!full) {
+                // 失败的是**下一步**（第 undone+1 步），不是第 undone 步 ——
+                // 以前两处都写 undone，undone=0 时会报成"第 0 步失败"。
                 CommandBus::Get().NoteFailure(
                     L"只撤回了 " + std::to_wstring(undone) + L" 步，第 " +
-                    std::to_wstring(undone) + L" 步失败：" +
+                    std::to_wstring(undone + 1) + L" 步失败：" +
                     (why.empty() ? L"原因未知" : why));
             }
             // 刷新：**撤了哪怕一步**都要刷（部分失败时已经有文件被改回去了）。

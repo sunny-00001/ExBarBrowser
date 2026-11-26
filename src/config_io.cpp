@@ -124,6 +124,8 @@ void Config::Load() {
     // 旧值 "right" 归一成 "end"（界面一直写着"最右"，一个取值两种行为）。
     if (str::IEquals(s_.tabNewPos.c_str(), L"right")) s_.tabNewPos = L"end";
     s_.confirmCloseTabs = root.GetBool(L"confirmCloseTabs", s_.confirmCloseTabs);
+    s_.hideTabBarWhenSingle =
+        root.GetBool(L"hideTabBarWhenSingle", s_.hideTabBarWhenSingle);
     s_.tabMinWidth = configio::ClampInt(root.GetInt(L"tabMinWidth", s_.tabMinWidth),
                                         kTabMinWidthMin, kTabMinWidthMax);
     s_.tabMaxWidth = configio::ClampInt(root.GetInt(L"tabMaxWidth", s_.tabMaxWidth),
@@ -171,6 +173,8 @@ void Config::Load() {
     s_.paneSplit = configio::ClampInt(root.GetInt(L"paneSplit", s_.paneSplit),
                                       kPaneSplitMin, kPaneSplitMax);
     s_.paneVertical = root.GetBool(L"paneVertical", s_.paneVertical);
+    s_.splitMarkThick = configio::ClampInt(root.GetInt(L"splitMarkThick", s_.splitMarkThick),
+                                          kSplitMarkThickMin, kSplitMarkThickMax);
 
     // AI 通道：默认开启（缺省即监听），配置里显式写 false 才关。
     s_.aiEnabled = root.GetBool(L"aiEnabled", s_.aiEnabled);
@@ -241,6 +245,7 @@ bool Config::Save() {
     root.Set(L"popupDragThreshold", json::Value::MakeInt(s_.popupDragThreshold));
     root.Set(L"tabNewPos", json::Value::MakeStr(s_.tabNewPos));
     root.Set(L"confirmCloseTabs", json::Value::MakeBool(s_.confirmCloseTabs));
+    root.Set(L"hideTabBarWhenSingle", json::Value::MakeBool(s_.hideTabBarWhenSingle));
     root.Set(L"tabMinWidth", json::Value::MakeInt(s_.tabMinWidth));
     root.Set(L"tabMaxWidth", json::Value::MakeInt(s_.tabMaxWidth));
     root.Set(L"tabDragScrollMs", json::Value::MakeInt(s_.tabDragScrollMs));
@@ -265,6 +270,7 @@ bool Config::Save() {
     root.Set(L"dualPane", json::Value::MakeBool(s_.dualPane));
     root.Set(L"paneSplit", json::Value::MakeInt(s_.paneSplit));
     root.Set(L"paneVertical", json::Value::MakeBool(s_.paneVertical));
+    root.Set(L"splitMarkThick", json::Value::MakeInt(s_.splitMarkThick));
     root.Set(L"aiEnabled", json::Value::MakeBool(s_.aiEnabled));
     root.Set(L"aiAllowDanger", json::Value::MakeBool(s_.aiAllowDanger));
     root.Set(L"aiTimeoutMs", json::Value::MakeInt(s_.aiTimeoutMs));

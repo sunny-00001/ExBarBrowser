@@ -123,14 +123,53 @@ method: 源码通读（tab_strip* / tab_set / app_tabs / app_commands_tabs / tab
 | 溢出边缘 | 标签硬切在裁切线 | 右缘加 16dp alpha 渐隐遮罩 | 待做 |
 | 拖拽反馈 | 4dp 静态竖线 | 浮层 + 让位动画后，竖线退为辅助（仅外部拖入时显示） | 部分完成（浮层/动画已做，竖线仍在） |
 | 颜色标签 | 26% 全底 + 底部色条 | 深色主题下偏弱；改「左侧 3dp 色条 + 8% 底」 | 待做 |
-| 动效体系 | 全仓无 duration/easing 令牌 | 统一 `kTabAnimMs` 与 ease-out，别各处写死 | 部分完成（标签栏已有 `kTabAnimMs`/`TabAnimDx`；其它栏未统一） |
+| 动效体系 | 全仓无 duration/easing 令牌 | 统一时长/缓动，别各处写死 | 部分完成（标签栏 `TabAnimDx` + 设置项 `tabAnimMs`；其它栏未统一） |
 | 键盘焦点 | 无焦点框 | roving tabindex + 2px `accent` 外框；`WM_UPDATEUISTATE` 控制显隐 | 待做 |
 | 像素对齐 | 1px 线走 `S(1)`，高 DPI 可能发虚 | 分隔线/描边按物理像素对齐 | 待做 |
 | 单标签场景 | 恒显示标签栏 | 加「仅多标签时显示」选项 | 待做 |
 
 ---
 
-## 6. 落地约束（本仓硬规则）
+## 6. 设置项（P0 三项已可配置）
+
+三项动效/交互都做成了设置，而不是写死常量。理由：动效与拖出成窗是**偏好**而非正确性 ——
+有人嫌动画是延迟，有人嫌拖出成窗容易误触；写死就只剩「改代码重编」一条路。
+
+| 键 | 类型 | 范围 | 默认 | 语义 |
+|---|---|---|---|---|
+| `tabAnimMs` | int | 0..400 | 140 | 拖拽重排的让位动画时长。**0 = 关闭动画**（直接换位，即旧行为） |
+| `tabDragGhost` | bool | — | true | 拖动时画跟随光标的浮层（原槽留空）。关掉则只剩插入线 |
+| `tabTearOffDy` | int | 0..80 | 18 | 拖出成窗的垂直磁吸阈值（逻辑像素）。**0 = 关闭拖出成窗**，只留右键菜单 |
+
+**生效时机**：三者都在拖拽的**当帧**读 `Config::Get().s()`，所以「改完下一次拖拽即生效」，
+不需要重启，也不需要重建标签栏。归在 `cfgapply::IsPureData`（不触发整窗布局）。
+
+**为什么分成三个键而不是一个开关**：
+- 「拖动中」的反馈（浮层）与「松手后」的过渡（动画）是两件事，有人只想去掉其中一个。
+- 磁吸阈值必须是数字：能关（0）也能调（18→30 让误触更少），一个 bool 表达不了「调多敏感」。
+
+**落地位置**（五处，缺一处就会「设置里改了没反应」）：
+
+| 环节 | 文件 |
+|---|---|
+| 范围唯一来源 | `settings_bounds.h`（`kTabAnimMsMin/Max`、`kTabTearOffDyMin/Max`） |
+| 字段与默认值 | `config.h`（`Settings::tabAnimMs/tabDragGhost/tabTearOffDy`） |
+| 注册（可写/可夹/可脚本读/界面可见） | `settings_reg_table.cpp` 的 `bar_tab` 组 |
+| 读盘夹取 / 写盘 | `config_io.cpp` 的 `ClampInt` / `root.Set` |
+| 落地分类 | `config_apply.cpp` 的 `IsPureData`（下次拖拽生效） |
+| 消费 | `tab_strip_anim.cpp`（动画时长、浮层开关）、`tab_strip_input.cpp`（磁吸阈值、动画收尾） |
+| 界面单位 | `settings_dialog_layout.cpp` 的 `UnitOf`（毫秒 / 像素） |
+
+**关闭后的行为边界**（写清楚，避免「关了但还留一半」）：
+- `tabAnimMs=0`：重排直接落到最终位置；动画途中改成 0 会立刻收尾（`AnimDx` 走 t=1）。
+- `tabDragGhost=false`：不画浮层，但**原槽仍然留空** —— 留空是「这一格被拿走了」的语义，
+  不是装饰，去掉会让人以为标签还在原位。
+- `tabTearOffDy=0`：不进入 tear-off 态，拖出标签栏只是普通重排；右键菜单的
+  「移到新窗口」不受影响（那是另一条显式入口）。
+
+---
+
+## 7. 落地约束（本仓硬规则）
 
 - 新交互一律走 `CommandBus`（`tab.move.to` / `tab.clone` / `tab.move.window` 已有底座），
   不新开私有消息旁路；`WM_APP_TAB_MOVED` 的转投已存在。
@@ -138,10 +177,12 @@ method: 源码通读（tab_strip* / tab_set / app_tabs / app_commands_tabs / tab
 - 不引第三方库、不写死像素/`RGB(`：尺寸走 `theme_->S()`，颜色走 `theme_` 令牌。
 - 拖拽是脚本不可合成路径，验收只能「人工拖、脚本读状态/截图观察」，不得模拟输入。
 - 与 `REVIEW-TABBAR-RECHECK` 的 S1/S2/M2/M3 分开提交，避免混在一起。
+- **新增设置项必须同时改六处**（见 §6 表格）：漏掉 `config_apply` 会被
+  `config_apply_test` 判红（「可写键既没有落地动作、也没被列为纯数据」）。
 
 ---
 
-## 7. 实施记录
+## 8. 实施记录
 
 ### 2026-11-26 23:35 — 第一批（P0-1 / P0-2 / P0-3）
 
@@ -149,13 +190,45 @@ method: 源码通读（tab_strip* / tab_set / app_tabs / app_commands_tabs / tab
 
 | 文件 | 内容 |
 |---|---|
-| `src/tab_strip.h` | 新增 `kTabAnimMs=140`、`kTabTearOffDy96=18`、纯函数 `TabAnimDx`；`TabStripItem.id`（**稳定身份**，动画按 id 不按下标）；`animFrom_/animStart_/animating_/kAnimTimer`；`dragMouse_/dragGrabDx_/tearOff_/clientH_` |
+| `src/tab_strip.h` | 纯函数 `TabAnimDx`；`TabStripItem.id`（**稳定身份**，动画按 id 不按下标）；`animFrom_/animStart_/animating_/kAnimTimer`；`dragMouse_/dragGrabDx_/tearOff_/clientH_` |
 | `src/tab_strip_anim.cpp`（新增 111 行） | `StartReorderAnim` / `StopReorderAnim` / `AnimDx` / `DrawDragGhost` |
 | `src/tab_strip.cpp` | `SetTabs` 按 id 快照旧 `left`，`Layout`+`EnsureVisible` 后启动动画；`CancelDrag`/`ReloadTheme` 停动画 |
 | `src/tab_strip_layout.cpp` | 缓存 `clientH_`；`ScrollBy` 停动画（滚动与让位是两种位移，不能叠加） |
 | `src/tab_strip_paint.cpp` | 按 `AnimDx` 偏移绘制；拖拽中跳过原槽并画浮层；tear-off 时抑制插入线、整条显示「松开：移到新窗口」 |
 | `src/tab_strip_input.cpp` | `WM_MOUSEMOVE` 更新 `dragMouse_` 并**每帧重绘**（浮层跟手）、判垂直越界；`WM_TIMER` 处理 `kAnimTimer`；`WM_LBUTTONUP` 走 tear-off 提交；`WM_SIZE` 停动画 |
 | `tests/tab_strip_rules_test.cpp` | 新增 `TabAnimDx` 的 7 条断言（起点/终点/夹取/半程值/单调性） |
+
+### 2026-11-26 23:55 — 第二批（P0 三项接入设置项）
+
+**动机**：第一批把时长与阈值写成了头文件常量，用户只能「改代码重编」。它们都是偏好，
+必须可关、可调 —— 于是接进设置系统（见 §6）。
+
+**改动文件**
+
+| 文件 | 内容 |
+|---|---|
+| `src/settings_bounds.h` | `kTabAnimMsMin/Max`（0..400）、`kTabTearOffDyMin/Max`（0..80） |
+| `src/config.h` | `Settings::tabAnimMs=140` / `tabDragGhost=true` / `tabTearOffDy=18`（默认值唯一出处） |
+| `src/settings_reg_table.cpp` | `bar_tab` 组新增三条注册（含中文说明与范围文本） |
+| `src/config_io.cpp` | 读盘 `ClampInt` / `GetBool`；写盘 `root.Set` |
+| `src/config_apply.cpp` | 三者归 `IsPureData`（下次拖拽生效，不触发整窗布局） |
+| `src/settings_dialog_layout.cpp` | `UnitOf`：`tabAnimMs`→毫秒、`tabTearOffDy`→像素 |
+| `src/tab_strip.h` | 删掉 `kTabAnimMs` / `kTabTearOffDy96` 两个常量（默认值改由 `Settings` 持有） |
+| `src/tab_strip_anim.cpp` | 时长与浮层开关当帧读 `Config`；`tabAnimMs<=0` 不起动画、`AnimDx` 走 t=1 |
+| `src/tab_strip_input.cpp` | 磁吸阈值当帧读 `Config`（0 = 关闭）；动画收尾也按当前时长判定 |
+
+**为什么「当帧读」而不是缓存到成员**：三项都只在拖拽路径上读，一次拖拽最多几次读，
+开销可忽略；缓存就得再写一套「设置变更 → 推给标签栏」的同步，那是新的分叉点。
+
+**验证**
+
+- 9 个改动 TU `clang++ -fsyntax-only` 全绿。
+- `config_apply_test`：**全部通过（可写键 67 个，全部有落地归属）** —— 新增 3 键都被归类。
+- `settings_reg_test`：**973 通过 / 0 失败**（含新键的读写与夹取）。
+- `config_roundtrip_test`：**通过 93 / 失败 0**（遍历全部键，写盘→读盘值不变）。
+- **全量构建仍被并发会话阻塞**：`app_commands_misc.cpp`（`ShowHotkeyManager` / `hotkeyManager_`
+  未定义）、`app_layout.cpp`、`app_pane_chips.cpp`（`NavBar::SetPaneCmdFn` 缺失）编译失败，
+  这三个文件都是另一会话的未完成改动，与本批零交集。等它收口后再整窗构建。
 
 **关键取舍**
 
@@ -186,7 +259,7 @@ method: 源码通读（tab_strip* / tab_set / app_tabs / app_commands_tabs / tab
 
 ---
 
-## 8. 验收方法
+## 9. 验收方法
 
 | 要验证什么 | 方法 |
 |---|---|
@@ -195,3 +268,6 @@ method: 源码通读（tab_strip* / tab_set / app_tabs / app_commands_tabs / tab
 | 拖出成窗 | 人工把标签拖离标签栏 > 阈值，确认提示出现、松手开新窗口且源标签关闭 |
 | 不影响既有 | `bash tests/run_all.sh tab`；`python tools/check_components.py` |
 | 视觉 | `python scripts\shot.py out.png`（只读 PrintWindow） |
+| **设置项生效** | `config.set tabAnimMs 0` → 拖一次确认无动画；再设回 140 确认恢复 |
+| **设置项落盘** | `config.get tabAnimMs` / `tabDragGhost` / `tabTearOffDy` 读回等于所设；重启后仍保持 |
+| **关闭语义** | `tabTearOffDy=0` 时拖离标签栏只重排、不开新窗口；`tabDragGhost=false` 时无浮层但原槽留空 |

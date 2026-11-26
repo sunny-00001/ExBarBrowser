@@ -56,3 +56,27 @@ bool SetClipboardText(void* owner, const std::wstring& text) {
     CloseClipboard();
     return true;
 }
+
+std::wstring GetClipboardText(void* owner) {
+    HWND hwnd = static_cast<HWND>(owner);
+    if (!IsClipboardFormatAvailable(CF_UNICODETEXT)) return std::wstring();
+    if (!OpenClipboardRetry(hwnd)) return std::wstring();
+
+    std::wstring out;
+    HANDLE h = GetClipboardData(CF_UNICODETEXT);
+    if (h) {
+        // GlobalLock 而不是直接转指针：剪贴板数据是 GMEM_MOVEABLE，
+        // 没锁就取地址是未定义行为（在 32 位下表现为随机崩溃）。
+        const wchar_t* p = static_cast<const wchar_t*>(GlobalLock(h));
+        if (p) {
+            // 不信任 NUL 位置：剪贴板内容可能被别的程序写坏（缺结尾 NUL）。
+            // 按"最多到这个上限"取，遇到 NUL 停 —— 比 strlen 安全。
+            size_t n = 0;
+            while (n < 0x1000000 && p[n] != L'\0') ++n;   // 16M 字符上限，防跑飞
+            out.assign(p, n);
+            GlobalUnlock(h);
+        }
+    }
+    CloseClipboard();
+    return out;
+}

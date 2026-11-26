@@ -159,7 +159,16 @@ ExBarBrowser_Popup                   WS_POPUP | WS_EX_TOOLWINDOW | CS_DROPSHADOW
 | `sequence_overlay.h/.cpp` | 序列模式总览弹层（打字过滤/导航/派发） | 注入的取数/派发回调 | `theme.h` |
 | `mouse_rules.h/.cpp` | 鼠标规则模型 + 内置默认 + `mouse.json` 解析 + **`CurrentMods()` 唯一实现**（含 AltGr 特判：右 Alt+左 Ctrl 是字符输入，返回 0），因它读 `GetKeyState` 属输入端（R15） | 时序、绘制 | `json.h` |
 | `input_router.h/.cpp` | 键盘/序列/鼠标总路由：单击延迟、双击、长按、滚轮、超时 | 业务状态 | `commands.h`、`mouse_rules.h` |
-| `hotkey_manager.h/.cpp` | 快捷键管理器（筛选/改键/清除/恢复默认） | 键位表实现 | `input_router.h` |
+| `input_router_rows.cpp` | 键位表的**行投影**（`BuildRows`）：keymap + 覆盖 → 管理器要显示的一行行；冲突判定与 `keybinding::Effective` 的先到先得同口径 | 输入热路径 | `key_binding.h` |
+| `hotkey_manager.h/.cpp` | 快捷键管理器（自绘三栏 + 通栏工具栏）的窗口生命周期 / 消息路由 / 主题切换 | 模型、几何、像素 | `input_router.h` |
+| `hotkey_manager_model.cpp` | 管理器模型：行派生（来源 / 冲突对方 / 状态）、筛选项从数据长出、搜索匹配、**排序**（序列键恒沉底）、多选 | 几何、绘制 | `input_router.h` |
+| `hotkey_manager_layout.cpp` | 管理器排布与命中（共用同一份 `rowLayout_` / `toolRects_`）；工具栏按钮表 `ToolbarItems` 的唯一来源 | 绘制、模型 | `ui_draw.h` |
+| `hotkey_manager_draw.cpp` | 管理器绘制（三栏 + 键位芯片 + 表头排序指示 + 状态栏），只用 `ui::` 原语与 `Theme` 令牌 | 几何、交互 | `ui_draw.h` |
+| `hotkey_manager_toolbar_draw.cpp` | 顶部工具栏绘制（四态按钮 + 分组分隔 + 右端统计） | 几何、命中 | `ui_draw.h` |
+| `hotkey_manager_actions.cpp` | 管理器交互**分派**：点到哪儿 → 调哪个动作（点击 / 键盘 / 清除 / 还原） | 捕获状态机、菜单、剪贴板 | `chord.h` |
+| `hotkey_manager_capture.cpp` | 改键捕获与按键录制状态机（捕获 / 冲突待确认 / 录制三态 + 冲突对方查询） | 分派 | `chord.h` |
+| `hotkey_manager_menu.cpp` | 行右键菜单（改键 / 清除 / 还原 / 复制 id / 打开命令面板 / 撤销重做） | 业务逻辑 | `str.h` |
+| `hotkey_manager_clip.cpp` | 撤销/重做栈 + 剪贴板（复制 id / 导出 / 导入，格式与 `settings.json` 的 `hotkeys` 段同构） | 分派 | `clipboard.h`、`json.h` |
 | `prompt.h/.cpp` | 文本输入对话框（书签重命名/新建分类） | 业务 | `theme.h` |
 | `config.h/.cpp` | 设置/会话/最近访问/键位覆盖；`<exe>\data` 路径 | UI | `json.h`、`text_file.h` |
 | `json.h/.cpp` | 极简 JSON（读 keymap/settings/mouse） | 流式/注释 | 标准库 |

@@ -20,6 +20,7 @@
 #include "search_scope.h"         // searchscope::RangeLabel / kRangeCount（范围档位唯一来源）
 #include "settings_bounds.h"      // 整型设置的数值域（与 config_io 的读盘夹取同一份）
 #include "settings_reg_table.h"
+#include "settings_reg_table_readonly.h"   // detail::AppendReadonlyEntries（只读三组）
 #include "settings_reg_valid.h"   // BoolSet / IntSet / StrEnumSet / *Value
 #include "status_segs.h"          // Seg_Count：statusSegs 的取值上界（纯枚举，不拖 UI 依赖）
 #include "theme.h"                // thememode::kSystem / kDark / kLight（档位标识唯一来源）
@@ -162,6 +163,16 @@ const std::vector<Entry>& Table() {
                      [](const Settings& s) { return json::Value::MakeBool(s.showTab); },
                      BoolSet(&m.showTab, L"tab"),
                      L"显示标签栏：关闭后整条隐藏，仍可用快捷键切换标签", L"bar_tab"});
+        // 单标签时隐藏：只在"标签数恰好为 1"时生效，与上面的 tab 开关独立
+        // （tab=false 是永久隐藏，这项是"没必要时不占地方"）。
+        v.push_back({L"hideTabBarWhenSingle", Kind::Bool,
+                     [](const Settings& s) {
+                         return json::Value::MakeBool(s.hideTabBarWhenSingle);
+                     },
+                     BoolSet(&m.hideTabBarWhenSingle, L"hideTabBarWhenSingle"),
+                     L"只有一个标签时隐藏标签栏：多开第二个标签立刻出现"
+                     L"（立即重排整窗）",
+                     L"bar_tab"});
         // 这些值以前散在 Theme 的 static constexpr、nav_metrics.h 与各栏的
         // S(600)/S(520) 里；现在都走注册表：可写、可夹、可脚本读、界面可见。
         v.push_back({L"tabBarHeight", Kind::Int,
@@ -239,16 +250,12 @@ const std::vector<Entry>& Table() {
                      L"关闭标签历史上限（" + RangeText(kClosedTabLimitMin, kClosedTabLimitMax) +
                          L"）：Ctrl+Shift+T 能连续回退几步",
                      L"bar_tab", {}, kClosedTabLimitMin, kClosedTabLimitMax});
-        // ---- 标签栏动效与拖出成窗 ----
-        // 这三项都是"上一轮 P0 做出来的交互"，做成设置而不是写死常量：
-        // 动效与拖出成窗都是**偏好**，不是正确性 —— 有人嫌动画是延迟、
-        // 有人嫌拖出成窗太容易误触。写死就只剩"改代码重编"一条路。
+        // ---- 标签栏动效与拖出成窗（P0 交互做成设置：偏好而非正确性，须可关）----
         v.push_back({L"tabAnimMs", Kind::Int,
                      [](const Settings& s) { return json::Value::MakeInt(s.tabAnimMs); },
                      IntSet(&m.tabAnimMs, L"tabAnimMs", kTabAnimMsMin, kTabAnimMsMax),
-                     L"拖拽重排的让位动画时长（ms，" +
-                         RangeText(kTabAnimMsMin, kTabAnimMsMax) +
-                         L"）：0 = 关闭动画，直接换位；改完下一次拖拽生效",
+                     L"让位动画时长（ms，" + RangeText(kTabAnimMsMin, kTabAnimMsMax) +
+                         L"）：0 = 关闭动画；下一次拖拽生效",
                      L"bar_tab", {}, kTabAnimMsMin, kTabAnimMsMax});
         v.push_back({L"tabDragGhost", Kind::Bool,
                      [](const Settings& s) { return json::Value::MakeBool(s.tabDragGhost); },
@@ -259,9 +266,9 @@ const std::vector<Entry>& Table() {
                      [](const Settings& s) { return json::Value::MakeInt(s.tabTearOffDy); },
                      IntSet(&m.tabTearOffDy, L"tabTearOffDy", kTabTearOffDyMin,
                             kTabTearOffDyMax),
-                     L"拖出成窗的垂直磁吸阈值（逻辑像素，" +
+                     L"拖出成窗磁吸阈值（逻辑像素，" +
                          RangeText(kTabTearOffDyMin, kTabTearOffDyMax) +
-                         L"）：0 = 关闭拖出成窗，只保留右键菜单里的「移到新窗口」",
+                         L"）：0 = 关闭拖出成窗（右键菜单仍可）",
                      L"bar_tab", {}, kTabTearOffDyMin, kTabTearOffDyMax});
 
         // ---- 导航栏 ----
@@ -435,6 +442,16 @@ const std::vector<Entry>& Table() {
                      [](const Settings& s) { return json::Value::MakeBool(s.paneVertical); },
                      BoolSet(&m.paneVertical, L"paneVertical"),
                      L"双栏方向：false 左右并排 / true 上下堆叠（垂直双栏），立即生效", L"pane"});
+        // 分割条两条强调线的粗细：活动侧指示条 + 悬停/拖动加粗线。以前写死 S(2)，
+        // 高 DPI 下太细、低分辨率下偏粗 —— 纯手感值，该能调。
+        v.push_back({L"splitMarkThick", Kind::Int,
+                     [](const Settings& s) { return json::Value::MakeInt(s.splitMarkThick); },
+                     IntSet(&m.splitMarkThick, L"splitMarkThick",
+                            kSplitMarkThickMin, kSplitMarkThickMax),
+                     L"分割条强调线粗细（逻辑像素，" + RangeText(kSplitMarkThickMin,
+                                                              kSplitMarkThickMax) +
+                         L"）：活动侧指示条与悬停线同档（立即生效）",
+                     L"pane", {}, kSplitMarkThickMin, kSplitMarkThickMax});
         // 导航窗格宽度：由拖动侧栏边界写入（唯一写入点是拖拽结束），这里给命令侧
         // 开一个可写入口 —— 否则"把树调宽一点"只能靠拖，AI/脚本完全够不着。
         // 范围取 layout_limits.h：与界面能拖到的区间**同一份**。写死在两处的话，
@@ -718,89 +735,10 @@ const std::vector<Entry>& Table() {
                          L"）：数字框/下拉/字符串框同宽",
                      L"dialog", {}, kSettingsControlWidthMin, kSettingsControlWidthMax});
 
-        // ---- 键位（只读）：写入走 hotkey.set / hotkey.clear / hotkey.reset ----
-        v.push_back({L"hotkeys", Kind::Object,
-                     [](const Settings& s) { return HotkeyValue(s.hotkeyOverrides); }, nullptr,
-                     L"快捷键覆盖（只读：改 data\\keymap.json，或用 hotkey.set 等三条命令）", L"keys"});
-
-        // ---- 窗口几何（只读）----
-        // 直接改 window.x/y 而不改 window.valid，窗口会在下次启动落到奇怪位置；
-        // 而 w/h 只是"上次尺寸"的记录。这类"改了看不见效果"的项不让机器碰。
-        //
-        // 键名带 `window.` 前缀：settings.json 里几何确实嵌在 window 对象下，
-        // 点分路径就是文件里的路径 —— 键名与用户手改文件时看到的完全对应。
-        v.push_back({L"window.max", Kind::Bool,
-                     [](const Settings& s) { return json::Value::MakeBool(s.maximized); }, nullptr,
-                     L"上次是否最大化（只读：下次启动按它恢复，改它当前窗口不变）", L"geometry"});
-        v.push_back({L"window.x", Kind::Int,
-                     [](const Settings& s) { return json::Value::MakeInt(s.winX); }, nullptr,
-                     L"窗口左上角 X（只读：由用户拖拽决定，下次启动生效）", L"geometry"});
-        v.push_back({L"window.y", Kind::Int,
-                     [](const Settings& s) { return json::Value::MakeInt(s.winY); }, nullptr,
-                     L"窗口左上角 Y（只读：由用户拖拽决定，下次启动生效）", L"geometry"});
-        v.push_back({L"window.w", Kind::Int,
-                     [](const Settings& s) { return json::Value::MakeInt(s.winW); }, nullptr,
-                     L"窗口宽（只读：由用户拖拽决定，下次启动生效）", L"geometry"});
-        v.push_back({L"window.h", Kind::Int,
-                     [](const Settings& s) { return json::Value::MakeInt(s.winH); }, nullptr,
-                     L"窗口高（只读：由用户拖拽决定，下次启动生效）", L"geometry"});
-
-        // ---- 会话状态（只读）----
-        // 这些都是"运行时另有一份活状态"的数据：写配置文件不会改变已开着的
-        // 标签、锁定集、书签树。要改它们请用对应命令（tab.* / bmk.*）。
-        v.push_back({L"recentPaths", Kind::StrArray,
-                     [](const Settings& s) { return StrArrayValue(s.recentPaths); }, nullptr,
-                     L"最近访问目录（只读：由导航产生，用 nav.history.clear 清空）", L"session"});
-        v.push_back({L"sessionPaths", Kind::StrArray,
-                     [](const Settings& s) { return StrArrayValue(s.sessionPaths); }, nullptr,
-                     L"上次关闭时的标签路径（只读：用 session.save / session.restore）", L"session"});
-        v.push_back({L"sessionActive", Kind::Int,
-                     [](const Settings& s) { return json::Value::MakeInt(s.sessionActive); }, nullptr,
-                     L"上次的活动标签下标（只读：session.save 写入）", L"session"});
-        v.push_back({L"lockedPaths", Kind::StrArray,
-                     [](const Settings& s) { return StrArrayValue(s.lockedPaths); }, nullptr,
-                     L"锁定的标签路径（只读：用 tab.lock locked=true/false 锁或解锁）", L"session"});
-        v.push_back({L"pinnedPaths", Kind::StrArray,
-                     [](const Settings& s) { return StrArrayValue(s.pinnedPaths); }, nullptr,
-                     L"固定的标签路径（只读：用 tab.pin pinned=true/false 固定或取消）", L"session"});
-        v.push_back({L"namedSessions", Kind::ObjArray,
-                     [](const Settings& s) {
-                         json::Value a = json::Value::MakeArray();
-                         for (const auto& e : s.namedSessions) {
-                             json::Value o = json::Value::MakeObject();
-                             o.Set(L"name", json::Value::MakeStr(e.name));
-                             json::Value ps = json::Value::MakeArray();
-                             for (const auto& p : e.paths) ps.arr.push_back(json::Value::MakeStr(p));
-                             o.Set(L"paths", ps);
-                             a.arr.push_back(std::move(o));
-                         }
-                         return a;
-                     }, nullptr,
-                     L"命名会话（只读：用 session.named.save / .restore / .delete）", L"session"});
-        v.push_back({L"tabMeta", Kind::ObjArray,
-                     [](const Settings& s) { return TabMetaValue(s.tabMeta); }, nullptr,
-                     L"标签改名/颜色（只读：用 tab.rename / tab.color）", L"session"});
-        v.push_back({L"closedTabs", Kind::StrArray,
-                     [](const Settings& s) { return StrArrayValue(s.closedTabs); }, nullptr,
-                     L"关闭历史（只读：用 tab.reopen）", L"session"});
-        // 会话的另外三段此前完全没登记：它们在 settings.json 里真实存在
-        // （sessionSelection / sessionHistory / sessionPane2Paths），但 config.list
-        // 与设置面板都看不见 —— 于是"为什么重启后没选中上次的文件"这类问题
-        // 连现场都调不出来。只读的理由与其它会话项一致：改文件不会改活状态。
-        v.push_back({L"sessionSelection", Kind::StrArray,
-                     [](const Settings& s) { return StrArrayValue(s.sessionSelection); }, nullptr,
-                     L"上次关闭时活动标签的选中项（只读：由关闭流程写入，重启时尽力恢复）",
-                     L"session"});
-        v.push_back({L"sessionHistory", Kind::ObjArray,
-                     [](const Settings& s) { return TabHistoryValue(s.sessionHistory); }, nullptr,
-                     L"每标签的导航历史（只读：session.save 写入；重启时按路径回填）", L"session"});
-        v.push_back({L"sessionPane2Paths", Kind::StrArray,
-                     [](const Settings& s) { return StrArrayValue(s.sessionPane2Paths); }, nullptr,
-                     L"双栏右窗格的路径（只读：与 sessionPaths 下标对齐，空串=当时无右窗格）",
-                     L"session"});
-        v.push_back({L"sessionPane2History", Kind::ObjArray,
-                     [](const Settings& s) { return TabHistoryValue(s.sessionPane2History); },
-                     nullptr, L"右窗格的导航历史（只读：只记录有右窗格的那些标签）", L"session"});
+        // ---- 只读观测面（键位 / 窗口几何 / 会话状态）----
+        // 这三组的 set 一律为空（config.set 拒绝）。与可写偏好分开，是因为
+        // "改了不生效"必须一眼看得出来；内容见 settings_reg_table_readonly.cpp。
+        detail::AppendReadonlyEntries(v);
         return v;
     }();
     return t;

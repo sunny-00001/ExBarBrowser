@@ -1,37 +1,18 @@
-// 快捷键管理器：交互（点击 / 键盘 / 改键 / 清除 / 还原）。
+// 快捷键管理器：交互（点击 / 键盘 / 清除 / 还原）。
 //
 // 【一个动作只有一处实现】点击与键盘走同一个入口：点"编辑键位…"与按回车都调
 // BeginCapture；点"清除"与按 Delete 都调 ClearSelected。各写一份的结局是
 // "点得动、快捷键没反应"（或反过来），而那种缺陷没有任何检查会报。
 //
-// 【写下去之前先说清楚后果】改键会直接落到 settings.json 并立刻 Reload。
-// 所以冲突键要**先问一句**（再按一次确认）、还原全部要**两步确认**——
-// 都是为了让"不可逆/难察觉"的动作有一个明确的停顿点。
+// 【这一层只做分派】改键捕获的状态机在 hotkey_manager_capture.cpp，
+// 右键菜单在 hotkey_manager_menu.cpp，撤销/剪贴板在 hotkey_manager_clip.cpp。
+// 留在这里的是"点到哪儿 → 调哪个动作"的判定本身。
 #include "hotkey_manager.h"
 
 #include <algorithm>
 
 #include "chord.h"
 #include "str.h"
-
-namespace {
-
-// 查找同键的另一条命令（不同 setting、不是序列、不是未绑定）。
-// 返回它的标题；空 = 没冲突。
-std::wstring PeerOf(const std::vector<BindingRow>& rows, const std::wstring& selfSetting,
-                    const KeyChord& c) {
-    const std::wstring want = chord::Format(c);
-    for (const auto& r : rows) {
-        if (r.isSequence || r.unbound) continue;
-        if (r.setting == selfSetting) continue;
-        KeyChord other;
-        if (!chord::Parse(r.key, &other)) continue;
-        if (chord::Format(other) == want) return r.title;
-    }
-    return std::wstring();
-}
-
-}  // namespace
 
 std::wstring HotkeyManager::HeldModsText() const {
     // 只读修饰键的**当前按住状态**用于回显。最终写下去的键仍由 chord::FromKey
@@ -58,9 +39,29 @@ void HotkeyManager::OnClick(int x, int y) {
     // 反过来写（先无条件 CancelCapture）会出现两个错：点「取消改键」会立刻
     // 重新进入捕获，点录制按钮会先停再开 —— 两处都是"按了没反应"的观感。
 
-    // 1) 录制按钮
+    // 0) 工具栏（通栏，最优先：它压在三栏之上）
+    const int tool = HitTool(x, y);
+    if (tool != kToolNone) {
+        OnTool(tool);
+        return;
+    }
+
+    // 0a) 录制按钮与搜索框（都在工具栏里，但不是"动作按钮"）。
+    //
+    // 搜索框的点击不能在这里吞掉：它必须落到那个真正的 EDIT 上，否则
+    // 用户点搜索框不会出现插入光标。所以这里只处理录制按钮，搜索框放行。
     if (PtInRect(&recordBtn_, pt)) {
         ToggleRecording();
+        return;
+    }
+    if (PtInRect(&searchField_, pt)) return;   // 交给 EDIT 自己处理
+
+    // 0b) 表头：点列标题排序。表头不是"行"，所以在判行之前处理。
+    const int sortCol = HitSortHeader(x, y);
+    if (sortCol >= 0) {
+        if (recording_) StopRecording();
+        if (capturing_) CancelCapture();
+        SetSort(static_cast<SortKey>(sortCol));
         return;
     }
 
@@ -89,29 +90,59 @@ void HotkeyManager::OnClick(int x, int y) {
         break;
     }
 
-    // 3) 左栏筛选项
+    // 3) 左栏筛选项（前两组是表切换：组合键 / 序列键）
     const int gi = HitGroup(x, y);
     if (gi >= 0 && gi < static_cast<int>(groups_.size())) {
         if (recording_) StopRecording();
         if (capturing_) CancelCapture();
-        const std::wstring id = groups_[static_cast<size_t>(gi)].id;
-        if (id != group_) {
-            group_ = id;
-            status_.clear();
-            statusError_ = false;
-            Refilter();
-            Layout();
-            InvalidateRect(hwnd_, nullptr, FALSE);
-        }
+        SetGroup(groups_[static_cast<size_t>(gi)].id);   // 内部同步 tableType_
         return;
     }
 
     // 4) 行。点键位芯片 = 直接改这一行的键（与 VS Code 点 Keybinding 单元格同款），
-    //    点行的别处只是选中。
+    //    点行的别处只是选中。Ctrl/Shift 走多选。
     const int vi = HitRow(x, y);
     if (vi >= 0) {
         if (recording_) StopRecording();
         if (capturing_) CancelCapture();
+
+        const std::wstring setting = rows_[static_cast<size_t>(view_[static_cast<size_t>(vi)])].src.setting;
+        const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+
+        if (shift && anchorView_ >= 0) {
+            // Shift 连选：从锚点到当前行整段加入多选（不清空已有的 ——
+            // 那才是列表控件的常规语义；清空的话第二次 Shift 点击会丢掉第一段）。
+            const int a = std::min(anchorView_, vi);
+            const int b = std::max(anchorView_, vi);
+            for (int k = a; k <= b && k < static_cast<int>(view_.size()); ++k) {
+                const std::wstring s = rows_[static_cast<size_t>(view_[static_cast<size_t>(k)])].src.setting;
+                if (!IsSelectedSetting(s)) multiSel_.push_back(s);
+            }
+            selSetting_ = setting;
+            SelectViewIndex(vi);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+        if (ctrl) {
+            // Ctrl 点击 = 切换这一行的多选状态（不移动光标）。
+            bool removed = false;
+            for (size_t k = 0; k < multiSel_.size(); ++k) {
+                if (multiSel_[k] == setting) {
+                    multiSel_.erase(multiSel_.begin() + static_cast<long>(k));
+                    removed = true;
+                    break;
+                }
+            }
+            if (!removed) multiSel_.push_back(setting);
+            anchorView_ = vi;
+            SelectViewIndex(vi);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+
+        // 普通点击：清掉多选，回到单选。
+        multiSel_.clear();
         SelectViewIndex(vi);
         const RowLayout& rl = rowLayout_[static_cast<size_t>(vi)];
         if (PtInRect(&rl.chip, pt)) {
@@ -176,13 +207,17 @@ void HotkeyManager::OnKeyDown(UINT vk) {
     case VK_UP:
         if (!view_.empty()) {
             const int vi = SelectedViewIndex();
-            SelectViewIndex(vi <= 0 ? 0 : vi - 1);
+            const int next = vi <= 0 ? 0 : vi - 1;
+            if (!(GetKeyState(VK_SHIFT) & 0x8000)) multiSel_.clear();
+            SelectViewIndex(next);
         }
         return;
     case VK_DOWN:
         if (!view_.empty()) {
             const int vi = SelectedViewIndex();
-            SelectViewIndex(vi < 0 ? 0 : std::min(static_cast<int>(view_.size()) - 1, vi + 1));
+            const int next = vi < 0 ? 0 : std::min(static_cast<int>(view_.size()) - 1, vi + 1);
+            if (!(GetKeyState(VK_SHIFT) & 0x8000)) multiSel_.clear();
+            SelectViewIndex(next);
         }
         return;
     case VK_HOME:
@@ -200,6 +235,11 @@ void HotkeyManager::OnKeyDown(UINT vk) {
     case VK_RETURN:
         BeginCapture();
         return;
+    case VK_SPACE:
+        // 空格 = 改键（VS Code 的 Enter 语义 + 资源管理器的"空格预览"位置，
+        // 这里选改键：面板里空格没有别的用途，而改键是最常用的动作）。
+        BeginCapture();
+        return;
     case VK_DELETE:
         ClearSelected();
         return;
@@ -213,11 +253,67 @@ void HotkeyManager::OnKeyDown(UINT vk) {
         if (searchEdit_) SetFocus(searchEdit_);
         return;
     }
+    case 'A':
+        // Ctrl+A = 全选可见行。
+        if (GetKeyState(VK_CONTROL) & 0x8000) {
+            SelectAllVisible();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+        break;
+    case 'Z':
+        // Ctrl+Z = 撤销；Ctrl+Shift+Z = 重做（与 VS Code / Photoshop 同手势）。
+        if (GetKeyState(VK_CONTROL) & 0x8000) {
+            if (GetKeyState(VK_SHIFT) & 0x8000) RedoLast();
+            else UndoLast();
+            return;
+        }
+        break;
+    case 'Y':
+        if (GetKeyState(VK_CONTROL) & 0x8000) {
+            RedoLast();   // Ctrl+Y 是 Windows 上的重做，一并支持
+            return;
+        }
+        break;
+    case 'C':
+        if (GetKeyState(VK_CONTROL) & 0x8000) {
+            CopySelectedIds();
+            return;
+        }
+        break;
     case VK_ESCAPE:
+        // Esc 的语义分三层：捕获中 → 取消捕获；有搜索词 → 清搜索；
+        // 都没有 → 关窗。一层到底会让"想清搜索"变成"窗口没了"。
+        if (!query_.empty()) {
+            query_.clear();
+            SyncSearchBox();
+            Refilter();
+            Layout();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+        if (!multiSel_.empty()) {
+            ClearMultiSelection();
+            return;
+        }
         PostMessageW(hwnd_, WM_CLOSE, 0, 0);
         return;
     default:
         break;
+    }
+}
+
+void HotkeyManager::OnTool(int id) {
+    switch (id) {
+    case kToolEdit: BeginCapture(); return;
+    case kToolClear: ClearSelected(); return;
+    case kToolReset: ResetSelected(); return;
+    case kToolUndo: UndoLast(); return;
+    case kToolRedo: RedoLast(); return;
+    case kToolCopyId: CopySelectedIds(); return;
+    case kToolExport: ExportToClipboard(); return;
+    case kToolImport: ImportFromClipboard(); return;
+    default: break;
     }
 }
 
@@ -234,124 +330,6 @@ void HotkeyManager::OnTimer(UINT_PTR id) {
 
 // ---------------------------------------------------------------- 录制
 
-void HotkeyManager::ToggleRecording() {
-    if (recording_) {
-        StopRecording();
-        return;
-    }
-    CancelCapture();
-    recording_ = true;
-    // 进录制就清空搜索词：录到的是"新的筛选条件"，接着上一轮的文字只会
-    // 让结果为空，看起来像"按了没反应"。
-    query_.clear();
-    SyncSearchBox();
-    Refilter();
-    Layout();
-    SetFocus(hwnd_);   // 键盘必须落在本窗口，否则录不到键
-    InvalidateRect(hwnd_, nullptr, FALSE);
-}
-
-void HotkeyManager::StopRecording() {
-    if (!recording_) return;
-    recording_ = false;
-    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
-}
-
-// ---------------------------------------------------------------- 改键
-
-void HotkeyManager::BeginCapture() {
-    const Row* row = Selected();
-    if (!row) {
-        SetStatus(L"先在列表里选一条命令", true);
-        return;
-    }
-    if (capturing_ && captureSetting_ == row->src.setting) return;
-    if (row->sequence) {
-        // 序列键要改状态机（多键 + 超时 + 唯一匹配），不是"换个字符串"。
-        // 说清去处，不让人在这里反复试。
-        SetStatus(L"序列键请改 data/keymap.json 的 sequences（需要多键状态机）", true);
-        return;
-    }
-    if (!row->src.implemented) {
-        SetStatus(L"该命令在当前版本未实现，改键不会生效", true);
-        return;
-    }
-    if (recording_) StopRecording();
-    capturing_ = true;
-    captureSetting_ = row->src.setting;
-    conflictPending_ = false;
-    status_.clear();
-    statusError_ = false;
-    SetFocus(hwnd_);   // 键盘必须落在本窗口，否则捕获不到
-    const int vi = SelectedViewIndex();
-    if (vi >= 0) EnsureVisible(vi);
-    InvalidateRect(hwnd_, nullptr, FALSE);
-}
-
-void HotkeyManager::CancelCapture() {
-    if (!capturing_) return;
-    capturing_ = false;
-    captureSetting_.clear();
-    conflictPending_ = false;
-    pendingPeer_.clear();
-    InvalidateRect(hwnd_, nullptr, FALSE);
-}
-
-void HotkeyManager::CommitCapture(const KeyChord& c) {
-    if (!capturing_) return;
-    const std::wstring key = chord::Format(c);
-    const std::wstring setting = captureSetting_;
-
-    if (chord::IsReserved(c)) {
-        // 系统先吃掉的键，注册了也轮不到本程序。这里**不写**，否则用户会得到
-        // 一条"看起来绑上了、按下去毫无反应"的记录 —— 那是本项目最不能容忍的谎。
-        MessageBeep(MB_ICONWARNING);
-        SetStatus(L"该组合被系统占用（" + key + L"），换一个", true);
-        conflictPending_ = false;
-        InvalidateRect(hwnd_, nullptr, FALSE);
-        return;
-    }
-
-    // 已经在等确认、且按的还是同一个键 → 就这么绑。
-    if (conflictPending_ && pendingChord_ == c) {
-        conflictPending_ = false;
-    } else {
-        const std::wstring peer = PeerOf(router_->Rows(), setting, c);
-        if (!peer.empty()) {
-            // 冲突键先拦住一次。本程序的规则是"先到先得"：绑上去之后**另一条**
-            // 会永久按不出来，而界面上的"冲突"两个字远不足以让人意识到这件事。
-            conflictPending_ = true;
-            pendingChord_ = c;
-            pendingPeer_ = peer;
-            MessageBeep(MB_ICONWARNING);
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            return;
-        }
-    }
-
-    std::wstring command;
-    for (const Row& r : rows_) {
-        if (r.src.setting == setting) {
-            command = r.src.command;
-            break;
-        }
-    }
-    capturing_ = false;
-    captureSetting_.clear();
-    pendingPeer_.clear();
-    if (command.empty()) return;
-
-    if (!router_->SetKeyForCommand(command, key)) {
-        SetStatus(L"改键失败：命令不可绑键", true);
-        return;
-    }
-    RebuildRows();
-    RebuildGroups();
-    Refilter();
-    Layout();
-    SetStatus(L"已绑定：" + command + L" → " + key);
-}
-
 void HotkeyManager::ClearSelected() {
     const Row* row = Selected();
     if (!row) {
@@ -367,17 +345,20 @@ void HotkeyManager::ClearSelected() {
         return;
     }
     const std::wstring command = row->src.command;
+    const std::wstring setting = row->src.setting;
+    const std::wstring oldKey = row->custom ? row->src.key : std::wstring();
     if (!router_->SetKeyForCommand(command, std::wstring())) {
         SetStatus(L"清除失败：命令不可绑键", true);
         return;
     }
+    PushUndo({setting, oldKey, kHotkeyDisabled});
     RebuildRows();
     RebuildGroups();
     Refilter();
     Layout();
     // 说清"清除"到底是什么：写的是解绑哨兵，不是删掉覆盖项 ——
     // 所以它不会自己回落到默认键（那正是"清不掉"的老问题）。
-    SetStatus(L"已解绑：" + command + L"（可用「还原此项默认」恢复默认键）");
+    SetStatus(L"已解绑：" + command + L"（「还原」可恢复默认键，Ctrl+Z 可撤销）");
 }
 
 void HotkeyManager::ResetSelected() {
@@ -397,15 +378,19 @@ void HotkeyManager::ResetSelected() {
         return;
     }
     const std::wstring command = row->src.command;
+    const std::wstring setting = row->src.setting;
+    const std::wstring oldKey = row->custom ? row->src.key : kHotkeyDisabled;
     if (!router_->ResetKeyForCommand(command)) {
         SetStatus(L"还原失败：命令不可绑键", true);
         return;
     }
+    // 还原也是"改动"：撤销要能回到还原之前那个自定义键。
+    PushUndo({setting, oldKey, std::wstring()});
     RebuildRows();
     RebuildGroups();
     Refilter();
     Layout();
-    SetStatus(L"已还原默认：" + command);
+    SetStatus(L"已还原默认：" + command + L"（Ctrl+Z 可撤销）");
 }
 
 void HotkeyManager::ResetAll() {
@@ -422,6 +407,8 @@ void HotkeyManager::ResetAll() {
     KillTimer(hwnd_, kTimerReset);
     resetArmed_ = false;
     router_->ResetDefaults();
+    undo_.clear();   // 全量还原之后旧撤销步已无意义（它们指向的覆盖项都没了）
+    redo_.clear();
     RebuildRows();
     RebuildGroups();
     Refilter();

@@ -26,6 +26,10 @@ ico::IconId StatusSegmentIcon(int seg) {
     case Seg_Type: return ico::IconId::Tag;
     case Seg_Ai: return ico::IconId::Channel;   // AI 通道：信号波，和状态栏其它段不撞
     case Seg_Undo: return ico::IconId::Undo;    // 撤销历史：回退箭头，与"可撤 N 步"同义
+    // 双栏协同 chip：必须与"复制/移动"本身同义，不能借用 Folder/Export 这类
+    // 泛用字形（那会和 Seg_Fld 撞成一样）。图标本身在 icon_glyph.h。
+    case Seg_CopyPane: return ico::IconId::CopyToPane;
+    case Seg_MovePane: return ico::IconId::MoveToPane;
     default: return ico::IconId::None;
     }
 }

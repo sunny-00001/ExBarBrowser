@@ -250,6 +250,9 @@ struct Settings {
     // 全都挂在槽位上，方向只决定**这两个槽位怎么摆** —— 所以切方向不丢状态。
     // paneSplit 的含义随方向变：左右=左栏宽度百分比，上下=上栏高度百分比。
     bool paneVertical = false;
+    // 双栏分割条上两条强调线的粗细（逻辑像素）：活动侧指示条与悬停/拖动加粗线。
+    // 以前写死 S(2) —— 高 DPI 下太细、低分辨率下偏粗，是纯手感值。
+    int splitMarkThick = 2;   // 分割条强调线粗细（1..6）
 
     // 窗口几何
     bool hasGeometry = false;
@@ -342,6 +345,22 @@ struct Settings {
     // 的折中值该由调用方按自己的作业耗时决定。与 aiTimeoutMs（管道超时）语义不同。
     int jobMachineTimeoutMs = 120000;  // 机器作业超时（1000..600000）
 };
+
+// 标签栏此刻是否应该显示。
+//
+// 【为什么是一个函数而不是多处写内联条件】这个判断有多个使用点（Layout 的
+// 栏高、LayoutKey 的几何指纹、Layout 里的 ShowWindow、ChromeHeight 的两处
+// 调用、启动期建树的高度）。各写一遍条件，只要有一处漏了"单标签隐藏"，
+// 就会出现"栏藏起来了但高度还留着"或"高度收了但窗口没藏" —— 两种都是
+// 看不见内容的空洞。语义只在这里定义一次，改规则只改这里。
+//
+// tabCount 由调用方给（Config 不知道标签集）：传 0 视为"还没建标签"，
+// 此时按 showTab 走 —— 启动期不该因为"暂时 0 个标签"而把栏藏掉。
+inline bool TabBarVisible(const Settings& s, int tabCount) {
+    if (!s.showTab) return false;
+    if (s.hideTabBarWhenSingle && tabCount == 1) return false;
+    return true;
+}
 
 class Config {
 public:

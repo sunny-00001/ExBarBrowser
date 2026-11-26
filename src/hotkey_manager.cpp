@@ -1,246 +1,308 @@
+// 快捷键管理器：窗口生命周期与消息路由。
+//
+// 【这个文件只管"窗口活着"这件事】模型在 *_model、几何在 *_layout、像素在
+// *_draw、动作在 *_actions。这里只做三件：建/销毁窗口、把消息分派给那四个、
+// 以及**主题切换**（那是窗口级的事，不属于任何一栏）。
+//
+// 分层理由与设置对话框一致（见 settings_dialog.cpp 顶部）：模型与绘制混在一起，
+// 就会出现"点到的地方和画出来的地方不是同一处"——这种错在界面上表现为
+// "点键位芯片没反应、点下一行反而开始改键"，极难查。
 #include "hotkey_manager.h"
 
 #include "platform_win.h"
-
-#include "chord.h"
-#include "commands.h"
+#include "str.h"
+#include "ui_draw.h"
 
 #include <commctrl.h>
 
-namespace {
+bool HotkeyManager::Create(HWND owner, const Theme& theme, InputRouter& router) {
+    if (hwnd_) return true;
+    owner_ = owner;
+    theme_ = &theme;
+    router_ = &router;
 
-// 类名由 identity.h 统一给出（规则 B1）
-using id::kHotkeysClass;
+    // CS_DBLCLKS：双击行 = 开始改键（鼠标用户的第二条路，与回车等价）。
+    // 不给这个类风格，WM_LBUTTONDBLCLK 根本不会来 —— 系统会把第二次按下
+    // 当普通按下再发一次，双击就成了"选中两次"。
+    if (!win::RegisterClassOnce(id::kHotkeysClass, WndProc, CS_DBLCLKS)) return false;
 
-struct State {
-    HWND hwnd = nullptr;
-    HWND list = nullptr;
-    HWND scope = nullptr;
-    HWND hint = nullptr;
-    const Theme* theme = nullptr;
-    InputRouter* router = nullptr;
-    bool capturing = false;
-    std::wstring captureCommand;
-    std::vector<BindingRow> rows;
-};
+    const int w = theme.S(1120);
+    const int h = theme.S(720);
+    RECT orc{};
+    if (owner) GetWindowRect(owner, &orc);
+    if (orc.right - orc.left <= 0) {
+        RECT wa{};
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+        orc = wa;
+    }
+    const int x = orc.left + ((orc.right - orc.left) - w) / 2;
+    const int y = orc.top + ((orc.bottom - orc.top) - h) / 2;
 
-State* g_state = nullptr;
+    hwnd_ = win::CreatePopup(id::kHotkeysClass, owner, this, 0,
+                             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, w, h, L"快捷键管理器");
+    if (!hwnd_) return false;
 
-}  // namespace
+    ApplyDarkTitleBar(hwnd_, theme.dark);
+    AllowDarkForWindow(hwnd_, theme.dark);
 
-// 类注册需要真实 WndProc，所以先声明（以前是注册 DefWindowProcW 再事后替换 —— 
-// 那不是必要手段，只是跟着上一份抄的结果）。
-LRESULT CALLBACK HotkeyProc(HWND h, UINT m, WPARAM w, LPARAM l);
-
-namespace {
-
-void RegisterClassOnce() { win::RegisterClassOnce(kHotkeysClass, HotkeyProc); }
-
-void SetSubItem(HWND list, int row, int col, const std::wstring& text) {
-    LVITEMW item{};
-    item.mask = LVIF_TEXT;
-    item.iItem = row;
-    item.iSubItem = col;
-    item.pszText = const_cast<wchar_t*>(text.c_str());
-    SendMessageW(list, LVM_SETITEMTEXTW, static_cast<WPARAM>(row),
-                 reinterpret_cast<LPARAM>(&item));
-}
-
-void FillList(State* st) {
-    if (!st || !st->list) return;
-    SendMessageW(st->list, LVM_DELETEALLITEMS, 0, 0);
-
-    int filter = static_cast<int>(SendMessageW(st->scope, LB_GETCURSEL, 0, 0));
-    std::wstring scope;
-    if (filter > 0) {
-        wchar_t buf[64] = L"";
-        SendMessageW(st->scope, LB_GETTEXT, static_cast<WPARAM>(filter),
-                     reinterpret_cast<LPARAM>(buf));
-        scope = buf;
+    // 搜索框是真 EDIT（有输入法、撤销、Ctrl+A）—— 自绘的假输入框这些都没有。
+    searchEdit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0,
+                                  10, 10, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (searchEdit_) {
+        SendMessageW(searchEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(theme.font), TRUE);
+        // 原生 EDIT 自己不会跟深色主题走（它画的是系统白底），必须显式套 SubApp。
+        win::ThemeControl(searchEdit_, theme.dark, L"CFD");
+        SetWindowTextW(searchEdit_, kSearchPlaceholder);
+        SetWindowSubclass(searchEdit_, SearchSub, 1, reinterpret_cast<DWORD_PTR>(this));
     }
 
-    int row = 0;
-    for (const auto& r : st->rows) {
-        if (!scope.empty() && r.scope != scope) continue;
-        LVITEMW it{};
-        it.mask = LVIF_TEXT | LVIF_PARAM;
-        it.iItem = row;
-        it.lParam = reinterpret_cast<LPARAM>(&r);
-        it.pszText = const_cast<wchar_t*>(r.title.c_str());
-        SendMessageW(st->list, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&it));
+    RebuildRows();
+    RebuildGroups();
+    Refilter();
+    Layout();
+    return true;
+}
 
-        std::wstring key = r.key.empty() ? L"（未设置）" : r.key;
-        if (r.isSequence) key = L"序列 " + r.key;
-        SetSubItem(st->list, row, 1, r.scope);
-        SetSubItem(st->list, row, 2, key);
-        std::wstring status = !r.implemented ? L"未实现"
-                              : r.reserved  ? L"系统占用"
-                              : r.conflict  ? L"冲突"
-                                            : L"可用";
-        SetSubItem(st->list, row, 3, status);
-        ++row;
+void HotkeyManager::Show() {
+    if (!hwnd_) return;
+    // 每次打开都重读一次：面板可能关了又开，期间 AI / 命令面板改过键位。
+    OnKeymapChangedExternally();
+    ShowWindow(hwnd_, SW_SHOWNORMAL);
+    SetForegroundWindow(hwnd_);
+    // 焦点落在搜索框：这个窗口最常见的第一个动作是"找一条命令"。
+    // 想直接按键盘筛选的话，搜索框右边那颗录制按钮就是干这个的。
+    if (searchEdit_) SetFocus(searchEdit_);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void HotkeyManager::ReloadTheme() {
+    if (!hwnd_ || !theme_) return;
+    ApplyDarkTitleBar(hwnd_, theme_->dark);
+    AllowDarkForWindow(hwnd_, theme_->dark);
+    if (searchEdit_) {
+        SendMessageW(searchEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(theme_->font), TRUE);
+        win::ThemeControl(searchEdit_, theme_->dark, L"CFD");
     }
-    wchar_t head[128];
-    swprintf(head, 128, L"共 %d 条（筛选后 %d 条）", static_cast<int>(st->rows.size()), row);
-    SetWindowTextW(st->hint, head);
+    // 字体换了 → 行高与键位芯片的宽度都可能变，必须重排，不能只重绘。
+    Layout();
+    InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
-BindingRow* SelectedRow(State* st) {
-    if (!st || !st->list) return nullptr;
-    int idx = ListView_GetNextItem(st->list, -1, LVNI_SELECTED);
-    if (idx < 0) return nullptr;
-    LVITEMW it{};
-    it.mask = LVIF_PARAM;
-    it.iItem = idx;
-    if (!SendMessageW(st->list, LVM_GETITEMW, 0, reinterpret_cast<LPARAM>(&it))) return nullptr;
-    return reinterpret_cast<BindingRow*>(it.lParam);
+void HotkeyManager::OnKeymapChangedExternally() {
+    if (!hwnd_) return;
+    RebuildRows();
+    RebuildGroups();
+    Refilter();
+    Layout();
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void BeginCapture(State* st) {
-    BindingRow* row = SelectedRow(st);
-    if (!row) {
-        MessageBoxW(st->hwnd, L"请先在列表里选择一条命令。", L"快捷键管理器", MB_ICONINFORMATION);
-        return;
+bool HotkeyManager::Visible() const { return hwnd_ && IsWindowVisible(hwnd_); }
+
+// ---------------------------------------------------------------- 窗口过程
+
+LRESULT CALLBACK HotkeyManager::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    // 与 settings_dialog 同一约定：this 走 lpCreateParams，在 WM_NCCREATE 里落进
+    // GWLP_USERDATA。CreatePopup 那边用同一个窗口消息传 —— 两处必须一致，
+    // 否则"有的窗口过程在 WM_NCCREATE 里就要用 this" 的那个会拿到空指针。
+    if (m == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(l);
+        SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+        return DefWindowProcW(h, m, w, l);
     }
-    if (row->isSequence) {
-        MessageBoxW(st->hwnd, L"序列键请在 keymap.json 中编辑（序列需要多键状态机）。",
-                    L"快捷键管理器", MB_ICONINFORMATION);
-        return;
-    }
-    if (!row->implemented) {
-        MessageBoxW(st->hwnd, L"该命令在当前版本未实现，改键不会生效。", L"快捷键管理器",
-                    MB_ICONWARNING);
-        return;
-    }
-    st->capturing = true;
-    st->captureCommand = row->command;
-    SetWindowTextW(st->hint, L"请按下新的组合键（Esc 取消）…");
-    SetFocus(st->hwnd);
+    auto* self = GetThis<HotkeyManager>(h);
+    if (!self) return DefWindowProcW(h, m, w, l);
+    return self->Handle(h, m, w, l);
 }
 
-void EndCapture(State* st) {
-    st->capturing = false;
-    st->captureCommand.clear();
-    FillList(st);
-}
-
-void RefreshRows(State* st) {
-    st->rows = st->router->Rows();
-    FillList(st);
-}
-
-}  // namespace
-
-bool HotkeyManagerVisible() { return g_state && g_state->hwnd && IsWindowVisible(g_state->hwnd); }
-
-LRESULT CALLBACK HotkeyProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    State* st = g_state;
+LRESULT HotkeyManager::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_ERASEBKGND:
-        return 1;
-    case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC dc = BeginPaint(h, &ps);
-        RECT rc;
-        GetClientRect(h, &rc);
-        if (st && st->theme) FillRect(dc, &rc, st->theme->brBar);
-        EndPaint(h, &ps);
-        return 0;
+        return 1;   // 全部自绘（ui::PaintBuffered 已经铺过底）
+    case WM_CTLCOLOREDIT: {
+        // 不处理这条消息，搜索框就是系统白底 —— 浅色主题下从灰底框里凸出来一块白。
+        if (!theme_) break;
+        HDC dc = reinterpret_cast<HDC>(w);
+        SetBkColor(dc, theme_->barAlt);
+        SetTextColor(dc, searchPlaceholder_ ? theme_->sub : theme_->text);
+        return theme_->brBarAlt ? reinterpret_cast<LRESULT>(theme_->brBarAlt) : 0;
     }
+    case WM_PAINT:
+        Paint(h);
+        return 0;
     case WM_SIZE:
-        if (st && st->list) {
-            // 全部按客户区重排：按钮以前只在创建时按"外框高度"放一次，WM_SIZE 不管它们，
-            // 结果按钮压在列表最后几行上（列表底边 504、按钮 480..510）。
-            RECT rc;
-            GetClientRect(h, &rc);
-            const int pad = st->theme->S(12);
-            const int leftW = st->theme->S(150);
-            const int btnH = st->theme->S(30);
-            const int btnY = rc.bottom - pad - btnH;
-            const int hintY = btnY - st->theme->S(8) - st->theme->S(20);
-
-            int bx = pad;
-            for (int id : {1001, 1002, 1003, 1004}) {
-                HWND b = GetDlgItem(h, id);
-                if (!b) continue;
-                const int btnW = (id == 1001 || id == 1003) ? st->theme->S(100)
-                                                            : st->theme->S(70);
-                MoveWindow(b, bx, btnY, btnW, btnH, TRUE);
-                bx += btnW + st->theme->S(8);
+        Layout();
+        InvalidateRect(h, nullptr, FALSE);
+        return 0;
+    case WM_GETMINMAXINFO: {
+        // 最小尺寸由三栏常量反推，不写死"手感值"：写死的数与布局脱钩之后，
+        // 后果不是难看，而是右栏被压成一条缝、说明看不见 —— 没有任何检查会报。
+        if (!theme_) return 0;
+        auto* mmi = reinterpret_cast<MINMAXINFO*>(l);
+        int cw = 0;
+        int ch = 0;
+        MinClientSize(*theme_, &cw, &ch);
+        RECT fr{0, 0, cw, ch};
+        AdjustWindowRectEx(&fr, static_cast<DWORD>(GetWindowLongPtrW(h, GWL_STYLE)), FALSE,
+                           static_cast<DWORD>(GetWindowLongPtrW(h, GWL_EXSTYLE)));
+        if (mmi->ptMinTrackSize.x < fr.right - fr.left) mmi->ptMinTrackSize.x = fr.right - fr.left;
+        if (mmi->ptMinTrackSize.y < fr.bottom - fr.top) mmi->ptMinTrackSize.y = fr.bottom - fr.top;
+        return 0;
+    }
+    case WM_COMMAND: {
+        if (searchEdit_ && l == reinterpret_cast<LPARAM>(searchEdit_) && HIWORD(w) == EN_CHANGE) {
+            // 只在这里读控件文本（缓存到 searchText_），别处一律读缓存：
+            // 控件身上挂着子类回调，回调里再给控件发 WM_GETTEXT 就是递归。
+            const std::wstring raw = SearchRawText();
+            searchPlaceholder_ = str::IEquals(raw, kSearchPlaceholder) || raw.empty();
+            searchText_ = raw;
+            query_ = searchPlaceholder_ ? std::wstring() : str::Trim(raw);
+            Refilter();
+            // 可见行变了 → 每一行的矩形都得重算。漏这一步的表现不是"难看"，
+            // 而是"命中判定按新行、绘制按旧行"。
+            Layout();
+            InvalidateRect(h, nullptr, FALSE);
+            return 0;
+        }
+        break;
+    }
+    case WM_MOUSEWHEEL:
+        ScrollBy(GET_WHEEL_DELTA_WPARAM(w));
+        return 0;
+    case WM_MOUSEMOVE: {
+        const int x = GET_X_LPARAM(l);
+        const int y = GET_Y_LPARAM(l);
+        const int row = HitRow(x, y);
+        const int grp = HitGroup(x, y);
+        const int tool = HitTool(x, y);
+        const int sortHd = HitSortHeader(x, y);
+        const POINT pt{x, y};
+        const bool rec = PtInRect(&recordBtn_, pt) != FALSE;
+        if (row != hoverRow_ || grp != hoverGroup_ || rec != hoverRecord_ || tool != hoverTool_ ||
+            sortHd != hoverSort_) {
+            hoverRow_ = row;
+            hoverGroup_ = grp;
+            hoverRecord_ = rec;
+            hoverTool_ = tool;
+            hoverSort_ = sortHd;
+            InvalidateRect(h, nullptr, FALSE);
+        }
+        // 工具栏按钮的悬停提示落到状态栏 —— 按钮上写不下的解释放这里，
+        // 而不是做成 tooltip 弹窗（弹窗会挡住按钮本身）。
+        if (tool != kToolNone) {
+            int n = 0;
+            const ToolButton* items = ToolbarItems(&n);
+            for (int i = 0; i < n; ++i) {
+                if (items[i].id == tool && items[i].tip && *items[i].tip) {
+                    if (status_ != items[i].tip) SetStatus(items[i].tip);
+                    break;
+                }
             }
-            MoveWindow(st->hint, pad, hintY, rc.right - pad * 2, st->theme->S(20), TRUE);
-
-            const int listH = hintY - pad;
-            MoveWindow(st->scope, pad, pad, leftW, listH, TRUE);
-            MoveWindow(st->list, pad + leftW + pad, pad, rc.right - leftW - pad * 3, listH, TRUE);
+        }
+        if (!tracking_) {
+            // 自绘控件的 hover 必须自己登记 TME_LEAVE：窗口默认收不到 WM_MOUSELEAVE。
+            TRACKMOUSEEVENT tme{};
+            tme.cbSize = sizeof(tme);
+            tme.dwFlags = TME_LEAVE;
+            tme.hwndTrack = h;
+            TrackMouseEvent(&tme);
+            tracking_ = true;
         }
         return 0;
-    case WM_COMMAND: {
-        int id = LOWORD(w);
-        if (!st) break;
-        if (id == 1001) {  // 编辑
-            BeginCapture(st);
-            return 0;
-        }
-        if (id == 1002) {  // 清除
-            BindingRow* row = SelectedRow(st);
-            if (row && !row->isSequence) {
-                st->router->SetKeyForCommand(row->command, L"");
-                RefreshRows(st);
-            }
-            return 0;
-        }
-        if (id == 1003) {  // 恢复默认
-            if (MessageBoxW(h, L"恢复所有键位到默认值？", L"快捷键管理器",
-                            MB_YESNO | MB_ICONQUESTION) == IDYES) {
-                st->router->ResetDefaults();
-                RefreshRows(st);
-            }
-            return 0;
-        }
-        if (id == 1004) {  // 关闭
-            DestroyWindow(h);
-            return 0;
-        }
-        if (id == 1100 && HIWORD(w) == LBN_SELCHANGE) {  // 范围筛选
-            FillList(st);
-            return 0;
-        }
-        break;
     }
+    case WM_MOUSELEAVE:
+        tracking_ = false;
+        if (hoverRow_ != -1 || hoverGroup_ != -1 || hoverRecord_ || hoverTool_ != kToolNone ||
+            hoverSort_ != -1) {
+            hoverRow_ = -1;
+            hoverGroup_ = -1;
+            hoverRecord_ = false;
+            hoverTool_ = kToolNone;
+            hoverSort_ = -1;
+            InvalidateRect(h, nullptr, FALSE);
+        }
+        return 0;
+    case WM_LBUTTONDOWN:
+        // 点窗口任何空处都把焦点从搜索框收回 —— 但捕获/录制期间不能收，
+        // 那两件事靠"焦点在本窗口"来收键。
+        if (!capturing_ && !recording_) SetFocus(h);
+        OnClick(GET_X_LPARAM(l), GET_Y_LPARAM(l));
+        return 0;
+    case WM_RBUTTONUP:
+        // 用 UP 而不是 DOWN：右键按下就弹菜单会让"按下-拖走"（取消手势）失效。
+        OnRightClick(GET_X_LPARAM(l), GET_Y_LPARAM(l));
+        return 0;
+    case WM_CONTEXTMENU: {
+        // 键盘 Shift+F10 / 菜单键也走这里。lParam = -1 表示来自键盘，
+        // 此时用选中行的位置当锚点。
+        int x = GET_X_LPARAM(l);
+        int y = GET_Y_LPARAM(l);
+        if (x == -1 && y == -1) {
+            const int vi = SelectedViewIndex();
+            if (vi < 0) return 0;
+            const RowLayout& rl = rowLayout_[static_cast<size_t>(vi)];
+            x = rl.row.left + theme_->S(40);
+            y = (rl.row.top + rl.row.bottom) / 2;
+        }
+        OnRightClick(x, y);
+        return 0;
+    }
+    case WM_LBUTTONDBLCLK:
+        OnDoubleClick(GET_X_LPARAM(l), GET_Y_LPARAM(l));
+        return 0;
     case WM_KEYDOWN:
-    case WM_SYSKEYDOWN: {  // Alt+字母发 WM_SYSKEYDOWN，捕获热键时必须一并拦截
-        if (!st) break;
-        if (st->capturing) {
-            if (w == VK_ESCAPE) {
-                EndCapture(st);
-                return 0;
-            }
-            if (w == VK_CONTROL || w == VK_SHIFT || w == VK_MENU || w == VK_LWIN || w == VK_RWIN)
-                return 0;
-            KeyChord c = chord::FromKey(static_cast<unsigned>(w));
-            if (chord::IsReserved(c)) {
-                MessageBeep(MB_ICONWARNING);
-                SetWindowTextW(st->hint, L"该组合被系统占用，请换一个（Esc 取消）…");
-                return 0;
-            }
-            st->router->SetKeyForCommand(st->captureCommand, chord::Format(c));
-            RefreshRows(st);
-            EndCapture(st);
+    case WM_SYSKEYDOWN: {
+        // Alt+字母走 WM_SYSKEYDOWN，捕获组合键时必须一并接。
+        const UINT vk = static_cast<UINT>(w);
+        // Alt+F4 放行给 DefWindowProc：它不是"要捕获的键"，是"关窗"。
+        // 拦掉的话用户会发现这个窗口关不掉（只能用 Esc 或标题栏叉）。
+        if (!capturing_ && !recording_ && m == WM_SYSKEYDOWN && vk == VK_F4)
+            return DefWindowProcW(h, m, w, l);
+        // 只按修饰键：更新实时回显，不算一个完整组合键。
+        if (vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU || vk == VK_LWIN ||
+            vk == VK_RWIN) {
+            if (capturing_ || recording_) InvalidateRect(h, nullptr, FALSE);
             return 0;
         }
-        break;
+        OnKeyDown(vk);
+        return 0;
     }
+    case WM_KILLFOCUS:
+        // 捕获/录制期间焦点跑掉（用户点了主窗口或别的程序）：安静取消。
+        // 不取消的话，用户以为还在改键，之后按的每个键都会被他处消费 ——
+        // 而他看到的是"我按了 Ctrl+W，程序没反应"。
+        if (capturing_) {
+            CancelCapture();
+            SetStatus(L"已取消改键：焦点离开了快捷键管理器", true);
+        }
+        if (recording_) StopRecording();
+        return 0;
+    case WM_TIMER:
+        OnTimer(w);
+        return 0;
     case WM_CLOSE:
+        if (capturing_) CancelCapture();
+        StopRecording();
         DestroyWindow(h);
         return 0;
     case WM_DESTROY:
-        if (st) {
-            if (st->theme) EnableWindow(GetParent(h), TRUE);
-            st->hwnd = nullptr;
-            delete st;
-            g_state = nullptr;
-        }
+        // 窗口没了，所有"指向某一行 / 某个键"的瞬态都要复位：对象是 App 成员，
+        // 会跨窗口存活，留着它们下次打开就落在错误的行上。
+        hwnd_ = nullptr;
+        searchEdit_ = nullptr;
+        capturing_ = false;
+        recording_ = false;
+        conflictPending_ = false;
+        resetArmed_ = false;
+        captureSetting_.clear();
+        selSetting_.clear();
+        hoverRow_ = -1;
+        hoverGroup_ = -1;
+        hoverRecord_ = false;
+        hoverTool_ = kToolNone;
+        hoverSort_ = -1;
+        tracking_ = false;
+        scroll_ = 0;
         return 0;
     default:
         break;
@@ -248,92 +310,38 @@ LRESULT CALLBACK HotkeyProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
 
-void ShowHotkeyManager(HWND owner, const Theme& theme, InputRouter& router) {
-    if (g_state && g_state->hwnd) {
-        ShowWindow(g_state->hwnd, SW_SHOW);
-        SetForegroundWindow(g_state->hwnd);
-        return;
+// 搜索框子类：Esc 清空（空则关窗），回车把焦点交给列表。
+//
+// 【只处理键，不读控件文本】读文本 = 给控件发 WM_GETTEXT，而这条回调就挂在
+// 那个控件身上 —— 回调里再读一次就是无限递归（爆栈）。文本一律走 EN_CHANGE
+// 缓存在 searchText_ 里。
+LRESULT CALLBACK HotkeyManager::SearchSub(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR,
+                                          DWORD_PTR ref) {
+    auto* self = reinterpret_cast<HotkeyManager*>(ref);
+    if (self && self->hwnd_) {
+        if (m == WM_KEYDOWN) {
+            if (w == VK_ESCAPE) {
+                if (self->query_.empty()) {
+                    PostMessageW(self->hwnd_, WM_CLOSE, 0, 0);
+                } else {
+                    SetWindowTextW(h, L"");
+                }
+                return 0;
+            }
+            if (w == VK_RETURN) {
+                SetFocus(self->hwnd_);
+                if (!self->view_.empty() && self->selSetting_.empty()) self->SelectViewIndex(0);
+                InvalidateRect(self->hwnd_, nullptr, FALSE);
+                return 0;
+            }
+            if (w == VK_DOWN || w == VK_UP) {
+                // 直接上下移动列表，不用先 Tab 出去 —— 搜到了就想选。
+                SetFocus(self->hwnd_);
+                self->OnKeyDown(static_cast<UINT>(w));
+                return 0;
+            }
+        }
+        if (m == WM_CHAR && (w == VK_RETURN || w == VK_ESCAPE)) return 0;   // 别响提示音
     }
-    RegisterClassOnce();
-
-    auto* st = new State();
-    st->theme = &theme;
-    st->router = &router;
-    g_state = st;
-
-    RECT orc{};
-    if (owner) GetWindowRect(owner, &orc);
-    int w = theme.S(820), h = theme.S(560);
-    int x = orc.left + ((orc.right - orc.left) - w) / 2;
-    int y = orc.top + ((orc.bottom - orc.top) - h) / 2;
-    st->hwnd = CreateWindowExW(0, kHotkeysClass, L"快捷键管理器", WS_OVERLAPPEDWINDOW | WS_VISIBLE, x, y,
-                               w, h, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (!st->hwnd) {
-        delete st;
-        g_state = nullptr;
-        return;
-    }
-    ApplyDarkTitleBar(st->hwnd, theme.dark);
-
-    int pad = theme.S(12);
-    st->scope = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
-                                WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY, pad, pad,
-                                theme.S(150), theme.S(400), st->hwnd,
-                                reinterpret_cast<HMENU>(1100), GetModuleHandleW(nullptr), nullptr);
-    st->list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-                               WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-                               pad * 2 + theme.S(150), pad, theme.S(620), theme.S(400), st->hwnd,
-                               nullptr, GetModuleHandleW(nullptr), nullptr);
-    st->hint = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, pad, theme.S(480),
-                               theme.S(700), theme.S(20), st->hwnd, nullptr,
-                               GetModuleHandleW(nullptr), nullptr);
-
-    for (HWND c : {st->scope, st->list, st->hint})
-        SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(theme.font), TRUE);
-
-    SendMessageW(st->list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0,
-                 LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-    struct Col {
-        const wchar_t* name;
-        int w;
-    } cols[] = {{L"命令", 280}, {L"范围", 100}, {L"键位", 180}, {L"状态", 110}};
-    for (int i = 0; i < 4; ++i) {
-        LVCOLUMNW c{};
-        c.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-        c.pszText = const_cast<wchar_t*>(cols[i].name);
-        c.cx = theme.S(cols[i].w);
-        c.iSubItem = i;
-        SendMessageW(st->list, LVM_INSERTCOLUMNW, static_cast<WPARAM>(i),
-                     reinterpret_cast<LPARAM>(&c));
-    }
-
-    const wchar_t* scopes[] = {L"全部", L"标签栏", L"导航栏", L"书签栏", L"文件视图",
-                               L"文件操作", L"系统对话框", L"窗口", L"全局"};
-    for (const wchar_t* s : scopes) SendMessageW(st->scope, LB_ADDSTRING, 0,
-                                                reinterpret_cast<LPARAM>(s));
-    SendMessageW(st->scope, LB_SETCURSEL, 0, 0);
-
-    struct Btn {
-        const wchar_t* text;
-        int id;
-        int w;
-    } btns[] = {{L"编辑键位…", 1001, 100}, {L"清除", 1002, 70}, {L"恢复默认", 1003, 100},
-                {L"关闭", 1004, 70}};
-    int bx = pad;
-    int by = h - theme.S(80);
-    for (const auto& b : btns) {
-        HWND btn = CreateWindowExW(0, L"BUTTON", b.text, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, bx,
-                                   by, theme.S(b.w), theme.S(30), st->hwnd,
-                                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(b.id)),
-                                   GetModuleHandleW(nullptr), nullptr);
-        SendMessageW(btn, WM_SETFONT, reinterpret_cast<WPARAM>(theme.font), TRUE);
-        bx += theme.S(b.w) + theme.S(8);
-    }
-
-    SetThis(st->hwnd, st);
-    st->rows = router.Rows();
-    FillList(st);
-    if (owner) EnableWindow(owner, FALSE);
-    ShowWindow(st->hwnd, SW_SHOW);
-    SendMessageW(st->hwnd, WM_SIZE, 0, 0);
+    return DefSubclassProc(h, m, w, l);
 }

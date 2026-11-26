@@ -7,8 +7,12 @@ bool AffectsLayout(const std::wstring& key) {
     // 四个栏显隐 + 导航窗格（显隐与宽度）+ 双栏与分栏比例。
     // 判据是"这一项会不会改变客户区的分配"。
     return key == L"tab" || key == L"nav" || key == L"bookmark" || key == L"statusbar" ||
+           // 单标签隐藏标签栏：直接改变客户区分配，必须立即重排。
+           key == L"hideTabBarWhenSingle" ||
            key == L"showNavPane" || key == L"navPaneWidth" || key == L"aiPanelWidth" ||
            key == L"dualPane" || key == L"paneSplit" || key == L"paneVertical" ||
+           // 分割条粗细：只影响重绘，但归在布局类最省事（会触发整窗重排）。
+           key == L"splitMarkThick" ||
            // 每条栏的高度与导航栏内宽：都改变客户区/控件几何，走同一次 Layout。
            key == L"tabBarHeight" || key == L"navBarHeight" || key == L"bookmarkBarHeight" ||
            key == L"statusBarHeight" || key == L"navBarSearchWidth" ||

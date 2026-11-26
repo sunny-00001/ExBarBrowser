@@ -50,6 +50,47 @@ private:
     // （绘制与命中不各判一次 —— 两处各判一次迟早会分叉）。
     enum RowStatus { kOk = 0, kConflict, kReserved, kUnimplemented };
 
+    // 排序键。点表头切换，再点同列反向。
+    //
+    // 【为什么"命令"是默认且必须存在】键位表原本的顺序是 keymap.json 的书写顺序，
+    // 那对用户毫无意义（既不是字母序也不是分组序）。默认按标题排，至少能
+    // "按名字找一条"；而按键位排是排查冲突时唯一有用的视角。
+    enum SortKey { kSortTitle = 0, kSortKey, kSortScope, kSortStatus };
+
+    // 行类型：组合键 / 序列键。
+    //
+    // 【为什么必须分开而不是混排】这两类东西的性质根本不同：
+    //   · 组合键 —— 单个 chord，可在这里改键/清除/还原，落 settings.json 的覆盖表
+    //   · 序列键 —— 多键状态机（前缀 + 超时 + 唯一匹配），**只读**，要改得动 keymap.json
+    // 混在一张表里时，112 条可编辑的行被 169 条只读的行埋掉：用户滚半天点中一条
+    // 才发现按钮是灰的。分开之后，"能改的东西"与"参考资料"各占一张表，
+    // 工具栏的启用态也就不会整片发灰。
+    enum RowType { kTypeChord = 0, kTypeSeq };
+
+    // 工具栏按钮 id。0 保留为"没命中"，所以从 1 起。
+    enum ToolId {
+        kToolNone = 0,
+        kToolEdit = 1,     // 改键（等同回车）
+        kToolClear,        // 清除键位（写解绑哨兵）
+        kToolReset,        // 还原此项默认（删覆盖项）
+        kToolUndo,         // 撤销
+        kToolRedo,         // 重做
+        kToolCopyId,       // 复制命令 id
+        kToolExport,       // 导出覆盖表到剪贴板
+        kToolImport,       // 从剪贴板导入覆盖表
+    };
+
+    // 一次可撤销的改动。
+    //
+    // 【为什么记 setting + 旧值，而不是记"命令 + 键"】还原动作的旧值可能是
+    // "没有覆盖项"（回落到默认），那与"覆盖成某个键"是两种状态，用一个字符串
+    // 表达不了。oldKey 空 = 原本没有覆盖项（还原时应当删覆盖项）。
+    struct UndoStep {
+        std::wstring setting;
+        std::wstring oldKey;   // 空 = 原本无覆盖项
+        std::wstring newKey;   // 空 = 改动后无覆盖项
+    };
+
     // 一行 = 路由层的一行 + 派生态。
     //
     // 【为什么不直接拿 BindingRow 用】"冲突是同谁撞的"只有面板知道
@@ -105,6 +146,34 @@ private:
         RECT hint{};
     };
 
+    // 工具栏上的一颗按钮。
+    //
+    // 【为什么按钮表是数据而不是一串手写矩形】工具栏是这一版新增的骨架，按钮
+    // 数量会随功能长（现在 6 颗，将来可能加"比对/预设"）。手写矩形意味着每加
+    // 一颗都要同步改布局、命中、绘制、禁用判定四处；做成表之后，加按钮只是
+    // 往 kToolbar 里加一行，四处自动跟上。
+    struct ToolButton {
+        int id;                // ToolId
+        ico::IconId icon;
+        const wchar_t* text;   // 按钮文字（窄窗口下省略，只留图标）
+        const wchar_t* tip;    // 状态栏悬停提示
+    };
+    struct ToolRect {
+        int id = 0;
+        RECT rc{};
+    };
+
+    // 表头列（排序 + 命中共用一份定义）。
+    //
+    // 【为什么要抽出来】表头绘制、排序命中、列矩形三处都要知道"有哪些列、
+    // 各占哪一段"。以前绘制一处按行矩形反推、命中一处再反推一遍 ——
+    // 两份反推迟早分叉，表现是"点'键位'却按'范围'排了"。
+    struct Column {
+        int sortKey;           // SortKey
+        const wchar_t* title;
+        RECT rc{};
+    };
+
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT Handle(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK SearchSub(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
@@ -122,22 +191,44 @@ private:
     const Row* Selected() const;
     int SelectedViewIndex() const;              // -1 = 没选中 / 不在当前视图里
     void SelectViewIndex(int vi);
+    // 排序：设键 + 方向（同列再点反向）。改完要 Refilter（view_ 的顺序就是显示顺序）。
+    void SetSort(SortKey key);
+    // 切换筛选项/表。group_ 与 tableType_ 必须一致，所以只允许经过这里改。
+    void SetGroup(const std::wstring& id);
+    bool IsSelectedSetting(const std::wstring& setting) const;
+    void SelectAllVisible();
+    void ClearMultiSelection();
+    // 多选时受影响的 setting 集合：多选非空则用它，否则用当前单选行。
+    std::vector<std::wstring> TargetSettings() const;
+
+    // ---- 撤销（hotkey_manager_actions.cpp）----
+    void PushUndo(const UndoStep& step);
+    void UndoLast();
+    void RedoLast();
+    void ApplyUndoStep(const UndoStep& step, bool forward);
 
     // ---- 排布与命中（hotkey_manager_layout.cpp）----
     static void MinClientSize(const Theme& theme, int* w, int* h);
+    // 工具栏按钮表（唯一来源，定义在 layout.cpp）。布局/命中/绘制/启用判定共用。
+    static const ToolButton* ToolbarItems(int* count);
     void Layout();
+    void LayoutToolbar();
     void LayoutRows();
     void LayoutRight();
     int RowHeight() const;
     int HitGroup(int x, int y) const;      // -1 = 没命中
     int HitRow(int x, int y) const;        // view_ 下标；-1 = 没命中
     int HitDetail(int x, int y) const;     // 0 无 / 1 编辑 / 2 清除 / 3 还原此项 / 4 还原全部
+    int HitTool(int x, int y) const;       // ToolId；0 = 没命中
+    int HitSortHeader(int x, int y) const; // SortKey；-1 = 没命中
     void ScrollBy(int delta);
     void EnsureVisible(int viewIndex);
+    bool ToolEnabled(int id) const;
 
     // ---- 绘制（hotkey_manager_draw.cpp）----
     void Paint(HWND hwnd);
     void PaintRail(HDC dc);
+    void PaintToolbar(HDC dc);
     void PaintTable(HDC dc);
     void PaintRow(HDC dc, int viewIndex);
     void PaintDetail(HDC dc);
@@ -152,8 +243,10 @@ private:
     // ---- 交互（hotkey_manager_actions.cpp）----
     void OnClick(int x, int y);
     void OnDoubleClick(int x, int y);
+    void OnRightClick(int x, int y);
     void OnKeyDown(UINT vk);
     void OnTimer(UINT_PTR id);
+    void OnTool(int id);
     void ToggleRecording();
     void StopRecording();
     void BeginCapture();
@@ -163,6 +256,10 @@ private:
     void ClearSelected();
     void ResetSelected();
     void ResetAll();
+    // 复制选中行的命令 id（可粘到 hotkey.set 里）。多选时逐行。
+    void CopySelectedIds();
+    void ExportToClipboard();
+    void ImportFromClipboard();
     void SetStatus(const std::wstring& msg, bool error = false);
     // 当前按住的修饰键文案（"Ctrl+Shift+"），用于捕获/录制期间的实时回显。
     std::wstring HeldModsText() const;
@@ -180,11 +277,37 @@ private:
     std::vector<int> view_;      // 可见行（rows_ 下标）
     std::vector<RowLayout> rowLayout_;   // 与 view_ 同序
 
+    // 分表：组合键 / 序列键。左栏点这两组就切表（见 Refilter）。
+    //
+    // 【为什么用"当前表"而不是"两张表各滚各的"】同一时刻只有一个滚动位置、
+    // 一个选中项、一个详情面板。两张表各自独立滚动听起来更"完整"，但用户
+    // 切回来会发现"刚才看的那条不知道在哪了" —— 而这两张表的规模（112 / 169）
+    // 都不需要各自的滚动记忆。
+    RowType tableType_ = kTypeChord;
+
     std::wstring group_ = L"all";
     std::wstring selSetting_;    // 选中行的 setting（跨重排稳定）
     std::wstring query_;
     std::wstring searchText_;
     bool searchPlaceholder_ = true;
+
+    // ---- 排序 ----
+    SortKey sortKey_ = kSortTitle;
+    bool sortAsc_ = true;
+
+    // ---- 多选（Ctrl/Shift 点击、Ctrl+A）。存 setting 而不是下标：重排/筛选后下标全变。----
+    std::vector<std::wstring> multiSel_;
+    int anchorView_ = -1;        // Shift 连选的锚点（view_ 下标）
+
+    // ---- 撤销 / 重做 ----
+    //
+    // 【为什么要撤销】改键是直接落盘的（settings.json）。一次误点就把用户
+    // 用了半年的键位覆盖掉了 —— 而"还原此项默认"只对**有覆盖项**的行有效，
+    // 覆盖掉一个原本是默认的键之后，用户想回到"刚才那样"没有任何路径。
+    // 撤销栈补的就是这条路。
+    std::vector<UndoStep> undo_;
+    std::vector<UndoStep> redo_;
+    static constexpr size_t kUndoLimit = 100;
 
     std::wstring status_;
     bool statusError_ = false;
@@ -207,6 +330,8 @@ private:
     int hoverRow_ = -1;
     int hoverGroup_ = -1;
     bool hoverRecord_ = false;
+    int hoverTool_ = 0;          // ToolId；0 = 没悬停在按钮上
+    int hoverSort_ = -1;         // SortKey；-1 = 没悬停在表头上
     bool tracking_ = false;
 
     int scroll_ = 0;
@@ -217,19 +342,24 @@ private:
     int totalConflict_ = 0;
 
     // 几何（物理像素）
+    RECT toolbar_{};
+    std::vector<ToolRect> toolRects_;
     RECT colA_{};
     RECT colB_{};
     RECT colC_{};
     RECT statusBar_{};
     RECT searchBox_{};
+    RECT searchField_{};     // 工具栏上的搜索框（EDIT 落在里面）
     RECT railList_{};
     RECT railFoot_{};
     RECT recordBtn_{};
     RECT head_{};
     RECT tableHead_{};
+    std::vector<Column> columns_;   // 表头列（排序命中与绘制共用）
     RECT body_{};
     RECT detailBox_{};
     DetailLayout detail_{};
 
     static constexpr UINT_PTR kTimerReset = 0x5301;
+    static constexpr UINT_PTR kTimerStatus = 0x5302;
 };

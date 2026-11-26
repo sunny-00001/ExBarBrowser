@@ -33,6 +33,7 @@ void HotkeyManager::Paint(HWND hwnd) {
     if (!theme_) return;
     ui::PaintBuffered(hwnd, theme_->bg, [this](HDC dc, const RECT& rc) {
         (void)rc;
+        PaintToolbar(dc);
         PaintRail(dc);
         PaintTable(dc);
         PaintDetail(dc);
@@ -40,7 +41,7 @@ void HotkeyManager::Paint(HWND hwnd) {
     });
 }
 
-// ---------------------------------------------------------------- 左栏
+// ---------------------------------------------------------------- 工具栏
 
 void HotkeyManager::PaintRail(HDC dc) {
     ui::FillRectColor(dc, colA_, theme_->bg);
@@ -51,7 +52,9 @@ void HotkeyManager::PaintRail(HDC dc) {
     ui::DrawTextRow(dc, theme_->fontBold, L"筛选", tr, theme_->text,
                     DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
 
-    const int rh = theme_->S(32);
+    // 行高与中栏同一个来源（RowHeight）：左栏以前写死 S(32)、中栏是 S(30)，
+    // 两栏的行距肉眼可见地不齐。现在全库只有一个 28。
+    const int rh = RowHeight();
     const int radius = theme_->radiusBtn();
     const int gSaved = SaveDC(dc);
     IntersectClipRect(dc, railList_.left, railList_.top, railList_.right, railList_.bottom);
@@ -109,66 +112,34 @@ void HotkeyManager::PaintRail(HDC dc) {
 
 void HotkeyManager::PaintTable(HDC dc) {
     ui::FillRectColor(dc, colB_, theme_->bg);
+    const int pad = theme_->S(12);   // 空结果提示与滚动条的内边距
 
-    // ---- 搜索框（真正的 EDIT 画在它上面，这里只画框 + 放大镜）----
-    const int radius = theme_->radiusBtn();
-    ui::FillRound(dc, searchBox_, theme_->barAlt, radius);
-    ui::FrameRectColor(dc, searchBox_, recording_ ? theme_->accent : theme_->editBorder);
-    const int iconPx = theme_->iconSmall();
-    RECT icon{searchBox_.left + theme_->S(8),
-              searchBox_.top + (searchBox_.bottom - searchBox_.top - iconPx) / 2,
-              searchBox_.left + theme_->S(8) + iconPx,
-              searchBox_.top + (searchBox_.bottom - searchBox_.top - iconPx) / 2 + iconPx};
-    ui::DrawGlyph(dc, ico::IconId::Search, icon, iconPx, theme_->sub);
-
-    // ---- 录制按钮：键盘图标。开了之后按键不再进搜索框，而是被译成组合键做筛选
-    //      （VS Code 的 Record Keys）。开着时整颗按钮转成强调色，不可能看错。----
-    if (recording_) {
-        ui::FillRound(dc, recordBtn_, theme_->accent, radius);
-    } else if (hoverRecord_) {
-        ui::FillRound(dc, recordBtn_, theme_->rowHover, radius);
-    } else {
-        ui::FillRound(dc, recordBtn_, theme_->barAlt, radius);
-    }
-    if (!recording_) ui::FrameRectColor(dc, recordBtn_, theme_->editBorder);
-    const int kpx = theme_->iconSmall();
-    RECT kir{recordBtn_.left + (recordBtn_.right - recordBtn_.left - kpx) / 2,
-             recordBtn_.top + (recordBtn_.bottom - recordBtn_.top - kpx) / 2,
-             recordBtn_.left + (recordBtn_.right - recordBtn_.left - kpx) / 2 + kpx,
-             recordBtn_.top + (recordBtn_.bottom - recordBtn_.top - kpx) / 2 + kpx};
-    ui::DrawGlyph(dc, ico::IconId::Keyboard, kir, kpx,
-                  recording_ ? theme_->selSolidFg : theme_->sub);
+    // 搜索框与录制按钮已搬到工具栏（见 PaintToolbar），这里不再画。
 
     // ---- 表头 ----
+    //
+    // 列矩形读 columns_（LayoutRows 算的那一份）—— 绘制与排序命中同一来源，
+    // 不再"从第一行反推"。视图为空时 columns_ 仍然是有效几何（它只依赖
+    // body_ 的宽度），所以搜索无结果时表头也不会跳位。
     ui::FillRectColor(dc, tableHead_, theme_->rowHover);
-    const int pad = theme_->S(12);
-    if (!view_.empty() || !rowLayout_.empty()) {
-        // 列标题从第一行的几何反推：两边都按同一份矩形，列宽改了不会有一处忘了跟。
-        // 没有可见行时（搜索无结果）用同样的常量画一次，列位置才不会跳。
-        const RowLayout probe = rowLayout_.empty() ? RowLayout{} : rowLayout_[0];
-        RECT hcmd{body_.left + pad + theme_->S(16), tableHead_.top,
-                  probe.title.right, tableHead_.bottom};
-        RECT hscope{probe.scope.left, tableHead_.top, probe.scope.right, tableHead_.bottom};
-        RECT hkey{probe.chip.left, tableHead_.top, probe.chip.right, tableHead_.bottom};
-        RECT hstat{probe.status.left, tableHead_.top, probe.status.right, tableHead_.bottom};
-        if (rowLayout_.empty()) {
-            // 视图为空：用 body_ 的宽度临时按同一套比例摆一次（只为画标题）。
-            const int right = body_.right - pad;
-            hstat = {right - theme_->S(88), tableHead_.top, right, tableHead_.bottom};
-            hkey = {hstat.left - theme_->S(10) - theme_->S(152), tableHead_.top,
-                    hstat.left - theme_->S(10), tableHead_.bottom};
-            hscope = {hkey.left - theme_->S(12) - theme_->S(88), tableHead_.top,
-                      hkey.left - theme_->S(12), tableHead_.bottom};
-            hcmd = {body_.left + pad + theme_->S(16), tableHead_.top, hscope.left, tableHead_.bottom};
-        }
-        ui::DrawTextRow(dc, theme_->font, L"命令", hcmd, theme_->sub,
+    for (const Column& c : columns_) {
+        ui::DrawTextRow(dc, theme_->font, c.title, c.rc, theme_->sub,
                         DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
-        ui::DrawTextRow(dc, theme_->font, L"范围", hscope, theme_->sub,
-                        DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
-        ui::DrawTextRow(dc, theme_->font, L"键位", hkey, theme_->sub,
-                        DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
-        ui::DrawTextRow(dc, theme_->font, L"状态", hstat, theme_->sub,
-                        DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    }
+
+    // 排序列的指示：列标题换强调色 + 末尾一个上下箭头。
+    //
+    // 【为什么必须给指示】"我点了表头，列表变了但不知道按什么排的"是
+    // 排序功能的常见失败态。箭头小，但它回答了"现在是升还是降"。
+    for (const Column& c : columns_) {
+        if (c.sortKey != sortKey_) continue;
+        ui::DrawTextRow(dc, theme_->font, c.title, c.rc, theme_->accent,
+                        DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+        const int tw = ui::MeasureText(dc, theme_->font, c.title, -1);
+        const int arrowPx = theme_->iconChevron();
+        const int ax = c.rc.left + tw + theme_->S(3) + arrowPx / 2;
+        const int ay = (c.rc.top + c.rc.bottom) / 2;
+        ui::DrawChevron(dc, ax, ay, arrowPx, theme_->accent, sortAsc_ ? -1 : 1);
     }
     RECT hsep{tableHead_.left, tableHead_.bottom - 1, tableHead_.right, tableHead_.bottom};
     ui::DrawSeparator(dc, hsep, false, theme_->line);
@@ -209,10 +180,17 @@ void HotkeyManager::PaintRow(HDC dc, int vi) {
     const RowLayout& rl = rowLayout_[static_cast<size_t>(vi)];
 
     const bool sel = row.src.setting == selSetting_;
-    if (sel) {
+    const bool multi = IsSelectedSetting(row.src.setting);
+    if (multi) {
+        // 多选的行统一用 wash 底（与单选同一个色）：多选是"单选的一个超集"，
+        // 用两种颜色会让人以为它们是两种不同的东西。
         ui::FillRectColor(dc, rl.row, theme_->wash);
-        RECT bar{rl.row.left, rl.row.top, rl.row.left + theme_->S(2), rl.row.bottom};
-        ui::FillRectColor(dc, bar, theme_->accent);
+        // 最左一条 accent：单选时是 2px 实心，多选时 2px 也画 —— 但只给
+        // **光标行**（selSetting_）画，其余多选行画 1px 淡色，
+        // 于是"当前看的是哪一行"在多选里依然分得出来。
+        const int barW = sel ? theme_->S(2) : theme_->S(1);
+        RECT bar{rl.row.left, rl.row.top, rl.row.left + barW, rl.row.bottom};
+        ui::FillRectColor(dc, bar, sel ? theme_->accent : theme_->softSel);
     } else if (vi == hoverRow_) {
         ui::FillRectColor(dc, rl.row, theme_->rowHover);
     }
@@ -254,6 +232,22 @@ void HotkeyManager::PaintRow(HDC dc, int vi) {
     else if (row.sequence) sc = theme_->inert;
     ui::DrawTextRow(dc, theme_->font, StatusText(row.status, row.sequence), rl.status, sc,
                     DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+    // 序列行整体压暗一档：它们是**只读**的参考信息（要改得动 keymap.json 的状态机），
+    // 与可编辑的热键混在一起时，用户点了发现按钮是灰的才知道"这条不能改"。
+    // 与其让他在工具栏上试错，不如在行上先说清。只压标题，不动键位芯片 ——
+    // 芯片本身是"信息"，压暗会让它读不清。
+    if (row.sequence) {
+        // 用"画一遍更淡的标题"实现：重画覆盖即可，不必引入 alpha 混合。
+        // 底色要与该行当前的底一致（选中行是 wash、悬停是 rowHover、其余是 bg），
+        // 否则会在选中/悬停行上擦出一道底色块 —— 那比"没压暗"更难看。
+        COLORREF under = theme_->bg;
+        if (IsSelectedSetting(row.src.setting)) under = theme_->wash;
+        else if (vi == hoverRow_) under = theme_->rowHover;
+        ui::FillRectColor(dc, rl.title, under);
+        ui::DrawTextRow(dc, theme_->font, row.src.title, rl.title, theme_->inert,
+                        DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+    }
 }
 
 void HotkeyManager::PaintChip(HDC dc, const RECT& rc, const std::wstring& text, bool emphasis,
@@ -400,7 +394,7 @@ void HotkeyManager::PaintStatus(HDC dc) {
         right = status_;
         err = statusError_;
     } else {
-        right = L"↑↓ 选择 · 回车改键 · Delete 清除 · Ctrl+F 搜索";
+        right = L"↑↓ 选择 · 回车改键 · Delete 清除 · Ctrl+Z 撤销 · Ctrl+A 全选";
     }
     RECT rr{statusBar_.right / 2, statusBar_.top, statusBar_.right - theme_->S(16), statusBar_.bottom};
     ui::DrawTextRow(dc, theme_->font, right, rr, err ? theme_->danger : theme_->sub,

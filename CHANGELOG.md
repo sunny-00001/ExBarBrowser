@@ -1,5 +1,72 @@
 ## [Unreleased]
 
+### 调整：快捷键管理器 搜索框入工具栏 / 行高统一 28 / 序列键独立成表（2026-11-27）
+
+- **搜索框搬到工具栏右端**：原占中栏顶部一整行（~34px）只放一个输入框。
+  搬走后列表多出整行高度，且"找到它 → 改它"落在同一条视觉带上。
+  窄窗口（剩余 < 120px）搜索框整个收起，动作按钮优先。
+- **行高统一 28px**：中栏行、左栏筛选项、表头、右栏键位芯片统一到 `kRowH96 = 28`
+  （原为 30 / 32 / 26 三种，同屏三种行距视觉上"列表是歪的"）。
+  左栏绘制的 `S(32)` 与 `HitGroup` 的 `S(32)` 都改读 `RowHeight()`。
+- **序列键与组合键分成两张表**：左栏前两组改为表切换（组合键 / 序列键）。
+  两类性质根本不同（组合键可改键，序列键是多键状态机、整表只读），混排时
+  112 条可编辑行被 169 条只读行埋掉。分表后组合键表每一行都可编辑，
+  上一版的"序列键沉底"补丁随之删除。
+  `group_` 与 `tableType_` 的一致性收口到 `SetGroup()` 一处。
+- **表头列矩形收口到 `columns_`**：绘制与排序命中读同一份，不再各"从第一行反推"
+  （原来视图为空时两条兜底分支各写一遍常量，搜索无结果时点表头可能排错列）。
+
+### 新增：快捷键管理器补齐工具栏与标准编辑交互（2026-11-27）
+
+参考 Windhawk `exbar.cpp` 的工具栏骨架（`ToolbarModule` 的"数据表驱动 + 布局/
+命中/绘制共用一份矩形"）与 VS Code / JetBrains 键位编辑器的交互惯例。
+
+**修复的真实缺陷：面板看起来"只能查看不能编辑"**
+- 根因是**排序把只读行顶到最前**：键位表里序列 169 条 vs 热键 112 条，按标题
+  平铺混排后首屏第一行很可能是一条序列键，而序列键不可编辑 → 工具栏
+  「改键/清除/还原」三颗全灰。现在序列键**恒沉底**（与升降序无关），首屏第一行
+  必然是能改的热键。像素级验收：修复前五颗按钮全是禁用色 `#606060`，
+  修复后「改键」为 accent `#4CA0FF`（启用）、「清除/还原」为 `#EEEEEE`。
+- 序列行标题压暗一档（inert），在列表里一眼可辨"这条只读"。
+
+**新增顶部通栏工具栏**（`hotkey_manager_toolbar_draw.cpp` + layout 的 `LayoutToolbar`）
+- 9 颗按钮 3 组：改键/清除/还原 ｜ 撤销/重做 ｜ 复制 id/导出/导入。
+- 按钮表是**数据**（`ToolbarItems`），布局/命中/绘制/启用判定四处读同一份 ——
+  加一颗按钮不用同步改四处。
+- 四种态：禁用（不画底，只灰字）、悬停（hover 底）、主操作（常驻 accent 描边）、
+  普通。右端显示"自定义 N 条 · 冲突 N"。
+
+**新增排序**：点表头列标题排序，同列再点反向；排序列标题变 accent 并带箭头。
+默认按标题升序。排序在 `Refilter` 里做（`view_` 的顺序就是显示顺序），
+不在绘制时另排 —— 否则点到的行与画出的行不是同一行。
+
+**新增多选**：`Ctrl+点击` 增减、`Shift+点击` 连选、`Ctrl+A` 全选。
+光标行用 accent 左边条、其余多选行用淡色条。
+
+**新增撤销/重做**（`hotkey_manager_clip.cpp`，`Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y`）
+- 改键、清除、还原、导入都入栈（上限 100 步）。
+- 撤销记"改动前是什么"：原本无覆盖项就记空，回放时**删覆盖项**（回落默认），
+  而不是把默认键固化成一条覆盖项。
+- 「还原全部默认」清空撤销栈。
+
+**新增剪贴板动作**
+- 复制命令 id（`Ctrl+C`）：多选时逐行。
+- 导出/导入：格式与 `settings.json` 的 `hotkeys` 段同构，已解绑导出成哨兵 `-`；
+  导入时未知 setting 跳过并报出条数（不静默丢弃）。
+- `clipboard.{h,cpp}` 补 `GetClipboardText`（与写共用同一套打开重试与失败语义）。
+
+**新增右键菜单**（`hotkey_manager_menu.cpp`，行上 / `Shift+F10`）
+- 改键、清除、还原、复制 id、在命令面板中打开、撤销、重做。
+- 每条都调同一个成员函数，与工具栏/键盘走同一条路径。
+
+**键盘补全**：`Space` 改键、`Ctrl+A` 全选、`Ctrl+Z`/`Ctrl+Shift+Z`/`Ctrl+Y` 撤销重做、
+`Ctrl+C` 复制 id；`Esc` 改成分层语义（捕获中取消捕获 → 有搜索词清搜索 →
+有多选清多选 → 才关窗）。
+
+**按职责拆分**（AGENTS.md §3 的 500 行上限）：`hotkey_manager_actions.cpp`
+从 799 行拆成 5 个文件 —— actions（分派）/ capture（改键状态机）/
+menu（右键菜单）/ clip（撤销+剪贴板）/ toolbar_draw（工具栏绘制）。
+
 ### 修复：标签栏复审报告 S1/S2/M2/M3 + 卫生项二次应用（2026-11-27）
 
 按 docs/REVIEW-TABBAR-RECHECK-2026-11-26.md 的优先级梯队重放（首轮修复于
@@ -29,6 +96,107 @@
 
 验证：tab 域单测 2/2 PASS（隔离 objdir）；与并行会话动画批次（tab_strip_anim）
 无交集冲突。
+
+### 设置项：六项"已实现但写死"的行为变成可配置（2026-11-27）
+
+判定口径：**已实现且生效 + 值是策略而非契约 + 不同人有不同偏好**。第一条是
+硬边界 —— 给尚未实现的功能加开关等于加一个空开关（toast、拖拽修饰键语义就
+因此被剔除，详见 docs/SETTINGS-GAPS-2026-11-27.md）。
+
+- `aiPeekEnabled`：AI 终态原来**无条件**自动弹气泡，长任务反复盖住文件列表。
+  关掉后 chip 仍显示未读数与颜色，降级为"看得见但不打断"。
+- `auditEnabled`：审计原来**没有总开关**。开关收在 `auditlog::Write()` 入口
+  而非调用方 —— 新增调用方不用记得判断；关掉时返回 `true`（用户要求的正常
+  状态，不是失败）。
+- `popupDragThreshold`（2..20，默认 6）：弹层拖拽启动阈值原写死 `6px`。
+- `bookmarkWheelStepDp`（16..200，默认 48）：书签栏滚轮步进原写死 `48dp`。
+- `hideTabBarWhenSingle`：单标签时标签栏占 26px 却零信息。语义收进
+  `config.h` 的 `TabBarVisible(s, tabCount)` 一个函数（原来五处使用点各写
+  一遍条件，漏一处就出现"栏藏了高度还在"或"高度收了窗口没藏"）；
+  **判断结果必须进 `LayoutKey.showBits`** —— 从两标签关到一标签是真实的
+  几何变化，指纹不看它就会认为"布局没变"而直接返回。
+- `splitMarkThick`（1..6，默认 2）：双栏分割条两条强调线原写死 `S(2)`。
+
+设置项 65 → 71。独立 objdir 全量构建 208 TU 通过；`check_commands` /
+`check_ai_meta` 全绿；`config_apply_test` / `config_roundtrip_test` PASS。
+
+### 修复：批量文件操作"假成功"与 AI 通道生命周期（审查 2026-11-26 第一/二梯队）
+
+按 docs/REVIEW-SUMMARY-2026-11-26.md 的优先级根治，全部落在"唯一实现"那一层。
+
+**批量操作假成功（S1/S2/S3，最严重）**
+- `shellopexec` 新增 `Op`（RAII 构建器）：创建 + **判** `SetOperationFlags` +
+  排队记账 + 四路判据提交。原来"建 op → 设 flags → 排队 → 执行"在 7 处各写一遍，
+  排队阶段的 HRESULT 全被丢弃 —— 全失败时队列为空、`PerformOperations` 返回 S_OK，
+  于是"删除失败"被记成"删除成功"、`SetOperationFlags` 失败则删除绕过回收站且不提示。
+- `Op::Commit` 装 `IFileOperationProgressSink` 数出**逐项失败**（10 个文件 3 个被占用时
+  shell 跳过它们、其余照做，原来的两个判据都看不出来）。
+- 7 处调用点（`shell_ops.cpp` 5 处 + `shell_ops_path.cpp` 3 处）全部改用 `Op`；
+  全项目 `CoCreateInstance(CLSID_FileOperation)` 只剩执行器一处。
+- `NewTextFile` 回退边界收紧：只有"NewItem 排队被拒"才回退 `CreateFileW`，
+  执行阶段失败不回退（否则会造出两份同名文件）。
+
+**AI 通道（P1-1 / P1-2）**
+- `aiqueue::Queue` 新增 `Reset()`：`Interrupt()` 只写"进入停机态"、没有出口，
+  于是 AI 开关关一次再开，所有请求立即超时（通道看起来全正常，极难归因）。
+  `StartServer` 起线程前复位。
+- `StopServer` 改为**先 Interrupt 再 join**：原来监听线程阻塞在等 UI 线程，
+  而 StopServer 就在 UI 线程上，join 最长等 `aiTimeoutMs`（可配 10 分钟）。
+- tools/list 的 `timeoutMs` 改取传输层唯一真源 `ai::UiTimeoutMs()`
+  （原来硬编码 90s、实际 10s，客户端重试决策因此出错）。
+
+**审计与协议口径（P2-2 / P2-3 / P3-5）**
+- `reject` lambda 改为无参、直接读 `r.error` / `r.errorCode`：
+  原来 5 处都传 `r.errorCode` 当 reason，审计的"人读原因"列全是机器码。
+- `RegisterWithResult` 补对称互斥检查（原来只有 `Register` 会警告）。
+- 旧格式超时响应补 `errorCode` 字段，与 JSON-RPC 分支对齐。
+
+**Shell 静默失效（H1 / H2 / H3）**
+- 导航同步成功后作废排队意图（`queued_`/`queuedPidl_` + `KillTimer`）：
+  原来"点 B 打开、过一会儿自己跳回 A"。
+- 主题重建失败时重建最小容器兜底 + 走 `failFn_`，不再留下永不重绘的空白。
+- `shellinput::Install` 判 `Subclass` 返回值：一个都没挂上就返回 false 并记日志，
+  不再"看起来装好了、实际鼠标规则全失效"。
+
+**其它（P2-U / P1-U）**
+- `modal::Run` / `popup_list::RunModal` 的 `int gm` 初始化；删除
+  `WM_APP_STATUS_MENU` 死分支与对应枚举项。
+- 滑块悬停态（P1-U）已由并行提交 `4cc6dbb` 修复，本次核验确认。
+
+### 快捷键管理器重做：自绘三栏面板 + 主题适配
+
+旧实现是 `ListBox + ListView + BUTTON` 三个系统控件，主题只有"底色 + 深色标题栏"
+跟着走 —— 表头、滚动条、按钮、选中行全在系统配色里，深色下看着像"深色底上贴了
+三块白板"。`SetWindowTheme(DarkMode_Explorer)` 救不回表头与滚动条（Explorer++ 至今
+卡在这一步）。这次按 `settings_dialog` 的分层范式整窗自绘：
+
+- **结构**：左 筛选 / 中 命令表 / 右 详情 / 底 状态栏。五个 `.cpp` 按"做什么"分
+  （生命周期 / 模型 / 排布与命中 / 绘制 / 交互），排布与命中**共用同一份矩形**。
+- **主题**：颜色只从 `Theme` 取，绘制只走 `ui::` 原语（`PaintBuffered` / `FillRound` /
+  `DrawSeparator` / `DrawTextRow` / `DrawGlyph`）。`App::ApplyTheme` 里加
+  `hotkeyManager_.ReloadTheme()`，深浅切换立刻生效。
+- **非模态**：去掉了 `EnableWindow(owner, FALSE)`。这个面板的用途是"改完立刻试"，
+  模态就得关窗再开窗（与设置对话框对齐）。
+- **筛选项从数据长出**：以前 8 个范围名硬编码在数组里、再拿字符串比 `scopeUi` ——
+  新增一类作用域的命令只能在"全部"下看到，且没有检查会报。现在项与计数都是数出来的，
+  并新增「已自定义 / 有冲突 / 序列键」三个语义筛选。
+- **搜索与录制**：命令名 / id / 作用域 / 键位文本都可匹配；搜索框右侧键盘按钮进入
+  录制态，直接按组合键按键位筛选（VS Code 的 Record Keys）。
+- **冲突不再只是一个 bool**：中栏标"冲突"，右栏说清"与「关闭标签」共用同一个键、
+  先到先得所以后面那条按不出来"。改键时撞上别人的键要**再按一次**才确认；
+  系统占用键直接拒绝并说明原因（不写进配置，避免"绑上了却按不出来"的谎）。
+- **清除 / 还原此项 / 还原全部** 三种语义分开：清除写解绑哨兵（`-`，不回落默认），
+  还原此项删覆盖项（回落 `keymap.json` / 系统原生键），还原全部两步确认
+  （不用 `MessageBox`——那是模态浅色框，深色下刺眼）。为此新增
+  `InputConfig::ClearHotkeyOverride` + `InputRouter::ResetKeyForCommand`。
+  `tests/key_binding_test.cpp` 加了 6 条断言钉住这三者的区别。
+- **来源列**：`BindingRow` 新增 `custom` / `unbound` / `nativeKey` 三个派生位，
+  右栏显示"默认 / 已自定义 / 已解绑"与"默认 Ctrl+L"，中栏行首画一颗小方块。
+- **外部改键会同步**：`hotkey.set` / `hotkey.clear` / `hotkey.reset` 执行完调
+  `OnKeymapChangedExternally()`，面板不会停在旧键位上。
+- **拆文件**：`BuildRows` 从 `input_router.cpp` 移到 `input_router_rows.cpp`
+  （数据面 vs 输入热路径两种语义），`input_router.cpp` 526 → 430 行。
+
 ### 结构化交互缺口收口（§2b A1–A4 + B3）
 
 独立复审（`docs/PRIORITY-STATUS.md` §2b）按优先级实施的修复：
@@ -142,6 +310,19 @@
 - `app_panes.cpp` → 拆出 `app_panes_swap.cpp`（双栏协同导航：
   `view.pane.swap` / `view.pane.mirror`）。原来那个文件是**双栏编排**，
   与**两条协同导航命令**语义不同。
+- `hotkey_manager.cpp` → 按"做什么"拆成五份（生命周期 / 模型 / 排布与命中 /
+  绘制 / 交互）。这个文件随"自绘三栏面板"重做一起涨起来的，硬切会切开同一份
+  矩形的算法与消费者，所以按职责切。
+- `settings_reg_table.cpp` → 拆出 `settings_reg_table_readonly.cpp`（只读观测面：
+  键位 / 窗口几何 / 会话状态，约 80 行）。这三组的 `set` 一律为空、`config.set`
+  一律拒绝，理由是同一个 —— 配置文件里这一份**不是**活状态，改它只会让
+  "下次启动"与"当前所见"分叉。混在可写项中间时，读表的人要翻过 600 行才发现
+  "这一段根本不能写"。
+- `shell_input.cpp` → 拆出 `shell_input_uia.cpp`（UIA 命中分支）。
+  命中探测本来就有两条互不相干的路：`SysListView32` 走
+  `ListView_SubItemHitTest`（纯本地、无 COM），Win11 DirectUI 视图没有可
+  hit-test 的列表控件，只能问 UIAutomation。后者的体量全在**让 UIA 在坏掉时
+  不拖垮输入**（惰性启动的初始化重试、冷却、失败计数），与鼠标分派无关。
 
 ### 键位补齐：文件列表区上下文菜单 + F6 焦点循环
 
@@ -169,6 +350,176 @@
 - `config.import {path}`：从导出文件还原设置，逐项报告成败；逐项走 `config.set`
   的同一套夹取与校验，不绕过任何业务判据。
 - Opus `.ocb` 配置备份的等价物；落点 `src/app_commands_config.cpp`。
+
+### 标签栏拖拽手感：让位动画 / 跟随浮层 / 拖出成窗（P0）
+
+对应 `docs/TABBAR-UX-PLAN-2026-11-26.md` 的 P0-1/P0-2/P0-3。此前拖拽只有一条 4dp
+插入线：标签不跟手、不让位，松手才瞬间换位 —— 读起来像"没反应"。
+
+- **让位动画**：同规模重排时按稳定 tab id 记录旧 `left`，`WM_TIMER` 三次 ease-out
+  插值；`TabStripItem` 新增 `id`，动画**不按下标配对**（重排后下标全体位移，
+  按索引配会把旧位置配给另一个标签）。
+- **被拖标签抬升**：拖拽中原槽留空，浮层跟随光标（`brBg` 实底 + `accent` 描边）；
+  `WM_MOUSEMOVE` 每帧重绘保证跟手，落点仍由插入线表达。
+- **拖出成窗磁吸**：垂直越过阈值进入 tear-off 态（抑制插入线、整条提示
+  「松开：移到新窗口」），松手复用既有 `kTabMenuMoveNewWindow`；锁定/固定/空路径
+  标签不参与。
+
+**新增两条偏好设置**（都是"手感值"，写死就只剩改代码重编一条路）
+- `hideTabBarWhenSingle`：只有一个标签时隐藏标签栏，多开第二个立刻出现。
+  与 `showTab` 是两回事（后者是永久隐藏）。判断收在 `config.h` 的
+  `TabBarVisible(s, tabCount)` 一处 —— 这个条件有 6 个使用点（栏高、几何指纹、
+  `ShowWindow`、`ChromeHeight` 两处、启动期建树），各写一遍必然漏掉一处，
+  症状是"栏藏了但高度还留着"或"高度收了窗口没藏"，两种都是看不见内容的空洞。
+  `tabCount == 0` 按 `showTab` 走（启动期不该因"暂时没有标签"把栏藏掉）。
+- `splitMarkThick`：双栏分割条上两条强调线（活动侧指示条 / 悬停拖动加粗线）的
+  粗细，1..6 逻辑像素。原写死 `S(2)` —— 高 DPI 下太细、低分辨率下偏粗。
+- 缓动抽成纯函数 `TabAnimDx` + 7 条单测；动效独立在 `tab_strip_anim.cpp`，
+  标签栏各文件仍 ≤500 行。
+- **三项接入设置**（`bar_tab` 组，改完下一次拖拽即生效）：
+  `tabAnimMs`（0..400，**0 = 关闭动画**，默认 140）、
+  `tabDragGhost`（bool，拖动浮层，默认开）、
+  `tabTearOffDy`（0..80，**0 = 关闭拖出成窗**，默认 18）。
+  默认值只在 `Settings` 一处、范围只在 `settings_bounds.h` 一处；
+  `config_apply_test` 的「每个可写键必须有落地归属」已覆盖（67 键全绿）。
+- 未改 `app_wnd.cpp` / `input_router.cpp`（开工时另一会话正在改）。
+
+### 文件操作的"假成功"根除：IFileOperation 收成唯一执行点
+
+`docs/REVIEW-SHELL-2026-11-26.md` 的 S1/S2/S3 三条数据安全项。它们共同的特征是
+**AI 与用户拿到的 `ok=true` 不等于真的做成了**，而这比失败更坏 —— 失败还能重试，
+假成功让人以为事情已经办完。
+
+- **排队阶段的 HRESULT 全被丢弃（S1/S2）**：`DeleteItem` / `NewItem` / `MoveItem` /
+  `CopyItem` 这些"排队"调用各自返回 HRESULT（权限/只读/占用/路径失效），
+  原实现全部不看。于是"全部排队失败 → 队列为空 → `PerformOperations` 返回 `S_OK`
+  → 判成成功"：删除报成功而文件还在，新建文件夹报成功而目录不存在。
+- **`SetOperationFlags` 全项目未判（S3）**：它失败时 `FOF_ALLOWUNDO` 没设上，
+  删除就**绕过回收站永久删除**且界面上没有任何提示 —— 全组唯一会静默丢数据的路径。
+- **只查两件事，漏了"部分失败"**：原判据是 `PerformOperations` 的 HRESULT +
+  `GetAnyOperationsAborted`。但 3 个文件被占用时 shell 会跳过它们、其余照做，
+  两个判据都报"成功"，只有逐项的 `hrResult` 能看出那 3 个没做成。
+  而且原来只有 `RenameTo` 查了 aborted，其余四处（删除/新建文件夹/转移/新建文本文件）
+  直接 `return SUCCEEDED(...)` —— "用户取消了删除"在审计里被记成 `ok=1`。
+
+修法：把「`CoCreateInstance` → `SetOwnerWindow` → `SetOperationFlags` → 逐项排队 →
+执行」这条在 7 处重复的舞步收进 `shellopexec::Op`（RAII 构建器）+ 唯一执行点
+`Commit()`。`Commit()` 用**四路判据**，缺一不可：
+
+| # | 判据 | 挡住的失败 |
+|---|---|---|
+| ① | `PerformOperations` 的 HRESULT | 整体失败 |
+| ② | `GetAnyOperationsAborted` | 用户取消 / 目标中途消失 |
+| ③ | `IFileOperationProgressSink` 逐项 `Post*Item` 的 `hrResult` | **部分失败**（shell 跳过后继续） |
+| ④ | `queued_ == 0` | **排队阶段全失败**（队列空但 PerformOperations 返回 S_OK） |
+
+配套：`Begin()` 里 `SetOperationFlags` 失败即中止（不再有"以为能撤销、实际永久删除"）；
+`SetOwnerWindow` 失败只记日志（只影响对话框归属，不改操作语义）；排队失败逐项记账并
+在失败原因里带上"是哪一项"；`DeleteSelection` / `DeleteSelectionPermanently` /
+`NewFolder` / `NewTextFile` / `TransferToFolder` 都加了 `why` 出参 —— 失败原因
+**只存在于 HRESULT 里**（"目标已存在"/"访问被拒绝"/"名称非法"），只回 bool 等于把
+三种完全不同的下一步压成同一个 false。
+
+`NewTextFile` 的回退边界一并钉住：**只有排队阶段被拒**（`NewItem` 返回失败，
+信号是"这个命名空间视图不支持 NewItem"）才回退到 `CreateFileW`；执行阶段失败
+（含用户取消）一律不回退 —— `IFileOperation` 可能已经把文件建出来了，再回退会造出
+"新建文本文档.txt" + "新建文本文档 (1).txt" 两份。
+
+**"路径作用域"那一侧也一并收口**：撤销栈专用的 `RenamePath` / `MovePathTo` /
+`CopyPathTo` / `DeletePath`（`shell_ops_path.{h,cpp}`）原来各写一遍
+`CoCreateInstance → SetOperationFlags → 单条排队 → Run`，且 `SetOperationFlags`
+同样不判。现在全部改走 `shellopexec::Op`，并补 `why` 出参 ——
+否则"撤销失败"只能给用户一个布尔值，而失败原因（目标已被占用 / 原路径不存在 /
+权限不足）恰恰决定他下一步该做什么。
+
+> 已审计确认收口完整：`CoCreateInstance(CLSID_FileOperation)` 与 `SetOperationFlags`
+> 全库**各只剩一处**（都在 `shell_op_exec.cpp`），`PerformOperations` 在该文件之外
+> 只出现在注释里，8 个 `Op` 使用点 ↔ 8 个 `Commit()` 调用完全配对。
+> **遗留**：`shellopexec` 没有单测覆盖，也还没有门禁能抓"新增一个 IFileOperation
+> 调用点却绕过 Op/Commit"这类回归 —— 建议补静态禁令（除 `shell_op_exec.cpp` 外
+> 不得出现上述三个符号）。
+
+### 复制/移动的撤销记录：冲突时不再记错落点（数据丢失）
+
+`transfer_undo.{h,cpp}` 把"复制/移动到"的撤销记录构造抽成纯函数。以前两处调用
+（命令面板的"复制到/移动到"、以及 `fs.copy`/`fs.move` 那条"选中 → 转移 → 记撤销"
+链路）各写一遍"目标目录 + 原文件名"的落点推导，**两处错在同一个假设上：
+冲突时落点不存在**。实际 `FOF_RENAMEONCOLLISION` 的冲突形态是"目标目录里本来就有
+同名文件"，于是算出来的 `after` 指向的是**用户原有的那个文件** ——
+撤销复制会把它删掉（数据丢失），撤销移动会把不相干的同名文件搬回源目录。
+
+正确口径（现在由纯函数钉住）：落点在转移**之前**是否已存在，必须由调用方在转移前
+探好传进来（`PrecheckDest`）；已存在 → 冲突、shell 会改名、真实落点不可知 → 不记；
+`after == 源文件`（同目录复制/移动）→ 撤销会删源 → 不记；其余且 `after` 确实存在
+才记一条。抽成纯函数正是为了能单测 —— 这条判据错了不报错，只是"撤销时删错文件"。
+
+### AI 通道的三处状态/契约缺陷
+
+- **`interrupted_` 粘滞（P1-1）**：通道热插拔（设置里关掉 AI 再打开）走
+  `StopServer → Interrupt() → StartServer`，而 `Interrupt()` 只有"进入停机态"的入口、
+  **没有配对的出口**，于是这个状态粘滞到进程结束：`Submit` 的等待谓词
+  `job->done || interrupted_` 恒真，每个请求立即返回"超时"。症状极具迷惑性 ——
+  管道在、令牌对、事件能推，看起来通道完全正常，但所有命令都失败。
+  补 `Queue::Reset()`（锁内置 `false` + 清队列），由 `StartServer` 在**起线程前**调用。
+- **`tools/list` 声明 90s、管道实际 10s（P1-2）**：契约与现实差 9 倍，客户端据此
+  做出错误的"该不该重试"决策（在"自己以为还没超时"的时刻收到 timeout）。
+  新增 `ai::UiTimeoutMs()` 作为**传输层唯一真源**（读 `aiTimeoutMs`，夹取 1s~10min），
+  `ListTools` / `FindTool` 都从它取值，不再各写一个常量。
+- **拒绝审计的 reason 位落机器码（P2-2）**：原来每个拒绝点都传
+  `reject(r.errorCode, r.errorCode)`，于是审计里的"原因"列全是机器码，追
+  "AI 为什么被拒"还得回查错误码表。收成无参 `reject()`、直接读 `r.error` 与
+  `r.errorCode` 两个字段后，`errorCode` 给机器、`error` 给人的双轨口径不可能再写错。
+
+> **遗留（本轮未改）**：`danger_disabled` 与 `need_approval` 两个分支的 `r.error`
+> 仍被赋成机器码（`r.error = L"danger_disabled"`），与新口径自相矛盾 ——
+> 既然改成读 `r.error` 当 reason，这两处的人可读文案也要补上。
+
+### 双栏协同的界面入口
+
+- `IconId::Dual` / `CopyToPane` / `MoveToPane` 三个字形登记（码位取自 MDL2 /
+  Segoe Fluent 共用区，与既有条目同口径），供双栏开关/比例/swap/mirror 与
+  "复制/移动到对侧"的行图标共用。
+- **活动侧条改画在窗口外缘，不再贴中线**：原来贴着中线时，2px accent + 1px line
+  合成一条 3px 强调线，与"悬停/拖动"的临时指示**一模一样** —— 静止时看起来就像
+  一直按在分割条上（实测反馈：未拖动却在双栏中间显示拖动指示）。外缘的语义正是
+  DOpus 说的"双栏必须显示 border 区分源/目标"，且离中线足够远、不与拖动手势混淆；
+  静止时中线保持 1px 的 `theme_.line`，中间必须干净。
+- 状态栏 `Seg_CopyPane` / `Seg_MovePane` 两个 chip：文案与可用态由
+  `App::SyncPaneChips` 同步，单栏或活动窗格无选中时文本为空、chip 自然不占位；
+  它挂在 `RefreshStats` **最前面**（与 `SyncUndoChip` 同一理由：可用性取决于
+  "选中数 + 是否双栏"，而 `RefreshStats` 里满是"目录没变就短路"的分支）。
+  短路分支里也要补一次同步，否则切完双栏 chip 要等下一次全量取数才出现。
+
+### 四处越界/递归的守卫
+
+- **书签栏拖拽落点下标越界**：`from` / `into` 是拖拽**开始时**记下的行号，而 `items_`
+  可能在拖拽期间被外部改短（AI/命令删了书签 → 栏重建 → 行数变少）。
+  只判 `>= 0` 就索引是越界读（Release 下读到垃圾 id，Debug 下直接断言）。
+  改为在 `DragFinish` 里按当前 `items_.size()` 重新夹取。
+- **"移到分类"递归无上限**：书签树正常不会很深，但数据被外部改坏成自引用环时
+  没有闸就是递归到栈溢出 —— 而崩点在"点右键 → 移到分类"这条路径上，很难联想到数据。
+  加 32 层深度上限，与 `bookmark_category_popup` 的下钻守卫同口径。
+- **标签栏 UIA 只校验一条 vector**：`Layout()` 在客户区为 0（最小化）时会先
+  `tabRects_.clear()` 再提前返回，此时 `items_` 仍非空。只查 `items_.size()`
+  会让 UIA 客户端（**任意线程**）越界读 vector（UB）。两条 vector 必须同时过界。
+- **`edge::Update` 的注释与实现不符**：注释说"方向没变时不动定时器（避免每帧
+  SetTimer）"，实际每帧都重设。改为如实说明 —— Win32 对同一 `timerId` 重复
+  `SetTimer` 只改间隔、不叠加定时器，所以每帧重设是**幂等**的，不需要额外比较方向。
+
+### 文档：复审执行记录回填 + 全量单测结论
+
+- `docs/BOOKMARK-BAR-AUDIT-2026-11-26.md` 的"执行记录"从一行摘要展开成可核对的分项
+  （每条写清落点文件、收口方式、为什么这样收），并把验证结论连同**日期**一起记下 ——
+  摘要式记录的问题是无法判断"这条到底做没做、做到什么程度"。
+- `docs/REVIEW-TABBAR-RECHECK-2026-11-26.md` 新增：对标签栏首审 14 条发现逐条
+  `grep` 复核，**14/14 全部仍存在、无一被顺手修复**，并记下一条影响面扩大的事实 ——
+  `09e4a88` 把 UIA provider 泛化后，书签栏也走同一套 `uia::` 基建，
+  原来只在 TabStrip 上的 `Root()` 锁外裸指针竞态（S2）现在**暴露两份**。
+- **全量单测 73/73 通过**（通过 73 / 无法运行 0 / 运行失败 0 / 编译失败 0）。
+  此前两次"被环境中断"的真因是**两个会话同时跑全量、共用同一个 `$OUT`**：两边写同一批
+  `*.build.log` / `*.run.log`，日志互相覆盖，于是"编译失败"的条目实际带着
+  `通过 18 / 失败 0` 的 run.log（甚至 build.log 的 mtime 晚于整轮结束时间）。
+  **并发跑全量必须各设 `EXBAR_TEST_OUT` 到自己的子目录**，否则结论不可信。
 
 ### 撤销历史弹层（file.undo.to 的人工路径）
 
@@ -4635,4 +4986,3 @@ Shell 视图 + 自绘 chrome"这条路线跑通，并留下可继续生长的分
 
 一个版本号对应一次**可回退的交付**，不对应一次提交。版本内允许多次提交，
 但 `[Unreleased]` 只能在版本发布时整段下移，不要边做边改已发布的段落。
-

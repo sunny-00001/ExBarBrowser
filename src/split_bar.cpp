@@ -6,6 +6,7 @@
 // 这里不重复任何一边的口径。
 #include "split_bar.h"
 
+#include "config.h"        // splitMarkThick 设置
 #include "pane_split.h"
 #include "platform_win.h"
 #include "ui_draw.h"
@@ -300,8 +301,12 @@ void SplitBar::Paint(HWND h) {
     const COLORREF lineColor =
         theme_ ? (live ? theme_->accent : theme_->line) : GetSysColor(COLOR_3DSHADOW);
     const COLORREF accent = theme_ ? theme_->accent : GetSysColor(COLOR_HIGHLIGHT);
-    const int liveThick = theme_ ? theme_->S(2) : 2;
-    const int sideThick = theme_ ? theme_->S(2) : 2;   // 活动侧条粗细，与 liveThick 同档
+    // 两条强调线的粗细来自设置 splitMarkThick（默认 2）：以前写死 S(2)，
+    // 高 DPI 下显得太细、低分辨率下又偏粗 —— 纯手感值。
+    // 活动侧条与悬停线同档：两者都表示"命令打到这一栏"，粗细不该分家。
+    const int markThick = Config::Get().s().splitMarkThick;
+    const int liveThick = theme_ ? theme_->S(markThick) : markThick;
+    const int sideThick = liveThick;
     const bool vertical = vertical_;
 
     ui::PaintBuffered(h, bg, [&](HDC mem, const RECT& rc) {

@@ -110,6 +110,11 @@ constexpr int kHistoryDepthMin = 50, kHistoryDepthMax = 2000;
 // ---- 标签拖拽自动滚动 ----
 constexpr int kTabDragScrollMsMin = 10, kTabDragScrollMsMax = 200;
 
+// ---- 双栏分割条强调线粗细 ----
+// 下限 1：100% DPI 下低于 1px 画不出来；上限 6：再粗就盖住内容、看着像栏变宽了。
+constexpr int kSplitMarkThickMin = 1, kSplitMarkThickMax = 6;
+
+
 // ---- 书签栏滚轮 ----
 // 滚一格走多远（逻辑像素）。下限 16 约一个字宽（再小滚不动），上限 200 约两行书签
 // （再大一格就飞出视野）。默认 48 ≈ 三个字宽，与标签栏同一档。

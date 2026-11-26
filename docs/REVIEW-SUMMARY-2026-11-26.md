@@ -2,6 +2,7 @@
 status: current
 baseline: 2026-11-26
 method: 6 个子代理并行（3 域代码审查 + 3 路全网调研）+ 本地静态检查交叉验证；关键结论逐条实锤复核
+fixed: 2026-11-26 晚（S1/S2/S3、P1-1/P1-2、P2-2/P2-3/P3-5、H1/H2/H3、P2-U 部分）
 related:
   - docs/REVIEW-UI-2026-11-26.md
   - docs/REVIEW-SHELL-2026-11-26.md
@@ -15,6 +16,8 @@ related:
 
 > 六份分报告已归档 docs/。本文只做三件事：**合并后的修复优先级**、**跨域共性结论**、
 > **调研可借鉴清单的收敛**。细节、代码片段、行号一律以分报告为准。
+>
+> **修复状态见 §7**：第一、二梯队与部分第三梯队已按"根治、复用基础设施、不打补丁"落地。
 
 ---
 
@@ -131,8 +134,9 @@ related:
 ## 5. 建议的下一步（供决策）
 
 1. **立即修**：S1/S2/S3（假成功三件套）→ P1-1（三行修复 + "停启"回归用例）→
-   P2-2/P3-5（各一行）。
+   P2-2/P3-5（各一行）。✅ **已完成，见 §7**
 2. **本周**：P1-2 契约对齐、H1 排队导航作废、H3 Install 判据、P1-U TrackMouseEvent。
+   ✅ **已完成，见 §7**
 3. **立项**：H2 主题重建出路、P2-1 管道多实例化、书签域 B1 三层拆分、
    双模式地址栏（B5，先做交互矩阵测试设计再动手）。
 4. **流程**：补跑全量单测；把本轮"批量排队失败"检查加入 check_ai_meta 的断言维度
@@ -148,3 +152,136 @@ related:
 | docs/RESEARCH-NAVBAR-2026-11-26.md | 15 产品导航栏对标 + 27 条可借鉴清单 | 40 KB |
 | docs/RESEARCH-SEARCHBOX-2026-11-26.md | 地址栏/搜索框交互范式 + 17 条落地清单 | 31 KB |
 | docs/RESEARCH-OPENSOURCE-2026-11-26.md | 8 个开源项目源码级调研 + 11 条实现借鉴 | 28 KB |
+
+## 7. 修复实施记录（2026-11-26 晚）
+
+原则：**从根本上解决、复用既有基础设施、不打补丁、不重复造轮子**。
+每条修复都落在"唯一实现"那一层，而不是在调用点各贴一张膏药。
+
+### 7.1 S1/S2/S3 —— 批量操作假成功（Shell 域，最严重）
+
+**根因**：`shellopexec` 声明自己是"全项目唯一执行器"，但实际只提供了 `Run(op)`；
+"建 op → 设 owner → 设 flags → 逐项排队 → 执行"这条舞步在 **7 处**各写一遍，
+于是排队阶段的 HRESULT 无人检查 —— 全失败时队列为空、`PerformOperations` 返回 S_OK、
+`Run` 报成功（S1 删除 / S2 新建）；`SetOperationFlags` 更是十余处全未判，
+失败即"绕过回收站静默永久删除"（S3）。
+
+**根治做法**：把整条舞步收进执行器，新增 `shellopexec::Op`（RAII 构建器）：
+
+| 新增 | 作用 |
+|---|---|
+| `Op::Begin(owner, flags, why)` | 创建 + **判** SetOperationFlags（失败即返回 false，杜绝静默永久删除） |
+| `Op::QueueDelete/Rename/Move/Copy/NewItem/MoveAll/CopyAll` | 排队统一记账（成功数 / 失败数 / 首个失败 HRESULT） |
+| `Op::Commit(why)` | 四路判据：① PerformOperations HRESULT ② GetAnyOperationsAborted ③ **逐项失败**（自装 `IFileOperationProgressSink`）④ **一项都没排上** |
+
+- 第 ③ 路是本轮新增的关键能力：原来"10 个文件里 3 个被占用"时 shell 跳过它们、
+  其余照做，①② 都是"成功"——只有 `Post*Item` 的 `hrResult` 能看出来。执行器现在
+  自己 `Advise` 一个 `FailureSink`（只观察不干预，所有回调返回 S_OK），
+  把部分失败也数出来。
+- 第 ④ 路挡的是"排队阶段全失败 → 队列空 → PerformOperations 假成功"。
+
+**调用点改造**（7 处，全部改为 `Op`，不再各自 `CoCreateInstance`）：
+`shell_ops.cpp` 的 `DeleteSelectionImpl` / `NewFolder` / `TransferToFolder` / `NewTextFile` /
+`RenameTo`，`shell_ops_path.cpp` 的 `TransferPath` / `RenamePath` / `DeletePath`。
+
+**NewTextFile 回退边界收紧**：只有"NewItem 排队被拒"才回退 `CreateFileW`
+（那是"命名空间视图不支持"的信号）；**执行阶段失败一律不回退**——否则 IFileOperation
+可能已建出文件，回退会造出两份（`新建文本文档.txt` + `新建文本文档 (1).txt`）。
+
+**验证**：`grep -rn "CoCreateInstance(CLSID_FileOperation" src/` 现在只剩
+`shell_op_exec.cpp` 一处（执行器内部），`shellopexec::Run` 已无调用者。
+签名新增 `std::wstring* why = nullptr` 默认参数，现有调用点零改动。
+
+### 7.2 P1-1 —— AI 通道"停启即死"
+
+**根因**：`aiqueue::Queue::Interrupt()` 只写"进入停机态"，没有配对的"离开"。
+`StopServer → Interrupt()` 后 `StartServer` 不复位，`Submit` 的等待谓词
+`job->done || interrupted_` 恒真 → 每个请求立即返回超时。表现是"AI 开关关一次再开，
+通道永久死掉直到重启进程"，而管道/令牌/事件全都正常，极难归因。
+
+**根治**：`Queue` 新增 `Reset()`（与 `Interrupt()` 成对存在），`StartServer` 在起线程前调用。
+
+**顺带修 A-2（同族互等）**：`StopServer` 原来先 `join` 后 `Interrupt`——监听线程
+可能正阻塞在 `Submit` 等 UI 线程处理请求，而 `StopServer` 就跑在 UI 线程上，
+join 期间无人 Pump，最长等到 `aiTimeoutMs`（可配 10 分钟）。改为**先 Interrupt 再 join**。
+
+### 7.3 P1-2 —— tools/list 超时契约差 9 倍
+
+**根因**：`ai_api.cpp` 硬编码 `timeoutMs = 90000` 并广播给客户端，而管道实际等待上限是
+`aiTimeoutMs`（默认 10000）。客户端据 90s 设定时器 → 10s 收到 timeout → 把"未到期失败"
+与"到期放弃"两类语义搞混，重试决策错误。
+
+**根治**：不新增第二个常量，而是把传输层超时收成**唯一真源**
+`ai::UiTimeoutMs()`（导出到 `ai_server.h`），`ListTools`/`FindTool` 直接调它。
+同时给配置值加 `std::clamp(1000, 600000)` 夹取（防直接写 `mutableSettings()` 的路径塞极端值）。
+
+### 7.4 P2-2 —— 审计 reason 位落机器码
+
+**根因**：5 个拒绝点都写 `reject(r.errorCode, r.errorCode)`，审计行的 `reason`
+（人读）与 `errorCode`（机器读）落成同一个机器码，破坏双轨约定。
+
+**根治**：`reject` lambda 改成**无参**、直接读 `r.error` 与 `r.errorCode` 两个字段 ——
+这样"两个字段必须分别写"的口径在结构上不可能再被写错（而不是逐个调用点改参数）。
+
+### 7.5 P2-3 —— 注册互斥只做一半
+
+`Register` 会警告"已有 ResultHandler"，`RegisterWithResult` 反向不检查。
+补对称检查（复用同一条日志模式），两个方向都能在注册时就发现"我注册了却没跑"。
+
+### 7.6 P3-5 —— 旧格式超时缺 errorCode
+
+`TimeoutResponse` 的简化格式分支补 `"errorCode":"timeout"`（加字段向后兼容），
+与 JSON-RPC 分支的机器可读性对齐。
+
+### 7.7 H1 —— 陈旧排队导航把视图拉回去
+
+**根因**：`A` 因 `ERROR_BUSY` 排队并挂上重放定时器；若定时器触发前 `B` 导航**成功**，
+成功分支既不清 `queued_` 也不 `KillTimer`，`ReplayQueued` 随后把视图导航到 `A`。
+现象："点 B 打开了，过一会儿自己跳回 A"。
+
+**根治**：`DoNavigate` 与 `NavigatePid` 的**同步成功分支**统一作废排队意图
+（清 `queued_`/`queuedPidl_`、`replayTries_ = 0`、`KillTimer`）。
+顺带修 L10：`NavigatePid` 里 `ILCloneFull` 失败时不再静默 `return true`。
+
+### 7.8 H2 —— 主题重建失败后窗口永久空白
+
+**根因**：`doRecreate` 先 `DestroyWindow(container_)`，`CreateWindowEx` 失败后
+`container_` 为 nullptr，此后 `Resize`/`SetVisible`/`ApplyNavPaneWanted`/`Destroy`
+全部早退；`ApplyTheme` 还忽略返回值 —— 界面是一块永不重绘的空白，日志之外无人知晓。
+
+**根治**：`fail()` 里若 `container_ == nullptr` 就重建一个**最小容器**（不带 EBC 但能挂
+导航与重试）；连容器都建不起来时调 `failFn_()` 交给 App。`ApplyTheme` 检查返回值并记日志。
+
+### 7.9 H3 —— 鼠标规则安装无失败判据
+
+**根因**：`shellinput::Install` 里三处 `Subclass()` 返回值全丢，只要有一个挂上就 `return true`。
+Win 版本层级变化时鼠标规则（双击空白上一级/单击项/滚轮）**全部静默退化**，
+而调用方以为装好了。
+
+**根治**：累计 `hooked` 计数，`hooked == 0` 时**不登记上下文并返回 false**；
+调用方 `shell_view_theme.cpp` 检查返回值并记明确日志。
+
+### 7.10 P2-U 部分 —— 未初始化读取与死分支
+
+- `modal::Run` 与 `popup_list::RunModal`：`int gm;` → `int gm = 1;`（首拍 done 为真时
+  不读未初始化值）；`MSG msg` → `MSG msg{}`。
+- 删除 `WM_APP_STATUS_MENU` 死分支（全仓无发送者，状态栏右键早已走 `SetContextFn` 回调）
+  及 `common.h` 里对应的枚举项。
+
+### 7.11 P1-U —— 滑块悬停态永久残留
+
+本轮审查发现该缺陷已由并行会话在提交 `4cc6dbb` 中修复（`tracking_` 标志 +
+`TRACKMOUSEEVENT{TME_LEAVE}`，并复用 `split_bar`/`status_bar` 的同款写法）。
+本次核验确认修复正确，未重复改动。
+
+### 7.12 验证与遗留
+
+- 16 个改动文件逐文件 `clang++ -fsyntax-only`（带项目实际宏 `-DWINVER=0x0A00` 等）**零错误**；
+  `build.sh` 链接通过。
+- `check_commands.py` / `check_ai_meta.py` 全绿。
+- **未修（有意留档）**：P2-1 管道多实例化（牵动 ServeLoop 重构）、P3-1~P3-4（令牌兜底/
+  g_pipe 竞态/legacy 热路径/订阅 gap）、Shell 中低档 24 条、UI 域 P2 性能项。
+  理由：这些属"立项级"或纯性能/洁癖项，按 §5 排序应在下一轮。
+- **单测未跑**：`build.sh` 全量构建在并行会话同时编译时被争抢，改为逐文件语法检查 +
+  链接验证。下次会话应先跑 `bash tests/run_all.sh`。
+
