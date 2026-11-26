@@ -104,10 +104,36 @@ public:
     bool CanRedo() const { return !redo_.empty(); }
     size_t RedoSize() const { return redo_.size(); }
 
-    // 只读枚举（file.undo.list 用）。顺序 0 = 栈顶 = 下一步要撤的那条。
+    // 只读枚举（file.undo.list 用）。
+    //
+    // 【顺序口径】entries_ 是**正序**（Push 走 push_back）：下标 0 = **最早**的
+    // 那一步，下标 size-1 = **栈顶**（下一步要撤的那条）。
+    //
+    // 【为什么写清楚】file.undo.to 的 index 是"从栈顶往回数"（0 = 撤 1 步），
+    // 与这里的下标**正好相反**。两个口径混用会撤错步 —— 而且命令照样返回
+    // 成功，错得悄无声息。所以对外一律用下面两个 ByStepIndex 取记录，
+    // 编号口径只有这一份。
+    //
     // 返回内部引用，调用方不得修改；栈本身不暴露写接口。
     const std::vector<Entry>& Entries() const { return entries_; }
     const std::vector<Entry>& RedoEntries() const { return redo_; }
+
+    // 按"从栈顶往回数"的编号取一条记录（index 0 = 栈顶 = 下一步要撤的那条）。
+    // 越界返回 nullptr。
+    //
+    // 【为什么要有这个】"index"在本工程里有两个含义：内部槽位（正序，0 = 最早）
+    // 与对外编号（倒序，0 = 栈顶）。以前 file.undo.list 按**槽位**输出 index，
+    // 而 file.undo.to 按**对外编号**取记录 —— AI 拿 list 的 index 去调 undo.to
+    // 会撤错步，而命令照样返回成功。把映射收进这里，两个口径就不可能再漂。
+    const Entry* ByStepIndex(size_t index) const {
+        if (index >= entries_.size()) return nullptr;
+        return &entries_[entries_.size() - 1 - index];
+    }
+    // 同上，但针对 redo 栈：index 0 = 下一步要**重做**的那条（redo_.back()）。
+    const Entry* RedoByStepIndex(size_t index) const {
+        if (index >= redo_.size()) return nullptr;
+        return &redo_[redo_.size() - 1 - index];
+    }
 
     // 重做栈顶已撤销的一步。
     //   · applyFwd 是**正向**执行器（beforePath → afterPath），与撤销的 apply 对称；

@@ -4,6 +4,7 @@
 #include "tab_strip.h"
 
 #include "config.h"
+#include "edge_autoscroll.h"
 #include "ui_draw.h"
 
 void TabStrip::EnsureVisible(int index) {
@@ -165,23 +166,20 @@ int TabStrip::DropTargetAt(int x, int y) const {
     return target;
 }
 
-void TabStrip::UpdateAutoScroll(int x, int step) {
+// 边缘带与起停判定已收口到 edge::Update（src/edge_autoscroll.h，与书签栏共用）；
+// 这里只保留"边缘带怎么算 + 最后鼠标 x 缓存"这两个标签栏自己的细节。
+void TabStrip::UpdateAutoScroll(int x, int stepPx) {
     dragMouseX_ = x;
-    if (step == dragScrollStep_) return;  // 方向没变：定时器已在跑，不动它
-    dragScrollStep_ = step;
-    if (!hwnd_) return;
-    if (step == 0) {
-        KillTimer(hwnd_, kDragScrollTimer);
-        return;
-    }
-    // 步进周期来自设置 tabDragScrollMs（默认 30ms）：够快能持续滚、又不会一下冲过头。
-    // 重复 SetTimer 只改间隔不叠加。
-    SetTimer(hwnd_, kDragScrollTimer, static_cast<UINT>(Config::Get().s().tabDragScrollMs), nullptr);
+    // 边缘带：左缘留出边距，右缘以裁切线为准（»/+ 区域不算标签）。
+    const int edge = theme_->S(28);
+    const int lo = theme_->S(6) + edge;
+    const int hi = tabViewRight_ - edge;
+    edge::Update(&dragScrollStep_, hwnd_, kDragScrollTimer, x, lo, hi, stepPx,
+                 static_cast<UINT>(Config::Get().s().tabDragScrollMs));
 }
 
 void TabStrip::StopAutoScroll() {
-    dragScrollStep_ = 0;
-    if (hwnd_) KillTimer(hwnd_, kDragScrollTimer);
+    edge::Stop(&dragScrollStep_, hwnd_, kDragScrollTimer);
 }
 
 int TabStrip::DropLineX() const {

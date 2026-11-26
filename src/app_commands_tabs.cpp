@@ -37,11 +37,9 @@ void App::RegisterTabCommands() {
     auto regR = cmd_reg::RegisterWithResult;
     // ---------------- 标签 ----------------
     reg(CmdId::TabNew, [this](const Args& args) {
-        // 与"+"按钮（WM_APP_TAB_NEW）同一口径：省略 path 时打开此电脑，
-        // 不是沿用当前目录 —— 后者由 tab.clone 负责。两条路径语义分开，
-        // 人和 AI 说"新建标签"得到的是同一个结果（R20 人机等价）。
-        // path 参数照旧支持：调用方明确给了目录就按目录开（此前 handler 丢弃它，
-        // 现已修复；这里保留该能力，不因改默认值而回退）。
+        // 与"+"按钮（WM_APP_TAB_NEW）同一口径：省略 path 时打开此电脑（不是
+        // 沿用当前目录 —— 那是 tab.clone），人和 AI 说"新建标签"结果一致（R20）。
+        // path 照旧支持：调用方明确给了目录就按目录开（此前 handler 丢弃它）。
         std::wstring p = args.Str(L"path");
         const std::wstring target = p.empty() ? std::wstring(nav::kThisPc) : p;
         // 预检路径：不存在的文件系统路径直接拒绝，不制造"标签建了但没打开"的假成功。
@@ -138,18 +136,12 @@ void App::RegisterTabCommands() {
     });
 
     // ---- 标签锁定 / 复制标签名 ----
-    // 这两条原先只存在于右键菜单的 switch 里（App::ShowTabMenu），
-    // 于是键盘、命令面板、脚本、AI 都做不到 —— 只有鼠标能做。
-    //
-    // 目标标签：给了 index 就用它，省略则用当前标签。**不新增 activeId_ 之外的
-    // 隐式状态**：index 越界如实报 false，不"就近取一个"（那会让调用方以为
-    // 操作了自己指定的那个标签）。
-    //
-    // 为什么每条 handler 自己写 `args.Has(L"index")` 而不抽公共 lambda：
-    // 静态检查靠"handler 里出现了 args.X(L"键")"来核对 schema 与实现一致
-    // （check_ai_meta 第 3 项）。把取值藏进辅助函数会让那条检查失效 ——
-    // 而它挡的正是"schema 声明了参数、handler 却没收，参数被静默丢弃"。
-    // 宁可重复一行，也不让判据看不见。
+    // 这两条原先只在右键菜单的 switch 里（键盘/面板/脚本/AI 都做不到）。
+    // 目标标签：给了 index 就用它，省略则用当前标签；越界如实报 false，
+    // 不"就近取一个"。为什么每条 handler 自己写 `args.Has(L"index")` 而不抽
+    // 公共 lambda：静态检查靠"handler 里出现了 args.X(L"键")"核对 schema 与
+    // 实现一致（check_ai_meta 第 3 项），藏进辅助函数会让那条检查失效 ——
+    // 而它挡的正是"schema 声明了参数、handler 却没收"的静默丢弃。
     reg(CmdId::TabLock, [this](const Args& args) {
         const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
         if (idx < 0 || idx >= tabSet_.Count()) return false;
@@ -243,6 +235,20 @@ void App::RegisterTabCommands() {
         MoveTab(tabSet_.IdAt(idx), tabSet_.Count() - 1);
         return true;
     });
+    reg(CmdId::TabMoveTo, [this](const Args& args) {
+        // 绝对位置重排（拖拽的结构化入口）：to = 0 起目标下标（TabSet::Move 的
+        // 「摘出再插入」落点）。left/right/first/last 是相对表达，这里补绝对表达。
+        const int idx = args.Has(L"index") ? args.Int(L"index", -1) : ActiveIndex();
+        if (idx < 0 || idx >= tabSet_.Count()) return false;
+        const int to = args.Int(L"to", -1);
+        if (to < 0 || to >= tabSet_.Count()) {
+            CommandBus::Get().NoteFailure(L"目标位置越界：0.." + std::to_wstring(tabSet_.Count() - 1));
+            return false;
+        }
+        const int id = tabSet_.IdAt(idx);
+        MoveTab(id, to);
+        return tabSet_.IdAt(to) == id;   // 原地不动是 no-op，报成功没问题
+    });
     reg(CmdId::TabPrevTab, [this](const Args&) {
         int prev = tabSet_.PrevMru(activeId_);
         if (!prev) {
@@ -271,14 +277,10 @@ void App::RegisterTabCommands() {
     });
     reg(CmdId::TabActivate, [this](const Args& args) {
         // index 是 **0 起**的标签序号，与 schema 的 "minimum":0 一致。
-        //
-        // 这里曾有一行 `if (idx > 0) --idx;  // 允许 1-based`，试图同时接受两种口径。
-        // 结果是 0 和 1 都指向第 1 个标签、而最后一个标签用 0 起序号永远够不到
-        // （必须传 tabCount 才能命中）—— 调用方按 schema 传值反而差一格，且
-        // ok=true、审计无异常，属于最难查的"调 A 执行 B"。
-        //
-        // 两种口径不能在一个参数里共存：宁可只认 schema 写的那一种。需要
-        // 1 起语义的调用方用 tab.goto.1..5（它们内部各自减 1），不要污染这个参数。
+        // 这里曾有一行 `if (idx > 0) --idx;` 试图同时接受 1-based：结果是 0 和 1
+        // 都指向第 1 个标签、最后一个永远够不到 —— 调用方按 schema 传值反而差一格，
+        // 且 ok=true，属于最难查的"调 A 执行 B"。两种口径不能共存：需要 1 起语义
+        // 的调用方用 tab.goto.1..5（内部各自减 1），不要污染这个参数。
         const int idx = args.Int(L"index");
         if (idx < 0 || idx >= tabSet_.Count()) return false;   // 越界如实报错，不假装成功
         Activate(tabSet_.IdAt(idx));
@@ -456,10 +458,8 @@ void App::RegisterTabCommands() {
     });
 
     // ---- 导航栏历史（后端下拉菜单的结构化版本）----
-    //
-    // 这三条补的是同一处缺口：地址框下拉里的历史只有鼠标能看能点。没有结构化
-    // 入口时，AI 只能盲按 nav.back 再读回路径 —— 想跳到第 3 条得试三次，
-    // 而且不知道中途会经过哪。列表先给出来，"会退到哪"就成了可核对的事实。
+    // 地址框下拉里的历史此前只有鼠标能看能点：AI 只能盲按 nav.back 再读回
+    // 路径，想跳第 3 条得试三次。列表先给出来，"会退到哪"就可核对。
     regR(CmdId::NavHistoryList, [this](const Args& args, json::Value* out) {
         if (!out) return false;
         const bool backward = args.Bool(L"backward", true);

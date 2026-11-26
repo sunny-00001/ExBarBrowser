@@ -82,6 +82,9 @@ public:
     // 不给出这个句柄就分不清"焦点在地址栏"和"焦点在搜索框"，
     // 于是 win.focus.search 只能靠猜（而猜错比不答更糟）。
     HWND searchHwnd() const { return search_; }
+    // 地址框句柄。与 searchHwnd() 同一口径：焦点循环要分清"焦点在地址栏"
+    // 和"焦点在搜索框"，没有句柄就只能猜（猜错比不答更糟）。
+    HWND addressHwnd() const { return edit_; }
     bool IsSearching() const;
     // 输入框里现在是什么（**还没提交**）。这是搜索框唯一的可回读面 ——
     // 命令 search.query.set 写的就是它，AI 要能确认"词确实填进去了"。

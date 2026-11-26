@@ -252,13 +252,10 @@ bool App::RunSearch(const std::wstring& query, std::wstring* title) {
     return true;
 }
 
-// 搜索框提交从这里进，转投 search.find 命令。
-//
-// 【为什么不是直接调 RunSearch】界面提交与命令面板/AI 的 search.find 必须
-// 是同一个入口：两处各写一遍，表现迟早不同（"搜索框能搜、命令搜不到"）。
-// 命令的 handler 内部调的正是 RunSearch，所以转投后仍是同一份实现，
-// 差别只在于这一路多了审计与事件。
 void App::RunSearchViaCommand(const std::wstring& query) {
+    // 搜索框提交的总线入口：转投 search.find 命令。
+    // 为什么不直接调 RunSearch：命令面板/AI 走 search.find 会留审计与事件，
+    // 而人点搜索框以前不留 —— 同一动作两条强度（判据 16f 要求这路也到总线）。
     json::Value a = json::Value::MakeObject();
     a.Set(L"query", json::Value::MakeStr(query));
     (void)CommandBus::Get().Invoke(CmdId::OpSearch, Args::FromJson(a), Actor::Ui());
@@ -291,12 +288,10 @@ void App::JumpHistory(int depth, bool backward) {
     GotoHistory(target);
 }
 
-// 界面侧的历史跳转（地址框下拉 / 后退·前进下拉）从这里进，转投命令总线。
-//
-// 【为什么绕这一圈】界面回调直接调 JumpHistory 时，那一步既没有审计也没有
-// 事件：命令面板/AI 跳历史会留痕，人点菜单跳历史不留。同一个动作两条强度。
-// 转投 nav.history.jump 后两路同源（该命令的 handler 内部调的就是 JumpHistory）。
 void App::JumpHistoryViaCommand(int depth, bool backward) {
+    // 历史跳转的总线入口：转投 nav.history.jump 命令。
+    // 与上面 JumpHistory 的区别不是行为，是**留痕**：命令面板/AI 跳历史会
+    // 写审计与事件，人点地址框下拉跳历史以前不留 —— 同一动作两条强度。
     json::Value a = json::Value::MakeObject();
     a.Set(L"depth", json::Value::MakeInt(depth));
     a.Set(L"backward", json::Value::MakeBool(backward));

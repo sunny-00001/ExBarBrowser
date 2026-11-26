@@ -123,6 +123,14 @@ std::wstring StateToJson(const StateSnapshot& s) {
 
     // ---- AI 面板可见性（ai.panel.toggle 的回读面）----
     v.Set(L"aiPanelVisible", json::Value::MakeBool(s.aiPanelVisible));
+    // 键位覆盖表（hotkey.* 的回读面）：断言只核对"改没改"（$changed/$unchanged），
+    // 内容照实输出 —— 调用方对比两次快照就能看出绑了什么。
+    {
+        json::Value hk = json::Value::MakeObject();
+        for (const auto& [setting, key] : s.hotkeyOverrides)
+            hk.Set(setting.c_str(), json::Value::MakeStr(key));
+        v.Set(L"hotkeyOverrides", std::move(hk));
+    }
     // 与 chip 文案同源：页面未上报前也能读到 starting 这个原生启动态。
     v.Set(L"aiState", Str(s.aiState));
     // 未读圆点的机器可读面：UI 与快照必须同源，否则 AI 会以为用户已看到结果。

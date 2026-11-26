@@ -37,7 +37,11 @@ inline constexpr DefHotkey kHotkeys[] = {
     {L"hotkeyToggleExtensions", L"ToggleExtensions", L"Ctrl+Alt+E"},
     {L"hotkeyTogglePreviewPane", L"TogglePreviewPane", L"Alt+P"},
     {L"hotkeyToggleDualPane", L"view.dualpane.toggle", L"Ctrl+F6"},
-    {L"hotkeyNextPane", L"view.pane.next", L"F6"},
+    {L"hotkeyNextPane", L"view.pane.next", L"Alt+F6"},
+    {L"hotkeyCopyToPane", L"file.copy.pane", L"F7"},
+    {L"hotkeyMoveToPane", L"file.move.pane", L"F8"},
+    {L"hotkeyFocusNextElement", L"win.focus.next", L"F6"},
+    {L"hotkeyFocusPrevElement", L"win.focus.prev", L"Shift+F6"},
     {L"hotkeyTogglePaneVertical", L"view.pane.vertical", L"Ctrl+Shift+F6"},
     {L"hotkeyToggleNavPane", L"ToggleNavPane", L"Ctrl+Shift+L"},
     {L"hotkeyNavTreeExpandAll", L"NavTreeExpandAll", L"Ctrl+Shift+E"},
@@ -121,6 +125,7 @@ inline constexpr DefHotkey kHotkeys[] = {
     {L"hotkeyViewMode8", L"ViewMode:7", L"Ctrl+Shift+8"},
     {L"hotkeyAiPanel", L"AiPanelToggle", L"Ctrl+J"},
     {L"hotkeyAiPanelWeb", L"AiPanelWeb", L"Ctrl+Alt+J"},
+    {L"hotkeyFileContextMenu", L"file.context.menu", L"Shift+F10"},
 };
 
 struct DefSeq {

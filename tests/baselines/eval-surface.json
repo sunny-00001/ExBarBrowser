@@ -133,7 +133,7 @@
     "tests/commands_confirm_test.cpp": "19e04628dd5ca4f784f00b427ee58e808a78ebef9fd360b7340e1a4f7f25a9e4",
     "tests/commands_test.cpp": "d1e595a604142105436436b948873d671ad489821c72d8322755d14339e03803",
     "tests/config_apply_test.cpp": "f33f656babaf74c83aada962e22b463197835d5793d64d7315caa325edaa1334",
-    "tests/config_roundtrip_test.cpp": "70f3759da7a4e9e3fd05739b3e7b7ad61a431e565a3c86c4b694186d9623641a",
+    "tests/config_roundtrip_test.cpp": "fb208bce040e2b8bc97753653fd8ea290428a22b6816d6710320efe100229ff8",
     "tests/dev_archive_test.cpp": "2a121f5b67599ae73a1f1ee4c1751cd73ae94d3cb91421678e997787779182b7",
     "tests/dev_diff_test.cpp": "2d2a65f1e0989e2cb4f361dca2a06de8608e153944b3806c243145b6ca34531e",
     "tests/dev_proc_test.cpp": "36bb38604d40572fc7e6ebfac15e121c5a97c599866b7d693882cbd867f062c1",
@@ -153,7 +153,7 @@
     "tests/job_test.cpp": "cff1c584dddfef75dc0dbfbf4f10b79906264ef4f7866c3857006c9e49f4edcf",
     "tests/json_bignum_test.cpp": "6e81b16883e199bb7006f6b2afbaf5de5ec853d7d072a6f165236e3041b0f358",
     "tests/key_binding_test.cpp": "36d69eb3ae429f39f7f43c440dc4049104590f4d1ed1f82480fd6d832b2003d9",
-    "tests/keymap_test.cpp": "ec10065c80efcc5791208ddea31bcc673c7e59e255fb6357ff5249733f159f6d",
+    "tests/keymap_test.cpp": "aa7aaf571d61da4b50efe092abb70492e9d345afe8ea906ce7118bce6ac04623",
     "tests/longpath_test.cpp": "aa765a97d01f2fe23fc68d19a2a51e65b605fc3770239acdf499f781e2c23de7",
     "tests/menu_component_test.cpp": "d78f7b220b9fd30ea5150eac3c3ccffd72661047c05cbd320072294205d690b3",
     "tests/menu_context_test.cpp": "ce06cb84b617bda4aeff5139ff80b477f10822d5e72a0aff6ff9404281dece7f",
@@ -190,7 +190,7 @@
     "tests/webview_actions_test.cpp": "d072c68f2a2cd586b7e7953a597030b1efdd267bbad920d17ba8325d32937f92",
     "tools/agentctl.py": "9ab01db056242915ea822827c5fa6f6fce9361d8cbac99e0baf9b1994eb44227",
     "tools/ai_call.py": "2893ab5bc49567fb5e6386a9c06a0ebf241bf6803a61b13363423bacc861c58f",
-    "tools/check_ai_meta.py": "468f6c2b82fe2c10e6d0282d76367e60388ed3b56085519371c9f3533e6c889d",
+    "tools/check_ai_meta.py": "2a3fdf7bccf0a353e70627f784b66e1c91fa22803a0c9cf01688e0a671aabe08",
     "tools/check_commands.py": "249929e8c5327a3ca837b9c785a77f82f9fd8d63e2f9a1954462b950cb7c7b76",
     "tools/check_components.py": "961f227503041bb94d53a3af44c74a8dba7854c8d113feb56ec3071fb451a14c",
     "tools/dumpinfo.py": "5cd390311cb4245356b456a624b167d17b358dd930b9ad1f27c48901f4d52238",
@@ -216,8 +216,8 @@
     "tools/probe_toggle.py": "b2a86e569ab57464bbbf6a5aef1754e546a2274153592d152dd699e574c0e5c0",
     "tools/reclaim.py": "def016c0b1f7afbe7611c94cc533863c81cfa355a8adfc264530a38f03f2485c"
   },
-  "generatedAt": "2026-11-26T11:23:24+08:00",
+  "generatedAt": "2026-11-26T22:20:22+08:00",
   "note": "评估面清单：构建器/测试/校验器。改动这些文件后必须重新签发。",
-  "selfSeal": "be1bc2321b03c25d526451d4a58deef64d5ad40aae4dd4a19680a278b15bc505",
+  "selfSeal": "2272dd2e5485d604438c2b79200256bd72ac76a1fb71451023838dfd6db32407",
   "version": 1
 }

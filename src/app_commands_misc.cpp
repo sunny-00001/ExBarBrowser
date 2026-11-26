@@ -78,6 +78,12 @@ void App::RegisterMiscCommands() {
         DestroyWindow(hwnd_);
         return true;
     });
+    // AI peek 开合（§2b A5）：状态栏 AI chip 的机器等价。ToggleAiPeek 里
+    // ConsumeAiUnread（清未读）与开合是同一个动作的两面，不拆开。
+    reg(CmdId::WinAiPeek, [this](const Args&) {
+        ToggleAiPeek();
+        return true;
+    });
     reg(CmdId::FolderOptions, [this](const Args&) {
         ShellExecuteW(hwnd_, L"open", L"control.exe", L"folders", nullptr, SW_SHOWNORMAL);
         return true;
@@ -95,6 +101,43 @@ void App::RegisterMiscCommands() {
     reg(CmdId::CommandPalette, [this](const Args&) { ShowCommandPalette(); return true; });
     reg(CmdId::HotkeyManager, [this](const Args&) {
         ShowHotkeyManager(hwnd_, theme_, input_);
+        return true;
+    });
+    // ---- 键位改绑（hotkey.*：热键管理器窗口的机器等价）----
+    // 以前改键是人独占：config.set 的 hotkeys 项只读、管理器窗口要鼠标点。
+    // 三条命令复用 SetKeyForCommand 的同一套语义（覆盖表 + Save + Reload），
+    // 于是"AI 改的"与"人在管理器里改的"落在同一份覆盖表上（R19 同源）。
+    reg(CmdId::HotkeySet, [this](const Args& args) {
+        const std::wstring cmd = args.Str(L"command");
+        const std::wstring key = args.Str(L"key");
+        if (cmd.empty() || key.empty()) return false;
+        // 序列键拒绝：它们的状态机在 InputRouter 里没有热键那样的单键覆盖语义
+        //（与热键管理器窗口同一条规则），错绑会把序列搞成"按不出"的哑键。
+        for (const auto& r : input_.Rows()) {
+            if (!r.isSequence) continue;
+            if (str::IEquals(r.command, cmd)) {
+                CommandBus::Get().NoteFailure(L"序列键请在 keymap.json 中编辑");
+                return false;
+            }
+        }
+        if (!input_.SetKeyForCommand(cmd, key)) {
+            CommandBus::Get().NoteFailure(L"命令不存在或不可绑键：" + cmd);
+            return false;
+        }
+        return true;
+    });
+    reg(CmdId::HotkeyClear, [this](const Args& args) {
+        const std::wstring cmd = args.Str(L"command");
+        if (cmd.empty()) return false;
+        // key 传空串 = SetKeyForCommand 的"显式解绑"（写哨兵，回落到默认表）。
+        if (!input_.SetKeyForCommand(cmd, std::wstring())) {
+            CommandBus::Get().NoteFailure(L"命令不存在或没有可解绑的键：" + cmd);
+            return false;
+        }
+        return true;
+    });
+    reg(CmdId::HotkeyReset, [this](const Args&) {
+        input_.ResetDefaults();   // 清全部覆盖 + Save + Reload（唯一实现）
         return true;
     });
     // 首选项面板本身早就存在，但只有一条入口：导航栏右键 →「设置…」。

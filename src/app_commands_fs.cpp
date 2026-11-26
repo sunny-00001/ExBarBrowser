@@ -104,6 +104,11 @@ void App::RegisterFsCommands() {
     });    reg(CmdId::FsMoveTo, [this](const Args& args) {
         return TransferTargets(args, true);
     });
+    // 对侧即目标：无参，源=活动窗格选中项，目标=另一窗格当前目录（TC F5/F6 范式）。
+    // 实现与 fs.copy/fs.move 汇合在 TransferSelTo（同一份底层链路）；
+    // move 的 destructive 声明会让人工路径先进 ConfirmIfDestructive 确认门。
+    reg(CmdId::FsCopyToPane, [this](const Args&) { return TransferToOtherPane(false); });
+    reg(CmdId::FsMoveToPane, [this](const Args&) { return TransferToOtherPane(true); });
 
     // FsOpen：按路径打开。语义与 CmdOpen 完全一致 ——
     // 文件夹在当前标签内进入（explorer 的行为），文件交给 shell 的默认处理程序。

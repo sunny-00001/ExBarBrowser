@@ -44,6 +44,12 @@ const CmdId kNoConfirmDestructive[] = {
     CmdId::CloseLeftOne, CmdId::CloseRightOne, CmdId::TabCloseDuplicates,
     CmdId::HotkeyManager, CmdId::AiStop,
     CmdId::DevBuild, CmdId::DevTest,
+    // win.quit：handler 里的 ConfirmExit() 就是它的确认 —— 比"确定执行破坏性
+    // 操作吗"更具体（会告诉你正开着几个标签、默认按钮是"否"、受 confirmCloseTabs
+    // 设置控制），且 Alt+F4 / 标题栏 X 走的就是这一问。不加豁免的话命令面板
+    // 路径会连问两次（先泛化确认、再 ConfirmExit）；confirmCloseTabs=false 时
+    // 泛化确认还违背用户"不要拦我"的明确表态。
+    CmdId::QuitExplorer,
 };
 
 }  // namespace

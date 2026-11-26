@@ -73,7 +73,7 @@ method: 读 D:\Dopus（Opus 安装本体）、D:\dopus-mcp（MCP 服务器）、
 | `AgentChat` 侧边栏工具 | **15** | `E:\Dopus\AgentChat\service\tools.js` |
 
 **读法**：Opus 的 31 条内部命令参数极厚（`Set` 一个命令 157 个参数），
-本项目 210 条命令**平均参数少得多**。这说明差距**不在命令条数，在每条命令的参数深度**。
+本项目 241 条命令**平均参数少得多**。这说明差距**不在命令条数，在每条命令的参数深度**。
 
 ---
 
@@ -179,7 +179,7 @@ Opus 的 `Set` 是 157 参数的最大命令，含筛选、输出、双栏、树
 `dopus-mcp` 的做法：从 `dopus.exe` 提取命令签名做成静态数据（29 条全覆盖，含 `Go` 的 116 个参数），
 供 AI 查"这条命令怎么用、参数名对不对"。
 
-**本项目已有等价数据源**（`src/commands.cpp` 的 `argsSchema` + `outputSchema`），
+**本项目已有等价数据源**（`src/commands_table.cpp` 的 `argsSchema` + `outputSchema`），
 做成只读工具的成本很低。现在 `tools/check_ai_meta.py` 只在**构建期**校验，
 **运行期** AI 拿不到"这条命令的正确用法"。
 
@@ -238,7 +238,7 @@ AI 传 `C:/dir` 时无法先确认自己理解对不对。
 `DOPUS-NOTES.md` §3 写「双栏 / 标签组 / 布局样式 → **不抄**（单栏单窗口是当前产品定位）」，
 §4 的映射表也把 `dual` 归到"不抄"。**但工作树正在改这条决策**：
 
-- `src/commands.cpp` 新增 `view.dualpane.toggle` / `view.pane.next` / `view.pane.split`（`SetPaneSplit`，20–80%）
+- `src/commands_table.cpp` 新增 `view.dualpane.toggle` / `view.pane.next` / `view.pane.split`（`SetPaneSplit`，20–80%）
 - `src/app.h` 新增 `struct Pane`（`panes[2]` + `activePane`）、`PaneAt` / `ActivePane` / `SetDualPane` / `NextPane` / `SetPaneSplit` / `FindPane`
 - `src/app_layout.cpp` 已按 `s.dualPane` + `s.paneSplit` 布局左右两个 `RECT`，右窗格按需创建
 
@@ -252,7 +252,7 @@ AI 传 `C:/dir` 时无法先确认自己理解对不对。
 ### 5.1 AI 面板没有实现
 
 `win.ai.toggle` / `win.ai.stop` 两条命令的 `implemented` 都是 `false`
-（`src/commands.cpp` 的 `AiTogglePanel` / `AiStop`），`src/` 里**没有任何 AI 面板 UI 代码**。
+（`src/commands_table.cpp` 的 `AiTogglePanel` / `AiStop`），`src/` 里**没有任何 AI 面板 UI 代码**。
 
 `E:\Dopus\AgentChat` 已把这块做完，且是本项目最好的参照物。它的 v2 迁移动机值得抄：
 
@@ -305,7 +305,7 @@ AI 传 `C:/dir` 时无法先确认自己理解对不对。
 | **P0** | 搜索打穿 | §2.1，AI 侧完全空白 | **高（见 §7）** |
 | **P1** | 属性写入（`SetAttr` 等价） | §2.2，看得到改不了 | 中 |
 | **P1** | 重命名规则（正则 / 自动编号 / 按类型） | §2.3，Opus 31 参数对应的高频需求 | 中 |
-| **P1** | `command_help` 运行期自省工具 | §3.1，数据已在 `commands.cpp` | 低 |
+| **P1** | `command_help` 运行期自省工具 | §3.1，数据已在 `commands_table.cpp` | 低 |
 | **P1** | 路径白名单（`allowedRoots` 等价） | §3.4 / §5.3，现存安全缺口 | 低 |
 | **P2** | 配置写入快照 + 回滚 | §3.2，AI 改配置无保险 | 中 |
 | **P2** | `fsutil` 路径语义工具 | §3.3 | 低 |
@@ -348,11 +348,12 @@ AI 传 `C:/dir` 时无法先确认自己理解对不对。
 ## 8. 数据来源
 
 ### 本仓（实跑）
-- `tools/check_commands.py` → 命令表 210 / 已实现 201 / 处理器 201 / keymap 105
-- `tools/check_ai_meta.py` → AI 暴露 165；210 条全部合法
+- `tools/check_commands.py` → 命令表 241 / 已实现 234 / 处理器 234 / keymap 引用 243
+- `tools/check_ai_meta.py` → AI 暴露 194；241 条全部合法
 - `tools/ebbctl.py list` → 管道 `tools/list` 返回 155（旧构建）
 - `tools/agentctl.py status` → `stale=true`，exe 01:20 vs 源码 09:55
-- `src/commands.cpp` / `src/commands.h` / `src/app_commands_fs.cpp` / `src/file_rename_plan.h` /
+- `src/commands_table.cpp` / `src/commands_table_tools.cpp` / `src/commands.h` /
+  `src/app_commands_fs.cpp` / `src/file_rename_plan.h` /
   `src/file_undo.h` / `src/app.h` / `src/app_layout.cpp` / `src/mcp_stdio.cpp` / `src/ai_server.cpp`
 
 ### Opus 侧（提取件）

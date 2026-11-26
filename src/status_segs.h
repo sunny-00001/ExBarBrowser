@@ -18,5 +18,15 @@ enum SegId {
     Seg_Eye,       // 隐藏文件三态
     Seg_Type,      // 类型（有选中时给扩展名）
     Seg_Ai,        // AI 助手状态 chip（常驻，点击弹 peek）
+    Seg_Undo,      // 撤销历史 chip（常驻，有可撤步数才显示，点击弹撤销历史列表）
     Seg_Count
 };
+
+// 常驻段：不受 statusSegs 显隐控制（开关它们不是"显示哪些段"能表达的意思）。
+//
+// 【为什么需要这个函数】Seg_Ai（AI 状态）与 Seg_Undo（撤销历史）都必须一直有落点：
+// AI 的 busy/approval 状态、以及"还有几步可撤"不能因为配置里没勾就消失。
+// 于是它们在状态栏右键菜单的勾选列表里被**排除**——
+// 列进去让人勾掉、而点完又立刻被补回来，是最坏的组合
+//（用户以为关掉了，实际没关，下次还会困惑）。
+inline bool StatusSegAlwaysOn(int seg) { return seg == Seg_Ai || seg == Seg_Undo; }

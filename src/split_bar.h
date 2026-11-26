@@ -77,6 +77,19 @@ public:
 
     void SetVisible(bool visible);
 
+    // 活动窗格指示（只有双栏那条分割条会用到）：side<0 = 无（侧栏边界不亮），
+    // 0 = 分割线靠 pane0 那侧着 accent，1 = 靠 pane1 那侧。
+    //
+    // 【为什么放这里而不是画在父窗口上】本窗口是真窗口、压在两栏交界最上层
+    // （HWND_TOP），画在任何别处都会被子窗口盖住或产生第二套绘制机制。
+    // 「活动栏在哪」也必须由外部（App 的 SyncChrome 链）告知 —— 控件不认识
+    // Tab/Pane，与"夹取区间由外部给"是同一条边界。
+    void SetActiveSide(int side) {
+        if (activeSide_ == side) return;
+        activeSide_ = side;
+        if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
     HWND hwnd() const { return hwnd_; }
     bool ok() const { return hwnd_ != nullptr; }
     Metric metric() const { return metric_; }
@@ -114,6 +127,9 @@ private:
     bool hover_ = false;
     bool tracking_ = false;
     bool dragging_ = false;
+    // 活动窗格侧（0/1/-1，见 SetActiveSide）。常驻状态提示，与悬停/拖动的
+    // 交互提示并存：accent 侧条=「命令打到这一栏」，中线加粗=「这条线能拖」。
+    int activeSide_ = -1;
     // 上一次提交给外部的落点。拖动中去重：像素位置连续，但落点可能是 1 度/1px
     // 的整数，同一步内重复重排只会让两侧内容白重排一次（每移动 1px 一次，
     // 一次拖动就是几百次整块重绘 —— 那正是"拖起来一顿一顿"的成因）。

@@ -137,6 +137,12 @@ struct PopupReorder {
     // 为什么不给弹层加"书签栏"概念：它是通用组件，只认行号与屏幕坐标。
     std::function<void(int row, POINT screen)> onDragOutPreview;
     std::function<void(int row, POINT screen)> onDragOut;
+    // 外部拖拽移交（可选）：弹层打开的瞬间就有一场"从外面拖进来的"拖拽在进行
+    // （书签栏拖动悬停分类 → 自动弹出分类内容 → 拖拽继续），不是用户在弹层里
+    // 重新按下的。置 true 时：进场即在拖拽态（没有"按下"这一步），起始行号
+    // **-1 = 外部项**，onReorder / onDragOut* 回调里的 from 都会收到 -1，
+    // 由宿主映射到外部条目；松手没压在有效落点上 = 加入末尾（宿主语义）。
+    bool allowExternalFrom = false;
 };
 
 // 拖拽落点：光标压在第 row 行上时，插入线落在哪一行之前。

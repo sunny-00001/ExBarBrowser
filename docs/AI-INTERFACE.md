@@ -17,8 +17,10 @@ baseline: 2026-11-21 19:15
 
 | 文件 | 职责 |
 |---|---|
-| `src/commands.h/.cpp` | 命令表 + AI 元数据（`risk` / `argsSchema` / `aiExposed` / `needsSelection`） |
-| `src/ai_api.h/.cpp` | 工具投影、参数校验、派发、状态快照 |
+| `src/commands_ids.h` | `CmdId` 枚举（值一经分配不可改，只允许末尾追加） |
+| `src/commands_table.h/.cpp` | 命令表 + AI 元数据（`risk` / `argsSchema` / `aiExposed` / `needsSelection`）；`.cpp` 是用户操作域，`commands_table_tools.cpp` 是工具/Agent 域 |
+| `src/commands.h/.cpp` | 命令契约与 `CommandBus`（派发、审计、破坏性确认在 `src/commands_confirm.cpp`） |
+| `src/ai_api.h/.cpp` | 工具投影、参数校验、派发、状态快照（工具投影的 JSON 生成在 `src/ai_api_json.cpp`） |
 | `src/ai_server.h/.cpp` | 命名管道通道、令牌校验、请求泵 |
 | `src/mcp_stdio.h/.cpp` | stdio ⇄ 命名管道 桥接（`--mcp-stdio`，让标准 MCP 客户端能直接驱动） |
 | `tools/check_ai_meta.py` | 静态对账（暴露/参数/选中项三方一致） |
@@ -279,42 +281,47 @@ python3 tools/probe_mcp_stdio.py path/to/ExBarBrowser.exe
 
 ## 6. 扩展：怎么加一条能被 AI 用的命令
 
-1. 在 `src/commands.cpp` 的表里加一行，填 `Risk`、`argsSchema`、`aiExposed=true`。
-2. 若带必填参数：在 `src/ai_api.cpp` 的 `kArgKeys` 加一条（键名必须与
-   `argsSchema.required` 完全一致）。
+1. 在 `src/commands_table.cpp`（工具/Agent 域在 `src/commands_table_tools.cpp`）的表里加一行，
+   填 `Risk`、`argsSchema`、`aiExposed=true`。
+2. handler 直接收**具名参数对象**（`Args`），JSON 参数原样传下去 ——
+   **不需要**在中间加"哪个键对应哪个参数"的映射表（那种表 `kArgKeys` 早就删了：
+   它存在的唯一理由是"handler 只收一个字符串"，而这个前提已经没了）。
 3. 在 `app_commands*.cpp` 里用 `reg(CmdId::X, handler)` 注册实现。
 4. 跑 `python tools/check_ai_meta.py` —— 它会检查暴露/参数/选中项是否自洽，
    第 22 项还会校验"每个拒绝都带 `errorCode`、码值不越界"。
-5. 跑 `tests/ai_api_test.cpp`。
+5. 跑 `bash tests/run_all.sh ai_api`（等价于跑 `tests/ai_api_test.cpp`）。
 6. 新增任何拒绝分支时，`r.error` 与 `r.errorCode` 必须成对出现 —— 只给中文等于
    让客户端回到"解析文案"的老路。
 
-> `kArgKeys` 存在的原因：`CommandBus` 的 handler 只收**一个字符串** arg，
-> 而 `argsSchema` 是给人和 AI 看的 JSON Schema，两者之间没有机器可读的映射。
-> 这张表把"哪个键对应命令的哪个参数"钉死，脚本会验证两边一致。
+> **`kArgKeys` 这张表已经没有了**（2026-11-26 实测确认）：命令 handler 现在直接收
+> 具名参数对象（`Args`），`argsSchema` 的 JSON 原样传下去。以前 handler 只收**一个字符串**
+> arg，才不得不在中间放一张"哪个键对应命令的哪个参数"的映射表 —— 那是缺陷的症状，
+> 不是解法。`argsSchema` 与 handler 的参数名是否对得上，由 `check_ai_meta.py` 静态对账。
 
 ---
 
 ## 7. 验证
 
 ```bash
-CC="/c/Program Files/Windhawk/Compiler/bin/clang++.exe"
-
 # 工具投影 + 参数校验 + 危险命令门（34 项）
-"$CC" -std=c++20 -O1 -DUNICODE -D_UNICODE -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 \
-  -D_WIN32_IE=0x0A00 -Isrc tests/ai_api_test.cpp src/ai_api.cpp src/commands.cpp \
-  src/json.cpp src/config.cpp src/text_file.cpp -o /tmp/t.exe \
-  -lole32 -luuid -lshell32 -ladvapi32 && /tmp/t.exe
+bash tests/run_all.sh ai_api
 
 # 协议层：非法输入 / 令牌 fail-closed / 不泄露能力面（9 项）
-"$CC" -std=c++20 -O1 -DUNICODE -D_UNICODE -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 \
-  -D_WIN32_IE=0x0A00 -Isrc tests/ai_server_test.cpp src/ai_server.cpp src/ai_api.cpp \
-  src/commands.cpp src/json.cpp src/config.cpp src/text_file.cpp -o /tmp/s.exe \
-  -lole32 -luuid -lshell32 -ladvapi32 -luser32 && /tmp/s.exe
+bash tests/run_all.sh ai_server
 
 # 静态对账
 python tools/check_ai_meta.py
 ```
+
+> **为什么不再给"手工编译某个测试"的长命令**（2026-11-26 移除）：
+> 命令表从 `src/commands.cpp` 搬到了 `src/commands_table.cpp` +
+> `src/commands_table_tools.cpp`，`ai::ToolsToJson` 等工具投影函数拆到了
+> `src/ai_api_json.cpp`，于是这里抄下来的两条编译行**链接不过**
+> （2026-11-26 实测报 `undefined symbol: CommandTable()` / `FindCommand()` /
+> `ai::ToolsToJson()`）。手抄依赖清单这种写法**抄一次就烂一次** ——
+> `run_all.sh` 自己按 `src/` 的实际清单链接，没有这种腐烂面。
+> 需要写一次性探针时，`docs/DEVELOPMENT.md` §"一条命令跑全部单测"里有
+> 通用编译开关与库清单。
 
 手工验证通道（PowerShell）：
 

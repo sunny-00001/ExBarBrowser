@@ -393,7 +393,11 @@ void App::OnCreate() {
 
     statusBar_.SetClickFn([this](int seg) {
         switch (seg) {
-        case Seg_Ai: ToggleAiPeek(); break;
+        // AI chip 与撤销 chip：转投总线（win.ai.peek / win.undo.history）——
+        // 与命令面板/快捷键/AI 同源（审计、前置检查、失败上报一处）。
+        // 以前直调 ToggleAiPeek / ShowUndoHistory，这条路没有审计也没有事件。
+        case Seg_Ai: CommandBus::Get().Invoke(CmdId::WinAiPeek, Args::Empty(), Actor::Ui()); break;
+        case Seg_Undo: CommandBus::Get().Invoke(CmdId::WinUndoHistory, Args::Empty(), Actor::Ui()); break;
         case Seg_Chk: CommandBus::Get().InvokeLegacy(CmdId::CmdSelectAll, L"", Actor::Ui()); break;
         case Seg_Date: CommandBus::Get().InvokeLegacy(CmdId::ViewSort, L"1", Actor::Ui()); break;
         case Seg_Path: CommandBus::Get().InvokeLegacy(CmdId::PathCopyDir, L"", Actor::Ui()); break;

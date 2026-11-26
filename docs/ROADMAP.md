@@ -367,7 +367,7 @@ P4 拆成三期（2026-11-22 决定）：**P4-a 不引入任何新依赖**，
 | 项 | 内容 | 前置 |
 |---|---|---|
 | 渲染层（待 P4-b 跑通后再定） | 消息区的富文本渲染，二选一：**原生富文本**（DirectWrite + 自写 Markdown 子集）或 **WebView2**（`ui/containers/web_panel`，B9）。**2026-11-22 决定：先不排期**，等实测看到模型确实返回 Markdown / 代码块 / diff 再定（D13 复检条件 2） | D3；原生路线需 `build_fast.py` 加 `dwrite`/`d2d1`；Web 路线需 B9 |
-| `find_actions` 检索层 | agent 按词检索命令表（本地匹配 `CommandTable`），返回 id/title/args/now/enabled+why/risk/asks_user。**本工程命令表 215 条，其中 171 条 `aiExposed` 进 `tools/list`，全量列表对 agent 上下文是重消耗**。**2026-11-22 决定：先记着，等 P4-b 跑完再定是否做** | D11 |
+| `find_actions` 检索层 | agent 按词检索命令表（本地匹配 `CommandTable`），返回 id/title/args/now/enabled+why/risk/asks_user。**本工程命令表 241 条，其中 194 条 `aiExposed` 进 `tools/list`，全量列表对 agent 上下文是重消耗**。**2026-11-22 决定：先记着，等 P4-b 跑完再定是否做** | D11 |
 | `run_actions` 多步编排 | agent 一次交一串步骤（≤N 步），整体作为一个撤销组。**前置：`fileundo::Stack` 现在是扁平 `vector<Item>`，没有 group 标记，要加**。同上，先记着 | D11 |
 | 计划级确认 | 写动作先出方案卡 → 一次确认 → 一次撤销（Pulse 风格）。**与现有 `aiAllowDanger` + `approve` 逐命令双门是两层叠加，不是二选一**。同上，先记着 | D11 |
 | 与 mod 的资产互通 | 同一套图标、同一套色令牌；`bookmarks.html` / `keymap` **不再共用**（便携模式后各写各的），需要互通时走导入导出（`bookmark_io.cpp` 已实现 Netscape 导入导出） | P2-3、P2-4、P3-4 |

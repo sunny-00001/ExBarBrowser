@@ -286,7 +286,7 @@ python tools/intents.py bookmark.move-to-end name=坚果云  # 一个意图：�
 
 | 维度 | 现状 | 目标 |
 |---|---|---|
-| 命令可枚举 | ✅ 全部登记在 `src/commands.cpp`，条数由 `check_ai_meta.py` / `check_commands.py` 实测 | 保持（数字随并行开发变动，本文不写死） |
+| 命令可枚举 | ✅ 全部登记在 `src/commands_table.cpp`，条数由 `check_ai_meta.py` / `check_commands.py` 实测 | 保持（数字随并行开发变动，本文不写死） |
 | 参数 schema | ✅ 全部合法，且与 handler 取用对齐 | 保持 |
 | 前置条件 | ✅ 43 条声明 | 扩展 |
 | 双向覆盖判据 | ✅ 第 15/16/16b/19/20/21 项（能真失败） | 保持 |

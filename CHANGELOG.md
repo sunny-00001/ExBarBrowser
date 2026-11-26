@@ -1,5 +1,192 @@
 ## [Unreleased]
 
+### 结构化交互缺口收口（§2b A1–A4 + B3）
+
+独立复审（`docs/PRIORITY-STATUS.md` §2b）按优先级实施的修复：
+
+- **A1 标签切换器选中转投 `tab.activate`**：`App::ShowTabSwitcher` 末尾选中一行以前
+  直调 `Activate(id)` —— 同一弹窗，弹层走命令、选中直调，两段两条强度。现在选中
+  转投 `CmdId::TabActivate`（`Actor::Ui()`），前置检查、审计、断言只有一处。
+- **A2a `WM_APP_TAB_SELECT` 转投 `tab.activate`**：点标签以前直调 `Activate`，
+  那条路没有审计也没有事件；现在同样转投总线。
+- **A3 新命令 `tab.move.to {index?, to}`**：拖拽重排的结构化入口（AI 以前无法表达
+  「移到第 2 位」）。`to` 是 0 起目标下标（`TabSet::Move` 的「摘出再插入」落点），
+  越界 `NoteFailure`；`index` 省略 = 当前标签。
+- **A4 新命令族 `hotkey.set / hotkey.clear / hotkey.reset`**：AI 改键位以前只能
+  手工编辑 `keymap.json`。`set {command, key}` 覆盖绑定（序列键拒绝，提示去
+  keymap.json）；`clear {command}` 显式解绑（回落默认表）；`reset` 清全部覆盖
+  （`ResetDefaults` 唯一实现）。快照新增 `hotkeyOverrides` 可回读字段
+  （`ai_api.h` / `ai_api_json.cpp` / `app_state.cpp` 三处联动），三条命令带真实
+  自断言（`$changed` / `$unchanged`），不留豁免。
+- **B3 `win.quit` 双重确认修复**：destructive 确认通道与 handler 里的 `ConfirmExit()`
+  连问两次。`ConfirmExit` 本身就是更高质量的确认（会告诉你正开着几个标签、默认「否」、
+  受 `confirmCloseTabs` 设置控制），Alt+F4 / 标题栏 X 走的也是这一问 ——
+  `win.quit` 进破坏性豁免表（`commands_confirm.cpp`），理由已写在表内。
+- **A5/B1/B2 弹层入口命令化**：新增 `win.ai.peek`（状态栏 AI chip 开合的机器等价，
+  handler=ToggleAiPeek，开合与清未读不拆）与 `win.undo.history`（撤销历史弹层的
+  打开入口——弹层内点行本就转投 `file.undo.to`/`file.redo`，缺的只是"打开"）。
+  状态栏 Seg_Ai / Seg_Undo 两分支的 chip 点击从直调改为转投总线（审计、前置检查
+  一处）。
+- **拖动落盘转投 `config.set`**：导航栏边界 / AI 面板边界 / 分栏比例三处拖动，
+  以前松手时直调 `Config::Get().Save()` —— 写盘失败被**吞掉**（`Save()` 返回值没人看），
+  这一步也进不了审计与事件流。现在转投 `CmdId::ConfigSet`（`Actor::Ui()`）：
+  `config.set` 是这些键的**唯一**落盘入口（设置面板改同一项也走它），写盘失败会
+  如实告警（`NoteWarning`——值已生效，只是下次启动会回退，报成失败会让调用方
+  误以为没生效而去重试），拖动与设置面板改同一项从此同源。
+  - 拖动**过程中**只改内存供实时重排（每一帧都落盘会刷屏），松手才提交。
+  - 取值范围与注册表校验**完全对齐**：拖动侧 `std::clamp(centerX, kNavPaneWidthMin,
+    kNavPaneWidthMax)` / `clamp(..., kAiPanelWidthMin, kAiPanelWidthMax)` /
+    分栏 `[20, 80]`，注册表侧 `IntSet` 用的也是同一组常量
+    （`kPaneSplitMin = panesplit::kMinPercent = 20`），所以拖得出的值一定过得了校验，
+    不会出现"拖完不落盘"。`config.set` 的 `destructive = false` → 不弹确认框
+    （拖动中弹模态框是不可接受的）。
+- 人侧参数来源登记 `HUMAN_PATH`（`tools/check_ai_meta.py`）：`tab.move.to`（拖拽
+  落点）、`hotkey.set/clear`（快捷键管理器「编辑/清除」按钮，与命令同一份
+  `SetKeyForCommand` 实现）。`hotkey.reset` 无参，走命令面板自动满足。
+- 命令基线随两轮新增刷新（225 → 247 个 id，含并行会话的双栏 pane 命令与本轮 6 条），
+  前缀判据通过；`check_commands` / `check_ai_meta` 全绿。
+- A2b（`WM_APP_TAB_CLOSE/NEW` 转投）暂缓：`tab.close` 有 `HasMultipleTabs` 前置，
+  走总线会改变「关最后标签=退出程序」—— 留给用户设计决策。
+
+### 本轮审查修正（含两处必现缺陷 + 一处长期玄学的根因）
+
+审查上一版以来全部改动时发现并修掉的问题：
+
+- **`file.context.menu` 的菜单弹不出来（必现）**：`IContextMenu::QueryContextMenu` 的
+  `hmenu` 是**输入参数**（shell 往调用方给的菜单里插项），不是输出参数。原实现传
+  `nullptr` 又去判断 `!hmenu`，于是函数在弹菜单之前就返回 false —— 命令 100% 失败。
+  同时 `idCmdFirst == idCmdLast` 使命令 id 区间为空（shell 一项都不会插）、跟踪后
+  没有 `DestroyMenu`。改为 `CreatePopupMenu` + 有效 id 区间（1..0x6FFF，与
+  `shell_ops.cpp` 的 Undo 同口径）+ 跟踪后销毁；owner-draw 转发补上
+  `WM_INITMENUPOPUP`（否则 shell 的动态菜单项缺失）并加 `IContextMenu2` 退回路径。
+- **状态栏右键菜单一点就崩**（必现）：段名表漏了 `Seg_Ai` 一项，聚合初始化补零得到
+  `nullptr`，而菜单接口收 `const std::wstring&` —— 从 `nullptr` 构造直接崩。
+  段名表移到 `status_bar.cpp` 与图标表同处，并加 `static_assert` 把这类漏项挡在编译期。
+- **UI 线程被整棵目录的递归枚举卡住**：文件夹的 `PKEY_Size` 是**内容大小**，shell 要
+  递归枚举整棵子树才给得出数，而这一次调用是同步的、在 UI 线程上、不可中断
+  （实测在 `D:\` 上会陷进去好几分钟）。盘符路径这一栏本来就显示"磁盘 X 可用"，
+  容器大小根本不会显示 —— 改为盘符路径与虚拟根跳过，只保留 UNC 等真实路径。
+- **调试残留**：主消息循环里每条消息打两条 `[dbg3]` 日志的临时探针已删除。
+- **原子替换偶发失败（长期玄学的根因）**：`tf::WriteText` 用
+  `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` 替换目标文件，只要目标此刻被别的句柄以
+  不共享删除的方式打开着（最常见是**杀软/索引服务对新写入文件的实时扫描**），
+  就返回 `ERROR_ACCESS_DENIED` —— 而原实现**零重试**，直接判失败。
+  实测（本机 400 次连续替换）撞上 7 次（失败率 1.75%），占用仅持续 0~32ms。
+  单次写一个文件几乎遇不到，但 `Config::Save()` 一次要写 **5 个**文件
+  （settings.json + session/history/tabs/window.json），配置回环测试每次回环都走
+  一遍 Save —— 850 次替换里总有一次撞上，于是表现为**"配置回环随机失败、失败键
+  每次换一个"**（看起来像某个键坏了，实际是写盘时机不巧）。
+  修法：占用类错误码（ACCESS_DENIED / SHARING_VIOLATION）有限次重试
+  （10/30/70ms），其余错误码立即失败。探针验证：7 次撞线**全部救回**。
+  同时把回环测试的失败消息拆开 —— "写盘失败"与"读回来不是它"是两类错，合成一条
+  会让前者被后者的话术盖住（此前根本看不出失败发生在写盘这一侧）。
+- **`hotkey.reset` 的自断言方向反了**：`$unchanged` 的语义是"执行前后该字段
+  **相同**"，而 `hotkey.reset` 的实现是 `ResetDefaults()`（**清全部覆盖**）——
+  有覆盖时覆盖表从"有内容"变成"空"，字段必然变化。写 `$unchanged` 等于断言
+  "这个命令不该改任何东西"，与它自己的语义相反。改为 `$changed`。
+- **`fs.copy.pane` / `fs.move.pane` 违反 `fs.*` 的组约定**：`fs.*` 组的约定是
+  "目标由参数点名、绝不读选中"（`check_ai_meta` 第 9 项强制），而这两条的实现是
+  `TransferToOtherPane`（无参，读活动窗格选中项）—— 属于 `file.*` 组的语义。
+  改名为 `file.copy.pane` / `file.move.pane`（`file.copy.to`/`file.move.to` 是既有
+  命令，不冲突），同步 `data/keymap.json` 并重生成 `keymap.gen.h`；两条登记进
+  `KNOWN_NO_TARGET`（显式登记"作用于当前选中"的设计债务）与 `UNDO_MECHANISM`
+  （撤销=删副本 / 移回源目录）。枚举名 `CmdId::FsCopyToPane` **有意保留**：
+  CmdId 的值一经分配不可变。
+- **书签栏菜单整片逃出第 16 项检查**：`bookmark_bar_itemmenu.cpp`（新拆出的项级
+  菜单）没在 `AREA_OF_FILE` 登记，于是它的菜单项**全部**不在扫描范围内 ——
+  `MENU_ACTIONS` 里对应的 8 条文案全都报"在扫描源码里找不到，表已腐烂"，
+  看着像表腐烂，其实是文件没登记。登记后 8 条一并消失。
+- **文档失真**：`docs/PARITY.md` 把 `path.copy.link` 描述成"序列化为 `file://` 形式的
+  快捷方式串入剪贴板"，实际实现是 **.lnk 虚拟文件**（CFSTR_FILEDESCRIPTOR +
+  CFSTR_FILECONTENTS），粘贴得到真快捷方式而不落盘 —— 已订正。
+
+### 按职责拆分（单文件 ≤500 行门禁）
+
+这批改动把四个文件推过了 500 行上限，按职责拆开（不是按行数硬切）：
+
+- `app_commands.cpp` → 拆出 `app_commands_palette.cpp`（弹层与命令面板：
+  标签切换器 / 标签菜单 / 状态栏菜单 / 命令面板 + 参数收集）。原来那个文件是
+  **命令注册的调度表**，与**界面侧弹层**是两种语义。
+- `bookmark_bar.cpp` → 拆出 `bookmark_bar_keys.cpp`（键盘导航一族：
+  方向键 / Home / End / 回车 / 菜单键）。原来那个文件的 `Handle` 里塞着绘制、焦点、
+  UIA、拖拽、菜单、键盘六类消息。
+- `app_panes.cpp` → 拆出 `app_panes_swap.cpp`（双栏协同导航：
+  `view.pane.swap` / `view.pane.mirror`）。原来那个文件是**双栏编排**，
+  与**两条协同导航命令**语义不同。
+
+### 键位补齐：文件列表区上下文菜单 + F6 焦点循环
+
+对照 EXPLORER-GAP-AUDIT §1.3 的缺失清单补齐三处（1.2/1.3 的最后几行欠账）：
+
+- **`file.context.menu`（Shift+F10）**：文件列表区的 shell 上下文菜单。此前书签栏/
+  标签栏有右键菜单，文件区只能靠真右键；现在键盘可达。落点 `src/app_commands_ctxmenu.cpp`
+  + `src/shell_ops_ctxmenu.cpp`（复用 shell 的背景 `IContextMenu`，不自绘菜单项）。
+- **F6 / Shift+F6 焦点循环**：`win.focus.next` / `win.focus.prev` 在地址栏 → 搜索框 →
+  文件视图 → 各栏之间循环移焦点（Explorer 的 F6 语义）。原 `view.pane.next`（切双栏
+  活动窗格）从 F6 迁到 **Alt+F6**，两组语义不再抢一个键。落点 `src/app_commands_focus.cpp`。
+- `data/keymap.json` 热键 107 → 110；`keymap.gen.h` 已重新生成。
+
+### 命令自省：cmd.help
+
+`cmd.help {name?}`：运行期列出命令用法（点分名/标题/组/实现状态/AI 暴露/风险/scope/
+必填参数/argsSchema/outputSchema/断言与豁免）。传 `name` 只回一条（FindCommand 双向都认），
+省略回全部。数据全部来自 `CommandDef`，与 tools/list、构建期 check_ai_meta 共用同一份
+真源 —— 不另建命令知识副本。落点 `src/app_commands_dev.cpp`。
+
+### 配置导出/还原：config.export / config.import
+
+- `config.export {path?}`：导出全部可写设置（走 settings_reg 的同一份键表）。省略
+  `path` 只回显不落盘；给了 path 写 JSON 文件。
+- `config.import {path}`：从导出文件还原设置，逐项报告成败；逐项走 `config.set`
+  的同一套夹取与校验，不绕过任何业务判据。
+- Opus `.ocb` 配置备份的等价物；落点 `src/app_commands_config.cpp`。
+
+### 撤销历史弹层（file.undo.to 的人工路径）
+
+状态栏撤销 chip（新增段 `Seg_Undo`）点击弹出撤销历史菜单：每步一行「撤销 N 步 ·
+重命名 旧名 → 新名」，点哪行就经 `file.undo.to {index}` 撤到那一步；redo 栈非空时
+菜单末尾有「重做」一行。编号口径与 file.undo.to 完全一致（index 0 = 栈顶），取记录
+共用 `Stack::ByStepIndex` —— 口径只有一份。数据直接取自 `fileundo::Stack`，不另存
+副本。落点 `src/app_undo_history.cpp`。这是 R20 人机等价的补齐：命令面板能按 schema
+追问 index，但"填数字"不是"看清单挑一步"。
+
+### 静态检查增强
+
+- `tools/check_ai_meta.py` 新增 **16f**：有对应命令的界面回调必须真的转投到那条命令
+  （登记表 + 两跳锚点，改坏"回调调助手"或"助手调命令"任一环都会红）。
+- 撤销历史弹层登记进菜单→命令对账（app_undo_history.cpp → 撤销历史）。
+- `tests/file_undo_test.cpp` 扩充重做路径用例（redo 栈分离/失败不弹栈/机器边界）。
+
+### 文档对账：命令表搬家之后，所有指旧位置的文档都指空了
+
+命令表从 `src/commands.cpp` 搬到了 `src/commands_table.cpp` + `src/commands_table_tools.cpp`
+（`ConfirmIfDestructive` / `Audit` 搬到 `src/commands_confirm.cpp`，`ai::ToolsToJson` 等
+工具投影搬到 `src/ai_api_json.cpp`）。**凡是还按旧位置指路的地方，读者照做就会撞空** ——
+本轮逐处核实并订正：
+
+- **手抄的编译命令已经链接不过**（不是"可能过期"，是实测报错）：
+  - `docs/DEVELOPMENT.md` 里 `commands_test` 那条 →
+    `undefined symbol: CommandTable() / FindCommand() / ReqReason()`；
+  - `docs/AI-INTERFACE.md` 里 `ai_api_test` / `ai_server_test` 那两条 →
+    `undefined symbol: CommandTable() / FindCommand() / ai::ToolsToJson()`。
+  两处都改成 `bash tests/run_all.sh <名字过滤>`（`run_all.sh` 自己按 `src/` 实际清单链接，
+  没有"抄一次烂一次"的腐烂面），并把 `FLAGS` / `LIBS` 留作写一次性探针时的参考。
+  `DEVELOPMENT.md` 自己那句"改动 `src/` 的依赖关系后要重测一遍"正是要消灭的维护债。
+- **数字对不上**：命令表 **241** 条 / 已实现 234 / AI 暴露 194（此前 README、PARITY、
+  EXPLORER-GAP-AUDIT、DOPUS-PARITY、ROADMAP 上写的是 184 / 210 / 215 / 219 / 231）。
+  `src/` 规模 6.46 万行（198 `.cpp` + 130 `.h`）、`tests/` 73 个单测 / 1289 项断言。
+  历史条目（DECISIONS D11 @2026-11-22、NAMING @2026-11-20、GAP-ANALYSIS 的变更流水）
+  **不改** —— 那是当时的记录，改了就是伪造历史。
+- **序列数**：`docs/PARITY.md` 写"209 条（38 默认 + 171 全命令覆盖）"，
+  `tests/keymap_test.cpp` 的注释写"207 序列（38 默认 + 169 命令覆盖）" ——
+  两个都是 2026-11-23 全量清算**之前**的数。现状是 **169**（那 38 条注定失败的序列已删，
+  见该文件「207 → 169 的来历」）。两处都改成现状，并注明"38 默认"只属于历史。
+- **`kArgKeys` 早已删除**：`docs/AI-INTERFACE.md` 还在教人"在 `src/ai_api.cpp` 的
+  `kArgKeys` 加一条"，而 handler 早已直接收具名参数对象（`Args`）——
+  那张表存在的唯一理由（"handler 只收一个字符串"）已经没了。已改写并说明原因。
+- `docs/AI-INTERFACE.md` 的文件分工表补上 `commands_ids.h` / `commands_table*.cpp` /
+  `commands_confirm.cpp` / `ai_api_json.cpp` 的实际归属。
+
 ## [0.3.2] - 2026-11-25 · 配置分层收尾 + 文件操作能力补齐 + 发布治理
 
 ### 文件操作能力补齐：撤销重做、文件属性、复制为快捷方式

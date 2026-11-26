@@ -122,6 +122,9 @@ void App::RegisterStateProviders() {
         s.aiPanelError = aiPanel_.lastError();
         s.aiPanelWebView = aiPanel_.webViewState();
 
+        // 键位覆盖表：hotkey.set/clear/reset 的回读面（与 Config 同一份真相）。
+        s.hotkeyOverrides = cfg.hotkeyOverrides;
+
         // ---- 选中与焦点（观测面）----
         if (ShellView* host = ActiveShellViewHost()) {
             // 排序/分组键从 shell 现读：bykey 改的是 PROPERTYKEY，不能从 int 档位反推。

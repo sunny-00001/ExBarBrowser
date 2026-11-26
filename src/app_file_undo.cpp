@@ -23,6 +23,28 @@ void App::NoteFileOp(fileundo::Op op, std::vector<fileundo::Item> items,
     e.byMachine = CommandBus::Get().fromMachine();
     e.label = label;
     fileUndo_.Push(std::move(e));
+    // 状态栏的撤销 chip 要跟着走（多一步可撤 = 多一行历史）。
+    SyncUndoChip();
+}
+
+// 状态栏「可撤销 N 步」chip 的文案。
+//
+// 【为什么要单独一个方法】撤销栈的深浅与当前目录无关，而 RefreshStats 里有
+// 一堆"目录没变就不重算"的短路 —— 挂在那边会被漏掉。挂在记栈/撤栈的四个点
+// 上（NoteFileOp / Undo / UndoTo / Redo）才是**真正会变**的时刻。
+//
+// 空文本的段不占位（见 status_bar.cpp 的排版），所以没东西可撤时
+// chip 自然消失，不会在状态栏上留一个"可撤销 0 步"的废话。
+void App::SyncUndoChip() {
+    const size_t n = fileUndo_.Size();
+    std::wstring text;
+    std::wstring tip = L"撤销历史（点击可查看每一步，并直接跳转到某一步）";
+    if (n > 0) {
+        text = L"可撤销 " + std::to_wstring(n) + L" 步";
+        const size_t r = fileUndo_.RedoSize();
+        if (r > 0) tip += L"；另有 " + std::to_wstring(r) + L" 步可重做";
+    }
+    statusBar_.SetSegmentText(Seg_Undo, text, tip);
 }
 
 bool App::ApplyFileUndo(fileundo::Entry& e, std::wstring* why) {

@@ -3,9 +3,18 @@
 // 【为什么单独成文件】拖动状态机是"输入 → 落点 → 提交"三段式，
 // 和栏的绘制/命中是两种职责；而提交那一段必须与**分类内拖动**保持同一套
 // 命令口径（bmk.move），两处各写一份必然分叉。拆开才读得动。
+//
+// 【边缘自动滚动】拖到栏左/右边缘带内按拍滚动（edge::Update 共享实现，
+// 周期共用 tabDragScrollMs 设置）；滚动经 ScrollBy 收口，落点由 ScrollBy
+// 里的统一重算刷新 —— 本文件不单独改 dropIdx_，避免两条路各写一份重算。
 #include "bookmark_bar.h"
 
 #include "commands.h"
+#include "config.h"
+
+// 悬停分类自动弹出的等待时长。资源管理器/浏览器的惯例在 500–1000ms 之间：
+// 太短会"路过分类就被展开"，太长则等得着急。
+constexpr UINT kFolderOpenHoverMs = 600;
 
 void BookmarkBar::DragUpdate(HWND h, int x, int y) {
     // 落点算法与 OLE 外部拖放共用同一份 DropSpotAtClient，避免两条路各写一套
@@ -20,6 +29,30 @@ void BookmarkBar::DragUpdate(HWND h, int x, int y) {
         dropPreview_ = true;
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
+    // 边缘自动滚动：把落点推进到视野外。触发带以可视窗口为准（» 按钮不算落点）；
+    // 滚动本身经 ScrollBy（里面统一重算落点），这里只管起停与最后鼠标 x。
+    dragMouseX_ = x;
+    if (overflow_) {
+        const int edge = theme_->S(28);
+        const int lo = theme_->S(6) + edge;
+        const int hi = viewRight_ - edge;
+        edge::Update(&dragScrollStep_, hwnd_, kDragScrollTimer, x, lo, hi,
+                     theme_->S(24), static_cast<UINT>(Config::Get().s().tabDragScrollMs));
+    } else {
+        edge::Stop(&dragScrollStep_, hwnd_, kDragScrollTimer);
+    }
+    // 悬停分类自动弹出：拖进分类"内部"并停住 → 定时器到点移交弹层（WM_TIMER）。
+    // 换了分类重挂定时器，拖出分类摘掉；拖自己不触发（那是顶层重排，不是移入）。
+    const bool overFolder = newInto >= 0 && dragIdx_ >= 0 && newInto != dragIdx_;
+    if (overFolder) {
+        if (folderHoverIdx_ != newInto) {
+            folderHoverIdx_ = newInto;
+            SetTimer(hwnd_, kDragFolderTimer, kFolderOpenHoverMs, nullptr);
+        }
+    } else if (folderHoverIdx_ != -1) {
+        folderHoverIdx_ = -1;
+        KillTimer(hwnd_, kDragFolderTimer);
+    }
 }
 
 void BookmarkBar::DragFinish(HWND h, bool commit) {
@@ -29,6 +62,9 @@ void BookmarkBar::DragFinish(HWND h, bool commit) {
     dragArm_ = dragging_ = false;
     dragIdx_ = dropIdx_ = dropInto_ = -1;
     dropPreview_ = false;
+    edge::Stop(&dragScrollStep_, hwnd_, kDragScrollTimer);   // 滚着松手：先停表再提交
+    KillTimer(h, kDragFolderTimer);
+    folderHoverIdx_ = -1;
     if (commit && from >= 0) {
         const Item& src = items_[static_cast<size_t>(from)];
         const std::wstring id = src.id;
@@ -51,4 +87,44 @@ void BookmarkBar::DragFinish(HWND h, bool commit) {
         }
     }
     InvalidateRect(h, nullptr, FALSE);
+}
+
+// 悬停分类到点：把进行中的拖拽移交给分类内容弹层。
+//
+// 【移交而不是换手】弹层一开就 SetCapture(list)，书签栏的捕获被接走，
+// 栏会同步收到 WM_CAPTURECHANGED 并复位拖拽状态 —— 所以需要的值必须在
+// 放手之前取走。移交后落点跟弹层走：压行画插入线，松手 bmk.move 按行落位；
+// 拖回书签栏松手 = 按栏落点提交（onDragOut）；拖出程序 = 取消。
+void BookmarkBar::HandoffDragToFolder(HWND h) {
+    const int folderIdx = dropInto_;
+    const int dragIdx = dragIdx_;
+    if (dragIdx < 0 || folderIdx < 0 || folderIdx >= static_cast<int>(items_.size()) ||
+        folderIdx == dragIdx)
+        return;
+    const Item& folder = items_[static_cast<size_t>(folderIdx)];
+    if (!folder.folder) return;
+    KillTimer(h, kDragFolderTimer);
+    folderHoverIdx_ = -1;
+    edge::Stop(&dragScrollStep_, hwnd_, kDragScrollTimer);   // 移交后滚动也停（弹层接管落点）
+
+    // 空分类弹不出内容（ShowFolderContents 见空菜单直接返回）：退回旧语义，
+    // 直接按"加入末尾"提交，不能让这次拖放静默消失。
+    const BookmarkNode* node = BookmarkStore::Get().Find(folder.id);
+    if (!node || !node->isFolder || node->children.empty()) {
+        DragFinish(h, true);
+        return;
+    }
+
+    const std::wstring dragId = items_[static_cast<size_t>(dragIdx)].id;
+    const RECT rc = folder.rc;
+    POINT anchor{rc.left, rc.bottom + 2};
+    ClientToScreen(h, &anchor);
+    // 先清自己的拖拽态再放手：ReleaseCapture 会同步派发 WM_CAPTURECHANGED，
+    // 那边的复位是兜底，这里的清理才是移交本身。
+    dragArm_ = dragging_ = false;
+    dragIdx_ = dropIdx_ = dropInto_ = -1;
+    dropPreview_ = false;
+    InvalidateRect(h, nullptr, FALSE);
+    ReleaseCapture();
+    ShowFolderContents(folder.id, anchor, dragId);
 }

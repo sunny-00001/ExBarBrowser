@@ -70,7 +70,8 @@ void BookmarkBar::ShowFolderMenu(int index, POINT screen) {
     ShowFolderContents(items_[static_cast<size_t>(index)].id, screen);
 }
 
-void BookmarkBar::ShowFolderContents(const std::wstring& folderId, POINT screen) {
+void BookmarkBar::ShowFolderContents(const std::wstring& folderId, POINT screen,
+                                     const std::wstring& draggingId) {
     // 【逐级下钻，而不是把整棵子树拍平加缩进】
     //
     // 原实现把所有后代一次性列进同一个菜单，用 `depth * 2` 个空格表示层级。
@@ -81,6 +82,11 @@ void BookmarkBar::ShowFolderContents(const std::wstring& folderId, POINT screen)
     //     "顶层的 x" 长得一样。
     // 现在只列**直接子项**，点分类再开下一级 —— 与资源管理器/浏览器一致，
     // 每一级都是短菜单，层级靠"路径"本身表达而不是靠空格。
+    //
+    // 【draggingId = 拖拽移交】书签栏拖动悬停本分类到点，弹层被自动打开，
+    // 那场拖拽还在进行（见 bookmark_bar_drag.cpp 的 HandoffDragToFolder）。
+    // 弹层进场即在拖拽态（dragFrom=-1 表示外部条目），压行画插入线、
+    // 松手按落点提交 —— "移到分类"从此能精确定位，而不是只能加入末尾。
     std::wstring current = folderId;
     for (int guard = 0; guard < 32; ++guard) {   // 深度上限，防数据自引用成死循环
         FolderRows data = BuildFolderRows(current);
@@ -96,16 +102,26 @@ void BookmarkBar::ShowFolderContents(const std::wstring& folderId, POINT screen)
         ui::MenuOptions opt;
         // 锚点键带层级：下钻后的菜单是一个**新的**锚点，不能沿用上一级的 key
         // （否则"再点即收"会把下一级当成上一级的重开而直接吞掉）。
-        opt.toggleKey = (L"bmk-folder:" + current).c_str();
+        // toggleKey 是裸指针，必须指向活到 menu.Show 返回的串 ——
+        // 写成 (L"..." + current).c_str() 会把指针指向语句结束就析构的临时串
+        //（-Wdangling-assignment-gsl 类问题；bookmark_bar_popup.cpp 同一处已修过一次）。
+        const std::wstring folderKey = L"bmk-folder:" + current;
+        opt.toggleKey = folderKey.c_str();
 
         // 拖动重排：落点是"插到第几行之前"，交给 bmk.move 去落到分类里的第几位。
         // toIndex 用的是**被拖行仍在列表里**的坐标 —— bmk.move 自己按
         // "移除被拖行"折算（to > from 时减一），两处都折算就会差一位。
+        // from = -1 是外部移交的条目（draggingId），它不在本容器里，无需折算。
         opt.reorder.onReorder = [&](int from, int to) {
-            if (from < 0 || from >= static_cast<int>(ids.size())) return;
+            std::wstring dragged;
+            if (from >= 0 && from < static_cast<int>(ids.size()))
+                dragged = ids[static_cast<size_t>(from)];
+            else if (!draggingId.empty())
+                dragged = draggingId;
+            if (dragged.empty()) return;
             if (to < 0 || to > static_cast<int>(ids.size())) return;
             json::Value a = json::Value::MakeObject();
-            a.Set(L"id", json::Value::MakeStr(ids[static_cast<size_t>(from)]));
+            a.Set(L"id", json::Value::MakeStr(dragged));
             a.Set(L"toId", json::Value::MakeStr(current));
             a.Set(L"toIndex", json::Value::MakeInt(to));
             CommandBus::Get().Invoke(CmdId::BmkMove, Args::FromJson(a), Actor::Ui());
@@ -128,11 +144,13 @@ void BookmarkBar::ShowFolderContents(const std::wstring& folderId, POINT screen)
 
         // 拖出弹层：纯分类节点、指向目录的普通书签、命名空间项都能落到书签栏；
         // 普通文件书签仍走右键“移到书签栏”（dragOutable 为 false）。
+        // 外部移交（draggingId）没有行号限制：从书签栏拖进来的就是可拖的。
         // 预览直接复用 BookmarkBar 的外部拖放落点/绘制，不在这里另画一套线。
         opt.reorder.onDragOutPreview = [&](int row, POINT screen) {
-            if (screen.x < 0 || screen.y < 0 || row < 0 ||
-                row >= static_cast<int>(dragOutable.size()) ||
-                !dragOutable[static_cast<size_t>(row)]) {
+            bool allowed = !draggingId.empty();   // 外部移交项默认可落
+            if (row >= 0 && row < static_cast<int>(dragOutable.size()))
+                allowed = dragOutable[static_cast<size_t>(row)];
+            if (screen.x < 0 || screen.y < 0 || !allowed) {
                 ClearDropPreview();
                 return;
             }
@@ -140,15 +158,20 @@ void BookmarkBar::ShowFolderContents(const std::wstring& folderId, POINT screen)
         };
         opt.reorder.onDragOut = [&](int row, POINT screen) {
             ClearDropPreview();
-            if (row < 0 || row >= static_cast<int>(ids.size()) ||
-                !dragOutable[static_cast<size_t>(row)])
-                return;
+            std::wstring dragged;
+            if (row >= 0 && row < static_cast<int>(ids.size())) {
+                if (!dragOutable[static_cast<size_t>(row)]) return;
+                dragged = ids[static_cast<size_t>(row)];
+            } else if (!draggingId.empty()) {
+                dragged = draggingId;
+            }
+            if (dragged.empty()) return;
             const BookmarkDropSpot spot = DropSpotAt(screen);
             if (!spot.valid) return;   // 松手不在书签栏上 = 取消拖出
-            LogDbg(L"[bmk] 分类拖出 row=%d id=%ls spot=1 idx=%d into=%d", row,
-                   ids[static_cast<size_t>(row)].c_str(), spot.index, spot.folderIndex);
+            LogDbg(L"[bmk] 分类拖出 id=%ls spot=1 idx=%d into=%d",
+                   dragged.c_str(), spot.index, spot.folderIndex);
             json::Value a = json::Value::MakeObject();
-            a.Set(L"id", json::Value::MakeStr(ids[static_cast<size_t>(row)]));
+            a.Set(L"id", json::Value::MakeStr(dragged));
             if (!spot.folderId.empty()) {
                 a.Set(L"toId", json::Value::MakeStr(spot.folderId));
             } else {
@@ -156,6 +179,9 @@ void BookmarkBar::ShowFolderContents(const std::wstring& folderId, POINT screen)
             }
             CommandBus::Get().Invoke(CmdId::BmkMove, Args::FromJson(a), Actor::Ui());
         };
+
+        // 外部移交时弹层进场即在拖拽态（from=-1 = draggingId 那一条）。
+        opt.reorder.allowExternalFrom = !draggingId.empty();
 
         const int pick = data.menu.Show(hwnd_, *theme_, screen, opt);
 

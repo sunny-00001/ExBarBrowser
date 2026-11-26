@@ -8,8 +8,19 @@
 
 #include "bookmarks.h"
 #include "common.h"
+#include "tab_uia.h"
 #include "tooltip_host.h"
 #include "theme.h"
+
+#include "edge_autoscroll.h"
+
+// 书签栏的 UIA Traits 与 WM_GETOBJECT 转发（provider 本体与标签栏共用，
+// 见 tab_uia.h）。消息分支 kMsgCount/kMsgItem/kMsgSelect 在 bookmark_bar.cpp。
+class BookmarkBar;
+namespace bmuia {
+uia::Traits TraitsFor(BookmarkBar* b);
+LRESULT HandleGetObject(BookmarkBar* b, HWND hwnd, WPARAM w, LPARAM l);
+}  // namespace bmuia
 
 // 一次落点的完整语义：顶层插入线 / 拖入分类，两者互斥。
 // valid=false 表示落在栏外（或没有可用栏窗口），调用方按"取消"处理。
@@ -134,6 +145,11 @@ private:
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT Handle(HWND, UINT, WPARAM, LPARAM);
+    // 键盘导航一族（方向键 / Home / End / 回车 / 菜单键）。
+    // 拆到 bookmark_bar_keys.cpp：Handle 里塞着绘制、焦点、UIA、拖拽、菜单、
+    // 键盘六类消息，键盘这一族自成一体（"焦点项游标 + 保证可见"一个语义），
+    // 不该让人在几百行 switch 里翻那几十行。
+    LRESULT HandleKeyDown(HWND, WPARAM, LPARAM);
     void BuildItems();
     void Layout();
     void Paint(HWND);
@@ -142,6 +158,9 @@ private:
     int HitIcon(int x, int y) const;
     bool HitOverflow(int x, int y) const;
     // 横向滚动（滚轮）：ScrollBy 改滚动量并重排，EnsureVisible 把某一项带进视野。
+    // ScrollBy 是**唯一**的滚动入口：滚轮 / 键盘跟随 / 拖拽自动滚动都走它，
+    // 滚动后的派生状态（拖拽落点、悬停高亮）也只在这里统一重算 ——
+    // 不收口的话，"滚了但插入线/高亮还指旧项"这类错位每个滚动源各犯一遍。
     void ScrollBy(int dx);
     void EnsureVisible(int index);
     // 滚轮处理：先问鼠标规则（用户可能把"书签栏上滚滚轮"绑成别的动作），
@@ -154,8 +173,12 @@ private:
     void ShowMoveToMenu(const std::wstring& id, const std::wstring& label, POINT screen);
     void ShowEmptyMenu(POINT screen);
     void ShowFolderMenu(int index, POINT screen);
-    // 分类内容弹层（可拖动排序 + 行内右键），实现见 bookmark_category_popup.cpp
-    void ShowFolderContents(const std::wstring& folderId, POINT screen);
+    // 分类内容弹层（可拖动排序 + 行内右键），实现见 bookmark_category_popup.cpp。
+    // draggingId 非空 = "拖拽移交"：一场从书签栏拖进来、悬停分类自动弹出时
+    // 还在进行的拖拽 —— 弹层进场即在拖拽态，from=-1 表示这个外部条目，
+    // 松手按弹层落点提交（而不是只能在栏上"加入末尾"）。
+    void ShowFolderContents(const std::wstring& folderId, POINT screen,
+                            const std::wstring& draggingId = L"");
     void ShowCategoryItemMenu(const std::wstring& folderId, int row, POINT screen);
     void ShowChildTree(int index);   // 图标：列该路径的子目录，可就地逐级展开
     void ShowOverflowMenu(POINT screen);
@@ -191,6 +214,19 @@ private:
     int dropInto_ = -1;        // 拖到某个分类"内部"时该分类的项索引（-1 = 无）
     bool dropPreview_ = false; // 落点预览可见（内部拖动 / 外部 OLE 拖放共用）
     POINT dragStart_{};
+    // 悬停分类自动弹出：拖进分类"内部"后停 600ms，把进行中的拖拽移交给
+    // 分类内容弹层（拖拽继续，落点跟着弹层行走）。folderHoverIdx_ 是定时器
+    // 挂着的那个分类项索引（换分类 / 拖出 / 松手都要摘掉定时器）。
+    static constexpr UINT kDragFolderTimer = 1;
+    int folderHoverIdx_ = -1;
+    void HandoffDragToFolder(HWND h);   // 定时器到点：移交拖拽给分类弹层
+
+    // 拖拽边缘自动滚动（edge_autoscroll.h 的共享实现，与标签栏同一套）：
+    // 拖到栏左/右边缘带内就按拍滚动，让视野外的书签也能成为落点。
+    // 定时器 id 与分类悬停定时器区分（2 = 滚动拍）。
+    static constexpr UINT kDragScrollTimer = 2;
+    int dragScrollStep_ = 0;    // 0=停；>0 向右；<0 向左（edge::Update 维护）
+    int dragMouseX_ = 0;        // 定时器拍没有鼠标坐标，缓存最后一次 MOUSEMOVE 的 x
 
     // ---- 键盘访问 ----
     //

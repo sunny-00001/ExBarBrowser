@@ -68,6 +68,10 @@ struct PopupState {
     POINT dragStart{};
 };
 
+// 拖拽几何与拖出预览：popup_list_drag.cpp 唯一实现（与 PopupApplyReorder 同文件）。
+void UpdateDragPosition(PopupState* st, HWND h, int x, int y);
+void ClearDragOutPreview(PopupState* st);
+
 // 树 / 几何 / 命中：popup_list_tree.cpp 唯一实现，其它 TU 只调用。
 void CollectAllVisible(PopupState* st);
 void EnsureLoaded(PopupState* st, int ni);
@@ -80,7 +84,7 @@ void RefreshHot(PopupState* st, HWND hList);
 void ResizeToFit(PopupState* st);
 void ToggleExpand(PopupState* st, int vi);
 
-// 行内拖拽：落点提交（popup_list_input.cpp 唯一实现）。
+// 行内拖拽：落点提交（popup_list_drag.cpp 唯一实现）。
 // 提交后按 rebuildRows 就地刷新行内容（宿主重建 → 弹层重画）。
 void PopupApplyReorder(PopupState* st, int from, int to);
 

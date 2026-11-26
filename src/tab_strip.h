@@ -224,7 +224,8 @@ private:
     POINT dragStart_{};
     int dropIdx_ = -1;
     // 拖拽边缘自动滚动：定时器只在拖到可视区边缘时运行。
-    // 起停都收口在 UpdateAutoScroll/StopAutoScroll，避免"停了定时器没停方向"的残留。
+    // 起停与边缘判定收口在 edge::Update/Stop（src/edge_autoscroll.h，与书签栏
+    // 共用的唯一实现）；本类只持有状态与定时器 id。
     static constexpr UINT_PTR kDragScrollTimer = 3;  // 主窗口已用 1/2
     int dragScrollStep_ = 0;    // 0=停；>0 向右看；<0 向左看
     int dragMouseX_ = 0;        // 定时器没有鼠标坐标，用最后一次 MOUSEMOVE 的 x

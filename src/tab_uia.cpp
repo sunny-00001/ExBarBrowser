@@ -1,14 +1,24 @@
-// 标签栏 UIA provider 实现。见 tab_uia.h 的设计说明。
+// 自绘栏 UIA provider 实现。见 tab_uia.h 的设计说明（标签栏/书签栏共用）。
 //
-// 线程模型：UIA 客户端可能从任意线程查询。items_/tabRects_ 只属于 UI 线程，
+// 线程模型：UIA 客户端可能从任意线程查询。条目数据只属于 UI 线程，
 // 因此所有读取与选中都 SendMessage 回 UI 线程（同步、同一进程，指针在返回前有效），
-// 不在 provider 里直接碰 TabStrip 的成员。
+// 不在 provider 里直接碰宿主类的成员 —— provider 只持有 Traits（根名/前缀）。
 #include "tab_uia.h"
 
 #include "tab_strip.h"
 
 #include <uiautomationcore.h>
 #include <uiautomationcoreapi.h>
+
+// TabTraitsFor：标签栏的 Traits 具体值（书签栏的见 bookmark_bar_uia.cpp）。
+uia::Traits uia::TabTraitsFor(TabStrip* s) {
+    Traits t;
+    t.rootName = L"标签栏";
+    t.rootControlType = 50018;              // UIA_TabControlTypeId
+    t.automationPrefix = L"tab.";
+    t.owner = s;
+    return t;
+}
 
 // 不包含 uiautomationclient.h：它含 C 风格的 `enum X` 前向声明，
 // clang 在 C++ 模式下直接报错（ISO C++ forbids forward references to 'enum'）。
@@ -31,6 +41,7 @@
 
 #include <oleauto.h>
 
+#include <cstdlib>
 #include <map>
 #include <mutex>
 
@@ -85,7 +96,8 @@ class TabItemProvider final : public IRawElementProviderSimple,
                               public ISelectionItemProvider,
                               public IInvokeProvider {
 public:
-    TabItemProvider(HWND hwnd, int index) : hwnd_(hwnd), index_(index) {}
+    TabItemProvider(HWND hwnd, int index, const uia::Traits& traits)
+        : hwnd_(hwnd), index_(index), traits_(traits) {}
     ~TabItemProvider() = default;
 
     // ---- IUnknown ----
@@ -139,7 +151,8 @@ public:
         case UIA_NamePropertyId: SetString(pRetVal, info.name.c_str()); break;
         case UIA_ControlTypePropertyId: SetInt(pRetVal, UIA_TabItemControlTypeId); break;
         case UIA_AutomationIdPropertyId: {
-            const std::wstring s = L"tab." + std::to_wstring(index_);
+            const std::wstring s = std::wstring(traits_.automationPrefix) +
+                                   std::to_wstring(index_);
             SetString(pRetVal, s.c_str());
             break;
         }
@@ -226,13 +239,14 @@ private:
     LONG refs_ = 1;
     HWND hwnd_ = nullptr;
     int index_ = 0;
+    uia::Traits traits_;   // automationId 前缀来自这里（tab./bmk.）
 };
 
 class TabRootProvider final : public IRawElementProviderSimple,
                               public IRawElementProviderFragment,
                               public IRawElementProviderFragmentRoot {
 public:
-    explicit TabRootProvider(HWND hwnd) : hwnd_(hwnd) {}
+    TabRootProvider(HWND hwnd, const uia::Traits& traits) : hwnd_(hwnd), traits_(traits) {}
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
         if (!ppv) return E_INVALIDARG;
@@ -277,7 +291,7 @@ public:
     HRESULT STDMETHODCALLTYPE GetPropertyValue(PROPERTYID id, VARIANT* pRetVal) override {
         if (!pRetVal) return E_INVALIDARG;
         switch (id) {
-        case UIA_NamePropertyId: SetString(pRetVal, L"标签栏"); break;
+        case UIA_NamePropertyId: SetString(pRetVal, traits_.rootName); break;
         case UIA_ControlTypePropertyId: SetInt(pRetVal, UIA_TabControlTypeId); break;
         case UIA_IsControlElementPropertyId:
         case UIA_IsContentElementPropertyId:
@@ -304,7 +318,7 @@ public:
             uia::ItemInfo info;
             QueryInfo(i, &info);
             if (PtInRect(&info.rect, pt)) {
-                *pRetVal = new TabItemProvider(hwnd_, i);
+                *pRetVal = new TabItemProvider(hwnd_, i, traits_);
                 return S_OK;
             }
         }
@@ -318,7 +332,7 @@ public:
             uia::ItemInfo info;
             QueryInfo(i, &info);
             if (info.selected) {
-                *pRetVal = new TabItemProvider(hwnd_, i);
+                *pRetVal = new TabItemProvider(hwnd_, i, traits_);
                 break;
             }
         }
@@ -340,9 +354,9 @@ public:
         const int n = Count();
         if (n == 0) return S_OK;
         if (dir == NavigateDirection_FirstChild)
-            *pRetVal = new TabItemProvider(hwnd_, 0);
+            *pRetVal = new TabItemProvider(hwnd_, 0, traits_);
         else if (dir == NavigateDirection_LastChild)
-            *pRetVal = new TabItemProvider(hwnd_, n - 1);
+            *pRetVal = new TabItemProvider(hwnd_, n - 1, traits_);
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE get_BoundingRectangle(UiaRect* pRetVal) override {
@@ -378,6 +392,7 @@ private:
 
     LONG refs_ = 1;
     HWND hwnd_ = nullptr;
+    uia::Traits traits_;   // 根名（"标签栏"/"书签栏"）来自这里
 };
 
 TabRootProvider* TabItemProvider::Root() {
@@ -403,7 +418,7 @@ HRESULT TabItemProvider::Navigate(NavigateDirection dir, IRawElementProviderFrag
     int target = -1;
     if (dir == NavigateDirection_NextSibling && index_ + 1 < n) target = index_ + 1;
     if (dir == NavigateDirection_PreviousSibling && index_ > 0) target = index_ - 1;
-    if (target >= 0) *pRetVal = new TabItemProvider(hwnd_, target);
+    if (target >= 0) *pRetVal = new TabItemProvider(hwnd_, target, traits_);
     return S_OK;
 }
 
@@ -425,14 +440,19 @@ HRESULT TabItemProvider::get_SelectionContainer(IRawElementProviderSimple** pRet
 
 namespace uia {
 
-LRESULT HandleGetObject(TabStrip* strip, HWND hwnd, WPARAM w, LPARAM l) {
-    if (!strip || !hwnd) return 0;
+LRESULT HandleGetObject(const Traits& traits, HWND hwnd, WPARAM w, LPARAM l) {
+    if (!traits.owner || !hwnd) return 0;
+    // 【诊断开关】EXBAR_NO_UIA_PROVIDER=1 → 不提供 provider（隔离 UIA 死锁用）。
+    // 只影响 provider 是否挂上，不改其它行为；排查完可去掉。
+    static const bool kDisabled =
+        (std::getenv("EXBAR_NO_UIA_PROVIDER") != nullptr);
+    if (kDisabled) return 0;
     TabRootProvider* root = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_mtx);
         auto it = g_roots.find(hwnd);
         if (it == g_roots.end()) {
-            root = new TabRootProvider(hwnd);
+            root = new TabRootProvider(hwnd, traits);
             g_roots[hwnd] = root;
         } else {
             root = it->second;

@@ -283,10 +283,35 @@ bool CollectViewStats(IShellView* view, ViewStats* out, SplitCache* cache,
     // 容器
     ComPtr<IShellItem2> folder2;
     if (SUCCEEDED(fv2->GetFolder(IID_IShellItem2, reinterpret_cast<void**>(&folder2))) && folder2) {
-        UINT64 size = 0;
-        if (SUCCEEDED(folder2->GetUInt64(PKEY_Size, &size))) {
-            out->containerBytes = size;
-            out->containerBytesKnown = true;
+        // 先取路径（便宜），再据此决定要不要问"内容大小" —— 顺序很重要，见下。
+        PWSTR path = nullptr;
+        if (SUCCEEDED(folder2->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+            out->containerPath = path;
+            CoTaskMemFree(path);
+        } else {
+            out->virtualRoot = true;
+        }
+
+        // 【为什么盘符路径不问 PKEY_Size】文件夹的 PKEY_Size 是**内容大小**，
+        // shell 要递归枚举整棵子树才给得出数。这一次调用是同步的、在 UI 线程上、
+        // **不可中断**：实测在 D:\ 上会陷进去好几分钟 —— 期间只有 shell 的嵌套
+        // 消息循环在转，界面表现为"启动了，但文件列表一直正在处理"（日志停在
+        // pkey_size 那一行，后面的帧一条都不跑，CPU 却是 0）。
+        //
+        // 而盘符路径这一栏本来就显示"磁盘 X 可用"（见 app_stats.cpp 的 hasDisk
+        // 分支），容器大小**根本不会显示** —— 为一个不显示的数值做全盘递归是纯亏。
+        // 虚拟根同样跳过：搜索视图/压缩包内没有"文件夹多大"这个概念。
+        //
+        // 于是只剩 UNC 这类"真实存在但不是盘符"的路径仍会求（保住原来那一栏）。
+        // 它的首次等待仍可能慢，要彻底解决得把这段挪到后台线程 ——
+        // TODO(异步化)：容器大小改成"后台线程取 + 取到再刷新状态栏"。
+        const bool drivePath = out->containerPath.size() >= 2 && out->containerPath[1] == L':';
+        if (!out->virtualRoot && !drivePath) {
+            UINT64 size = 0;
+            if (SUCCEEDED(folder2->GetUInt64(PKEY_Size, &size))) {
+                out->containerBytes = size;
+                out->containerBytesKnown = true;
+            }
         }
         FILETIME ft{};
         if (!out->hasModified && SUCCEEDED(folder2->GetFileTime(PKEY_DateModified, &ft))) {
@@ -294,13 +319,6 @@ bool CollectViewStats(IShellView* view, ViewStats* out, SplitCache* cache,
             if (!FileTimeToLocalFileTime(&ft, &local)) local = ft;
             FileTimeToSystemTime(&local, &out->modified);
             out->hasModified = true;
-        }
-        PWSTR path = nullptr;
-        if (SUCCEEDED(folder2->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
-            out->containerPath = path;
-            CoTaskMemFree(path);
-        } else {
-            out->virtualRoot = true;
         }
     } else {
         out->virtualRoot = true;

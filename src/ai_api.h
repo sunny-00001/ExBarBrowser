@@ -384,6 +384,13 @@ struct StateSnapshot {
     unsigned aiPanelPort = 0;
     std::wstring aiPanelError;
     std::wstring aiPanelWebView;
+
+    // ---- 键位覆盖的可回读面（hotkey.set / hotkey.clear / hotkey.reset）----
+    // 覆盖表本身（setting → 按键）。断言语言没有"集合相等"，所以三条键位命令
+    // 只能写 $changed / $unchanged（改没改这个字段），"绑的是什么"用
+    // nav 侧的 keymap 读回（tool.list / cmd.help 会带 bindings）。
+    // 与 Config::s().hotkeyOverrides 同源，config.set 的只读项 hotkeys 也读它。
+    std::vector<std::pair<std::wstring, std::wstring>> hotkeyOverrides;
 };
 using StateFn = std::function<StateSnapshot()>;
 void SetStateProvider(StateFn fn);

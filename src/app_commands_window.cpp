@@ -208,18 +208,11 @@ void App::RegisterWindowCommands() {
     });
 }
 
-// ---------------------------------------------------------------- AI 面板标题栏
-//
-// AI 页自绘的标题栏（close / minimize / maximize / pin / unpin）经 WebMessage
-// 送到宿主。以前这里直接调 ShowWindow / SetWindowPos：这些动作既没有审计，
-// 也没有事件，与系统菜单、快捷键那两路完全不是同一条路径。
-//
-// 现在统一转投命令总线：close → ai.panel.toggle（收起面板，不是退出程序），
-// minimize/maximize → win.minimize / win.maximize / win.restore，
-// pin/unpin → win.topmost {on:true/false}。
-// 语义逐条等价：win.topmost 的 on 参数与页面传来的 pin/unpin 一一对应，
-// maximize 的"最大化/还原"切换由 IsZoomed 判定后选命令，与原实现同一判据。
+
 void App::DispatchAiPanelWindowAction(const std::wstring& action) {
+    // AI 页自绘标题栏的窗口动作 → 命令总线。
+    // 以前这一路直接调 ShowWindow / SetWindowPos：没有审计、没有事件，
+    // 也不经过命令层的前置检查 —— 与系统菜单、快捷键那条路强度不同。
     if (action == L"close") {
         // 收起面板而不是退出程序 —— 与原来的 ToggleAiPanel 同一语义。
         if (aiPanel_.visible())

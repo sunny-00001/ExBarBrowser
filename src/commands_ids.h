@@ -225,4 +225,41 @@ enum class CmdId : int {
     // ---- 配置导出/还原（只允许追加在末尾，见 C1b）----
     ConfigExport,      // {path?}：导出全部可写设置（省略 path 只回显，不落盘）
     ConfigImport,      // {path}：从导出文件还原设置（逐项报告成败）
+    // ---- 文件列表区上下文菜单（只允许追加在末尾，见 C1b）----
+    FileContextMenu,   // 无参：弹 shell 的上下文菜单（Shift+F10），纯人机 UI
+    // ---- F6 焦点循环（只允许追加在末尾，见 C1b）----
+    FocusNextElement,  // 无参：焦点移到下一个界面元素（F6）
+    FocusPrevElement,  // 无参：焦点移到上一个界面元素（Shift+F6）
+    // ---- 标签绝对位置重排（只允许追加在末尾，见 C1b）----
+    // 拖拽重排的结构化入口：tab.move.* 只有左移/右移/最前/最后，
+    // "把标签移到第 N 位"此前没有任何命令能表达 —— AI 无法复现拖拽。
+    TabMoveTo,         // {index?, to}：把标签移到指定位置（index 省略=当前标签）
+    // ---- 键位改绑（只允许追加在末尾，见 C1b）----
+    // 热键管理器窗口的机器等价：改绑/解绑/全部还原。此前改键是人独占操作
+    // （config.set 的 hotkeys 项只读），AI/脚本无法表达"把这个命令绑到 X"。
+    HotkeySet,         // {command, key}：把命令绑到指定组合键（覆盖默认）
+    HotkeyClear,       // {command}：显式解绑（回落到默认绑定）
+    HotkeyReset,       // 无参：清掉全部覆盖，回到 keymap.json 的默认表
+    // ---- 双栏协同（P0-2 / P1，2026-11-26；只允许追加在末尾，见 C1b）----
+    // 对侧即目标（TC F5/F6 范式）：无参命令，源=活动窗格选中项，目标=另一窗格
+    // 当前目录。与 fs.copy/fs.move（显式点名 to）共用 TransferTargets 的同一份
+    // 底层（shellops::TransferToFolder + fileundo），只是目标来源不同。
+    //
+    // 【枚举名与命令名不一致：有意保留】枚举项叫 FsCopyToPane，命令名却是
+    // file.copy.pane —— 因为这两条**作用于当前选中**（无参），属于 file.* 组
+    // 的语义；而 fs.* 组的约定是"目标由参数点名、绝不读选中"（check_ai_meta
+    // 第 9 项强制）。曾用 fs.copy.pane 时被那条判据判失败，改名才是正解。
+    // 枚举名不改：CmdId 的**值**一经分配不可变，重命名枚举项会让
+    // tests/baselines/commands-baseline.json 的按名比对失效 —— 值没变，
+    // 名字变更是白付成本。
+    FsCopyToPane,      // 无参：复制活动窗格选中项到另一窗格当前目录
+    FsMoveToPane,      // 无参：移动活动窗格选中项到另一窗格当前目录（destructive，人工确认门）
+    ViewPaneSwap,      // 无参：两窗格目录互换（TC Ctrl+U / cm_Exchange）
+    ViewPaneMirror,    // 无参：另一窗格导航到活动窗格当前目录（TC cm_MatchSrc 目录版）
+    // ---- 弹层入口命令化（2026-11-26 §2b B1/A5；只允许追加在末尾，见 C1b）----
+    // "打开一个弹层"也是动作，也要有机器等价：撤销历史弹层（chip 点击人独占）
+    // 与 AI peek（A5 分支级盲区）。弹层内的选中/派发本来就走总线，
+    // 缺的只是"把它打开"这一步的入口。
+    WinUndoHistory,    // 无参：打开撤销历史弹层（点行 = file.undo.to / file.redo）
+    WinAiPeek,         // 无参：翻转 AI peek 面板（状态栏 AI chip 同义）
 };

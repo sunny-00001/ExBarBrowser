@@ -111,6 +111,10 @@ KNOWN_NO_TARGET = {
     # 同样 aiExposed=false。机器侧要永久删必须走 fs.delete + approve，
     # 不能靠这条无目标参数的键盘命令来表达。
     'file.delete.permanent',
+    # 「复制/移动到另一窗格」：作用于**当前选中**，目标窗格由布局决定
+    # （另一侧当前目录），没有可点名的目标路径。
+    # 机器侧要指定路径复制/移动走 fs.copy / fs.move（带 path 参数）。
+    'file.copy.pane', 'file.move.pane',
 }
 
 # R20 的判定分两条路，因为"可达"有两种不同含义：
@@ -209,6 +213,17 @@ HUMAN_PATH = {
                         '→ App::ShowSearchScopeMenu → 命令总线 search.scope.set',
     'search.query.set': '导航栏搜索框右侧「搜索历史」下拉 → 选中一条历史 → 命令总线 search.query.set'
                         '（参数 query 即那条历史词；**只回填不执行搜索**）',
+
+    # 下面三条是"确定式双胞胎"（2026-11-26 §2b A3/A4）：机器用参数点名，
+    # 人用"先选中/先拖、再执行"。同一份底层实现（InputRouter::SetKeyForCommand /
+    # ResetDefaults / App::MoveTab），两条入口结果等价。
+    'tab.move.to': '标签栏拖拽重排（TabStrip 命中测试算落点 → App::MoveTab），'
+                   '参数 index=被拖的标签、to=落点格；拖拽就是这两个参数的人侧来源',
+    'hotkey.set': '系统菜单「快捷键管理器(K)」（win.hotkeys 同一扇窗）→ 选中一行 → '
+                  '「编辑」按钮 → 捕获按键（chord::Format）→ SetKeyForCommand；'
+                  '参数 command=选中行、key=按下的组合键',
+    'hotkey.clear': '快捷键管理器 → 选中一行 →「清除」按钮 → SetKeyForCommand(cmd, "")'
+                    '（空串=显式解绑哨兵）；参数 command=选中行',
 }
 
 # 机器专用查询：人能通过命令面板触发，但拿到的是 JSON（写进审计日志），
@@ -302,6 +317,10 @@ UNDO_MECHANISM = {
     'file.rename.batch': 'App::fileUndo_（改名逆操作：旧名→新名）',
     'file.copy.to': 'App::fileUndo_（复制逆操作：撤销=删副本）',
     'file.move.to': 'App::fileUndo_（移动逆操作：源→目标）',
+    # 跨窗格复制/移动：走同一条 shellopexec 执行路径，撤销记录同样进
+    # App::fileUndo_ 的逆操作栈（撤销=删副本 / 移回源目录）。
+    'file.copy.pane': 'App::fileUndo_（复制逆操作：撤销=删副本）',
+    'file.move.pane': 'App::fileUndo_（移动逆操作：移回源目录）',
     'fs.rename': 'App::fileUndo_（改名逆操作：旧名→新名）',
     'fs.move': 'App::fileUndo_（移动逆操作：源→目标）',
     'fs.copy': 'App::fileUndo_（复制逆操作：撤销=删副本）',
@@ -1915,10 +1934,18 @@ def main():
         # 区域名沿用"书签"，登记名因此保持不变。
         'bookmark_bar_popup.cpp': '书签',
         'bookmark_category_popup.cpp': '书签',
+        # 书签栏项级菜单（项右键 + 「移到分类…」二层）从 bookmark_bar.cpp 拆出。
+        # 不登记的话这个文件的菜单项会**整片逃出**第 16 项扫描 ——
+        # 表里的文案全都报"在扫描源码里找不到"，看着像表腐烂，其实是文件没登记。
+        'bookmark_bar_itemmenu.cpp': '书签',
         'nav_bar_actions.cpp': '视图',
         'nav_bar_view_menu.cpp': '视图',
         'app_view_menus.cpp': '视图',
         'app_commands.cpp': '状态栏',
+        # 弹层与命令面板（从 app_commands.cpp 拆出）：标签切换器 / 标签菜单 /
+        # 状态栏菜单 / 命令面板都在这里。区域名沿用 app_commands.cpp 的登记 ——
+        # 登记名不变，MENU_ACTIONS 里「状态栏·…」那几条就不用改。
+        'app_commands_palette.cpp': '状态栏',
         'bookmark_io.cpp': '书签导入',
         'app_commands_files.cpp': '详情列',
         'app_search.cpp': '搜索',

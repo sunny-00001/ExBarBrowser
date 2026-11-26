@@ -22,6 +22,10 @@ void App::RefreshStats() {
     // 看着像"滑块坏了"。
     SyncZoomSlider();
 
+    // 撤销历史 chip：同一条思路 —— 撤销栈深浅与当前目录无关，放在取数最前面
+    // 单独同步，免得被下面那些"目录没变就不重算"的短路漏掉。
+    SyncUndoChip();
+
     unsigned& tick = statsTick_;
     ++tick;
 
@@ -78,7 +82,9 @@ void App::RefreshStats() {
     // 允许分类的判据：路径已稳定（不是刚导航过来的那一帧）且规模不过大。
     // allowSplit=false 时 CollectViewStats 只取总量/选中集，跳过逐项分类。
     const bool allowSplit = !pathChanged && p->items <= kStatsSplitCap;
-    if (view) ok = CollectViewStats(view, &stats, &p->split, path, allowSplit);
+    if (view) {
+        ok = CollectViewStats(view, &stats, &p->split, path, allowSplit);
+    }
 
     if (ok && stats.total) p->items = stats.total;
     if (ok) {

@@ -150,6 +150,9 @@ const Alias kAliases[] = {
     {L"FsAttrSet",         L"fs.attr.set"},
     {L"FileUndoList",      L"file.undo.list"},
     {L"FileUndoTo",        L"file.undo.to"},
+    {L"FileContextMenu",   L"file.context.menu"},
+    {L"FocusNextElement",  L"win.focus.next"},
+    {L"FocusPrevElement",  L"win.focus.prev"},
 
     // --- View（group=View）---
     {L"ViewMode",          L"view.mode"},

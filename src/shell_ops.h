@@ -80,6 +80,15 @@ bool SelectedSinglePath(IShellView* view, std::wstring* fullPath);
 bool RenameTo(IShellView* view, HWND owner, const std::wstring& fullPath,
               const std::wstring& newName, std::wstring* why = nullptr);
 
+// 弹出 shell 自己的上下文菜单（Shift+F10 的实现入口）。
+//
+// 对当前**选中项**弹；没有选中项时弹背景菜单（新建/粘贴/查看/排序…）。
+// 实现见 src/shell_ops_ctxmenu.cpp（为什么必须自己弹、owner-draw 怎么转发，
+// 那里有完整说明）。
+//
+// 返回 true = 用户选了一项且已执行；false = 没有菜单或用户取消。
+bool ShowContextMenu(IShellView* view, HWND owner, POINT screen);
+
 // ---- 按路径的文件操作（撤销栈专用）----
 //
 // 见 src/shell_ops_path.h —— 那组按**完整路径**操作的文件操作已单独成文件：

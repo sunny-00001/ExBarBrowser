@@ -26,12 +26,20 @@
 
 static int g_pass = 0, g_fail = 0;
 
-static void Expect(bool cond, const wchar_t* key, const char* what) {
+static void Expect(bool cond, const wchar_t* key, const char* what,
+                   const std::wstring* detail = nullptr) {
     if (cond) {
         ++g_pass;
     } else {
         ++g_fail;
         std::printf("  FAIL  %s  [key=%ls]\n", what, key ? key : L"-");
+        // 【为什么把原因也打出来】"写盘失败"与"读回来不是它"是两类完全不同的错，
+        // 合成一条消息时前者会被后者的措辞盖住 —— 而写盘失败往往不是代码问题
+        // （原子写的 MoveFileEx 撞上杀软/索引器短暂占用目标文件就会失败），
+        // 不打原因就只能靠猜。
+        if (detail && !detail->empty()) {
+            std::printf("        原因：%ls\n", detail->c_str());
+        }
     }
 }
 
@@ -69,7 +77,8 @@ static void ReloadFromDisk() {
 enum class Rt {
     Ok,            // 写进去了，读回来还是它
     SetRejected,   // settings_reg 当场拒绝（原因看 err）
-    Lost,          // 写进去了，但存盘/读盘之后不是它了 —— 这一层的真实故障
+    Lost,          // 写进去了，但读回来不是它 —— 这一层的真实故障
+    WriteFailed,   // 存盘本身失败 —— 与"读回来变了"是**两类**错，必须分开
 };
 
 // 把一项设成 target，存盘，从盘上读回来，问"值还是不是存盘前的那个"。
@@ -86,7 +95,7 @@ static Rt RoundTrip(const std::wstring& key, const json::Value& target, std::wst
     if (!settings_reg::Get(key, &before)) return Rt::Lost;   // 存盘前的运行值
     if (!cfg.Save()) {
         if (err) *err = cfg.lastSaveError();
-        return Rt::Lost;   // 存不下去也是"值没保住"，不能算被拒绝
+        return Rt::WriteFailed;   // 存不下去是"写盘失败"，与"读回来变了"分开
     }
     ReloadFromDisk();
     json::Value after;
@@ -139,7 +148,10 @@ int main() {
                            "边界值不被判『超出范围』（声明范围 == 实现范围）");
                     break;
                 case Rt::Lost:
-                    Expect(false, e.key.c_str(), "边界值写盘再读盘后不变");
+                    Expect(false, e.key.c_str(), "写进去了但读回来不是它", &err);
+                    break;
+                case Rt::WriteFailed:
+                    Expect(false, e.key.c_str(), "写盘失败（值没存住）", &err);
                     break;
             }
         }

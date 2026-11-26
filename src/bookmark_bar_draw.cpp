@@ -76,11 +76,35 @@ void BookmarkBar::Layout() {
 }
 
 // 横向滚动：滚轮把后面的书签带进视野。滚动量夹在 [0, maxScroll_]。
+//
+// 【唯一的滚动入口】滚轮（OnWheel）、键盘跟随（EnsureVisible）、拖拽自动滚动
+// （WM_TIMER 拍）全都经这里。滚动会改变每一项的客户区位置，所以滚动一次就要把
+// 所有"按旧位置算出来的派生状态"重算一遍：
+//   · 拖拽中 → DropSpotAtClient 重算插入线/分类落点（否则滚轮/自动滚动滚一下，
+//     插入线一直错位到鼠标再动为止 —— E1 的根因就是滚动与落点脱钩）；
+//   · 悬停中 → UpdateHover 重算光标下的项（鼠标不动就没有后续 WM_MOUSEMOVE 兜底，
+//     高亮会指在滚走前的旧项上 —— E4）。
 void BookmarkBar::ScrollBy(int dx) {
     const int next = BmkClampScroll(scrollX_, dx, maxScroll_);
     if (next == scrollX_) return;
     scrollX_ = next;
     Layout();                    // 重排 + 挪提示热区（提示文本没变，走的是快路径）
+    if (dragging_) {
+        const BookmarkDropSpot spot = DropSpotAtClient(dragMouseX_, dragStart_.y);
+        dropIdx_ = spot.valid ? spot.index : -1;
+        dropInto_ = spot.folderIndex;
+    }
+    if (hover_ >= 0 || hotOvf_ || hoverIcon_ >= 0) {
+        POINT pt;
+        if (GetCapture() == hwnd_) {
+            // 拖拽中：用缓存的最后鼠标位置（光标在栏内但不产生 move）。
+            pt = POINT{dragMouseX_, dragStart_.y};
+        } else {
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd_, &pt);
+        }
+        UpdateHover(hwnd_, pt.x, pt.y);
+    }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 

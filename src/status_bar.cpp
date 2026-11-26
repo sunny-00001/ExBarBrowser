@@ -25,8 +25,30 @@ ico::IconId StatusSegmentIcon(int seg) {
     case Seg_Eye: return ico::IconId::Eye;
     case Seg_Type: return ico::IconId::Tag;
     case Seg_Ai: return ico::IconId::Channel;   // AI 通道：信号波，和状态栏其它段不撞
+    case Seg_Undo: return ico::IconId::Undo;    // 撤销历史：回退箭头，与"可撤 N 步"同义
     default: return ico::IconId::None;
     }
+}
+
+// 段名（状态栏右键菜单用）。与图标表放在同一个文件：加段时两处一起改。
+//
+// 【为什么不用调用方的静态数组】以前那段数组写在 app_commands.cpp 里，
+// 少写一项就是 nullptr（聚合初始化补零），而菜单接口收 const std::wstring&
+// —— 从 nullptr 构造 std::wstring 直接崩。加 Seg_Ai 时就踩了这个坑，
+// 表现是"状态栏右键菜单一点就崩"。下面的静态断言把这类漏项挡在编译期。
+namespace {
+const wchar_t* const kSegNames[Seg_Count] = {
+    L"文件夹计数", L"文件计数", L"已选/总数", L"修改日期", L"路径",
+    L"选中容量",   L"容器/磁盘", L"隐藏文件三态", L"类型",
+    L"AI 状态", L"撤销历史",
+};
+static_assert(sizeof(kSegNames) / sizeof(kSegNames[0]) == Seg_Count,
+              "状态栏段名表必须覆盖全部段（漏项 = nullptr → 菜单崩溃）");
+}  // namespace
+
+const wchar_t* StatusSegmentName(int seg) {
+    if (seg < 0 || seg >= Seg_Count) return L"";
+    return kSegNames[seg];
 }
 
 // 段图标（系统位图口径）：优先系统默认图标；系统没有对应资源的形状返回 None，
@@ -63,10 +85,12 @@ void StatusBar::SetModel(const StatusModel& m) {
 
 void StatusBar::SetEnabledSegments(const std::vector<int>& segs) {
     enabled_ = segs;
-    // AI chip 常驻：statusSegs 管的是"文件统计段显示哪些"，不该把后台 AI 状态一起藏掉。
-    // 这里补一次再归一，用户手改配置里写了 Seg_Ai 也不会重复画。
-    if (std::find(enabled_.begin(), enabled_.end(), Seg_Ai) == enabled_.end())
-        enabled_.push_back(Seg_Ai);
+    // 常驻段：statusSegs 管的是"文件统计段显示哪些"，不该把后台 AI 状态
+    // 与"还有几步可撤"一起藏掉。这里补一次再归一，用户手改配置里写了
+    // 重复的段号也不会重复画。
+    for (int seg : {Seg_Ai, Seg_Undo})
+        if (std::find(enabled_.begin(), enabled_.end(), seg) == enabled_.end())
+            enabled_.push_back(seg);
     std::sort(enabled_.begin(), enabled_.end());
     enabled_.erase(std::unique(enabled_.begin(), enabled_.end()), enabled_.end());
     if (hwnd_) {

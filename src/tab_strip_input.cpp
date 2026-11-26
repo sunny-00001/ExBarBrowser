@@ -35,16 +35,11 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
                     InvalidateRect(h, nullptr, FALSE);
                 }
                 // 边缘自动滚动：仅在溢出时有意义（不溢出时没有可滚内容）。
-                // 进入左/右边缘带就按对应方向滚动，离开就停。带宽与步长都过 S()。
-                if (overflow_) {
-                    const int edge = theme_->S(28);
-                    const int leftEdge = theme_->S(6) + edge;
-                    const int rightEdge = tabViewRight_ - edge;
-                    UpdateAutoScroll(x, x < leftEdge ? -theme_->S(24)
-                                        : (x > rightEdge ? theme_->S(24) : 0));
-                } else {
+                // 边缘带与起停判定在 UpdateAutoScroll 内（edge::Update 共享实现）。
+                if (overflow_)
+                    UpdateAutoScroll(x, theme_->S(24));
+                else
                     StopAutoScroll();
-                }
             }
         }
         UpdateHover(h, x, y);
@@ -296,7 +291,7 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_GETOBJECT:
         // OBJID_CLIENT：UIA/读屏软件要这个窗口的可访问性树。
         if (static_cast<LONG>(l) == OBJID_CLIENT)
-            return uia::HandleGetObject(this, h, w, l);
+            return uia::HandleGetObject(uia::TabTraitsFor(this), h, w, l);
         break;
     case uia::kMsgCount:
         return static_cast<LRESULT>(items_.size());

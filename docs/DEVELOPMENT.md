@@ -224,74 +224,46 @@ obj 链接每个测试（排除 `main.obj` / `*_test.obj` / `*.check.obj`），�
 > `tests/keymap_test.cpp` 因此**红着很久没人发现**（硬编码 70 条，实际早已 84），
 > 见 [CHANGELOG](../CHANGELOG.md) 的"文档全量对账"条目。
 
-下面是最常用的几条**手工**命令（想单独调一个测试时用）。每一条都实测过；
-如果你只想知道"现在全绿吗"，用上面的 `run_all.sh` 就够了。
+想单独调一个测试时，用 `run_all.sh` 的**名字过滤**（子串匹配）：
+
+```bash
+bash tests/run_all.sh keymap         # keymap_test
+bash tests/run_all.sh sequence       # sequence_test
+bash tests/run_all.sh commands       # commands_confirm_test + commands_test
+bash tests/run_all.sh popup_layout   # popup_layout_test
+bash tests/run_all.sh popup_toggle   # popup_toggle_test
+bash tests/run_all.sh clear_history  # clear_history_test
+bash tests/run_all.sh nav_input      # nav_input_test
+bash tests/run_all.sh nav_model      # nav_model_test
+bash tests/run_all.sh display_name   # display_name_test
+```
+
+> **为什么这里不再给"手工编译某个测试"的长命令**（2026-11-26 移除）：
+> 那种写法把"这个测试要链哪几个 `.cpp`"抄在文档里，**抄一次就烂一次** ——
+> 命令表从 `src/commands.cpp` 搬到了 `src/commands_table.cpp` +
+> `src/commands_table_tools.cpp`，`ConfirmIfDestructive` / `Audit` 搬到了
+> `src/commands_confirm.cpp`，于是文档里 `commands_test` 那条编译行**链接不过**
+> （2026-11-26 实测报 `undefined symbol: CommandTable()` / `FindCommand()` /
+> `ReqReason()`）。同一条注释里的"必须输出 hotkeys=84 sequences=38"也跟着烂了
+> （现为 **112 / 169**）。
+> `run_all.sh` 自己按 `src/` 的实际清单链接，**没有这种腐烂面** ——
+> 上面那句"改动 `src/` 的依赖关系后要重测一遍"正是它要消灭的维护债。
+
+只有写**一次性探针**（不是单测）才需要手写编译行；此时用这份参考开关：
 
 ```bash
 CC="/c/Program Files/Windhawk/Compiler/bin/clang++.exe"
-
 # 通用编译开关。以前这段文档只给 -Isrc，照抄会撞上宽字符 API 与 GDI 常量缺失。
 FLAGS="-std=c++20 -O1 -DUNICODE -D_UNICODE -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 -D_WIN32_IE=0x0A00 -Isrc"
-# 常见库集合。单测用不到的库多链不会报错，缺了才会 —— 所以给一份"够用"的清单。
+# 常见库集合。用不到的库多链不会报错，缺了才会 —— 所以给一份"够用"的清单。
+# 缺 -luxtheme 会报 _SetWindowTheme 未定义；缺 -luser32 -lgdi32 会在 ui_draw /
+# icon_glyph 那几个测试上炸。
 LIBS="-static -static-libstdc++ -static-libgcc -lole32 -luuid -lshell32 -lshlwapi -ladvapi32 -luxtheme -ldwmapi"
-
-# 键位表：必须输出 hotkeys=84 sequences=38
-#   依赖链：LoadKeymap → tf::ReadText → str::FromUtf8Strict → LogDbg → win::ThemeControl
-#   少链任何一个都链接失败。早期版本漏了 str/log/platform_win，照抄必挂。
-"$CC" $FLAGS tests/keymap_test.cpp src/keymap.cpp src/json.cpp src/text_file.cpp \
-  src/str.cpp src/log.cpp src/platform_win.cpp $LIBS -o /tmp/keymap_test.exe
-(cd tests && /tmp/keymap_test.exe)
-
-# 序列状态机：前缀 / 超时 / 取消 / 候选
-"$CC" $FLAGS tests/sequence_test.cpp src/sequence.cpp src/keymap.cpp src/json.cpp \
-  src/text_file.cpp src/str.cpp src/log.cpp src/platform_win.cpp $LIBS -o /tmp/sequence_test.exe
-(cd tests && /tmp/sequence_test.exe)
-
-# 命令目录：keymap 引用的每条命令必须存在于目录（missingFromKeymap=0）
-#   额外要 cmd_naming（FindCommand 双向解析），漏了报 AliasOf/LegacyOf 未定义。
-#   注意：本测试读的是 "data/keymap.json"（相对仓库根），**必须从仓库根跑**，
-#   不能像 keymap_test 那样 cd tests（那个读 "../data/keymap.json"）。
-"$CC" $FLAGS tests/commands_test.cpp src/commands.cpp src/keymap.cpp src/json.cpp \
-  src/text_file.cpp src/config.cpp src/str.cpp src/log.cpp src/platform_win.cpp \
-  src/cmd_naming.cpp $LIBS -o /tmp/commands_test.exe
-/tmp/commands_test.exe
-
-# 弹层行高：分隔线 2px、普通行 itemH、总高累加（不需要窗口）
-#   要 icon_glyph（行高常量依赖 ico::Glyph 的字形度量）
-"$CC" $FLAGS tests/popup_layout_test.cpp src/icon_glyph.cpp $LIBS -o /tmp/popup_layout_test.exe
-/tmp/popup_layout_test.exe
-
-# 再点即收：开关/异键/嵌套/空键/失活判据（不需要窗口，纯逻辑）
-"$CC" $FLAGS tests/popup_toggle_test.cpp src/popup_toggle.cpp $LIBS -o /tmp/popup_toggle_test.exe
-/tmp/popup_toggle_test.exe
-
-# 清除历史：清完只剩当前目录一条、idx 收敛、前后退不可用（不需要窗口）
-#   要 nav_history（History::Goto/ClearKeepingHere/Request 的实现）
-"$CC" $FLAGS tests/clear_history_test.cpp src/nav_history.cpp $LIBS -o /tmp/clear_history_test.exe
-/tmp/clear_history_test.exe
-
-# 导航栏输入语义：UNC/命名空间分段、粘贴路径剥引号、盘根与 UNC 的 Tab 补全切分
-"$CC" $FLAGS tests/nav_input_test.cpp $LIBS -o /tmp/nav_input_test.exe
-/tmp/nav_input_test.exe
-
-# 导航模型显示：此电脑/回收站的地址文本与面包屑显示友好名（不是 ">::>"）
-"$CC" $FLAGS tests/nav_model_test.cpp src/nav_model.cpp $LIBS -o /tmp/nav_model_test.exe
-/tmp/nav_model_test.exe
-
-# 统一显示名：历史/最近访问不显示裸 "::{GUID}"
-#   依赖链：ico::DisplayName → SHLoadIndirectString / SHParseDisplayName → ui::StockIcon
-"$CC" $FLAGS tests/display_name_test.cpp src/icon_resolve.cpp src/ui_draw.cpp \
-  src/icon_glyph.cpp src/text_file.cpp src/str.cpp src/log.cpp src/platform_win.cpp \
-  $LIBS -luser32 -lgdi32 -o /tmp/display_name_test.exe
-/tmp/display_name_test.exe
+```
 
 # 静态对账：表 / keymap / 处理器三方一致 + keymap.gen.h 是否过期（不需要编译）
 python tools/check_commands.py
 ```
-
-> 以上每一条都在 2026-11-21 09:05 实测跑过（退出码 0）。**改动 `src/` 的依赖关系后要重测一遍**
-> —— 单测是直接链 `.cpp` 的，抽走一个符号就断，而主构建未必能暴露（PCH 会把缺失的
-> `#include` 补齐）。
 >
 > **工作目录不统一，是这里最容易踩的一脚**：
 > | 测试 | 从哪跑 | 为什么 |

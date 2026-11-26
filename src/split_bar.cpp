@@ -256,11 +256,18 @@ void SplitBar::Paint(HWND h) {
     // 【悬停/拖动 = 中线变粗变强调色，而不是整块变色】整块 6px 换成 accent 太吵，
     // 而且一闪一闪的；把 1px 换成 3px 的 accent 既够醒目，也不改变任何宽度，
     // 所以不存在"悬浮后离开、宽度残留"的问题（每次 WM_PAINT 都是全量重画）。
+    //
+    // 【活动侧条（只有双栏那条用）】activeSide_ 指出"命令与导航当前打到哪一栏"，
+    // 在那一侧沿缝画一条 2px 的 accent 纵深条 —— 与 DOpus"双栏必须显示 border
+    // 区分源/目标"同一件事。这是**常驻状态提示**，与悬停/拖动的临时提示并存：
+    // 条贴着缝的边、不占任何布局宽度，切栏只重绘本窗口（SetGeometry 的几何不变）。
     const COLORREF bg = theme_ ? theme_->bg : GetSysColor(COLOR_WINDOW);
     const bool live = dragging_ || hover_;
     const COLORREF lineColor =
         theme_ ? (live ? theme_->accent : theme_->line) : GetSysColor(COLOR_3DSHADOW);
+    const COLORREF accent = theme_ ? theme_->accent : GetSysColor(COLOR_HIGHLIGHT);
     const int liveThick = theme_ ? theme_->S(2) : 2;
+    const int sideThick = theme_ ? theme_->S(2) : 2;   // 活动侧条粗细，与 liveThick 同档
     const bool vertical = vertical_;
 
     ui::PaintBuffered(h, bg, [&](HDC mem, const RECT& rc) {
@@ -281,5 +288,26 @@ void SplitBar::Paint(HWND h) {
         line.bottom = std::min(line.bottom, rc.bottom);
         if (line.right > line.left && line.bottom > line.top)
             ui::FillRectColor(mem, line, lineColor);
+
+        // 活动侧条：贴着中线、属于活动窗格的那一侧。竖分割条（左右并排）时
+        // side=0 在左、side=1 在右；横分割条（上下堆叠）时 side=0 在上、side=1 在下。
+        if (activeSide_ == 0 || activeSide_ == 1) {
+            RECT side;
+            if (vertical) {
+                const int y = (rc.top + rc.bottom) / 2;
+                side = activeSide_ == 0 ? RECT{rc.left, y - sideThick, rc.right, y}
+                                        : RECT{rc.left, y + 1, rc.right, y + 1 + sideThick};
+            } else {
+                const int x = (rc.left + rc.right) / 2;
+                side = activeSide_ == 0 ? RECT{x - sideThick, rc.top, x, rc.bottom}
+                                        : RECT{x + 1, rc.top, x + 1 + sideThick, rc.bottom};
+            }
+            side.left = std::max(side.left, rc.left);
+            side.top = std::max(side.top, rc.top);
+            side.right = std::min(side.right, rc.right);
+            side.bottom = std::min(side.bottom, rc.bottom);
+            if (side.right > side.left && side.bottom > side.top)
+                ui::FillRectColor(mem, side, accent);
+        }
     });
 }

@@ -118,12 +118,32 @@ bool WriteText(const std::wstring& path, const std::wstring& text) {
         DeleteFileW(ToExtended(tmp).c_str());
         return false;
     }
-    if (!MoveFileExW(ToExtended(tmp).c_str(), ToExtended(path).c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        DeleteFileW(ToExtended(tmp).c_str());
-        return false;
+    // 【为什么必须重试】MoveFileEx 带 MOVEFILE_REPLACE_EXISTING 替换目标文件时，
+    // 只要目标此刻被别的句柄**以不共享删除的方式**打开着，就返回
+    // ERROR_ACCESS_DENIED(5) / ERROR_SHARING_VIOLATION(32)。
+    // 最常见的来源是**杀软/索引服务对新写入文件的实时扫描** —— 那是毫秒级的
+    // 瞬时占用，纯属时机不巧，不是错误。
+    //
+    // 实测（本机，400 次连续替换）：撞到 1 次，错误码 5，失败率约 0.25%。
+    // 单次写一个文件时几乎遇不到，但 Config::Save() 一次要写 **5 个**文件
+    // （settings.json + session/history/tabs/window.json），配置回环测试里
+    // 每次回环都走一遍 Save —— 850 次替换里总有一次撞上，于是"回环随机失败"
+    // 成了一条查不出根因的玄学（失败键每次换一个，看起来像某个键坏了）。
+    //
+    // 所以这里对"占用类"错误做有限次重试：其余错误码（磁盘满、只读、路径非法…）
+    // 立即失败 —— 那些重试也没用，只会拖慢真正的错误暴露。
+    for (int attempt = 0;; ++attempt) {
+        if (MoveFileExW(ToExtended(tmp).c_str(), ToExtended(path).c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            return true;
+        const DWORD err = GetLastError();
+        if (attempt >= 3 || (err != ERROR_ACCESS_DENIED && err != ERROR_SHARING_VIOLATION)) {
+            DeleteFileW(ToExtended(tmp).c_str());
+            return false;
+        }
+        // 递增间隔（10/30/70ms）：占用者通常在几十毫秒内松手。
+        Sleep(10 + attempt * 20);
     }
-    return true;
 }
 
 

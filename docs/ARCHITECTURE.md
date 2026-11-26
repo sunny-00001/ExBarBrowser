@@ -192,7 +192,7 @@ ExBarBrowser_Popup                   WS_POPUP | WS_EX_TOOLWINDOW | CS_DROPSHADOW
 | `popup_list.cpp` | 布局命中 / 绘制 / 二级展开 / 键盘导航 |
 | `bookmark_bar.cpp` | 绘制 / 命中 / 菜单 |
 | `bookmarks.cpp` | Netscape 解析 / 树模型 / 持久化 |
-| `commands.cpp` | 目录表（纯数据）可以独立成 `.inc` |
+| `commands_table.cpp` | 目录表（纯数据）可以独立成 `.inc` |
 | `app_commands_files.cpp` | 文件操作 / 视图开关 |
 | `shell_input.cpp` | UIA 探测 / ListView 探测 / 子类生命周期 |
 | `input_router.cpp` | 键 / 序列 / 鼠标三条入口 |
@@ -626,7 +626,7 @@ mingw 头只声明 1 个。多出的参数走寄存器、被忽略即可，**不
 | `006-ebch.cpp` | `ebch` | `keymap.cpp` / `chord.cpp` / `sequence.cpp` / `input_router.cpp` / `hotkey_manager.cpp` | 热键 + 序列 + 管理器（当前 83 热键 / 38 序列，含 13 条指向未实现命令的占位）；低级键盘钩子与注入抑制不迁移 |
 | `002-ebda.cpp` / `003-olns.cpp` | `ebda` / `olns` | — | 命名空间扩展：本工程直接用 shell 原生，不需要 |
 | `012-ebai.cpp` / `014-ebaiui.cpp` | `ebai` | `ai_api.cpp` / `ai_server.cpp` | 接口层已实现（JSON-RPC over 管道，与 mod 的 `ebai` 同源设计）；窗口内 AI 面板未做（P4） |
-| `ebop` 操作层 | `ebop` | `commands.cpp` + `cmd_naming.cpp` | 参数对象化、效果四维、前置条件、结构化结果、点分命名 —— 即 0.2.1 的"操作契约 10 步" |
+| `ebop` 操作层 | `ebop` | `commands_table.cpp` + `cmd_naming.cpp` | 参数对象化、效果四维、前置条件、结构化结果、点分命名 —— 即 0.2.1 的"操作契约 10 步" |
 
 完整能力对照（按命令逐组，含未实现项的差异根因）见 [PARITY.md](PARITY.md)；
 当前条数以 `python tools/check_commands.py` 首行为准（它打印"命令表 N 条，已实现 M"）。
@@ -637,8 +637,8 @@ mingw 头只声明 1 个。多出的参数走寄存器、被忽略即可，**不
 
 | 想加的东西 | 落点 | 需要动的文件 | 注意事项 |
 |---|---|---|---|
-| 一个新快捷键 | 改 `data/keymap.json`，再跑 `python tools/gen_keymap.py`（更新兜底默认表） | 无代码 | 与 mod 默认键冲突要在 PARITY 记一笔；命令必须已在 `commands.cpp` 注册 |
-| 一个新命令 | `commands.cpp` 目录加一行 + `App::RegisterCommands()` 注册处理器 | `commands.*`、`app_commands.cpp` | 未实现时 `implemented=false`，管理器会标灰 |
+| 一个新快捷键 | 改 `data/keymap.json`，再跑 `python tools/gen_keymap.py`（更新兜底默认表） | 无代码 | 与 mod 默认键冲突要在 PARITY 记一笔；命令必须已在 `commands_table.cpp` 注册 |
+| 一个新命令 | `commands_table.cpp` 目录加一行 + `App::RegisterCommands()` 注册处理器 | `commands.*`、`app_commands.cpp` | 未实现时 `implemented=false`，管理器会标灰 |
 | 一个新下拉菜单 | 在业务文件里写 `ui::Menu menu; menu.Add...; menu.Show(...)` | 无新文件 | 动作图标写 `ico::IconId`，路径行交给 `AddPath` 走 `ico::Cached`；只在调用点描述动作，不手写 `PopupRow` |
 | 状态栏多一段信息 | `StatusBar` 的 `SegId` + `StatusModel` 加字段，`RefreshStats` 填值 | `status_bar.h/.cpp`、`app.cpp` | 逻辑段号只用于数组/位掩码，绘制顺序单独维护 |
 | 一个新的鼠标手势 | 改 `data/mouse.json`（target 见 `mouse_rules.h`） | 无代码 | 组件需把 `(target,button,mods)` 交给 `MouseSink` |

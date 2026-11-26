@@ -1,11 +1,7 @@
 // 应用编排：窗口、布局、标签生命周期、命令注册、消息路由。
 //
-// 状态归属：
-//   · 标签顺序/锁定/MRU/关闭历史 -> core::TabSet（唯一）
-//   · 每个标签的 Shell 视图     -> App::tabs_（id 映射）
-//   · 标签图标（HICON）         -> TabStrip（唯一所有者，App 不碰）
-//   · 视觉令牌                 -> Theme（唯一）
-//   · 键位/鼠标规则            -> InputRouter（唯一）
+// 状态归属：标签顺序/锁定/MRU/关闭历史 -> core::TabSet；每个标签的 Shell 视图 ->
+// App::tabs_；标签图标 -> TabStrip；视觉令牌 -> Theme；键位/鼠标规则 -> InputRouter。
 #pragma once
 #include <array>
 #include <map>
@@ -118,6 +114,12 @@ private:
     // 设置域（config.*）：枚举/读写/导出/还原。单独成文件是因为它要落地到
     // 界面（栏高、主题、窗格、状态栏段…），混在杂项里会把那个文件推过欠账线。
     void RegisterConfigCommands();
+    // 文件列表区上下文菜单（Shift+F10）。实现见 app_commands_ctxmenu.cpp。
+    void RegisterContextCommands();
+    // F6 / Shift+F6 焦点循环。实现见 app_commands_focus.cpp。
+    void RegisterFocusCommands();
+    // 撤销 / 重做命令族（file.undo / file.redo）。实现见 app_commands_undo.cpp。
+    void RegisterUndoCommands();
     // 书签编辑族（收藏夹增删改查、拖放/重排的结构化入口）：作用域自成一体，
     // 实现见 app_commands_misc_bookmarks.cpp。
     void RegisterBookmarkCommands();
@@ -292,10 +294,14 @@ private:
     // 焦点事件观察（EVENT_OBJECT_FOCUS，只读）：任何来源的焦点变化都据此同步外壳。
     void StartFocusWatch();
     void StopFocusWatch();
+    // 双栏协同导航（只动导航，不动槽位结构 —— 槽位是持久化单位）：
+    //   SwapPanes  两栏目录互换（每栏走自己的历史栈，交换后可各自后退）；
+    //   MirrorPane 另一窗格导航到活动窗格当前目录（活动窗格不动）。
+    void SwapPanes();
+    void MirrorPane();
     // Shell 回调反查所属窗格：FindTab 只保留给不关心左右的老调用点。
     bool FindPane(ShellView* view, Tab** tab, int* paneIndex) const;
-    // 焦点面板判定（观测面）：按真实窗口层级判断焦点属于哪个面板，
-    // 匹配不上就如实返回 unknown，不猜。AI 状态快照每次现取。
+    // 焦点面板判定（观测面）：按窗口层级判断焦点属于哪个面板，认不出就报 unknown。
     std::wstring FocusPaneOf(HWND focus);
 
     // 会话选中恢复（P3）：启动时挂起，首次导航完成时消费一次。
@@ -311,9 +317,7 @@ private:
     // 服务是面板的前置条件 —— 没服务时面板显示占位页而不是白屏。
     void InitAiPanel();
     void ToggleAiPanel();
-    // AI 页自绘标题栏的窗口动作（close/minimize/maximize/pin/unpin）：
-    // 统一转投命令总线（ai.panel.toggle / win.minimize / win.maximize /
-    // win.restore / win.topmost），与系统菜单、快捷键同源。
+    // AI 页自绘标题栏的窗口动作（close/minimize/maximize/pin/unpin）→ 窗口命令。
     void DispatchAiPanelWindowAction(const std::wstring& action);
     // 页面经 WebMessage 上报的 AI 状态：chip 文本 + peek 内容。
     // 参数用基本类型，避免把 WebView COM 绑定类型漏进 app.h 的公共面。
@@ -361,8 +365,7 @@ private:
     void GoHome();
     void RefreshActive();
     void JumpHistory(int depth, bool backward);
-    // 历史跳转的**总线入口**：界面侧（地址框下拉 / 后退·前进下拉）走它，
-    // 内部转投 nav.history.jump 命令 —— 与命令面板/AI 同源，有审计与事件。
+    // 历史跳转的总线入口：界面侧 → nav.history.jump 命令（与命令面板/AI 同源）。
     void JumpHistoryViaCommand(int depth, bool backward);
     std::vector<std::wstring> HistoryList(bool backward) const;
     // 清空地址框下拉里的历史：当前标签的后退/前进栈 + 全局"最近访问"。
@@ -386,15 +389,8 @@ private:
     void ShowTabMenu(int index, int action);
     void ShowViewMenuAt();
     // 设置对话框：表（settings_reg）驱动的可调项列表，改动走 config.set 命令。
-    // 【为什么是独立窗口而不是弹出菜单】旧的设置面板是一整块弹出菜单：39 项平铺，
-    // 高度只够露出十几项，剩下的靠滚动找，而"这一项属于哪一类"完全没有表达。
-    // 设置本来就有明确分组（栏 / 视图 / 序列键 / 标签 / 窗口 / 会话 / 状态栏 /
-    // 键位 / AI），分组就该出现在界面上 ——
-    //   左栏分类页签 → 中栏按类排 → 右栏讲清这一项的名称、键名与生效时机。
-    // 详见 src/settings_dialog.h 顶部的取舍说明。
-    //
-    // 【非模态】多数设置立即生效，模态窗会把主窗口挡住，用户改完只能凭记忆
-    // 猜"到底变了没有"。它是主窗口的 owned 窗口：主窗口关掉时它跟着销毁。
+    // 为什么是独立窗口而不是弹出菜单、为什么非模态：见 src/settings_dialog.h
+    // 顶部的取舍说明（那份更全 —— 这里只留指针，避免同一段话抄两遍后走样）。
     void ShowSettingsDialog();
     // 把配置里的历史上限推到实际拥有它们的两个模型上：
     //   · recentLimit / searchLimit → Config 自己的两个 vector（超出的立刻裁掉）
@@ -419,18 +415,16 @@ private:
     // 不同（"搜索框能搜、命令搜不到"这种最典型的假等价）。成功时把结果视图的
     // 标题写进 title，供命令返回结构化结果。
     bool RunSearch(const std::wstring& query, std::wstring* title);
-    // 搜索框提交的总线入口：转投 search.find 命令，与命令面板/AI 同源。
-    void RunSearchViaCommand(const std::wstring& query);
+    void RunSearchViaCommand(const std::wstring& query);  // → search.find（与命令面板/AI 同源）
 
     // ---- 搜索域（导航栏搜索框）----
     //
-    // 范围与历史的真相在 Config::Settings 里（App 不持有副本，R19 同源）。
-    // 左带弹「搜索范围」、右带弹「搜索历史」—— 两个菜单里的每一项都走**命令**
-    // （search.scope.set / search.query.set / search.history.clear）：
-    // 鼠标路径与键盘/AI 路径必须同源，否则就是两套实现。
+    // 范围与历史的真相在 Config::Settings 里（App 不持副本，R19 同源）。
+    // 两个菜单里的每一项都走**命令**（search.scope.set / search.query.set /
+    // search.history.clear）：鼠标路径与键盘/AI 路径必须同源。
     //
-    // widthPx = 搜索框宽度（物理像素，由导航栏给）：弹层与搜索框同宽、
-    // 左右边缘齐平。宽度跟着锚点一起传，App 不自己量（几何在导航栏那一侧）。
+    // widthPx = 搜索框宽度（物理像素，由导航栏给）：弹层与搜索框同宽、边缘齐平。
+    // App 不自己量（几何在导航栏那一侧）。
     void ShowSearchScopeMenu(POINT at, int widthPx);
     void ShowSearchHistoryMenu(POINT at, int widthPx);
     // 当前搜索范围档位（0..3，见 searchscope::Range）。
@@ -446,20 +440,20 @@ private:
     // 确定式"复制/移动到目标文件夹"的公共实现（FsCopyTo / FsMoveTo 共用）。
     // 参数里 targets 是一组完整路径，to 是目标文件夹。
     bool TransferTargets(const Args& args, bool move);
+    // 「选中 → 转移 → 撤销记录 → 刷新」的唯一链路（上面两者汇合于此）。
+    bool TransferSelTo(const std::vector<std::wstring>& targets, const std::wstring& to,
+                       bool move);
+    // 对侧即目标（fs.copy.pane / fs.move.pane）：源=活动窗格选中项，目标=另一窗格
+    // 当前目录。单栏时先开双栏（与 fs.open.pane 同语义）。
+    bool TransferToOtherPane(bool move);
     static int ViewModeCount();  // 与视图分组表一致（避免各处写 _countof）
     // 把 (FOLDERVIEWMODE, 图标尺寸) 反查回 0..7 的预留下标。无匹配返回 -1。
     // 导航栏视图菜单给的是这两个值，而命令系统要的是下标。
     static int ViewModeIndexFor(int fvm, int iconPx);
-    // 复制文本到剪贴板。返回是否真的写入了 —— 命令 handler 直接把它当结果：
-    // 剪贴板被别的程序占用时 OpenClipboard 会失败（已内部重试），
-    // 这时报 ok=true 等于骗调用方"复制好了"。
+    // 复制文本到剪贴板。返回是否真的写入了（被占用时报 false，不假装成功）。
     bool CopyText(const std::wstring& text);
-    // 书签保存的统一善后：成功什么都不做；被"外部已改"拦下时告诉用户
-    // 内存里的书签被另存到了哪个文件。
-    //
-    // 为什么必须集中：Save() 有 16 个调用点（拖放、菜单、导入、命令），
-    // 那条"拒绝覆盖 + 另存 .conflict.html"的护栏如果只在某一处提示，
-    // 其余 15 处都会安静失败 —— 用户以为加上了，其实没落盘。
+    // 书签保存的统一善后：成功什么都不做；被"外部已改"拦下时告诉用户另存到了哪。
+    // 必须集中：Save() 有 16 个调用点，护栏只在其中一处提示的话其余 15 处都会安静失败。
     void NotifyBookmarkSave(bool ok);
     // 对**指定路径**弹 shell 属性框。与 CmdProps 的区别：那个作用于"当前选中项"，
     // 这个按路径点名（面包屑段右键要用，右键的那一刻那段并不在选中集里）。
@@ -469,6 +463,12 @@ private:
     void ApplyViewMode(int index);
     // 把视图里**真实**的图标像素回灌给滑块（读回而不是自己记一份 —— 见实现处注释）。
     void SyncZoomSlider();
+    // 状态栏「可撤销 N 步」chip 的文案（空栈时 chip 消失）。
+    void SyncUndoChip();
+    // F6 / Shift+F6 的焦点循环（见 app_commands_focus.cpp）。dir > 0 往后，< 0 往前。
+    void FocusCycle(int dir);
+    // 撤销历史弹层：列出每一步，点哪一行就撤到那一步（实现见 app_undo_history.cpp）。
+    void ShowUndoHistory();
 
     // ---- 序列总览弹窗（复刻 mod 的 ExBarSeqOverlay）----
     // 取数与派发都在本层：弹窗只管 UI/键盘，App 用既有数据源填行、
@@ -541,12 +541,10 @@ private:
     Tab* backgroundTab_ = nullptr;
     // 首帧还没画出来（Run 的 ShowWindow 之前）。
     //
-    // 【为什么需要】建第二个窗格的 ShellView 实测 375 ms（双栏启动：
-    // [+734] 建右视图 -> [+1109] 完成）。这段时间窗口还没显示，花掉的是
-    // 用户"双击后等窗口"的耐心，而第二窗格对**第一眼**没有贡献 —— 首帧有主窗格就够。
-    // 所以启动期把右视图延到首帧之后补（WM_APP_STARTUP_SETTLE），
-    // 用户先看到窗口，第二窗格随后填上。非启动路径的 Activate 仍然同步建 ——
-    // "点一下标签、第二窗格立刻有内容"这件事不能被拖。
+    // 【为什么需要】建第二个窗格的 ShellView 实测 375 ms，而第二窗格对**第一眼**
+    // 没有贡献 —— 首帧有主窗格就够。于是启动期把右视图延到首帧之后补
+    // （WM_APP_STARTUP_SETTLE）；非启动路径的 Activate 仍然同步建
+    // （"点一下标签、第二窗格立刻有内容"不能被拖）。
     bool startupPending_ = false;
     // 焦点事件观察句柄（EVENT_OBJECT_FOCUS，out-of-context，只读）。
     // 它不改焦点、不注入输入，只用来在焦点落到另一个视图时同步外壳显示。
@@ -578,19 +576,16 @@ private:
     IShellView* statsLastView_ = nullptr;
 
     // ---- 关标签时的视图延迟销毁队列 ----
-    // 探针 84：ShellView::Destroy（IExplorerBrowser::Destroy + Release + DestroyWindow）
-    // = 20~69 ms per view，全在 UI 线程；关一个标签销毁 1~2 个 → 20~138 ms。
-    // 用户对"关闭"的期待是立刻消失，所以 CloseTab 只隐藏窗口 + 把 unique_ptr
-    // 移进这里，真正的 release 交给 WM_APP_RECLAIM_VIEWS（消息循环空闲时）。
-    // 生命周期：队列由 App 独占，视图已不在 tabs_ 里、无人能再拿到，所以安全；
-    // 唯一风险是退出时队列非空 —— OnDestroy 必须清空它（见那里）。
+    // 探针 84：ShellView::Destroy = 20~69 ms per view，全在 UI 线程；关一个标签
+    // 销毁 1~2 个 → 20~138 ms。所以 CloseTab 只隐藏窗口 + 把 unique_ptr 移进
+    // 这里，真正的 release 交给 WM_APP_RECLAIM_VIEWS（消息循环空闲时）。
+    // 队列由 App 独占，视图已不在 tabs_ 里、无人能再拿到；退出时队列非空 ——
+    // OnDestroy 必须清空它（见那里）。
     std::vector<std::unique_ptr<ShellView>> pendingDestroy_;
     // 文件操作撤销栈（唯一一份）。
     //
-    // 为什么需要它：shell 的撤销谓词在 IExplorerBrowser 宿主里取不到
-    // （背景菜单没有 undo 行），于是"可撤销"要么是兑现不了的声明，
-    // 要么就得自己记一份"做过什么"。见 src/file_undo.h。
-    //
-    // 边界：机器的撤销不穿透人工操作（栈顶是人工做的就不给机器撤）。
+    // 为什么需要它：shell 的撤销谓词在 IExplorerBrowser 宿主里取不到（背景菜单
+    // 没有 undo 行），于是"可撤销"要么是兑现不了的声明，要么就得自己记一份
+    // "做过什么"（见 src/file_undo.h）。边界：机器的撤销不穿透人工操作。
     fileundo::Stack fileUndo_;
 };

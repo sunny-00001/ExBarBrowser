@@ -1,16 +1,17 @@
 ---
 status: current
-baseline: 2026-11-21 21:00
+baseline: 2026-11-26 11:00
 ---
 
 # 能力对照：ExBar mod vs ExBarBrowser
 
 > 回答一个问题：**独立进程路线现在能替代 explorer 到什么程度，缺口在哪，哪些缺口根本不该补。**
 >
-> 数据来源：`src/commands.cpp` 的命令目录（逐条对照 `implemented` 字段，不按 README 宣称），
+> 数据来源：`src/commands_table.cpp` + `src/commands_table_tools.cpp` 的命令目录
+> （逐条对照 `implemented` 字段，不按 README 宣称），
 > mod 侧对照其 127 条命令目录（`data/capabilities.json`）。本工程在其上补了确定式操作、
 > 菜单动作、长任务/开发面等扩展命令；总数以 `tools/check_commands.py` 实测为准
-> （2026-11-22：**215 条**）。
+> （2026-11-26：**241 条**）。
 > 数字不写死在这里 —— 加一条命令就变，见 §2 口径说明。
 
 ---
@@ -26,27 +27,29 @@ baseline: 2026-11-21 21:00
 
 ---
 
-## 2. 总览（2026-11-22 脚本对账）
+## 2. 总览（2026-11-26 脚本对账）
 
 | 组 | 条数 | 已实现 | 未实现 |
 |---|---:|---:|---|
-| Tab | 40 | 39 | 1（`tab.merge`） |
+| Tab | 41 | 40 | 1（`tab.merge`） |
 | Go | 10 | 10 | 0 |
 | Nav | 10 | 10 | 0 |
-| Path | 8 | 7 | 1（`path.copy.link`） |
-| File | 36 | 36 | 0 |
-| View | 25 | 24 | 1（`view.toggle.checkboxes`） |
-| Window | 23 | 21 | 2（`win.ai.toggle` / `win.ai.stop`） |
+| Path | 8 | 8 | 0 |
+| File | 45 | 45 | 0 |
+| View | 28 | 27 | 1（`view.toggle.checkboxes`） |
+| Ai | 2 | 2 | 0 |
+| Window | 30 | 28 | 2（`win.ai.toggle` / `win.ai.stop`） |
 | External | 5 | 3 | 2（`ext.run` / `ext.sendkeys`） |
-| Bookmark | 21 | 21 | 0 |
-| Config | 3 | 3 | 0 |
-| Dev | 9 | 9 | 0 |
+| Bookmark | 22 | 22 | 0 |
+| Config | 5 | 5 | 0 |
+| Dev | 10 | 10 | 0 |
 | Session | 8 | 8 | 0 |
 | Tool | 10 | 10 | 0 |
 | Search | 7 | 6 | 1（`search.everything`） |
-| **合计** | **215** | **207** | **8** |
+| **合计** | **241** | **234** | **7** |
 
-> 口径：脚本按 `src/commands.cpp` 里 `{CmdId::X, …}` 字面形式逐条统计分组与 `implemented`，
+> 口径：脚本按 `src/commands_table.cpp` + `src/commands_table_tools.cpp` 里
+> `{CmdId::X, …}` 字面形式逐条统计分组与 `implemented`，
 > 不按 README 宣称。命令行：见 `tools/check_commands.py`（同时校验 keymap × 处理器三方一致）。
 >
 > `search.find` 于 2026-11-21 从「已实现」降级为 `implemented=false`（宿主
@@ -65,7 +68,7 @@ baseline: 2026-11-21 21:00
 > 所以 `search.scope.set {scope:"thispc"}` **直接拒绝**，范围菜单里那一行摆成灰字
 > 「（本宿主暂不可用）」。详见 EXPLORER-GAP-AUDIT §2.1 F1 的遗留小节。
 >
-> 总数 215 里，10 条确定式命令
+> 总数 241 里，10 条确定式命令
 > （`fs.open` / `fs.open.tab` / `fs.open.window` / `fs.copy.toclip` / `fs.cut.toclip` /
 > `fs.properties` / `fs.rename` / `fs.delete` / `fs.copy` / `fs.move`）不是"mod 有而我们没有"，
 > 而是"机器需要按路径点名操作"的补充 —— 详见 §3.5 与 `docs/OPERATION-MODEL.md` 第 4 步。
@@ -86,16 +89,16 @@ baseline: 2026-11-21 21:00
 > `tool.job.get` / `tool.job.cancel` / `tool.job.list` 是 2026-11-22 新增的**作业查询与控制**
 > （前五条长任务命令改跑工作线程后配套的读面）。
 
-> 对账口径：`src/commands.cpp` 的 `implemented` 字段 × `app_commands*.cpp` 的 `reg(CmdId::X)`
+> 对账口径：`src/commands_table*.cpp` 的 `implemented` 字段 × `app_commands*.cpp` 的 `reg(CmdId::X)`
 > × `data/keymap.json` 的引用。一条命令"已实现"必须三者都在，`python tools/check_commands.py`
 > 会同时校验；`tests/commands_test.cpp` 校验 keymap 里的每个命令 id 都存在。
 > （旧版本手写的 90/36 与代码不一致：`GoTab1..9` 在 keymap 里绑了但目录里没有，
 > `CopyToFolder`/`MoveToFolder` 也一直缺，已补齐。）
 
-一句话结论：**File / Bookmark / Config / Dev / Session / Tool 六组全部落地；剩下的 8 条里搜索占 1
+一句话结论：**File / Bookmark / Config / Dev / Session / Tool 六组全部落地；剩下的 7 条里搜索占 1
 （`search.everything` 要接它的 IPC；`search.find` 已于 2026-11-22 走原生搜索文件夹修好），
 另有 AI 面板（2，缺窗口内对话 UI），以及少量"本工程模型下没有意义/没有把握"的项
-（合并窗口、复制为快捷方式、复选框、RunCommand/SendKeys 等）。**
+（合并窗口、复选框、RunCommand/SendKeys 等）。**
 
 ---
 
@@ -127,10 +130,12 @@ PowerShell（在当前目录开终端）/ 主文件夹。
 面包屑（分段、ghost、每级 chevron、分段子目录下拉、折叠）、地址编辑、`Tab` 补全、
 系统自动补全（`SHAutoComplete`，目录优先）、方向历史、最近访问下拉。
 
-### 3.4 Path（7）—— 已实现 6
+### 3.4 Path（8）—— 全实现
 
 完整路径 / 文件名 / 当前目录 / UNC（`\\localhost\C$\…`）/ 扩展名 / 所有标签路径 → 剪贴板。
-`PathCopyLink`（复制为快捷方式）未实现。
+`PathCopyLink`（复制为快捷方式）已于 2026-11-25（0.3.2）实现：`path.copy.link` 把选中项
+做成 **.lnk 虚拟文件**放进剪贴板（CFSTR_FILEDESCRIPTOR + CFSTR_FILECONTENTS），
+粘贴得到真快捷方式而不是文本路径；不落盘。
 
 ### 3.5 File（36）—— 全实现
 
@@ -446,7 +451,7 @@ path=搜索: a · E:\ExBarBrowser（含子目录）
 | 收藏当前目录 / 切换书签栏 | `Ctrl+D` / `Ctrl+Shift+B` | 同 | 一致 |
 | 命令面板 / 快捷键管理器 | `Ctrl+Shift+P` / `Alt+K` | 同 | 一致 |
 | 视图模式 | `Ctrl+Shift+1..8` | 同 | 一致 |
-| 序列键 | 38 条（`g g`、`g t`…） | 209 条（38 默认 + 171 全命令覆盖），另有模式总览弹窗 | 本工程增强 |
+| 序列键 | 38 条（`g g`、`g t`…） | 169 条（全命令覆盖，见 `data/keymap.json`），另有模式总览弹窗 | 本工程增强 |
 | 鼠标规则 | `empty` 双击上一级、`bookmark_empty` 双击切换书签栏 | 同 + 状态栏双击复制路径；Shell 视图目标由 UIA/ListView 探测接入 | 超集 |
 
 完整键位表：`data/keymap.json`；输入系统细节：[INPUT.md](INPUT.md)。

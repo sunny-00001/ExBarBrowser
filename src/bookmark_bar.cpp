@@ -6,6 +6,7 @@
 #include "bookmark_drop.h"
 #include "commands.h"
 #include "config.h"
+#include "tab_uia.h"
 #include "ui_draw.h"
 #include "icon_resolve.h"
 #include "mouse_rules.h"
@@ -36,6 +37,7 @@ void BookmarkBar::Create(HWND parent, const Theme& theme) {
 }
 
 BookmarkBar::~BookmarkBar() {
+    uia::Release(hwnd_);   // 释放 UIA 根 provider（同 TabStrip 的析构契约）
     BmkDropDetach(hwnd_);  // 先注销 OLE drop target（引用回调和本对象）
     // 不再销毁图标：句柄由 ico::Cached 持有到进程结束（见 IconFor 的说明）。
     // 在这里 DestroyIcon 会连带毁掉别的栏正在用的同一枚图标。
@@ -124,12 +126,16 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     case WM_MOUSELEAVE:
         tracking_ = false;
+        // 鼠标离开本栏：悬停态清零（高亮/热键提示），拖拽滚动拍一并摘掉 ——
+        // 拖到边缘滚着滚着鼠标滑出栏外，不能留下一个继续滚的表。
         if (hover_ >= 0 || hotOvf_ || hoverIcon_ >= 0) {
             hover_ = -1;
             hotOvf_ = false;
             hoverIcon_ = -1;
             InvalidateRect(h, nullptr, FALSE);
         }
+        if (dragging_ && dragScrollStep_ != 0)
+            edge::Stop(&dragScrollStep_, hwnd_, kDragScrollTimer);
         return 0;
 
     // ---------------------------------------------------------------- 键盘
@@ -138,7 +144,12 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
     // 焦点在栏上时用裸键移动 kbdIdx_，Enter 打开，Shift+F10 出菜单，Esc 退回视图。
     // 以前这里一个键盘消息都不处理 —— 只能用鼠标点书签，键盘用户完全被挡住。
     case WM_SETFOCUS:
+        // 复用上次会话的 kbdIdx_ 时必须把它带回视野：焦点框可以看不见，
+        // 但 Shift+F10 的菜单锚点取的是这一项的 rc —— rc.left 为负时菜单
+        // 会开到栏外（E3）。与 FocusBar 的规则一致：键盘到达必可见。
+        if (kbdIdx_ >= 0 && kbdIdx_ >= static_cast<int>(items_.size())) kbdIdx_ = -1;
         if (kbdIdx_ < 0 && !items_.empty()) kbdIdx_ = 0;
+        if (kbdIdx_ >= 0) EnsureVisible(kbdIdx_);
         InvalidateRect(h, nullptr, FALSE);
         return 0;
     case WM_KILLFOCUS:
@@ -148,69 +159,46 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_GETDLGCODE:
         // 声明要方向键/Enter/Esc：否则 Tab 之外的键会被外层当成对话框导航键吃掉。
         return DLGC_WANTARROWS | DLGC_WANTCHARS | DLGC_WANTALLKEYS;
-    case WM_KEYDOWN: {
-        const int n = static_cast<int>(items_.size());
-        if (n == 0) {
-            if (w == VK_ESCAPE && refocus_) refocus_();
-            return 0;
-        }
-        if (w == VK_ESCAPE) {
-            kbdIdx_ = -1;
-            InvalidateRect(h, nullptr, FALSE);
-            if (refocus_) refocus_();   // 焦点还给视图，Delete / type-ahead 才可用
-            return 0;
-        }
-        if (w == VK_LEFT || w == VK_RIGHT) {
-            // 走遍**全部**项。以前放不下的项被折叠、栏上没有位置，
-            // 键盘只能停在折叠项之前，看它们得用 » 菜单 —— 键盘用户等于摸不到。
-            // 现在项都有位置，方向键走过去时顺手把栏滚到那一项（EnsureVisible），
-            // 焦点框不会停在看不见的地方。
-            const int step = (w == VK_RIGHT) ? 1 : -1;
-            const int cur = kbdIdx_ >= 0 ? kbdIdx_ : (step > 0 ? -1 : n);
-            int next = cur + step;
-            if (next < 0) next = 0;
-            if (next >= n) next = n - 1;
-            kbdIdx_ = next;
-            EnsureVisible(next);
-            InvalidateRect(h, nullptr, FALSE);
-            return 0;
-        }
-        if (w == VK_HOME || w == VK_END) {
-            kbdIdx_ = (w == VK_HOME) ? 0 : n - 1;
-            EnsureVisible(kbdIdx_);
-            InvalidateRect(h, nullptr, FALSE);
-            return 0;
-        }
-        if (w == VK_RETURN || w == VK_SPACE) {
-            if (kbdIdx_ >= 0 && kbdIdx_ < n) {
-                POINT at{items_[static_cast<size_t>(kbdIdx_)].rc.left,
-                         items_[static_cast<size_t>(kbdIdx_)].rc.bottom};
-                ClientToScreen(h, &at);
-                if (items_[static_cast<size_t>(kbdIdx_)].folder)
-                    ShowFolderMenu(kbdIdx_, at);
-                else
-                    Navigate(kbdIdx_);
-            }
-            return 0;
-        }
-        if (w == VK_APPS || (w == VK_F10 && (GetKeyState(VK_SHIFT) & 0x8000))) {
-            // 无障碍要求：图标/鼠标能做的，键盘也要能做到（等同右键）。
-            if (kbdIdx_ >= 0 && kbdIdx_ < n) {
-                POINT at{items_[static_cast<size_t>(kbdIdx_)].rc.left,
-                         items_[static_cast<size_t>(kbdIdx_)].rc.bottom};
-                ClientToScreen(h, &at);
-                ShowItemMenu(kbdIdx_, at);
-            }
-            return 0;
-        }
+    case WM_GETOBJECT:
+        // OBJID_CLIENT：UIA/读屏软件要这个窗口的可访问性树。
+        // provider 是 tab_uia 的泛化版（Traits 区分标签/书签两种栏），见
+        // bookmark_bar_uia.cpp 的消息分支。
+        if (static_cast<LONG>(l) == OBJID_CLIENT)
+            return bmuia::HandleGetObject(this, h, w, l);
         break;
+    case uia::kMsgCount:
+        return static_cast<LRESULT>(items_.size());
+    case uia::kMsgItem: {
+        auto* info = reinterpret_cast<uia::ItemInfo*>(l);
+        const int i = static_cast<int>(w);
+        if (!info || i < 0 || i >= static_cast<int>(items_.size())) return FALSE;
+        info->name = items_[static_cast<size_t>(i)].label;
+        info->path = items_[static_cast<size_t>(i)].path;
+        info->rect = items_[static_cast<size_t>(i)].rc;
+        info->selected = (i == kbdIdx_);
+        return TRUE;
     }
+    case uia::kMsgSelect: {
+        // UIA 选中书签 = 键盘走到这一项（不导航 —— 激活走 Invoke）。
+        const int i = static_cast<int>(w);
+        if (i >= 0 && i < static_cast<int>(items_.size())) {
+            kbdIdx_ = i;
+            EnsureVisible(i);
+            InvalidateRect(h, nullptr, FALSE);
+        }
+        return 0;
+    }
+    case WM_KEYDOWN:
+        return HandleKeyDown(h, w, l);
     case WM_CONTEXTMENU: {
         // Shift+F10 也可能被系统转成 WM_CONTEXTMENU（lParam = -1,-1）。
         const int sx = GET_X_LPARAM(l), sy = GET_Y_LPARAM(l);
         POINT at{sx, sy};
         if (sx == -1 && sy == -1) {
             if (kbdIdx_ < 0 || kbdIdx_ >= static_cast<int>(items_.size())) return 0;
+            // 键盘触发的菜单：先让焦点项可见（EnsureVisible 幂等，已在视野内
+            // 就不动滚动量），锚点再从重排后的 rc 上取 —— 否则菜单开到栏外。
+            EnsureVisible(kbdIdx_);
             at = POINT{items_[static_cast<size_t>(kbdIdx_)].rc.left,
                        items_[static_cast<size_t>(kbdIdx_)].rc.bottom};
             ClientToScreen(h, &at);
@@ -282,6 +270,7 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         dropInto_ = -1;
         dropPreview_ = false;
         dragging_ = false;
+        dragMouseX_ = x;   // 滚动重算落点/hover 都用这份缓存坐标
         if (dragArm_) SetCapture(h);
         return 0;
     }
@@ -300,6 +289,9 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
             DragUpdate(h, GET_X_LPARAM(l), GET_Y_LPARAM(l));
             return 0;
         }
+        // 悬停/空闲态也缓存光标 x：ScrollBy 重算 hover 时用它（滚动发生时
+        // 鼠标不动、没有后续 mousemove，没有缓存就只能取 GetCursorPos 猜）。
+        dragMouseX_ = GET_X_LPARAM(l);
         UpdateHover(h, GET_X_LPARAM(l), GET_Y_LPARAM(l));
         return 0;
     }
@@ -314,8 +306,27 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         dragArm_ = dragging_ = false;
         dragIdx_ = dropIdx_ = dropInto_ = -1;
         dropPreview_ = false;
+        edge::Stop(&dragScrollStep_, hwnd_, kDragScrollTimer);   // 滚动拍一并摘掉
+        KillTimer(h, kDragFolderTimer);
+        folderHoverIdx_ = -1;
         InvalidateRect(h, nullptr, FALSE);
         return 0;
+    case WM_TIMER:
+        if (w == kDragFolderTimer) {
+            // 悬停分类到点：移交拖拽给分类弹层（见 bookmark_bar_drag.cpp）。
+            // 定时器只在拖拽悬停分类期间挂着，其他 id 一律不是自己的。
+            HandoffDragToFolder(h);
+            return 0;
+        }
+        if (w == kDragScrollTimer) {
+            // 拖拽边缘自动滚动的拍（edge::Update 挂的表）。三条全真才滚：
+            // 没在拖/没步进/没溢出都不动 —— 与标签栏同一守卫（edge::TickGuard）。
+            // 滚动经 ScrollBy（里面统一重算落点），这里不再单独改 dropIdx_。
+            if (edge::TickGuard(dragging_, dragScrollStep_, overflow_))
+                ScrollBy(dragScrollStep_);
+            return 0;
+        }
+        break;
     case WM_LBUTTONUP: {
         int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
         POINT pt{x, y};

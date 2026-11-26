@@ -11,7 +11,24 @@
 #include <algorithm>
 
 #include "app_commands.h"
+#include "commands.h"   // CommandBus：拖动落盘转投 config.set
 #include "config.h"   // historyDepth：新窗格的历史栈深度来自设置
+
+namespace {
+
+// 拖动落盘走命令总线：config.set 是这些键的**唯一**落盘入口（设置面板改同一项
+// 也走它）。两点好处：
+//   · 写盘失败会被如实告警（直调 Config::Save() 把失败吞掉了）；
+//   · 这一步进审计与事件，与设置面板改同一项同源。
+// 拖动**过程中**只改内存供实时重排（每一帧都落盘会刷屏），松手才提交。
+bool CommitSetting(const wchar_t* key, int value) {
+    json::Value a = json::Value::MakeObject();
+    a.Set(L"key", json::Value::MakeStr(key));
+    a.Set(L"value", json::Value::MakeInt(value));
+    return CommandBus::Get().Invoke(CmdId::ConfigSet, Args::FromJson(a), Actor::Ui());
+}
+
+}  // namespace
 
 App::Pane* App::PaneAt(Tab* tab, int index) {
     if (!tab || index < 0 || index >= 2) return nullptr;
@@ -249,7 +266,7 @@ void App::OnNavEdgeDragged(int centerX, bool final) {
     s.navPaneWidth = w;
     if (changed) Layout();   // 拖动中只重排：Layout 读的就是刚写进去的值
     if (!final) return;
-    Config::Get().Save();
+    CommitSetting(L"navPaneWidth", w);
     if (changed) MarkSessionDirty();
     LogDbg(L"[layout] 导航边界拖动结束：%d px", w);
 }
@@ -264,7 +281,7 @@ void App::OnAiEdgeDragged(int centerX, bool final) {
     s.aiPanelWidth = w;
     if (changed) Layout();
     if (!final) return;
-    Config::Get().Save();
+    CommitSetting(L"aiPanelWidth", w);
     if (changed) MarkSessionDirty();
     LogDbg(L"[layout] AI 边界拖动结束：%d px", w);
 }
@@ -392,7 +409,7 @@ void App::OnSplitterDragged(int percent, bool final) {
     s.paneSplit = v;
     if (changed) Layout();
     if (!final) return;
-    Config::Get().Save();
+    CommitSetting(L"paneSplit", v);
     if (changed) MarkSessionDirty();
     LogDbg(L"[pane] 分割条拖动结束：%d%%", v);
 }

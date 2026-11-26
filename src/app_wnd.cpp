@@ -149,9 +149,16 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
 
-    case WM_APP_TAB_SELECT:
-        self.Activate(self.tabSet_.IdAt(static_cast<int>(w)));
+    case WM_APP_TAB_SELECT: {
+        // 点击标签 = tab.activate：与快捷键/AI 同源（前置检查、审计、断言一处）。
+        // 以前直调 Activate —— 点标签那条路没有审计也没有事件。
+        // 注意命令语义是 0 起下标、只切换不关闭，与点击完全等价（TabStrip 只在
+        // 真正的单击选中时发这条消息，快速关闭走 WM_APP_TAB_CLOSE）。
+        json::Value a = json::Value::MakeObject();
+        a.Set(L"index", json::Value::MakeInt(static_cast<int>(w)));
+        (void)CommandBus::Get().Invoke(CmdId::TabActivate, Args::FromJson(a), Actor::Ui());
         return 0;
+    }
     case WM_APP_TAB_CLOSE:
         self.CloseTab(self.tabSet_.IdAt(static_cast<int>(w)));
         return 0;

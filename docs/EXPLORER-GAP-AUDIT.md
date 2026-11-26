@@ -9,7 +9,7 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 > **回答一个问题**：跟 Windows 11 资源管理器比，还差哪些、哪些是错的、哪些不用补。
 >
 > 口径声明：
-> - 命令数取自 `tools/check_commands.py` 实跑：**184 条 / 已实现 175 / 未实现 9**；`tools/check_ai_meta.py` 实跑 AI 暴露 **143 条**。
+> - 命令数取自 `tools/check_commands.py` 实跑：**241 条 / 已实现 234 / 未实现 7**；`tools/check_ai_meta.py` 实跑 AI 暴露 **194 条**。
 > - 行为结论取自真实命名管道实测（`agentctl.py call`），不是读文档推断。
 > - 与 Explorer 的功能对照来自微软官方文档与 Win11 实际界面。
 > - 分类沿用三分法：**错误**（内部矛盾 / 可复现缺陷）、**缺失**（能力空白）、**有意取舍**（设计选择）。
@@ -65,11 +65,11 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 
 | 类别 | 缺什么 | 备注 |
 |---|---|---|
-| 选择 | `Shift+方向键` 范围多选 | shell 视图原生应具备，但未在 `data/mouse.json` 登记；`Ctrl+点击` 多选、`Shift+右键` 新窗口同理 |
+| 选择 | `Shift+方向键` 范围多选 | **输入路径审计（2026-11-26）**：规则不命中时点击/按键全部直通 shell（`input_router.cpp` 返回 false → `DefSubclassProc`），Ctrl+点击多选、Shift+点击、Shift+方向键走 shell 原生行为，**没有规则拦截**；有意往 `mouse.json` 加规则反而会吃掉原生行为。待人工实测勾销 |
 | 缩放 | `Ctrl+鼠标滚轮` 改图标大小 | ✅ 已补：`view.zoom` / `view.zoom.set` + `mouse.json` 的 `wheel_up`/`wheel_down`（`mods=1` 即 Ctrl）+ 视图菜单「图标大小…」 |
-| 导航 | `Backspace` 上一级、`F6`/`Shift+F6` 焦点循环 | `F6` 在 Explorer 是窗口元素间循环焦点，本仓四栏没有对应 |
-| 预览 | `Space` 快速查看（Peek） | 需 PowerToys 式 Peek 实现，成本较高 |
-| 菜单 | `Shift+F10` 上下文菜单 | 书签栏/标签栏有，**文件列表区没有** |
+| 导航 | `Backspace` 上一级、`F6`/`Shift+F6` 焦点循环 | ✅ 已补：`Backspace`→`NavUp`（keymap 既有）；`win.focus.next`（F6）/ `win.focus.prev`（Shift+F6）2026-11-26 落地，`view.pane.next` 迁 Alt+F6 让出 F6 |
+| 预览 | `Space` 快速查看（Peek） | 需 PowerToys 式 Peek 实现，成本较高；与 P3-5 预览窗格合并评估 |
+| 菜单 | `Shift+F10` 上下文菜单 | ✅ 已补：`file.context.menu`（Shift+F10），走 shell 背景 `IContextMenu` |
 
 ### 1.4 本仓有、Explorer 没有（超集，不必改）
 
@@ -87,7 +87,7 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 
 | 项 | 内容 |
 |---|---|
-| 原声明 | `src/commands.cpp` 里 `CmdId::OpSearch` → `search.find`，**`implemented=true`**、`aiExposed=true`，`docs/PARITY.md` §3.12 也记为"已实现" |
+| 原声明 | `src/commands_table.cpp` 里 `CmdId::OpSearch` → `search.find`，**`implemented=true`**、`aiExposed=true`，`docs/PARITY.md` §3.12 也记为"已实现" |
 | 原实现 | `App::RunSearch`（`src/app_nav.cpp`）拼 `search-ms:` URL 后调 `t->view->Navigate(u)`；而 `ShellView::DoNavigate`（`src/shell_view.cpp`）**明确拒绝 `search-ms:` 前缀并 return false**（注释写明：`IExplorerBrowser` 没有搜索带，`BrowseToObject` 对它返回 `S_OK` 却把视图留在原地） |
 | 原实测 | `agentctl.py call search.find '{"query":"test"}'` → `ok=false`，`error="搜索视图没有接受这个查询：search-ms:query=test&crumb=location:..."` |
 | **修法** | **走原生搜索文件夹**：`ISearchFolderItemFactory`（`CLSID_SearchFolderItemFactory`）造 PIDL → `ShellView::NavigatePid` 以 **PIDL** 形式导航。`DoNavigate` 拒绝的是**字符串前缀**，不是文件夹类型 —— 同一个文件夹以 PIDL 交出去，shell 能绑定，导航过去就是**真的搜索结果视图**（排序 / 右键 / 拖放照旧可用）。同一套做法见 `D:\Windhawk\exbar.cpp:26215 RunSystemSearchFolder`。实现见 `src/search_folder.{h,cpp}`、`src/shell_view_search.cpp` |
@@ -225,7 +225,7 @@ method: 与 Windows 11 资源管理器逐项对照；结论以本仓实测（真
 
 | 序 | 项 | 涉及文件 | 状态 |
 |---|---|---|---|
-| 1 | **F1 `search.find`**：~~改 `implemented=false` + 撤处理器/AI 暴露~~ → **改走原生搜索文件夹**（`ISearchFolderItemFactory` 造 PIDL + PIDL 形式导航），搜索真能执行；结果视图默认详细信息。遗留：「此电脑」档在本宿主做不到（作用域只能是一个普通目录），如实报错 | `src/search_folder.{h,cpp}`、`src/shell_view_search.cpp`、`src/app_nav.cpp`、`src/commands.cpp`、`docs/PARITY.md` | ✅ |
+| 1 | **F1 `search.find`**：~~改 `implemented=false` + 撤处理器/AI 暴露~~ → **改走原生搜索文件夹**（`ISearchFolderItemFactory` 造 PIDL + PIDL 形式导航），搜索真能执行；结果视图默认详细信息。遗留：「此电脑」档在本宿主做不到（作用域只能是一个普通目录），如实报错 | `src/search_folder.{h,cpp}`、`src/shell_view_search.cpp`、`src/app_nav.cpp`、`src/commands_table.cpp`、`docs/PARITY.md` | ✅ |
 | 2 | **K1 `Ctrl+Shift+A` 双绑**：`hotkeyTabSwitcher` 改 `Ctrl+Shift+G` | `data/keymap.json` + `src/keymap.gen.h` | ✅ |
 | 3 | **K3 `Ctrl+9`**：改绑 `GoTab9`，`TabLast` 移到 `Ctrl+0` | `data/keymap.json` + `src/keymap.gen.h` | ✅ |
 | 4 | **G1/G2/G3/G5 数字漂移** | `docs/PARITY.md`、`docs/ROADMAP.md`、本审计 | ✅ |

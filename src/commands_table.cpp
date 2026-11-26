@@ -158,6 +158,12 @@ std::vector<CommandDef> UserCommandRows() {
     // 书签右键「打开」族的另一窗格去处。进程内导航，但落点不是活动窗格：
     // state 快照只暴露左右两栏路径、不表达"哪一条是另一栏"，故沿用导航的异步豁免。
     {CmdId::FsOpenInPane, L"fs.open.pane", L"File", L"文件操作", L"打开（另一窗格）", true, kEffectOpenTab, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"目标的完整路径\"}},\"required\":[\"path\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptAsyncNav},
+    // 对侧即目标（2026-11-26 P0-2，TC F5/F6 范式）：无参，源=活动窗格选中项，
+    // 目标=另一窗格当前目录。与 fs.copy/fs.move 汇合在 TransferSelTo（同一份
+    // 底层链路）。move 让源消失 → destructive=1，人工路径先进确认门；
+    // 效果落磁盘，无状态回读面 → kExemptNoReadback（撤销记录已进 fileundo）。
+    {CmdId::FsCopyToPane, L"file.copy.pane", L"File", L"文件操作", L"复制到另一窗格", true, kEffectCopyTo, kNoArgs, true, true, Requirements{Req::HasSelection}, nullptr, nullptr, kExemptNoReadback},
+    {CmdId::FsMoveToPane, L"file.move.pane", L"File", L"文件操作", L"移动到另一窗格", true, kEffectMoveTo, kNoArgs, true, true, Requirements{Req::HasSelection}, nullptr, nullptr, kExemptNoReadback},
     {CmdId::FsCopy, L"fs.copy.toclip", L"File", L"文件操作", L"复制到剪贴板（指定路径）", true, kEffectCopyToClipboard, "{\"type\":\"object\",\"properties\":{\"targets\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"一组完整路径\"}},\"required\":[\"targets\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
     {CmdId::FsCut, L"fs.cut.toclip", L"File", L"文件操作", L"剪切到剪贴板（指定路径）", true, kEffectCutToClipboard, "{\"type\":\"object\",\"properties\":{\"targets\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"一组完整路径\"}},\"required\":[\"targets\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
     {CmdId::FsProperties, L"fs.properties", L"File", L"文件操作", L"属性（指定路径）", true, kEffectProperties, "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"description\":\"目标的完整路径\"}},\"required\":[\"target\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
@@ -173,6 +179,12 @@ std::vector<CommandDef> UserCommandRows() {
     // file.undo 更危险（file.undo 是 aiExposed 且 destructive=0）——
     // 否则就是"能一步一步撤、却不能一次撤到某一步"这种自相矛盾的能力面。
     {CmdId::FileUndoTo, L"file.undo.to", L"File", L"文件操作", L"撤销到指定步骤", true, Effects{0, 0, 0, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"index\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"0=栈顶（下一步要撤的那条），1=再往前一条\"}},\"required\":[\"index\"],\"additionalProperties\":false}", true, false, Requirements{}, "{\"type\":\"object\",\"properties\":{\"undone\":{\"type\":\"integer\"},\"remaining\":{\"type\":\"integer\"}},\"required\":[\"undone\",\"remaining\"]}", nullptr, kExemptUndo},
+    // Shift+F10：文件列表区上下文菜单。
+    //
+    // 【为什么不暴露给 AI】它弹的是**给人看**的菜单，机器调它只会得到一个
+    // 没人看的菜单（同 win.palette / nav.viewmenu 的口径）。人工路径 = 键位。
+    // openWorld=1：菜单里能启动外部程序（打开方式/压缩/…）。
+    {CmdId::FileContextMenu, L"file.context.menu", L"File", L"文件操作", L"上下文菜单（Shift+F10）", true, Effects{0, 0, 0, 1, 0, Scope::CurrentTab}, kNoArgs, false, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
     // ---- View ----
     {CmdId::ViewMode, L"view.mode", L"View", L"文件视图", L"视图模式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"preset\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":7,\"description\":\"0=超大图标 1=大图标 2=中图标 3=小图标 4=列表 5=详细信息 6=平铺 7=内容\"}},\"required\":[\"preset\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, "viewMode=$arg:preset"},
     {CmdId::ViewSort, L"view.sort", L"View", L"文件视图", L"排序方式", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, "{\"type\":\"object\",\"properties\":{\"by\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":3,\"description\":\"0=名称 1=日期 2=类型 3=大小\"}},\"required\":[\"by\"],\"additionalProperties\":false}", true, false, Requirements{}, nullptr, "sortMode=$arg:by"},
@@ -214,6 +226,11 @@ std::vector<CommandDef> UserCommandRows() {
     // 与 view.dualpane.toggle 分开：开合与方向是两件事，方向在单栏下也有意义
     // （先切方向、再开双栏，得到的就是上下两栏）。
     {CmdId::ViewTogglePaneVertical, L"view.pane.vertical", L"View", L"文件视图", L"切换双栏方向（左右/上下）", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, false, false},
+    // 双栏协同导航（2026-11-26 P1，TC cm_Exchange / cm_MatchSrc 目录版）：
+    // 只改两栏各显示什么目录，不动槽位结构。导航异步落地 → kExemptAsyncNav。
+    // 暴露给 AI：文件编排动作（AI 无法用现有命令表达"把对侧目录换过来"）。
+    {CmdId::ViewPaneSwap, L"view.pane.swap", L"View", L"文件视图", L"互换两栏目录", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{}, nullptr, nullptr, kExemptAsyncNav},
+    {CmdId::ViewPaneMirror, L"view.pane.mirror", L"View", L"文件视图", L"对侧打开当前目录", true, Effects{0, 0, 1, 0, 0, Scope::CurrentTab}, kNoArgs, true, false, Requirements{}, nullptr, nullptr, kExemptAsyncNav},
     // ---- AI 面板 ----
     // 右侧的聊天面板。断言 aiPanelVisible=$changed：开关必须真的改了状态，
     // 否则"按了没反应"会被当成成功（面板创建失败时正是这个症状）。
@@ -232,6 +249,45 @@ std::vector<CommandDef> UserCommandRows() {
     {CmdId::HotkeyManager, L"win.hotkeys", L"Window", L"窗口", L"快捷键管理器", true, Effects{0, 1, 0, 0, 0, Scope::System}, kNoArgs, false, false},
     {CmdId::FocusAddress, L"win.focus.address", L"Window", L"导航栏", L"聚焦地址栏", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, nullptr, "focus=address_bar"},
     {CmdId::FocusSearch, L"win.focus.search", L"Window", L"导航栏", L"聚焦搜索框", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, nullptr, "focus=search_box"},
+    // F6 / Shift+F6 的窗口元素焦点循环（Explorer 的 F6 是这个，不是"切窗格"）。
+    //
+    // 断言写 `focus=$changed` 而不是写死某一栏：下一站取决于**当前**焦点，
+    // 静态写不出具体值；但"焦点确实搬了家"是可以断言的 ——
+    // $changed 比的就是执行前后的 state.focus（FocusPaneOf 出的那个串）。
+    //
+    // idempotent=0：连按两次会走两站（第二站 ≠ 第一站），不是等价操作。
+    {CmdId::FocusNextElement, L"win.focus.next", L"Window", L"窗口", L"焦点循环（下一个元素）", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, nullptr, "focus=$changed"},
+    {CmdId::FocusPrevElement, L"win.focus.prev", L"Window", L"窗口", L"焦点循环（上一个元素）", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, nullptr, "focus=$changed"},
+    // 标签绝对位置重排：拖拽的结构化入口（2026-11-26 独立复审 A3）。
+    // to 是 0 起目标下标，handler 里按「摘出再插入」的最终位置语义解释
+    // （与 TabSet::Move 的落点一致）。目标相对命令（left/right/first/last）
+    // 已存在，这里只补"第 N 位"这个绝对表达。
+    {CmdId::TabMoveTo, L"tab.move.to", L"Tab", L"标签栏", L"把标签移到指定位置", true, Effects{0, 0, 1, 0, 0, Scope::App},
+     "{\"type\":\"object\",\"properties\":{\"index\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"要移动的标签序号；省略=当前标签\"},\"to\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"目标位置（0 起下标）\"}},\"required\":[\"to\"],\"additionalProperties\":false}",
+     true, false, Requirements{Req::HasTabs}, nullptr, nullptr, kExemptTargetRelative},
+    // 键位改绑：热键管理器窗口的机器等价（2026-11-26 独立复审 A4）。
+    // key 用 chord::Format 的写法（如 Ctrl+Shift+A / Alt+D）；空串在 hotkey.set
+    // 里被 schema 拒绝 —— 「解绑」用 hotkey.clear，两个意图不混在一个参数里。
+    {CmdId::HotkeySet, L"hotkey.set", L"Window", L"键位", L"把命令绑到组合键", true, Effects{0, 0, 1, 0, 0, Scope::App},
+     "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"minLength\":1,\"description\":\"命令名（点分主名或 legacy 名）\"},\"key\":{\"type\":\"string\",\"minLength\":1,\"description\":\"组合键，如 Ctrl+Shift+A\"}},\"required\":[\"command\",\"key\"],\"additionalProperties\":false}",
+     true, false, Requirements{}, nullptr, "hotkeyOverrides=$changed"},
+    {CmdId::HotkeyClear, L"hotkey.clear", L"Window", L"键位", L"解绑命令的组合键", true, Effects{0, 0, 1, 0, 0, Scope::App},
+     "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"minLength\":1,\"description\":\"命令名\"}},\"required\":[\"command\"],\"additionalProperties\":false}",
+     true, false, Requirements{}, nullptr, "hotkeyOverrides=$changed"},
+    {CmdId::HotkeyReset, L"hotkey.reset", L"Window", L"键位", L"还原全部默认键位", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs,
+     // 【断言方向】$unchanged 的语义是"执行前后该字段**相同**"（见 ai_api_json.cpp
+     // 的 hotkeyOverrides 回读面注释）。而 hotkey.reset 的实现是
+     // input_.ResetDefaults() —— **清全部覆盖**（app_commands_misc.cpp）：
+     // 有覆盖时覆盖表从"有内容"变成"空"，字段必然变化。
+     // 写 $unchanged 等于断言"这个命令不该改任何东西"，与它自己的语义相反 ——
+     // AI 通道调用它时断言必然不成立。
+     true, false, Requirements{}, nullptr, "hotkeyOverrides=$changed"},
+    // 弹层入口命令化（2026-11-26 独立复审 B1/A5）："打开一个弹层"也是动作，
+    // 也要有机器等价。弹层内的选中本来就走总线（file.undo.to / file.redo），
+    // 这里补"把它打开"这一步。openWorld=0（不出进程）；无自断言（弹出与否
+    // 不在 StateSnapshot 里），走 kExemptNoReadback。
+    {CmdId::WinUndoHistory, L"win.undo.history", L"Window", L"窗口", L"撤销历史", true, Effects{0, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
+    {CmdId::WinAiPeek, L"win.ai.peek", L"Window", L"窗口", L"AI 面板开合", true, Effects{0, 0, 0, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, nullptr, nullptr, kExemptNoReadback},
     // 原声明是 implemented=false + destructive=1 + Scope::System，三条都不对：
     // 面板早就有（导航栏右键「设置…」），开的是一扇窗、不改任何不可逆状态，
     // 也不碰进程外。声明错了的直接后果是命令面板里搜不到它、键位绑不上。

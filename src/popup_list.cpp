@@ -242,6 +242,13 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
     // 那一下只用来关菜单，不会同时触发被点的控件。与时间无关，因此不存在
     // "用户想收回时窗口早过期"的问题。
     SetCapture(st.list);
+    // 外部移交的拖拽：进场即在拖（没有"按下"这一步可等），起始行号 -1 = 外部项。
+    // 后续 WM_MOUSEMOVE 直接走 dragging 分支画插入线，UP 按落点提交或加入末尾。
+    if (st.reorder.allowExternalFrom) {
+        st.dragging = true;
+        st.dragFrom = -1;
+        st.dropIndex = -1;
+    }
     popup::NoteOpened(st.toggleKey.c_str());
 
     // 对齐 mod 19298-19301：GetMessage 返回 -1 是错误（不能继续循环），

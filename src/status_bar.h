@@ -46,6 +46,15 @@ ico::IconId StatusSegmentIcon(int seg);
 // 返回 sysicon::Id::None 表示系统没有对应资源（该段退字形）。
 sysicon::Id StatusSegmentSysId(int seg);
 
+// 段 -> 菜单里显示的名字。状态栏右键菜单用（本体不画名字）。
+//
+// 【为什么要放在这里而不是调用方的静态表】那张表以前漏了一项（Seg_Ai 加入时），
+// 缺项在聚合初始化里是**nullptr**，而菜单接口收的是 const std::wstring& ——
+// 从 nullptr 构造 std::wstring 会直接崩。于是"状态栏右键菜单一点就崩"。
+// 现在名字表与图标表放在同一处（status_bar.cpp），加段必须同时改两处，
+// 而漏项会在下面的编译期断言里当场报出来。
+const wchar_t* StatusSegmentName(int seg);
+
 class StatusBar {
 public:
     void Create(HWND parent, const Theme& theme);

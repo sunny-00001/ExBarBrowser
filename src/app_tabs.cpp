@@ -503,37 +503,6 @@ void App::SyncTabIdentity(Tab* t) {
     tabSet_.SetLocked(t->id, isLocked);
 }
 
-std::wstring App::FocusPaneOf(HWND focus) {
-    if (!focus) return L"unknown";
-    // 顺序 = 判定精度：自有窗口（书签栏/导航栏）用 hwnd 精确匹配，shell 提供的
-    // 类名次之，最后才是视图容器子孙。都匹配不上就 unknown —— 猜错比不答更糟
-    // （AI 会拿着错误焦点做决策）。
-    if (bookmarkBar_.hwnd() &&
-        (focus == bookmarkBar_.hwnd() || IsChild(bookmarkBar_.hwnd(), focus)))
-        return L"bookmark_bar";
-    if (navBar_.hwnd() && (focus == navBar_.hwnd() || IsChild(navBar_.hwnd(), focus))) {
-        // 搜索框与地址框分开报：两者都在导航栏里，但"聚焦搜索框"与
-        // "聚焦地址栏"是两件不同的事。合成一个值的话，
-        // 调用方无法确认 win.focus.search 到底生效了没有。
-        if (navBar_.searchHwnd() && focus == navBar_.searchHwnd()) return L"search_box";
-        return L"address_bar";
-    }
-    wchar_t cls[64] = {};
-    GetClassNameW(focus, cls, _countof(cls));
-    if (lstrcmpW(cls, L"SysTreeView32") == 0) return L"nav_tree";
-    if (Tab* t = Active()) {
-        // 双栏下分辨焦点在左视图还是右视图：两个视图都归为 file_view 的话，
-        // AI 无法知道当前命令会打到哪一栏，也就无法据焦点做决策。
-        const bool dual = Config::Get().s().dualPane;
-        for (int i = 0; i < 2; ++i) {
-            const Pane* pane = t->panes[static_cast<size_t>(i)].get();
-            if (!pane || !pane->view || !pane->view->hwnd()) continue;
-            if (focus == pane->view->hwnd() || IsChild(pane->view->hwnd(), focus))
-                return dual ? (i == 0 ? L"file_view_left" : L"file_view_right") : L"file_view";
-        }
-    }
-    return L"unknown";
-}
 
 int App::FindTab(ShellView* view) const {
     Tab* tab = nullptr;
@@ -571,7 +540,7 @@ void App::SyncChrome() {
                             tabStrip_.hwnd() != nullptr, navBar_.hwnd() != nullptr);
     if (sig == lastChromeSignature_) {
         // 选中集/文件计数不在这份签名里：它们只影响状态栏，必须每次照常取。
-        MarkStatsDirty(); RefreshStats();
+        MarkStatsDirty();  // EXP2：只置脏，由 800ms 定时器消费
         return;
     }
 
@@ -586,8 +555,12 @@ void App::SyncChrome() {
     // 这里是唯一的同步点：激活标签、切窗格、导航、后退/前进都会走到 SyncChrome，
     // 树的高亮就不会出现"看的是 A、树还停在 B"。
     if (navPane_.ok() && !navPath.empty()) navPane_.SyncTo(navPath);
+    // 双栏分割条的活动侧跟着活动窗格走（与上面同一逻辑：SyncChrome 是外壳
+    // 跟随活动窗格的唯一汇聚点）。单栏分割条本来就隐藏，这里无条件通知即可。
+    // 幂等：SetActiveSide 内部判同值直接返回，不产生无效重绘。
+    panesBar_.SetActiveSide(t->activePane);
     lastChromeSignature_ = sig;
-    MarkStatsDirty(); RefreshStats();
+    MarkStatsDirty();  // EXP2：只置脏，由 800ms 定时器消费
 }
 
 // 真正销毁"关标签时摘下来的视图"（WM_APP_RECLAIM_VIEWS）。
