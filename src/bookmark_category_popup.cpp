@@ -211,6 +211,11 @@ void BookmarkBar::ShowCategoryItemMenu(const std::wstring& folderId, int row, PO
     // 行号就是子项下标（弹层显示了全部子项），所以这里直接取。
     if (row < 0 || row >= static_cast<int>(node->children.size())) return;
     const BookmarkNode item = node->children[static_cast<size_t>(row)];
+    // 【在进模态之前算好】menu.Show 是一段吞消息的模态循环，期间 AI 通道的
+    // 定时器仍会派发 bmk.* 命令 → BookmarkStore 可能整体重载 → node 指向的
+    // 节点被释放。之后再用 node->children.size() 就是悬空解引用（UAF）。
+    // 子项数在菜单生命期内不会变，拷出来即可。
+    const int childCount = static_cast<int>(node->children.size());
 
     ui::Menu menu;
     menu.Add(L"打开", 1, item.isFolder ? ico::IconId::Folder : ico::IconId::Page)
@@ -221,8 +226,7 @@ void BookmarkBar::ShowCategoryItemMenu(const std::wstring& folderId, int row, PO
         .Separator()
         // 上移 / 下移：分类内最常用的两种整理动作（拖不动时也能用键盘路径）。
         .Add(L"上移", 5, ico::IconId::ChevronUp, row <= 0).Cmd(CmdId::BmkMove)
-        .Add(L"下移", 6, ico::IconId::ChevronDown,
-             row + 1 >= static_cast<int>(node->children.size()))
+        .Add(L"下移", 6, ico::IconId::ChevronDown, row + 1 >= childCount)
         .Cmd(CmdId::BmkMove)
         .Add(L"移到书签栏", 7, ico::IconId::Export).Cmd(CmdId::BmkMove)
         .Separator()
@@ -243,7 +247,6 @@ void BookmarkBar::ShowCategoryItemMenu(const std::wstring& folderId, int row, PO
     // 不等于下标合法 —— 真走到这里时 row 仍可能越界（比如重排后行号变了）。
     // 越界的 toIndex 在 store 里会被拒（而不是越界写 vector），这里先挡住，
     // 免得用户看到"点了没反应"。
-    const int childCount = static_cast<int>(node->children.size());
     auto moveTo = [&](int toIndex) {
         if (toIndex < 0 || toIndex > childCount) return;
         json::Value a = json::Value::MakeObject();

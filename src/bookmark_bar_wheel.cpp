@@ -11,12 +11,14 @@
 // 位置转交过来，与序列弹层用的是同一手法（见 input_router_overlay.cpp）。
 #include "bookmark_bar.h"
 
+#include "config.h"       // 滚轮步进读设置 bookmarkWheelStepDp
 #include "mouse_rules.h"
 
 namespace {
 
-// 滚轮一步的位移：与标签栏同一档（S(48) ≈ 三个字宽）。
-constexpr int kWheelStepDp = 48;
+// 滚轮一步的位移：来自设置 bookmarkWheelStepDp（默认 48 ≈ 三个字宽）。
+// 以前是裸常量 —— 书签条目宽窄差异大，"一格跳过一条"与"一格挪一点点"
+// 都有人要，写死就只能改代码重编译。每次滚动现读，改完立即生效。
 
 }  // namespace
 
@@ -47,7 +49,8 @@ bool BookmarkBar::OnWheel(UINT msg, WPARAM w, LPARAM l) {
     if (!overflow_) return false;
 
     const bool horizontal = (msg == WM_MOUSEHWHEEL);
-    ScrollBy(BmkWheelScroll(delta, theme_->S(kWheelStepDp), horizontal));
+    ScrollBy(BmkWheelScroll(delta,
+                            theme_->S(Config::Get().s().bookmarkWheelStepDp), horizontal));
     return true;
 }
 

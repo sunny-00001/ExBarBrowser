@@ -160,23 +160,56 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_APP_TAB_CLOSE:
-        self.CloseTab(self.tabSet_.IdAt(static_cast<int>(w)));
+        // 关标签的两条路（点关闭钮 / tab.close 命令）必须同源，但**语义要分流**：
+        //
+        // 【为什么不是无条件转投 tab.close】tab.close 带 Req::HasMultipleTabs，
+        // 而点最后一个标签的关闭钮，用户预期是"关掉这个窗口"（既有行为）。
+        // 直接转投会把"关闭程序"变成"什么都不发生"—— 比不一致更糟。
+        //
+        // 【为什么最后一个走 win.quit】CloseTab 关掉最后一个时会 DestroyWindow，
+        // 而 tab.close 标着 undoable（进关闭历史、Ctrl+Shift+T 能重开）。
+        // 一个命令不能有两种后果：多标签时"可撤销的关标签"、单标签时"不可撤销的退出"。
+        // 所以单标签这一支走 win.quit —— 与标题栏 X / Alt+F4 完全同源
+        //（同一份 ConfirmExit、同一条审计），退出语义归退出命令。
+        if (self.tabSet_.Count() <= 1) {
+            (void)CommandBus::Get().Invoke(CmdId::QuitExplorer, Args::Empty(), Actor::Ui());
+            return 0;
+        }
+        {
+            json::Value a = json::Value::MakeObject();
+            a.Set(L"index", json::Value::MakeInt(static_cast<int>(w)));
+            (void)CommandBus::Get().Invoke(CmdId::TabClose, Args::FromJson(a), Actor::Ui());
+        }
         return 0;
     case WM_APP_TAB_NEW:
         // "+" 按钮固定打开此电脑（namespace 根），与 tab.new 无参语义一致：
         // 用户点 + 的预期是"开一个全新的起点"，而不是复制当前目录（那是"复制标签"）。
         // 需要复制当前目录时走 kTabMenuClone / tab.clone，两条路径各有明确用途。
-        self.NewTab(nav::kThisPc, self.NewTabIndex());
+        //
+        // 【为什么不直调 NewTab】同一件事（"新建标签"）快捷键/命令面板走 tab.new、
+        // 点 + 直调 App 方法 —— 两条强度：命令那路有审计、有 tabCount 断言。
+        // 转投后仍是同一份实现（handler 内部就调 NewTab），差别只在留痕。
+        // 省略 path：tab.new 的默认值就是 nav::kThisPc，与这里原先传的一致。
+        (void)CommandBus::Get().Invoke(CmdId::TabNew, Args::Empty(), Actor::Ui());
         return 0;
     case WM_APP_TAB_MOVED:
-        self.MoveTab(self.tabSet_.IdAt(static_cast<int>(w)), static_cast<int>(l));
+        // 拖拽重排 = tab.move.to：left/right/first/last 只能表达相对移动，
+        // "把第 5 个拖到第 2 位"需要绝对落点，这条命令就是为它补的。
+        // index 是被拖的那一格（w），to 是落点（l），都是 0 起。
+        {
+            json::Value a = json::Value::MakeObject();
+            a.Set(L"index", json::Value::MakeInt(static_cast<int>(w)));
+            a.Set(L"to", json::Value::MakeInt(static_cast<int>(l)));
+            (void)CommandBus::Get().Invoke(CmdId::TabMoveTo, Args::FromJson(a), Actor::Ui());
+        }
         return 0;
     case WM_APP_TAB_MENU:
         self.ShowTabMenu(static_cast<int>(w), static_cast<int>(l));
         return 0;
-    case WM_APP_STATUS_MENU:
-        self.ShowStatusMenu(*reinterpret_cast<POINT*>(l));
-        return 0;
+    // 状态栏右键不再经消息：statusBar_ 走了 SetContextFn 回调（见 app.cpp 的
+    // SetContextFn → ShowStatusMenu），WM_APP_STATUS_MENU 已从 common.h 的枚举里
+    // 移除。这里保留 case 会引用一个不存在的常量（编译失败），
+    // 且它本来就没有发送方 —— 删掉，行为不变（右键仍弹同一个菜单）。
     case WM_APP_REFOCUS:
         self.FocusActiveView();
         return 0;

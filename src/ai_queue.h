@@ -48,6 +48,17 @@ public:
     // （让他们立刻拿到 false，不必干等到 waitMs 超时）。
     void Interrupt();
 
+    // 重启前复位：把 interrupted_ 清回 false。
+    //
+    // 【为什么必须有】Interrupt() 只是"进入停机态"的入口，没有配对的出口时，
+    // 这个状态会**粘滞**到进程结束。原来通道热插拔（设置里关掉 AI 再打开）
+    // 走的就是 StopServer→Interrupt() → StartServer（不复位），
+    // 于是 Submit 的等待谓词 `job->done || interrupted_` 恒真、
+    // 每个请求立即返回"超时"——通道看起来完全正常（管道在、令牌对、事件能推），
+    // 但所有命令都失败。这类"只写进入态、不写离开态"的状态机是硬伤，
+    // 所以复位入口与 Interrupt 成对存在，由 StartServer 在起线程前调用。
+    void Reset();
+
     // 排队中还没被取走的请求数（诊断与测试用）。
     size_t Pending() const;
 

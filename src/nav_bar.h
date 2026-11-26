@@ -13,6 +13,7 @@
 //   · 所有下拉走自绘 popup_list（带图标、24px 行高），不用系统菜单
 #pragma once
 #include "common.h"
+#include "commands_ids.h"   // CmdId：双栏菜单项回传"哪条命令"（纯枚举，不拖 UI 依赖）
 #include "theme.h"
 #include "nav_model.h"
 #include "tooltip_host.h"
@@ -48,6 +49,11 @@ public:
         // 从 shell 现读的 {GUID}:pid 字符串（D2/D9）。空 = 无/未知。
         std::wstring sortKey;
         std::wstring groupKey;
+        // 双栏三态：布局也是"视图"的一部分，与导航窗格/预览窗格同一层语义。
+        // 直接来自 Config（布局没有 shell 侧的第二份真源，配置即现状）。
+        bool dualPane = false;
+        bool paneVertical = false;
+        int paneSplit = 50;
     };
     using ViewStateFn = std::function<ViewState()>;
     // 面包屑段右键菜单的动作号。用枚举而不是裸 int：App 侧要 switch 它，
@@ -138,6 +144,10 @@ public:
         historyJump_ = std::move(jump);
     }
     void SetSortGroupFn(SortGroupFn fn) { onSortGroup_ = std::move(fn); }
+    // 双栏菜单项：菜单只回传"哪条命令 + 内联参数"，App 转投命令总线
+    // （与档位走 onView_、排序走 onSortGroup_ 同一种分工：本栏不认识动作语义）。
+    using PaneCmdFn = std::function<void(CmdId id, const std::wstring& arg)>;
+    void SetPaneCmdFn(PaneCmdFn fn) { onPaneCmd_ = std::move(fn); }
     void SetViewStateFn(ViewStateFn fn) { viewState_ = std::move(fn); }
     void SetSegmentCmdFn(SegmentCmdFn fn) { segmentCmd_ = std::move(fn); }
     void SetRecentFn(RecentFn fn) { recentList_ = std::move(fn); }
@@ -282,6 +292,7 @@ private:
     ListFn historyList_;
     JumpFn historyJump_;
     SortGroupFn onSortGroup_;
+    PaneCmdFn onPaneCmd_;
     ViewStateFn viewState_;
     SegmentCmdFn segmentCmd_;
     RecentFn recentList_;

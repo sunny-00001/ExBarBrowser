@@ -12,6 +12,7 @@
 
 #include "assert_check.h"
 #include "ai_events.h"
+#include "ai_server.h"   // ai::UiTimeoutMs —— 传输层超时的唯一真源
 #include "audit_log.h"
 #include "str.h"
 
@@ -180,7 +181,10 @@ std::vector<ToolSpec> ListTools() {
         t.outputSchema = d.outputSchema ? Utf8ToWide(d.outputSchema) : std::wstring();
         t.effects = d.effects;
         t.needsSelection = d.needsSelection;
-        t.timeoutMs = 90000;   // 与既有客户端的 90s 一致；长命令以后可逐条覆盖
+        // 软超时取自传输层唯一真源（ai::UiTimeoutMs），不要再写常量：
+        // 客户端拿这个值设定时器，而它必须等于管道实际等待上限，
+        // 否则客户端会在「自己以为还没超时」时收到 timeout（原来 90s vs 10s，差 9 倍）。
+        t.timeoutMs = ai::UiTimeoutMs();
         // 撤销组只覆盖两套真有撤销栈的域：File 与 Bookmark。其它 undoable
         // 命令（例如 tab.close）没有同域栈，不能对 AI 承诺 join。
         if (const wchar_t* domain = UndoDomainOfGroup(t.group)) {
@@ -216,7 +220,7 @@ bool FindTool(const std::wstring& name, ToolSpec* out) {
             out->outputSchema = d.outputSchema ? Utf8ToWide(d.outputSchema) : std::wstring();
             out->effects = d.effects;
             out->needsSelection = d.needsSelection;
-            out->timeoutMs = 90000;
+            out->timeoutMs = ai::UiTimeoutMs();
             if (const wchar_t* domain = UndoDomainOfGroup(out->group)) {
                 if (out->effects.undoable) {
                     out->undoDomain = domain;
@@ -253,8 +257,13 @@ CallResult CallImpl(const std::wstring& command, const json::Value& args, bool a
     // （反复撞同一个错 = 调用方用错了方法；反复撞 danger = 有人在试探边界）。
     //
     // 统一在这里登记一次，避免每个拒绝点各写一遍而漏掉某个分支。
-    auto reject = [&](const std::wstring& reason, const std::wstring& errorCode) {
-        CommandBus::Get().AuditRejected(command, reason, errorCode);
+    //
+    // 【双轨口径】reason 必须是**人可读**的中文原因，errorCode 才是**机器可判读**
+    // 的稳定标识。两个字段必须分别写：原来每个拒绝点都传 r.errorCode 当 reason，
+    // 于是审计里的原因列全是机器码 —— 追"AI 为什么被拒"时还得回查错误码表。
+    // 收成一个"直接读 r 的两个字段"的 lambda 后，这个口径不可能再被写错。
+    auto reject = [&]() {
+        CommandBus::Get().AuditRejected(command, r.error, r.errorCode);
         return r;
     };
 
@@ -271,7 +280,7 @@ CallResult CallImpl(const std::wstring& command, const json::Value& args, bool a
             r.errorCode = L"not_exposed";
         r.error = L"未知或未暴露给 AI 的命令";
         LogDbg(L"[ai] 拒绝未知命令：%s（%s）", command.c_str(), r.errorCode.c_str());
-        return reject(r.errorCode, r.errorCode);
+        return reject();
     }
     // 回给调用方的命令名统一成规范名：它可能传的是旧名（NavBack），
     // 但响应里给 nav.back，这样客户端只需认一种形式。
@@ -287,14 +296,14 @@ CallResult CallImpl(const std::wstring& command, const json::Value& args, bool a
             r.error = L"danger_disabled";
             LogDbg(L"[ai] 拒绝危险命令（设置未允许）：%s", command.c_str());
             auditlog::SetApproval(L"denied");   // 不是"没批"，是"根本不让批"
-            return reject(r.errorCode, r.errorCode);
+            return reject();
         }
         if (!approve) {
             r.errorCode = L"need_approval";
             r.error = L"need_approval";
             LogDbg(L"[ai] 需批准：%s", command.c_str());
             auditlog::SetApproval(L"required");  // 要批，但这次没批
-            return reject(r.errorCode, r.errorCode);
+            return reject();
         }
         // 带批准且设置允许 → granted。approvedBy 记 ai：批准是**调用方声明**的
         // （"我已向人类确认过"），不是本进程弹窗问出来的 —— 记成 human 是把事实说错。
@@ -308,14 +317,14 @@ CallResult CallImpl(const std::wstring& command, const json::Value& args, bool a
         r.errorCode = L"schema_invalid";   // 命令表写错，是实现缺陷，不是调用方的错
         r.error = L"命令的 argsSchema 非法（实现缺陷）";
         LogDbg(L"[ai] %s 的 argsSchema 解析失败：%s", command.c_str(), perr.c_str());
-        return reject(r.errorCode, r.errorCode);
+        return reject();
     }
     std::wstring verr;
     if (!ValidateAgainstSchema(schema, args, &verr)) {
         r.errorCode = L"bad_args";         // 改请求即可，不该去改代码
         r.error = verr;
         LogDbg(L"[ai] 参数非法：%s（%s）", command.c_str(), verr.c_str());
-        return reject(r.errorCode, r.errorCode);
+        return reject();
     }
 
     // 唯一执行入口：参数对象原样交给 CommandBus，actor 固定 "ai"。

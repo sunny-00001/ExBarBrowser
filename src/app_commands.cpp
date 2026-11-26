@@ -4,6 +4,7 @@
 #include "app.h"
 
 #include "app_commands.h"
+#include "transfer_undo.h"
 #include "view_modes.h"
 #include "clipboard.h"
 #include "file_undo.h"
@@ -202,35 +203,26 @@ bool App::TransferSelTo(const std::vector<std::wstring>& targets, const std::wst
             CommandBus::Get().NoteFailure(L"目标不在当前视图：" + targets.front());
             return false;
         }
+        // 落点预探必须在**转移之前**：转移后才探到的"已存在"分不清是
+        // "我们刚产生的副本"还是"用户原本就有的同名文件"（见 transfer_undo.h）。
+        const std::vector<bool> preExisted = transferundo::PrecheckDest(targets, to);
         const bool ok = shellops::TransferToFolder(v, hwnd_, to, move);
         RefreshActive();
         if (hit < static_cast<int>(targets.size()))
             LogDbg(L"[cmd] %ls 只命中 %d/%zu 个目标", move ? L"FsMoveTo" : L"FsCopyTo", hit,
                    targets.size());
-        // 撤销记录：源路径 → 目标路径。撤销移动 = 移回原目录；撤销复制 = 删副本。
+        // 撤销记录：源路径 → 真实落点。
         //
-        // 落点按"目标目录 + 原文件名"算出来。冲突时 shell 会自动改名
-        //（FOF_RENAMEONCOLLISION，比如 "a (2).txt"）—— 那种情况下算出来的
-        // 落点并不存在，**不记**这一项：记一条指向不存在路径的撤销记录，
-        // 等于给用户一个"撤销会失败"的假承诺。
+        // **源用入参 targets，不用转移之后的 SelectedPaths**：移动把源项搬走之后，
+        // 视图里已经没有它们了，事后读选中集拿到的是空/别的项 —— 那会让"撤销移动"
+        // 整条记录成空。
+        //
+        // 冲突（目标目录原本就有同名文件）由 transfer_undo 过滤掉：那种情况下
+        // shell 按 FOF_RENAMEONCOLLISION 改了名，真实落点不可知；照旧记一条
+        // 指向用户原有文件的记录，撤销时就会删错文件。
         if (ok) {
-            const std::vector<std::wstring> sel = shellops::SelectedPaths(v);
-            std::vector<fileundo::Item> items;
-            for (const std::wstring& p : sel) {
-                const std::wstring leaf = nav::Leaf(p);
-                if (leaf.empty()) continue;
-                const std::wstring after = tf::Join(to, leaf);
-                if (!tf::Exists(after)) {
-                    LogDbg(L"[undo] %ls 的落点与预期不符（%s），不记撤销记录",
-                           move ? L"FsMoveTo" : L"FsCopyTo", after.c_str());
-                    continue;
-                }
-                fileundo::Item item;
-                item.beforePath = p;
-                item.afterPath = after;
-                item.beforeName = leaf;
-                items.push_back(std::move(item));
-            }
+            std::vector<fileundo::Item> items =
+                transferundo::BuildItems(targets, to, preExisted);
             if (!items.empty())
                 NoteFileOp(move ? fileundo::Op::Move : fileundo::Op::Copy, std::move(items),
                            move ? L"移动到" : L"复制到");

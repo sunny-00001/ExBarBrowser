@@ -16,6 +16,24 @@
 // 太短会"路过分类就被展开"，太长则等得着急。
 constexpr UINT kFolderOpenHoverMs = 600;
 
+// 边缘自动滚动的起停判定（唯一入口）：内部重排 DragUpdate 与 OLE 外部拖入
+// PreviewDropAt 都调它。触发带以可视窗口为准（» 按钮不算落点）；滚动拍在
+// WM_TIMER 里经 ScrollBy（落点/hover 的重算收口在那里），这里只起停。
+// 非溢出时没有可滚内容，直接停表 —— 与标签栏 WM_MOUSEMOVE 的分支同构。
+void BookmarkBar::EdgeAutoScroll(int clientX, int clientY) {
+    dragMouseX_ = clientX;
+    dragMouseY_ = clientY;
+    if (!overflow_) {
+        edge::Stop(&dragScrollStep_, hwnd_, kDragScrollTimer);
+        return;
+    }
+    const int edge = theme_->S(28);
+    const int lo = theme_->S(6) + edge;
+    const int hi = viewRight_ - edge;
+    edge::Update(&dragScrollStep_, hwnd_, kDragScrollTimer, clientX, lo, hi,
+                 theme_->S(24), static_cast<UINT>(Config::Get().s().tabDragScrollMs));
+}
+
 void BookmarkBar::DragUpdate(HWND h, int x, int y) {
     // 落点算法与 OLE 外部拖放共用同一份 DropSpotAtClient，避免两条路各写一套
     // "分类中间 50% / 其余插插入线 / 栏外取消"的口径。
@@ -30,17 +48,8 @@ void BookmarkBar::DragUpdate(HWND h, int x, int y) {
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
     // 边缘自动滚动：把落点推进到视野外。触发带以可视窗口为准（» 按钮不算落点）；
-    // 滚动本身经 ScrollBy（里面统一重算落点），这里只管起停与最后鼠标 x。
-    dragMouseX_ = x;
-    if (overflow_) {
-        const int edge = theme_->S(28);
-        const int lo = theme_->S(6) + edge;
-        const int hi = viewRight_ - edge;
-        edge::Update(&dragScrollStep_, hwnd_, kDragScrollTimer, x, lo, hi,
-                     theme_->S(24), static_cast<UINT>(Config::Get().s().tabDragScrollMs));
-    } else {
-        edge::Stop(&dragScrollStep_, hwnd_, kDragScrollTimer);
-    }
+    // 滚动本身经 ScrollBy（里面统一重算落点），这里只管起停。
+    EdgeAutoScroll(x, y);
     // 悬停分类自动弹出：拖进分类"内部"并停住 → 定时器到点移交弹层（WM_TIMER）。
     // 换了分类重挂定时器，拖出分类摘掉；拖自己不触发（那是顶层重排，不是移入）。
     const bool overFolder = newInto >= 0 && dragIdx_ >= 0 && newInto != dragIdx_;
@@ -65,6 +74,13 @@ void BookmarkBar::DragFinish(HWND h, bool commit) {
     edge::Stop(&dragScrollStep_, hwnd_, kDragScrollTimer);   // 滚着松手：先停表再提交
     KillTimer(h, kDragFolderTimer);
     folderHoverIdx_ = -1;
+    // 下标必须**在这里重新校验**：from/into 是拖拽开始时记下的行号，而 items_
+    // 可能在拖拽期间被外部改短（AI/命令删了书签 → 栏重建 → 行数变少）。
+    // 只判 >= 0 就索引是越界读（Release 下读到垃圾 id，Debug 下直接断言）。
+    const int n = static_cast<int>(items_.size());
+    if (from >= n) from = -1;
+    if (into >= n) into = -1;
+    if (to > n) to = n;
     if (commit && from >= 0) {
         const Item& src = items_[static_cast<size_t>(from)];
         const std::wstring id = src.id;
@@ -98,7 +114,11 @@ void BookmarkBar::DragFinish(HWND h, bool commit) {
 void BookmarkBar::HandoffDragToFolder(HWND h) {
     const int folderIdx = dropInto_;
     const int dragIdx = dragIdx_;
-    if (dragIdx < 0 || folderIdx < 0 || folderIdx >= static_cast<int>(items_.size()) ||
+    // 两个下标都要判**上界**：悬停计时器到点时才走到这里，而 items_ 可能已经
+    // 被 Reload() 重建变短（拖拽期间 AI/命令改了书签）。只判 >= 0 就索引
+    // items_[dragIdx] 是越界读 —— 与 DragFinish 用同一套判据。
+    const int n = static_cast<int>(items_.size());
+    if (dragIdx < 0 || dragIdx >= n || folderIdx < 0 || folderIdx >= n ||
         folderIdx == dragIdx)
         return;
     const Item& folder = items_[static_cast<size_t>(folderIdx)];

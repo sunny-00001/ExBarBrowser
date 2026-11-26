@@ -72,8 +72,9 @@ public:
     void SetTitle(int id, const std::wstring& title);
     void SetPath(int id, const std::wstring& path);
     void SetLocked(int id, bool locked);
-    // 固定/取消固定。固定时移到固定区末尾（与其他固定标签相邻），
-    // 取消固定保持当前位置 —— 不把标签"弹"到别处，避免用户找不到。
+    // 固定/取消固定。pin：移到固定区末尾（与其他固定标签相邻）；
+    // unpin：移到第一个未固定位（Chrome 语义）——"取消固定"后标签回到
+    // 普通区的开头，不是原地。实现见 tab_set.cpp SetPinned，两边口径一致。
     void SetPinned(int id, bool pinned);
     // 空串 = 取消改名（回到跟随路径）。
     void SetAlias(int id, const std::wstring& alias);

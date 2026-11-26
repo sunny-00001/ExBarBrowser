@@ -118,7 +118,9 @@ const wchar_t* SettingsDialog::UnitOf(const std::wstring& key) {
     // 只有这几项的单位是"一看数字就知道是什么"的那种；其余不写单位
     // （凭空给一个单位比不给更糟）。
     if (key == L"paneSplit") return L"%";
-    if (key == L"seqTimeoutMs" || key == L"holdDelayMs" || key == L"aiTimeoutMs") return L"毫秒";
+    if (key == L"seqTimeoutMs" || key == L"holdDelayMs" || key == L"aiTimeoutMs" ||
+        key == L"tabAnimMs")
+        return L"毫秒";
     // 宽度项都是像素：少写一个就只剩裸数字，"420" 会被读成别的量纲。
     if (key == L"tabMinWidth" || key == L"tabMaxWidth" || key == L"navPaneWidth" ||
         key == L"aiPanelWidth" || key == L"navBarSearchWidth" ||
@@ -130,6 +132,8 @@ const wchar_t* SettingsDialog::UnitOf(const std::wstring& key) {
     if (key == L"tabBarHeight" || key == L"navBarHeight" || key == L"bookmarkBarHeight" ||
         key == L"statusBarHeight" || key == L"navPaneItemHeight")
         return L"像素";
+    // 磁吸阈值是"越过边缘多少像素"，不写单位会被读成毫秒或逻辑档位。
+    if (key == L"tabTearOffDy") return L"像素";
     // 三个历史上限的单位是"条"：不写的话 "30" 会被读成毫秒或像素。
     if (key == L"recentLimit" || key == L"searchLimit" || key == L"closedTabLimit") return L"条";
     return nullptr;

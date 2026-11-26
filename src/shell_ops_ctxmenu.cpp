@@ -24,6 +24,8 @@
 
 #include "shell_ops_internal.h"
 
+#include "modal.h"   // modal::Scope：登记模态层（AI 泵据此避让）
+
 // 本机 SDK 的 shobjidl.h 里没有 GCSMENUVERB 这个常量名（值是 0，标准头里
 // 与 GCSMENUVERBLONG 并列）。按标准值补上，别去猜别的。
 #ifndef GCSMENUVERB
@@ -135,15 +137,21 @@ bool ShowContextMenu(IShellView* view, HWND owner, POINT screen) {
     }
 
     // owner-draw 的转发通道（见文件头"owner-draw 的坑"）。
-    // cm3 必须活到 RemoveWindowSubclass 之后 —— 子类还挂着的时候它不能析构。
+    // 【三者都必须活到 RemoveWindowSubclass 之后】子类挂着的时候它们不能析构：
+    //   · cm3 —— IContextMenu3 的实现；
+    //   · cm2 —— 老 shell 的回退实现。**必须与本块的 cm3 同作用域**：以前把它
+    //     声明在 else 块里，出了块就 Release（引用计数归零即销毁），而 mc.cm2
+    //     还指着它 —— 菜单跟踪期间一收到 WM_DRAWITEM 就是 use-after-free
+    //     （任何不提供 IContextMenu3 的 shell 扩展都会触发）；
+    //   · mc  —— 子类数据本身。
     ComPtr<IContextMenu3> cm3;
+    ComPtr<IContextMenu2> cm2;
     MenuSubclass mc;
-    if (SUCCEEDED(cm->QueryInterface(IID_IContextMenu3, reinterpret_cast<void**>(&cm3))) && cm3)
+    if (SUCCEEDED(cm->QueryInterface(IID_IContextMenu3, reinterpret_cast<void**>(&cm3))) && cm3) {
         mc.cm3 = cm3.get();
-    else {
+    } else {
         // 退回 IContextMenu2：HandleMenuMsg（不带 plResult 出参）是 IContextMenu2
         // 就有的方法；老一点的 shell 不给 IContextMenu3，但 owner-draw 转发仍要成立。
-        ComPtr<IContextMenu2> cm2;
         if (SUCCEEDED(cm->QueryInterface(IID_IContextMenu2, reinterpret_cast<void**>(&cm2))) && cm2)
             mc.cm2 = cm2.get();
     }
@@ -157,6 +165,12 @@ bool ShowContextMenu(IShellView* view, HWND owner, POINT screen) {
     //     （CMINVOKECOMMANDINFOEX 里根本没有 hMenu 字段可填），
     //     改走**助记符**：fMask=0 时 shell 只读前 7 个字段（布局与真实 SDK 一致），
     //     lpVerb 必须是 ANSI 字符串。
+    // modal::Scope：菜单跟踪是一段**吞消息的模态循环**，期间必须让 AI 泵避让。
+    // 不登记的话，模态期间 WM_TIMER 照常派发 → ai::PumpRequests() 执行命令 →
+    // 比如 bmk.* 重建书签栏 / tab.close 销毁视图 → 我们手里这些 PIDL、IContextMenu、
+    // 甚至 owner 窗口都可能已经在菜单还开着的时候被换掉或销毁。
+    // 与 popup_list.cpp 的 ShowPopupList 同一口径（那里也是先登记再跟踪）。
+    modal::Scope modalScope;
     const int cmd = static_cast<int>(TrackPopupMenuEx(
         hmenu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y, owner,
         nullptr));
@@ -165,7 +179,12 @@ bool ShowContextMenu(IShellView* view, HWND owner, POINT screen) {
     // 菜单是我们建的，必须自己销毁（shell 只往里插项，不负责收）。
     DestroyMenu(hmenu);
 
-    if (cmd < 0) return false;   // 用户取消
+    // 【取消时返回 0，不是负数】TPM_RETURNCMD 的契约：用户取消/菜单没选中任何项
+    // 时返回 **0**。以前写的是 cmd < 0，于是按 Esc 会被当成"选中了 id 0"，
+    // 继续往下走用假 id 去取动词、去 InvokeCommand —— 配合下面 GetCommandString
+    // 的参数错位，表现就是"取消菜单反而执行了第一项（通常是打开）"。
+    // 有效 id 从 idCmdFirst=1 起，所以 <= 0 一律是取消。
+    if (cmd <= 0) return false;
 
     // 取该项的助记符（"open" / "rename" / "delete"…）：InvokeCommand 要的是它。
     // 取不到就不执行 —— fMask=0 时 lpVerb 会被当成 ANSI 字符串读，
@@ -176,6 +195,18 @@ bool ShowContextMenu(IShellView* view, HWND owner, POINT screen) {
     // 更直接的路走不通 —— GetCommandString 取动词是唯一可行的标准做法
     // （与 MSDN 的 IContextMenu2 "Creating a Shortcut Menu" 示例同路）。
     //
+    // 【参数顺序与 id 偏移，两个都错过一次】
+    //   签名是 (idCmd, uType, pReserved, pszName, cchMax)。
+    //   · 以前把 GCSMENUVERB 和 cmd 写反了：idCmd 传了 0、uType 传了菜单 id。
+    //     后果不只是"取不到"：uType=4 是 GCS_VERBW，shell 会把 **UTF-16**
+    //     写进 char[128]（按字符数算 = 最多 256 字节，栈越界）；uType=5 是
+    //     GCS_HELPTEXTW，拿到的是帮助文本当动词用；其余 id 直接 E_INVALIDARG
+    //     → 全部 return false → **菜单弹得出来、点任何项都没反应**。
+    //   · idCmd 必须减掉 idCmdFirst（本函数用 1，见上面的 QueryContextMenu）：
+    //     菜单 id 是绝对 id，GetCommandString 要的是相对偏移。同仓
+    //     shell_ops.cpp 的 MAKEINTRESOURCEA(id - 1) 就是这个口径 —— 直接送
+    //     cmd 会拿到**相邻那一项**的动词，执行错的命令。
+    //
     // 【已知风险，见 shell_ops.cpp 的实测记录】GetCommandString 会为菜单项
     // **懒加载对应的 shell 扩展**；第三方扩展（云盘客户端/右键增强）若在其
     // 处理里阻塞，这里就回不来，而本函数在 UI 线程 —— 整个消息泵会卡住。
@@ -185,8 +216,8 @@ bool ShowContextMenu(IShellView* view, HWND owner, POINT screen) {
     // 一旦实测遇到卡顿，换的路是：改用 CMINVOKECOMMANDINFO + hMenu 语义
     // （需要自己拼一个带 hMenu 的结构体），而不是退回逐项遍历。
     char verb[128] = {};
-    const HRESULT hrVerb =
-        cm->GetCommandString(GCSMENUVERB, static_cast<UINT>(cmd), nullptr, verb, sizeof(verb));
+    const HRESULT hrVerb = cm->GetCommandString(static_cast<UINT_PTR>(cmd - 1), GCSMENUVERB,
+                                               nullptr, verb, sizeof(verb));
     if (FAILED(hrVerb) || !verb[0]) {
         LogDbg(L"[shellops] 上下文菜单项 %d 取不到助记符，跳过执行", cmd);
         return false;

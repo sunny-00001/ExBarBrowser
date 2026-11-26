@@ -678,21 +678,6 @@ int App::Run(HINSTANCE hInst, const std::wstring& initialPath,
 }
 
 // ---------------------------------------------------------------- 输入
-bool App::ConfirmExit() {
-    // MCP 模式（--mcp-stdio）：这个进程是 MCP 客户端拉起来的服务器，
-    // 客户端断开即应静默退出 —— 弹框问"确定退出吗"会把客户端晾在原地。
-    if (mcpstdio::Requested()) return true;
-    // 只有多标签才问：最后一个标签关闭 = 正常结束，不该再拦一次。
-    // 默认按钮是"否"：误按 Enter 的常见场景（Alt+F4 后手还没离开键盘）
-    // 不该把整组标签关掉；会话虽能恢复，但用户此刻未必想退出。
-    if (!Config::Get().s().confirmCloseTabs) return true;
-    const int n = tabSet_.Count();
-    if (n <= 1) return true;
-    const std::wstring text =
-        L"当前打开了 " + std::to_wstring(n) + L" 个标签页。\n\n确定要退出吗？";
-    return MessageBoxW(hwnd_, text.c_str(), L"退出 ExBarBrowser",
-                       MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES;
-}
 
 void App::MarkSessionDirty() {
     if (!hwnd_) return;

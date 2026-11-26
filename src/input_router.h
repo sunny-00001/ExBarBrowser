@@ -29,6 +29,15 @@ struct BindingRow {
     bool isSequence = false;
     bool conflict = false;
     bool reserved = false;
+    // 「这一行的键是从哪来的」——快捷键管理器的"来源"列要它。
+    // 只有 custom / unbound 两个派生位，不足以反推出"默认键"：默认值可能是
+    // 键位表里的，也可能是 SystemKeyFor 兜底出来的，界面不该分这两者
+    // （用户看到的都是"默认"），但**必须**能分出"我改过 / 我清过"。
+    bool custom = false;   // 覆盖表里有这个 setting 且值不是解绑哨兵
+    bool unbound = false;  // 覆盖表里是解绑哨兵（用户点了"清除"）
+    // 系统原生兜底键（keymap::SystemKeyFor）。空 = 这条命令没有系统原生键。
+    // 只用于右栏"默认：Ctrl+L"的说明，不参与"按得出来"的判定（那是 Effective 的事）。
+    std::wstring nativeKey;
 };
 
 class InputRouter {
@@ -95,6 +104,12 @@ public:
     // 管理器
     const std::vector<BindingRow>& Rows() const { return rows_; }
     bool SetKeyForCommand(const std::wstring& command, const std::wstring& key);
+    // 把一条命令的键位**还原成默认**：删掉它的覆盖项，而不是写空串/哨兵。
+    // 【为什么必须删而不是写空】写空串会被 ResolveKey 原样返回，BuildBindings 见到空键
+    // 就跳过 —— 那条命令反而**按不出来**了，与"恢复默认"正好相反。写哨兵更糟：
+    // 哨兵是"显式解绑"，是用户主动清掉的语义。只有删掉覆盖项才会回落到
+    // keymap.json 的默认值 / 系统原生键。
+    bool ResetKeyForCommand(const std::wstring& command);
     void ResetDefaults();
     std::wstring StatusText() const;
 

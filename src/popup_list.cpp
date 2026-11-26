@@ -256,8 +256,8 @@ static void RunModal(PopupState& st, HWND owner, POINT screen, int width, int he
     // modal::Scope：把这段循环登记成"模态层" —— 模态期间不派发 AI 命令
     // （见 modal.h 里 Depth() 的说明）。
     modal::Scope modalScope;
-    MSG msg;
-    int gm;
+    MSG msg{};
+    int gm = 1;   // 初值非 0：首拍 st.done 已真时不会读未初始化值（与 modal::Run 同口径）
     while (!st.done && (gm = GetMessageW(&msg, nullptr, 0, 0)) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);

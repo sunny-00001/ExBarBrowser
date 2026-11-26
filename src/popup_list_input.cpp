@@ -21,9 +21,9 @@ static void PickRow(PopupState* st, HWND hList, int vi) {
     PostMessageW(st->self, WM_CLOSE, 0, 0);
 }
 
-// 拖拽启动阈值（像素）。与书签栏顶层的拖动阈值同口径（6px）：
-// 阈值太小会把"点一下选行"误判成拖动，太大则拖不动。
-constexpr int kDragThreshold = 6;
+// 拖拽启动阈值不再在这里定义：已升为设置 popupDragThreshold（见 config.h），
+// 原因是"点一下"与"按住拖"的分界纯属手感 —— 有人手抖、有人习惯长按，
+// 写死 6px 就只能改代码重编译。
 
 // 拖拽落点：光标压在哪一行、该行的上半还是下半 → 插入线位置。
 //
@@ -94,11 +94,14 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
             UpdateDragPosition(st, h, mx, my);
             return 0;
         }
-        // 按下后移动超阈值 = 起拖。阈值同书签栏顶层（6px），防手抖误判。
+        // 按下后移动超阈值 = 起拖。阈值来自设置 popupDragThreshold（默认 6px，
+        // 与书签栏顶层同口径）：太小会把"点一下选行"误判成拖动，太大则拖不动。
+        // 每次移动现读 —— 它是纯手感值，改完下一次拖就生效。
         if (st->dragArm && !st->dragging) {
             const int dx = mx - st->dragStart.x;
             const int dy = my - st->dragStart.y;
-            if (dx * dx + dy * dy > kDragThreshold * kDragThreshold) {
+            const int th = Config::Get().s().popupDragThreshold;
+            if (dx * dx + dy * dy > th * th) {
                 st->dragging = true;
                 UpdateDragPosition(st, h, mx, my);
                 return 0;

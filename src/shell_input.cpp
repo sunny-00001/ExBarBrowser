@@ -478,16 +478,27 @@ bool Install(HWND viewWindow, HWND container, const std::wstring& dir, MouseSink
     InspectWindow(viewWindow, ctx.get());
     EnumChildWindows(viewWindow, FindProc, reinterpret_cast<LPARAM>(ctx.get()));
 
+    // 【必须判返回值】Subclass 失败 = 这个窗口没挂上子类，鼠标规则（双击空白
+    // 上一级 / 单击项 / 滚轮）在这个视图上全部静默失效。原来三处返回值全丢，
+    // 只要有一个挂上就 return true，调用方（OnViewCreated）以为装好了，
+    // 用户只会觉得"鼠标规则时灵时不灵"。
+    int hooked = 0;
     if (ctx->listView) {
-        Subclass(ctx->listView, ctx.get());  // Win10
+        hooked += Subclass(ctx->listView, ctx.get()) ? 1 : 0;   // Win10
     } else if (ctx->defView) {
-        Subclass(ctx->defView, ctx.get());   // Win11 DirectUI：点击经 WM_PARENTNOTIFY 上抛
+        hooked += Subclass(ctx->defView, ctx.get()) ? 1 : 0;    // Win11 DirectUI：点击经 WM_PARENTNOTIFY 上抛
     }
     if (ctx->tree && ctx->tree != ctx->listView && ctx->tree != ctx->defView)
-        Subclass(ctx->tree, ctx.get());
+        hooked += Subclass(ctx->tree, ctx.get()) ? 1 : 0;
 
-    LogDbg(L"[shell-input] install view=%p container=%p list=%p def=%p tree=%p", viewWindow,
-           container, ctx->listView, ctx->defView, ctx->tree);
+    LogDbg(L"[shell-input] install view=%p container=%p list=%p def=%p tree=%p hooked=%d",
+           viewWindow, container, ctx->listView, ctx->defView, ctx->tree, hooked);
+    if (hooked == 0) {
+        // 一个都没挂上：不登记上下文，让调用方拿到 false 去记一条明确失败，
+        // 而不是带着一个"看起来装好了、实际不工作"的假状态继续跑。
+        LogDbg(L"[shell-input] install 失败：没有任何窗口可挂子类（Win 版本层级变化？）");
+        return false;
+    }
     g_contexts[container] = std::move(ctx);
     return true;
 }

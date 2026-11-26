@@ -31,9 +31,15 @@ void SplitBar::Destroy() {
     if (!hwnd_) return;
     // 先撤捕获再销毁：带着捕获销毁窗口会让系统把捕获交给别的窗口，
     // 而那时我们还在拖 —— 松开那一刻就落到别人身上了。
+    //
+    // 【顺序：先置 false 再 ReleaseCapture】ReleaseCapture 会**同步**派发
+    // WM_CAPTURECHANGED，处理器看到 dragging_ 仍是 true 会走 NoteDrag(...) →
+    // App::OnSplitterDragged → config.set + Layout()。而本函数是销毁/退出路径，
+    // 在那里重排界面并写配置是灾难。WM_LBUTTONUP 分支就是先置 false 再放捕获，
+    // 这里与它对齐。
     if (dragging_) {
-        ReleaseCapture();
         dragging_ = false;
+        ReleaseCapture();
     }
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
@@ -162,6 +168,27 @@ LRESULT SplitBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (!dragging_) SetHover(false);
         return 0;
 
+    case WM_LBUTTONDBLCLK: {
+        // 双击 = 比例归中（宿主决定归到多少，控件只上报）。
+        //
+        // 【为什么要在 LBUTTONDOWN 之前拦】双击序列是 DOWN→UP→DBLCLK，
+        // 第一次 DOWN 已经走过一次"开始拖动→松开提交"（原地不动，落点不变，
+        // 无害）；这里若再当 DOWN 处理会重新进入拖动状态，用户下一帧移动鼠标
+        // 就变成"双击后又跟着拖"。所以 DBLCLK 只做归中，不碰拖动状态。
+        if (dblClickFn_) dblClickFn_();
+        return 0;
+    }
+
+    case WM_RBUTTONUP: {
+        // 右键 = 就地动作菜单。右击**不改变活动窗格**（与右键文件列表的取舍一致：
+        // 用户只是想看看有什么可做，不是要切栏）。
+        if (!contextFn_) return 0;
+        POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+        ClientToScreen(h, &pt);
+        contextFn_(pt);
+        return 0;
+    }
+
     case WM_LBUTTONDOWN: {
         // 【不抢焦点】分割条不是可聚焦控件：SetFocus 会打断"视图里正在用键盘
         // 选文件"的用户，也会让双栏的活动窗格跳到一个不是视图的窗口上。
@@ -258,9 +285,16 @@ void SplitBar::Paint(HWND h) {
     // 所以不存在"悬浮后离开、宽度残留"的问题（每次 WM_PAINT 都是全量重画）。
     //
     // 【活动侧条（只有双栏那条用）】activeSide_ 指出"命令与导航当前打到哪一栏"，
-    // 在那一侧沿缝画一条 2px 的 accent 纵深条 —— 与 DOpus"双栏必须显示 border
-    // 区分源/目标"同一件事。这是**常驻状态提示**，与悬停/拖动的临时提示并存：
-    // 条贴着缝的边、不占任何布局宽度，切栏只重绘本窗口（SetGeometry 的几何不变）。
+    // 画在**本窗口的外缘**（贴着活动窗格内容的那一侧），不是贴着中线：
+    //
+    //   活动栏内容 ▏accent▏ bg │ 1px line │ bg ▏ 非活动栏内容
+    //                └ 外缘        └ 中线（只有悬停/拖动才变粗变 accent）
+    //
+    // 【为什么不贴着中线】贴着中线时 2px accent + 1px line 合成一条 3px 强调线，
+    // 与"悬停/拖动"的临时指示**一模一样** —— 静止时看起来就像一直按在分割条上
+    // （实测反馈：未拖动却在双栏中间显示拖动指示）。外缘是"这一栏的边框"，
+    // 语义正是 DOpus 说的「双栏必须显示 border 区分源/目标」；而且它离中线足够远，
+    // 不会与拖动手势的反馈混淆。静止时中线保持 1px 的 theme_.line —— 中间必须干净。
     const COLORREF bg = theme_ ? theme_->bg : GetSysColor(COLOR_WINDOW);
     const bool live = dragging_ || hover_;
     const COLORREF lineColor =
@@ -289,18 +323,16 @@ void SplitBar::Paint(HWND h) {
         if (line.right > line.left && line.bottom > line.top)
             ui::FillRectColor(mem, line, lineColor);
 
-        // 活动侧条：贴着中线、属于活动窗格的那一侧。竖分割条（左右并排）时
+        // 活动侧条：贴**外缘**（见上方说明），不贴中线。竖分割条（左右并排）时
         // side=0 在左、side=1 在右；横分割条（上下堆叠）时 side=0 在上、side=1 在下。
         if (activeSide_ == 0 || activeSide_ == 1) {
             RECT side;
             if (vertical) {
-                const int y = (rc.top + rc.bottom) / 2;
-                side = activeSide_ == 0 ? RECT{rc.left, y - sideThick, rc.right, y}
-                                        : RECT{rc.left, y + 1, rc.right, y + 1 + sideThick};
+                side = activeSide_ == 0 ? RECT{rc.left, rc.top, rc.right, rc.top + sideThick}
+                                        : RECT{rc.left, rc.bottom - sideThick, rc.right, rc.bottom};
             } else {
-                const int x = (rc.left + rc.right) / 2;
-                side = activeSide_ == 0 ? RECT{x - sideThick, rc.top, x, rc.bottom}
-                                        : RECT{x + 1, rc.top, x + 1 + sideThick, rc.bottom};
+                side = activeSide_ == 0 ? RECT{rc.left, rc.top, rc.left + sideThick, rc.bottom}
+                                        : RECT{rc.right - sideThick, rc.top, rc.right, rc.bottom};
             }
             side.left = std::max(side.left, rc.left);
             side.top = std::max(side.top, rc.top);

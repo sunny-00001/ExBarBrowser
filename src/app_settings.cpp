@@ -26,6 +26,16 @@ void App::ShowSettingsDialog() {
     settingsDialog_.Show();
 }
 
+void App::ShowHotkeyManager() {
+    // 与设置对话框同一套接线：Create 幂等，主题与路由都由 App 持有，
+    // 所以面板拿到的永远是当前那一份（不会出现"面板里的键位是启动时的快照"）。
+    if (!hotkeyManager_.Create(hwnd_, theme_, input_)) {
+        MessageBeep(MB_ICONERROR);
+        return;
+    }
+    hotkeyManager_.Show();
+}
+
 void App::ApplyBarHeights() {
     const Settings& s = Config::Get().s();
     // Theme 保存的是 96 DPI 逻辑值；真正缩放由 Theme::S 在每次 barXxx() 里做。

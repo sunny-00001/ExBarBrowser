@@ -95,6 +95,10 @@ constexpr int kSeqPageRowsMin = 2, kSeqPageRowsMax = 30;
 constexpr int kPopupTypeAheadMsMin = 200, kPopupTypeAheadMsMax = 3000;
 // 可见行上限：6 行是"还能不滚动地选"的下限，40 行已接近一屏极限。
 constexpr int kPopupMaxRowsMin = 6, kPopupMaxRowsMax = 40;
+// 弹层里"按住拖动"的启动阈值（逻辑像素）。下限 2：低于此手抖就进拖动，
+// 单击选行会变成拖动；上限 20：超过此要拖很远才动，用户以为坏了。
+// 默认 6 与书签栏顶层拖动阈值同口径。
+constexpr int kPopupDragThresholdMin = 2, kPopupDragThresholdMax = 20;
 
 // ---- 搜索历史下拉 ----
 constexpr int kSearchHistoryMenuRowsMin = 5, kSearchHistoryMenuRowsMax = 50;
@@ -105,6 +109,21 @@ constexpr int kHistoryDepthMin = 50, kHistoryDepthMax = 2000;
 
 // ---- 标签拖拽自动滚动 ----
 constexpr int kTabDragScrollMsMin = 10, kTabDragScrollMsMax = 200;
+
+// ---- 书签栏滚轮 ----
+// 滚一格走多远（逻辑像素）。下限 16 约一个字宽（再小滚不动），上限 200 约两行书签
+// （再大一格就飞出视野）。默认 48 ≈ 三个字宽，与标签栏同一档。
+constexpr int kBmkWheelStepDpMin = 16, kBmkWheelStepDpMax = 200;
+
+// ---- 标签栏动效与拖出成窗 ----
+// 让位动画时长。下限 0 = 关闭动画（有人明确不喜欢动效，必须给一条关掉的路）；
+// 上限 400ms —— 再长就"拖完了还在慢慢挪"，反而妨碍连续操作。
+// 默认 140 与 Chromium 的标签让位同量级。
+constexpr int kTabAnimMsMin = 0, kTabAnimMsMax = 400;
+// 拖出成窗的垂直磁吸阈值（逻辑像素）。下限 4：太小会在正常横向拖动时
+// 被手抖误判成"要拖出去"；上限 80：太大则要拖离半屏才成立，用户不知道有这功能。
+// 0 = 关闭拖出成窗（只保留菜单里的「移到新窗口」）。
+constexpr int kTabTearOffDyMin = 0, kTabTearOffDyMax = 80;
 
 // ---- 会话快照去抖 ----
 // 下限 200ms（再短会频繁写盘），上限 10s（再长崩溃丢失过多状态）。

@@ -16,6 +16,7 @@
 //     tests/tab_strip_rules_test.cpp -o /tmp/tab_strip_rules_test.exe \
 //     -lole32 -luuid -lshell32 -lshlwapi -luser32 -lgdi32 -lcomctl32 -ldwmapi -luxtheme
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "tab_strip.h"
@@ -95,6 +96,27 @@ int main() {
             "溢出按钮 -> overflow（DOWN 也必须认得它）");
     CheckEq(TabMouseTarget(false, true, true, true), MT_TAB, "标签正文优先于 +/» ");
     CheckEq(TabMouseTarget(true, true, true, true), MT_TAB_CLOSE, "关闭钮优先于正文");
+
+    // ---- 让位动画的缓动：起点、终点、单调收窄 ----
+    // ease-out = dx·(1-t)³：t=0 停在起点，t=1 精确归零，中途单调靠近 0。
+    CheckEq(TabAnimDx(-140, 0.0), -140, "t=0：停在起点（不提前动）");
+    CheckEq(TabAnimDx(-140, 1.0), 0, "t=1：精确就位（不留 1px 残差）");
+    CheckEq(TabAnimDx(-140, -0.5), -140, "t<0 夹到起点");
+    CheckEq(TabAnimDx(-140, 1.5), 0, "t>1 夹到终点");
+    CheckEq(TabAnimDx(0, 0.5), 0, "无位移：任何时刻都返回 0");
+    // dx=-140、t=0.5 → -140×0.125 = -17.5，向零取整 -17。
+    CheckEq(TabAnimDx(-140, 0.5), -17, "半程只剩约 1/8（三次 ease-out）");
+    // 单调性：同一 dx 下，时间越往后，剩余偏移的绝对值越小。
+    {
+        int prev = TabAnimDx(-200, 0.1);
+        bool monotonic = true;
+        for (int step = 2; step <= 9; ++step) {
+            const int cur = TabAnimDx(-200, step / 10.0);
+            if (std::abs(cur) > std::abs(prev)) monotonic = false;
+            prev = cur;
+        }
+        Check(monotonic, "10%..90% 区间剩余偏移单调收窄");
+    }
 
     std::printf(g_fail ? "\n有 %d 项失败\n" : "\n全部通过\n", g_fail);
     return g_fail ? 1 : 0;

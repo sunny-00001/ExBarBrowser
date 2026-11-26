@@ -119,6 +119,10 @@ public:
     // OLE 拖放支持（bookmark_drop 调用）：
     BookmarkDropSpot DropSpotAt(POINT screen) const;  // 屏幕点 → 插入线 / 目标分类
     void PreviewDrop(const BookmarkDropSpot& spot);   // 外部拖放预览（与内部拖动共用绘制）
+    // OLE DragOver 的每次回调（屏幕点）：落点预览 + 边缘自动滚动起停。
+    // 外部拖文件夹与内部拖书签必须获得同一种"拖到边缘自动滚过去"的能力，
+    // 所以预览与滚动在这里一步做完（bookmark_drop.cpp 只调这一个）。
+    void PreviewDropAt(POINT screen);
     void ClearDropPreview();
     // 把外部拖入的路径写成命令（审计/撤销/AI 同源）。返回成功条数。
     int ApplyDroppedPaths(const std::vector<std::wstring>& paths, const BookmarkDropSpot& spot);
@@ -223,10 +227,14 @@ private:
 
     // 拖拽边缘自动滚动（edge_autoscroll.h 的共享实现，与标签栏同一套）：
     // 拖到栏左/右边缘带内就按拍滚动，让视野外的书签也能成为落点。
+    // 内部重排（DragUpdate）与 OLE 外部拖入（PreviewDropAt）两条链路都走
+    // EdgeAutoScroll —— 起停判定只此一份，差别只在外部拖入的坐标是屏幕点。
     // 定时器 id 与分类悬停定时器区分（2 = 滚动拍）。
     static constexpr UINT kDragScrollTimer = 2;
     int dragScrollStep_ = 0;    // 0=停；>0 向右；<0 向左（edge::Update 维护）
-    int dragMouseX_ = 0;        // 定时器拍没有鼠标坐标，缓存最后一次 MOUSEMOVE 的 x
+    int dragMouseX_ = 0;        // 定时器拍没有鼠标坐标，缓存最后一次鼠标 x
+    int dragMouseY_ = 0;        // 与 x 成对缓存（落点重算 DropSpotAtClient 需要整点）
+    void EdgeAutoScroll(int clientX, int clientY);   // 起停判定 + 最后鼠标 x 缓存（两链路共用）
 
     // ---- 键盘访问 ----
     //

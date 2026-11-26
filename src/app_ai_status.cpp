@@ -60,7 +60,11 @@ void App::ApplyAiStatusCore(const std::wstring& state, const std::wstring& summa
         return;
     }
     if (aiui::IsAiTerminalState(state)) {
-        ShowAiPeek();
+        // 自动弹 peek 是可关的（aiPeekEnabled）：有人让 AI 后台跑长任务，
+        // 不希望每次终态都盖住正在看的文件列表。关掉后 chip 仍显示未读数与
+        // 颜色，通知降级为"看得见但不打断"。
+        if (Config::Get().s().aiPeekEnabled) ShowAiPeek();
+        else HideAiPeek();
     } else {
         HideAiPeek();
     }

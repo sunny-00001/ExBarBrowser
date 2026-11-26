@@ -145,6 +145,14 @@ std::wstring ToTextLine(const Record& r) {
 }
 
 bool Write(const Record& r) {
+    // 总开关放在唯一写入点：所有调用方（命令执行 / AI 拒绝 / 开发面作业）
+    // 都经过这里，加在各调用点就必然漏掉某一处 —— 那种漏是静默的
+    // （"我关了审计，怎么还有记录"）。
+    //
+    // 返回 true 而不是 false：调用方把返回值当"审计写成功了吗"用，
+    // 关闭审计是**用户明确要求的**正常状态，不是失败。
+    if (!Config::Get().s().auditEnabled) return true;
+
     const std::wstring dir = Config::Get().LogsDir();
     if (dir.empty()) return false;
     tf::EnsureDir(dir);

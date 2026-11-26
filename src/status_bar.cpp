@@ -37,13 +37,17 @@ ico::IconId StatusSegmentIcon(int seg) {
 // —— 从 nullptr 构造 std::wstring 直接崩。加 Seg_Ai 时就踩了这个坑，
 // 表现是"状态栏右键菜单一点就崩"。下面的静态断言把这类漏项挡在编译期。
 namespace {
-const wchar_t* const kSegNames[Seg_Count] = {
+// 【不要写死长度】以前写成 const wchar_t* const kSegNames[Seg_Count]，数组已
+// 按 Seg_Count 定长，sizeof/sizeof 恒等于 Seg_Count —— 那条 static_assert 恒真，
+// 挡不住它声称要挡的漏项（少写一个名字 → 聚合初始化补 nullptr → 从 nullptr
+// 构造 std::wstring → 菜单一点就崩）。不写长度，用 std::size 比才有意义。
+const wchar_t* const kSegNames[] = {
     L"文件夹计数", L"文件计数", L"已选/总数", L"修改日期", L"路径",
     L"选中容量",   L"容器/磁盘", L"隐藏文件三态", L"类型",
-    L"AI 状态", L"撤销历史",
+    L"AI 状态", L"撤销历史", L"复制到另一窗格", L"移动到另一窗格",
 };
-static_assert(sizeof(kSegNames) / sizeof(kSegNames[0]) == Seg_Count,
-              "状态栏段名表必须覆盖全部段（漏项 = nullptr → 菜单崩溃）");
+static_assert(std::size(kSegNames) == Seg_Count,
+              "状态栏段名表必须与 Seg_Count 等长（少一项 = nullptr → 菜单崩溃）");
 }  // namespace
 
 const wchar_t* StatusSegmentName(int seg) {

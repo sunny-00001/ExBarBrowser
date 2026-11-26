@@ -1,6 +1,12 @@
 // 外部拖入路径的落点预览与命令提交。
 // 职责边界：本文件只把 BookmarkDropSpot 翻译成 bmk.add.path 参数；
 // 真正改树仍在命令 handler -> BookmarkStore，拖放侧不直接写 store。
+//
+// 【边缘自动滚动】外部拖文件夹与内部拖书签必须有同一种"拖到栏边缘自动滚过去"
+// 的能力（Chrome/Firefox 对书签栏上的外部拖放同样是这么做的）。OLE 链路的
+// DragOver 走 PreviewDropAt：落点预览与 edge 自动滚动的起停一步做完；
+// 滚动拍（WM_TIMER）经 ScrollBy —— 落点预览的重算以 dropPreview_ 为守卫
+// （外部拖放也写这个标志），所以滚出来的新落点会立刻反映到插入线/分类描边。
 #include "bookmark_bar.h"
 
 #include "commands.h"
@@ -17,6 +23,15 @@ std::wstring DroppedName(const std::wstring& path) {
 
 }  // namespace
 
+void BookmarkBar::PreviewDropAt(POINT screen) {
+    // 落点预览（与内部拖动同一份 DropSpotAtClient 口径）+ 边缘滚动起停。
+    // 坐标是屏幕点（OLE DragOver 的 pt 即屏幕坐标，见 bookmark_drop.cpp 的说明）。
+    PreviewDrop(DropSpotAt(screen));
+    POINT cl = screen;
+    if (hwnd_) ScreenToClient(hwnd_, &cl);
+    EdgeAutoScroll(cl.x, cl.y);
+}
+
 void BookmarkBar::PreviewDrop(const BookmarkDropSpot& spot) {
     const int index = spot.valid ? spot.index : -1;
     const int into = spot.valid ? spot.folderIndex : -1;
@@ -32,6 +47,9 @@ void BookmarkBar::ClearDropPreview() {
     dropPreview_ = false;
     dropIdx_ = -1;
     dropInto_ = -1;
+    // 预览消失 = 拖放对栏结束（Drop 提交 / DragLeave 拖出 / 拖进分类弹层接管），
+    // 自动滚动随之停 —— 两条链路的停表都收口在这里，不留"还在滚的表"。
+    edge::Stop(&dragScrollStep_, hwnd_, kDragScrollTimer);
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 

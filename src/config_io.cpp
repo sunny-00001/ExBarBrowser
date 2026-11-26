@@ -80,6 +80,9 @@ void Config::Load() {
     s_.bookmarkBarTooltipWidth =
         configio::ClampInt(root.GetInt(L"bookmarkBarTooltipWidth", s_.bookmarkBarTooltipWidth),
                            kBookmarkBarTooltipWidthMin, kBookmarkBarTooltipWidthMax);
+    s_.bookmarkWheelStepDp =
+        configio::ClampInt(root.GetInt(L"bookmarkWheelStepDp", s_.bookmarkWheelStepDp),
+                           kBmkWheelStepDpMin, kBmkWheelStepDpMax);
     s_.statusBarTooltipWidth =
         configio::ClampInt(root.GetInt(L"statusBarTooltipWidth", s_.statusBarTooltipWidth),
                            kStatusBarTooltipWidthMin, kStatusBarTooltipWidthMax);
@@ -113,6 +116,9 @@ void Config::Load() {
                                              kPopupTypeAheadMsMin, kPopupTypeAheadMsMax);
     s_.popupMaxRows = configio::ClampInt(root.GetInt(L"popupMaxRows", s_.popupMaxRows),
                                          kPopupMaxRowsMin, kPopupMaxRowsMax);
+    s_.popupDragThreshold =
+        configio::ClampInt(root.GetInt(L"popupDragThreshold", s_.popupDragThreshold),
+                           kPopupDragThresholdMin, kPopupDragThresholdMax);
 
     s_.tabNewPos = root.GetStr(L"tabNewPos", s_.tabNewPos);
     // 旧值 "right" 归一成 "end"（界面一直写着"最右"，一个取值两种行为）。
@@ -125,6 +131,11 @@ void Config::Load() {
     if (!TabWidthsConsistent(s_.tabMinWidth, s_.tabMaxWidth)) s_.tabMaxWidth = s_.tabMinWidth;
     s_.tabDragScrollMs = configio::ClampInt(root.GetInt(L"tabDragScrollMs", s_.tabDragScrollMs),
                                             kTabDragScrollMsMin, kTabDragScrollMsMax);
+    s_.tabAnimMs = configio::ClampInt(root.GetInt(L"tabAnimMs", s_.tabAnimMs), kTabAnimMsMin,
+                                      kTabAnimMsMax);
+    s_.tabDragGhost = root.GetBool(L"tabDragGhost", s_.tabDragGhost);
+    s_.tabTearOffDy = configio::ClampInt(root.GetInt(L"tabTearOffDy", s_.tabTearOffDy),
+                                         kTabTearOffDyMin, kTabTearOffDyMax);
 
     // 深浅色：先归一成规范形（小写）再判合法 —— 手抄 "Dark" 应该生效。
     s_.themeMode = str::Lower(root.GetStr(L"themeMode", s_.themeMode));
@@ -168,8 +179,10 @@ void Config::Load() {
                                         kAiTimeoutMsMin, kAiTimeoutMsMax);
     s_.aiPumpIntervalMs = configio::ClampInt(root.GetInt(L"aiPumpIntervalMs", s_.aiPumpIntervalMs),
                                              kAiPumpIntervalMsMin, kAiPumpIntervalMsMax);
+    s_.aiPeekEnabled = root.GetBool(L"aiPeekEnabled", s_.aiPeekEnabled);
 
     // 会话快照去抖 + 审计/作业策略。
+    s_.auditEnabled = root.GetBool(L"auditEnabled", s_.auditEnabled);
     s_.sessionSaveDelayMs =
         configio::ClampInt(root.GetInt(L"sessionSaveDelayMs", s_.sessionSaveDelayMs),
                            kSessionSaveDelayMsMin, kSessionSaveDelayMsMax);
@@ -207,6 +220,7 @@ bool Config::Save() {
     root.Set(L"navBarSearchWidth", json::Value::MakeInt(s_.navBarSearchWidth));
     root.Set(L"navBarAddressMinWidth", json::Value::MakeInt(s_.navBarAddressMinWidth));
     root.Set(L"bookmarkBarTooltipWidth", json::Value::MakeInt(s_.bookmarkBarTooltipWidth));
+    root.Set(L"bookmarkWheelStepDp", json::Value::MakeInt(s_.bookmarkWheelStepDp));
     root.Set(L"statusBarTooltipWidth", json::Value::MakeInt(s_.statusBarTooltipWidth));
     root.Set(L"navPaneItemHeight", json::Value::MakeInt(s_.navPaneItemHeight));
     root.Set(L"navPaneIndent", json::Value::MakeInt(s_.navPaneIndent));
@@ -224,11 +238,15 @@ bool Config::Save() {
     root.Set(L"seqPageRows", json::Value::MakeInt(s_.seqPageRows));
     root.Set(L"popupTypeAheadMs", json::Value::MakeInt(s_.popupTypeAheadMs));
     root.Set(L"popupMaxRows", json::Value::MakeInt(s_.popupMaxRows));
+    root.Set(L"popupDragThreshold", json::Value::MakeInt(s_.popupDragThreshold));
     root.Set(L"tabNewPos", json::Value::MakeStr(s_.tabNewPos));
     root.Set(L"confirmCloseTabs", json::Value::MakeBool(s_.confirmCloseTabs));
     root.Set(L"tabMinWidth", json::Value::MakeInt(s_.tabMinWidth));
     root.Set(L"tabMaxWidth", json::Value::MakeInt(s_.tabMaxWidth));
     root.Set(L"tabDragScrollMs", json::Value::MakeInt(s_.tabDragScrollMs));
+    root.Set(L"tabAnimMs", json::Value::MakeInt(s_.tabAnimMs));
+    root.Set(L"tabDragGhost", json::Value::MakeBool(s_.tabDragGhost));
+    root.Set(L"tabTearOffDy", json::Value::MakeInt(s_.tabTearOffDy));
     root.Set(L"themeMode", json::Value::MakeStr(s_.themeMode));
     root.Set(L"recentLimit", json::Value::MakeInt(s_.recentLimit));
     root.Set(L"searchLimit", json::Value::MakeInt(s_.searchLimit));
@@ -251,7 +269,9 @@ bool Config::Save() {
     root.Set(L"aiAllowDanger", json::Value::MakeBool(s_.aiAllowDanger));
     root.Set(L"aiTimeoutMs", json::Value::MakeInt(s_.aiTimeoutMs));
     root.Set(L"aiPumpIntervalMs", json::Value::MakeInt(s_.aiPumpIntervalMs));
+    root.Set(L"aiPeekEnabled", json::Value::MakeBool(s_.aiPeekEnabled));
     root.Set(L"sessionSaveDelayMs", json::Value::MakeInt(s_.sessionSaveDelayMs));
+    root.Set(L"auditEnabled", json::Value::MakeBool(s_.auditEnabled));
     root.Set(L"auditRotateKB", json::Value::MakeInt(s_.auditRotateKB));
     root.Set(L"auditArgsTextLimit", json::Value::MakeInt(s_.auditArgsTextLimit));
     root.Set(L"jobMachineTimeoutMs", json::Value::MakeInt(s_.jobMachineTimeoutMs));

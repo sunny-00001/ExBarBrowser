@@ -114,9 +114,9 @@ void TabStrip::ShowTabMenu(int index, POINT screen) {
 
     // 颜色是"选了一个值"而不是"选了一个动作"：再弹一层，选中值走独立消息。
     if (action == kTabMenuColor) {
-        POINT at = screen;
-        GetCursorPos(&at);
-        ShowTabColorMenu(index, at);
+        // 锚点跟被右键的标签（与主菜单同一坐标），不跟光标：主菜单弹出后
+        // 光标可能已被移走，二级菜单飘到别处会让人找不到"这是给哪个标签上色"。
+        ShowTabColorMenu(index, screen);
         return;
     }
 

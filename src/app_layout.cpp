@@ -346,6 +346,9 @@ void App::ApplyTheme(int dpiOverride) {
     // 设置对话框是独立窗口，不会跟着主窗口 InvalidateRect 一起刷新 ——
     // 不显式通知它，深色切换后它会保持旧配色直到用户碰它一下。
     settingsDialog_.ReloadTheme();
+    // 快捷键管理器同样是独立顶层窗口，理由与上面那条一样：
+    // 它不会跟着主窗口 InvalidateRect 一起刷新，不显式通知就停在旧配色。
+    hotkeyManager_.ReloadTheme();
     navPane_.ApplyTheme(theme_);
     panesBar_.ReloadTheme();
     navEdge_.ReloadTheme();

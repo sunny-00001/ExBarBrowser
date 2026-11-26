@@ -270,7 +270,8 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         dropInto_ = -1;
         dropPreview_ = false;
         dragging_ = false;
-        dragMouseX_ = x;   // 滚动重算落点/hover 都用这份缓存坐标
+        dragMouseX_ = x;      // 滚动重算落点/hover 都用这份缓存坐标
+        dragMouseY_ = y;
         if (dragArm_) SetCapture(h);
         return 0;
     }
@@ -289,9 +290,10 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
             DragUpdate(h, GET_X_LPARAM(l), GET_Y_LPARAM(l));
             return 0;
         }
-        // 悬停/空闲态也缓存光标 x：ScrollBy 重算 hover 时用它（滚动发生时
-        // 鼠标不动、没有后续 mousemove，没有缓存就只能取 GetCursorPos 猜）。
+        // 悬停/空闲态也缓存光标坐标：ScrollBy 重算落点/hover 时用（滚动发生时
+        // 鼠标不动、没有后续 mousemove，没有缓存就只能凭空猜）。
         dragMouseX_ = GET_X_LPARAM(l);
+        dragMouseY_ = GET_Y_LPARAM(l);
         UpdateHover(h, GET_X_LPARAM(l), GET_Y_LPARAM(l));
         return 0;
     }
@@ -320,9 +322,10 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         if (w == kDragScrollTimer) {
             // 拖拽边缘自动滚动的拍（edge::Update 挂的表）。三条全真才滚：
-            // 没在拖/没步进/没溢出都不动 —— 与标签栏同一守卫（edge::TickGuard）。
-            // 滚动经 ScrollBy（里面统一重算落点），这里不再单独改 dropIdx_。
-            if (edge::TickGuard(dragging_, dragScrollStep_, overflow_))
+            // 没有"拖拽/拖放进行中"的标志、没步进、没溢出都不动。
+            // 进行中 = 内部重排 dragging_ 或 OLE 外部拖入 dropPreview_ ——
+            // 两条链路共用同一张表，守卫也必须同时认它们。
+            if ((dragging_ || dropPreview_) && dragScrollStep_ != 0 && overflow_)
                 ScrollBy(dragScrollStep_);
             return 0;
         }

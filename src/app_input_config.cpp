@@ -25,6 +25,9 @@ public:
     void SetHotkeyOverride(const std::wstring& setting, const std::wstring& key) override {
         Config::Get().SetHotkeyOverride(setting, key);
     }
+    void ClearHotkeyOverride(const std::wstring& setting) override {
+        Config::Get().ClearHotkeyOverride(setting);
+    }
     void ClearAllHotkeyOverrides() override {
         Config::Get().mutableSettings().hotkeyOverrides.clear();
     }

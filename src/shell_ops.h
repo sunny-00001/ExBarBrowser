@@ -24,18 +24,20 @@ bool CopySelection(IShellView* view, bool cut);
 // 想要真正复制到某处，用 FsCopyTo（一步到位）。
 bool CopyPaths(const std::vector<std::wstring>& paths, bool cut);
 bool Paste(IShellView* view, HWND owner);
-bool DeleteSelection(IShellView* view, HWND owner);
+bool DeleteSelection(IShellView* view, HWND owner, std::wstring* why = nullptr);
 // Shift+Delete：与 DeleteSelection 走同一份 IFileOperation，但不带 FOF_ALLOWUNDO，
 // 即绕过回收站永久删除。仍保留 FOF_WANTNUKEWARNING 让 shell 弹最终警告。
-bool DeleteSelectionPermanently(IShellView* view, HWND owner);
+bool DeleteSelectionPermanently(IShellView* view, HWND owner, std::wstring* why = nullptr);
 bool InvokeSelectionVerb(IShellView* view, HWND owner, const char* verb);  // rename/properties/open
 bool InvokeFolderVerb(IShellView* view, HWND owner, const char* verb);     // paste
-bool NewFolder(IShellView* view, HWND owner);
-bool NewTextFile(IShellView* view, HWND owner, std::wstring* created);
+bool NewFolder(IShellView* view, HWND owner, std::wstring* why = nullptr);
+bool NewTextFile(IShellView* view, HWND owner, std::wstring* created,
+                 std::wstring* why = nullptr);
 // 选中项恰好只有一个文件夹时返回其路径（用于"打开"文件夹 = 当前标签内进入）
 bool FirstFolderSelection(IShellView* view, std::wstring* path);
 // 把当前选中项复制/移动到 target 文件夹（IFileOperation，撤销与冲突交给系统）。
-bool TransferToFolder(IShellView* view, HWND owner, const std::wstring& target, bool move);
+bool TransferToFolder(IShellView* view, HWND owner, const std::wstring& target, bool move,
+                      std::wstring* why = nullptr);
 bool SelectAll(IShellView* view);
 bool SelectIndex(IShellView* view, int index);
 

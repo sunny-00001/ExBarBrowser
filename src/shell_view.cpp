@@ -342,6 +342,12 @@ bool ShellView::DoNavigate(const std::wstring& path) {
         return true;
     }
     if (FAILED(hr)) return false;  // 同步失败由 App::NavigateActive 统一弹框+回滚，避免双触发
+    // 本次导航已同步成功：队列里的重放意图**必须作废**。
+    // 否则定时器触发时 ReplayQueued 会把视图导航回排队期间用户点的另一个路径
+    // （现象："点 B 打开了，过一会儿自己跳回 A"）。
+    queued_.clear();
+    replayTries_ = 0;
+    if (container_) KillTimer(container_, kNavReplayTimer);
     return true;
 }
 

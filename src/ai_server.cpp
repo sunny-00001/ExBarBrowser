@@ -48,9 +48,13 @@ aiqueue::Queue g_queue;
 
 // UI 线程处理一个请求的超时（毫秒）。超时后客户端收到 error=timeout，但 UI 线程
 // 仍会把那个请求处理完 —— 命令已经在跑了。取值来自配置项 aiTimeoutMs（可热改）。
-int UiTimeoutMs() {
+// 见 ai_server.h 的导出声明：它是传输层超时的唯一真源，tools/list 也要报这个值。
+int UiTimeoutMsImpl() {
     const int v = Config::Get().s().aiTimeoutMs;
-    return v > 0 ? v : Settings{}.aiTimeoutMs;
+    // 夹取：配置层虽有上限（config_io），但任何直接写 mutableSettings() 的路径
+    //（测试、将来的导入）都可能塞进极端值。1s~10min 是"有意义"的区间。
+    const int ms = v > 0 ? v : Settings{}.aiTimeoutMs;
+    return std::clamp(ms, 1000, 600000);
 }
 
 // UTF-8 转换唯一实现在 str.cpp
@@ -165,7 +169,7 @@ void WriteDiscoveryFiles(const std::wstring& token, const std::wstring& pipe) {
 // 详见 ai_queue.h。
 std::wstring RunOnUiThread(const std::wstring& request) {
     std::wstring out;
-    if (!g_queue.Submit(request, UiTimeoutMs(), &out)) return std::wstring();
+    if (!g_queue.Submit(request, UiTimeoutMsImpl(), &out)) return std::wstring();
     return out;
 }
 
@@ -212,7 +216,11 @@ std::string TimeoutResponse(const std::string& line) {
         v.Set(L"error", e);
         return WideToLine(json::Stringify(v, 0)) + "\n";
     }
-    return "{\"ok\":false,\"error\":\"timeout\"}\n";
+    // 旧格式（简化本地格式）的超时响应：补上 errorCode 字段。
+    // 项目口径是 errorCode 才是给机器分支的稳定标识（AI-INTERFACE.md §3）；
+    // JSON-RPC 分支有 errorCode，旧格式没有 —— 同一个"超时"事实在两条协议路径
+    // 上机器可读性不一致，旧脚本只能匹配字符串。加字段向后兼容。
+    return "{\"ok\":false,\"error\":\"timeout\",\"errorCode\":\"timeout\"}\n";
 }
 
 uint64_t SeqOfLine(const std::wstring& line) {
@@ -337,6 +345,8 @@ void ServeLoop() {
 }
 }  // namespace
 
+int UiTimeoutMs() { return UiTimeoutMsImpl(); }
+
 std::wstring TokenPath() { return tf::Join(Config::Get().RuntimeDir(), L"ai-token.txt"); }
 
 std::wstring CurrentPipeName() { return g_pipe_name; }
@@ -346,6 +356,11 @@ std::wstring CurrentToken() { return g_token; }
 bool StartServer(void (*postToUi)(const std::wstring& requestLine)) {
     (void)postToUi;   // 队列 + 条件变量足够，不需要 PostMessage
     if (g_running) return true;
+    // 【必须先复位】上一轮 StopServer 调过 Interrupt()，把队列置成了停机态。
+    // 不复位的话：Submit 的等待谓词 `job->done || interrupted_` 恒真，
+    // 每个请求立即返回"超时"，而管道/令牌/事件全都正常 —— 极难归因。
+    // 复位要早于起线程（线程一起来就可能 Submit）。
+    g_queue.Reset();
     g_token = MakeToken();
     g_pipe_name = PipeName();
     // 恢复上一进程留下的最近事件与序号（B8）：磁盘历史不能被新进程当成
@@ -366,6 +381,12 @@ bool HasSubscribers() { return g_subscribers.load() > 0; }
 void StopServer() {
     if (!g_running) return;
     g_running = false;
+    // 【顺序很关键】必须在 join 之前打断队列。
+    // 监听线程此刻可能正阻塞在 Submit 的 cv_.wait_for 上等 UI 线程处理请求，
+    // 而 StopServer 就**跑在 UI 线程**上 —— join 期间没人会 Pump，
+    // 那个 job 永远拿不到 done。等待上限是 aiTimeoutMs（可配到 10 分钟），
+    // 于是"关窗口"会看起来卡死。先 Interrupt 唤醒它，join 才能立刻返回。
+    g_queue.Interrupt();
     // 打断阻塞中的 ConnectNamedPipe / ReadFile
     if (g_pipe != INVALID_HANDLE_VALUE) {
         CancelIoEx(g_pipe, nullptr);
@@ -384,9 +405,6 @@ void StopServer() {
     }
     g_pipe = INVALID_HANDLE_VALUE;
     g_subscribers = 0;
-    // 排队里还没被 UI 线程取走的请求：没人会再处理它们了，直接清掉；
-    // 正在等结果的监听线程也一并唤醒（不必干等到超时）。
-    g_queue.Interrupt();
 
     // 发现文件清理：
     //   · 每实例副本 ai-token.<pid>.txt / ai-pipe.<pid>.txt 无条件删；

@@ -8,7 +8,7 @@ namespace {
 
 // 把一个完整路径的项移动/复制到目标目录（按路径，不依赖当前选中）。
 bool TransferPath(HWND owner, const std::wstring& srcPathIn, const std::wstring& dstDirIn,
-                   bool move) {
+                   bool move, std::wstring* why) {
     // 路径归一化：撤销栈里的路径来自"当初那次操作"的记录，
     // 那里存的是归一化后的形式；这里再归一化一次是防御性的，
     // 保证"任何路径进 shell 都先过 ToShellPath"这条规则没有例外。
@@ -25,22 +25,20 @@ bool TransferPath(HWND owner, const std::wstring& srcPathIn, const std::wstring&
                                            reinterpret_cast<void**>(&dest))) ||
         !dest)
         return false;
-    ComPtr<IFileOperation> op;
-    if (FAILED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_IFileOperation,
-                                reinterpret_cast<void**>(&op))) ||
-        !op)
+    shellopexec::Op op;
+    if (!op.Begin(owner, FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION, why))
         return false;
-    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION);
-    op->SetOwnerWindow(owner);
-    const HRESULT hr = move ? op->MoveItem(item.get(), dest.get(), nullptr, nullptr)
-                            : op->CopyItem(item.get(), dest.get(), nullptr, nullptr);
-    if (FAILED(hr)) return false;
-    return shellopexec::Run(op.get());
+    if (move)
+        op.QueueMove(item.get(), dest.get());
+    else
+        op.QueueCopy(item.get(), dest.get());
+    return op.Commit(why);
 }
 
 }  // namespace
 
-bool RenamePath(HWND owner, const std::wstring& fullPathIn, const std::wstring& newName) {
+bool RenamePath(HWND owner, const std::wstring& fullPathIn, const std::wstring& newName,
+                std::wstring* why) {
     const std::wstring fullPath = pathutil::ToShellPath(fullPathIn);
     if (fullPath.empty() || newName.empty()) return false;
     // 名字里不能带路径分隔符 —— 那是"移动"，不是"重命名"。
@@ -53,27 +51,26 @@ bool RenamePath(HWND owner, const std::wstring& fullPathIn, const std::wstring& 
         !item)
         return false;
 
-    ComPtr<IFileOperation> op;
-    if (FAILED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_IFileOperation,
-                                reinterpret_cast<void**>(&op))) ||
-        !op)
+    shellopexec::Op op;
+    if (!op.Begin(owner, FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION |
+                             FOF_NOCONFIRMATION | FOF_NOERRORUI,
+                  why))
         return false;
-    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION |
-                          FOF_NOCONFIRMATION | FOF_NOERRORUI);
-    op->SetOwnerWindow(owner);
-    if (FAILED(op->RenameItem(item.get(), newName.c_str(), nullptr))) return false;
-    return shellopexec::Run(op.get());
+    if (!op.QueueRename(item.get(), newName.c_str(), newName)) return false;
+    return op.Commit(why);
 }
 
-bool MovePathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir) {
-    return TransferPath(owner, srcPath, dstDir, /*move=*/true);
+bool MovePathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir,
+                std::wstring* why) {
+    return TransferPath(owner, srcPath, dstDir, /*move=*/true, why);
 }
 
-bool CopyPathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir) {
-    return TransferPath(owner, srcPath, dstDir, /*move=*/false);
+bool CopyPathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir,
+                std::wstring* why) {
+    return TransferPath(owner, srcPath, dstDir, /*move=*/false, why);
 }
 
-bool DeletePath(HWND owner, const std::wstring& fullPathIn) {
+bool DeletePath(HWND owner, const std::wstring& fullPathIn, std::wstring* why) {
     const std::wstring fullPath = pathutil::ToShellPath(fullPathIn);
     if (fullPath.empty()) return false;
     ComPtr<IShellItem> item;
@@ -81,17 +78,13 @@ bool DeletePath(HWND owner, const std::wstring& fullPathIn) {
                                            reinterpret_cast<void**>(&item))) ||
         !item)
         return false;
-    ComPtr<IFileOperation> op;
-    if (FAILED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_IFileOperation,
-                                reinterpret_cast<void**>(&op))) ||
-        !op)
-        return false;
     // FOF_WANTNUKEWARNING：超配额/网络盘时 shell 必须弹警告，不能静默永久删除。
     // 撤销"复制"就是删副本 —— 副本回回收站，随时能还原。
-    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_WANTNUKEWARNING);
-    op->SetOwnerWindow(owner);
-    if (FAILED(op->DeleteItem(item.get(), nullptr))) return false;
-    return shellopexec::Run(op.get());
+    shellopexec::Op op;
+    if (!op.Begin(owner, FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_WANTNUKEWARNING, why))
+        return false;
+    if (!op.QueueDelete(item.get(), fullPath)) return false;
+    return op.Commit(why);
 }
 
 }  // namespace shellops

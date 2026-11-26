@@ -139,8 +139,9 @@ private:
     void UpdatePreview(POINTL pt) {
         if (!owner_) return;
         // 同 Drop：这里的 pt 已经是屏幕坐标，不能再 ClientToScreen。
-        POINT p{static_cast<LONG>(pt.x), static_cast<LONG>(pt.y)};
-        owner_->PreviewDrop(owner_->DropSpotAt(p));
+        // PreviewDropAt = 落点预览 + 边缘自动滚动起停（外部拖文件夹拖到栏边缘
+        // 也要像内部拖书签一样自动滚过去 —— 与 Chrome/Firefox 书签栏同款行为）。
+        owner_->PreviewDropAt(POINT{static_cast<LONG>(pt.x), static_cast<LONG>(pt.y)});
     }
 
     ULONG ref_ = 1;

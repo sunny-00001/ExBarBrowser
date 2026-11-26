@@ -52,92 +52,6 @@ std::wstring InputRouter::ShortcutText(CmdId id, const std::wstring& arg) const 
     return keybinding::TextForCmd(id, arg, keymap_, chords_, cfg_->SeqEnabled());
 }
 
-void InputRouter::BuildRows() {
-    rows_.clear();
-    std::map<std::wstring, int> counts;
-
-    for (const auto& hk : keymap_.hotkeys) {
-        BindingRow row;
-        row.setting = hk.setting;
-        row.command = hk.command;
-        std::wstring cmdName, cmdArg;
-        SplitCommandSpec(hk.command, &cmdName, &cmdArg);
-        const CommandDef* def = FindCommand(cmdName);
-        row.title = def ? def->title : cmdName;
-        if (def && !cmdArg.empty()) row.title += L" (" + cmdArg + L")";
-        row.group = def ? def->group : L"?";
-        row.scope = def ? def->scopeUi : L"全局";
-        row.implemented = def && def->implemented;
-        // 生效键文本同样走唯一解析（覆盖 → 表内 → 系统原生键；"-" = 显式解绑）。
-        // 这里以前是就地复制的一份同规则代码 —— 两份的结局是"管理器说绑了 X、
-        // 实际生效的是 Y"。
-        const std::wstring key = keybinding::ResolveKey(
-            hk.setting, hk.key, cfg_->HotkeyOverrides());
-        row.key = key == kHotkeyDisabled ? std::wstring(L"（未绑定）") : key;
-        KeyChord c;
-        // 哨兵 "-" 会被 chord::Parse 当成 VK_OEM_MINUS 解析成功，于是所有"未绑定"
-        // 行撞在同一个 counts["-"] 上 → 管理器把 2 条以上未绑定标成"冲突"。
-        if (!key.empty() && key != kHotkeyDisabled && chord::Parse(key, &c)) {
-            row.reserved = chord::IsReserved(c);
-            ++counts[chord::Format(c)];
-        }
-        rows_.push_back(std::move(row));
-    }
-
-    for (const auto& sq : keymap_.sequences) {
-        BindingRow row;
-        row.setting = L"sequence:" + sq.seq;
-        row.command = sq.command;
-        const CommandDef* def = FindCommand(sq.command);
-        row.title = def ? def->title : sq.command;
-        row.group = def ? def->group : L"?";
-        row.scope = def ? def->scopeUi : L"全局";
-        row.implemented = def && def->implemented;
-        row.key = sq.seq;
-        row.isSequence = true;
-        rows_.push_back(std::move(row));
-    }
-
-    for (auto& r : rows_) {
-        if (r.isSequence || r.key.empty()) continue;
-        KeyChord c;
-        if (chord::Parse(r.key, &c) && counts[chord::Format(c)] > 1) r.conflict = true;
-    }
-
-    // ---- 冲突写日志（不是只标在管理器界面上）----
-    //
-    // 【为什么要有这一段】BuildBindings 的 add() 是"先到先得"：同一个 chord
-    // 第二次出现就被**静默丢弃**（上面那个 `if (b.chord == c) return;`）。
-    // 于是冲突的真实后果是"后一条命令永远按不出来"，
-    // 而用户能看到的只有快捷键管理器里那一列"冲突"字样 ——
-    // 不打开那个窗口，就完全不知道自己的键位为什么没反应。
-    //
-    // 日志是**只读证据**（AGENTS.md §7 的验证口径）：出问题时看一眼日志就知道
-    // 是不是键位撞了，而不是去猜"是不是命令没实现"。
-    //
-    // 【为什么放在 BuildRows 之后】这里已经把三件事都算准了：
-    // 用户覆盖（Config 的 override）、系统默认键兜底（SystemKeyFor）、
-    // 以及未绑定哨兵（kHotkeyDisabled）的排除 —— 与判定"冲突"用的是同一份数据，
-    // 不会出现"界面说冲突、日志说没冲突"的两套口径。
-    //
-    // 【为什么只报一次】Reload 会在配置变化时反复调用，逐次刷屏没意义；
-    // 只在第一次见到某个组合时记一条。
-    for (auto it = counts.begin(); it != counts.end(); ++it) {
-        if (it->second < 2) continue;
-        std::wstring who;
-        for (const auto& r : rows_) {
-            if (r.isSequence || r.key.empty()) continue;
-            KeyChord c;
-            if (!chord::Parse(r.key, &c)) continue;
-            if (chord::Format(c) != it->first) continue;
-            if (!who.empty()) who += L" / ";
-            who += r.setting + L"→" + r.command;
-        }
-        LogDbg(L"[keymap] 快捷键冲突：%ls 被绑了 %d 次（先到先得，后一条永远按不出来）：%ls",
-               it->first.c_str(), it->second, who.c_str());
-    }
-}
-
 int InputRouter::CurrentMods() const {
     // 转调输入端唯一实现（mouse_rules.h）。此前这里逐行复制了同一段
     // GetKeyState 三连 + AltGr 特判，校验器当时以"需按焦点抑制"为由放行 ——
@@ -502,4 +416,15 @@ void InputRouter::ResetDefaults() {
     cfg_->ClearAllHotkeyOverrides();
     cfg_->Save();
     Reload();
+}
+
+bool InputRouter::ResetKeyForCommand(const std::wstring& command) {
+    for (const auto& r : rows_) {
+        if (r.isSequence || !str::IEquals(r.command, command)) continue;
+        cfg_->ClearHotkeyOverride(r.setting);
+        cfg_->Save();
+        Reload();
+        return true;
+    }
+    return false;
 }

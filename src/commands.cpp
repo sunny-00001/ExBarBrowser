@@ -132,6 +132,18 @@ void CommandBus::RegisterByName(const wchar_t* name, Handler fn) {
 }
 
 void CommandBus::RegisterWithResult(CmdId id, ResultHandler fn) {
+    // 与 Register 互斥检查：同一命令在两个通道都注册时，Dispatch 会让带结果的
+    // 胜出。Register 会检查"反向"并警告，这里检查**正向**（先 Register 后
+    // RegisterWithResult 时，先注册的普通 handler 被静默遮蔽）——
+    // 两个方向都要提醒，否则会出现"我注册了 handler 却没跑"且日志全空的排查灾难。
+    for (const auto& kv : handlers_) {
+        if (kv.first == id) {
+            const CommandDef* d = FindCommand(id);
+            LogDbg(L"[cmd] 冲突：%s 已用 Register 注册，"
+                   L"它的 handler 会被 RegisterWithResult 遮蔽", d ? d->name : L"?");
+            break;
+        }
+    }
     for (auto& kv : resultHandlers_) {
         if (kv.first == id) {
             kv.second = std::move(fn);

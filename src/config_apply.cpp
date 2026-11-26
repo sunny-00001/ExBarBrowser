@@ -63,10 +63,13 @@ bool IsPureData(const std::wstring& key) {
     //   popupTypeAheadMs / popupMaxRows → 下一次打开任意弹层
     //   searchHistoryMenuRows → 下一次打开搜索历史下拉
     //   tabDragScrollMs → 下一次拖拽标签到边缘
+    //   tabAnimMs / tabDragGhost / tabTearOffDy → 下一次拖拽标签（当帧读配置）
     //   sessionSaveDelayMs → 下一次标签/路径变更
     //   aiPumpIntervalMs → 下一次启用 AI 通道（重建泵定时器）
     //   auditRotateKB / auditArgsTextLimit → 下一次写审计
     //   jobMachineTimeoutMs → 下一次启动机器作业
+    //   aiPeekEnabled → 下一次 AI 到终态（每次判断现读）
+    //   auditEnabled → 下一次写审计（Write 内部现读，无需重建）
     return key == L"seqTimeoutMs" || key == L"holdDelayMs" || key == L"seqEnabled" ||
            key == L"seqShowHints" || key == L"seqSingleInstant" || key == L"seqUniqueAuto" ||
            key == L"tabNewPos" || key == L"confirmCloseTabs" || key == L"aiAllowDanger" ||
@@ -76,9 +79,14 @@ bool IsPureData(const std::wstring& key) {
            key == L"seqWheelRows" || key == L"seqPageRows" ||
            key == L"popupTypeAheadMs" || key == L"popupMaxRows" ||
            key == L"searchHistoryMenuRows" || key == L"tabDragScrollMs" ||
+           key == L"tabAnimMs" || key == L"tabDragGhost" || key == L"tabTearOffDy" ||
            key == L"sessionSaveDelayMs" || key == L"aiPumpIntervalMs" ||
            key == L"auditRotateKB" || key == L"auditArgsTextLimit" ||
-           key == L"jobMachineTimeoutMs";
+           key == L"jobMachineTimeoutMs" ||
+           // 2026-11-26 补的功能开关：都在读取点现读配置，下一次触发即生效。
+           key == L"aiPeekEnabled" || key == L"auditEnabled" ||
+           // 手感常量升级为设置：都在使用点现读，改完下一次滚动/拖动即生效。
+           key == L"popupDragThreshold" || key == L"bookmarkWheelStepDp";
 }
 
 }  // namespace cfgapply

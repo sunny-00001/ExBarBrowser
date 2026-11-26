@@ -9,11 +9,21 @@
 namespace keybinding {
 namespace {
 
+// spec → 规范名。菜单写 `view.mode:3`、键位表写 `ViewMode:3`，两边只在规范名上相遇。
+std::wstring CanonName(const std::wstring& name) {
+    return cmdnaming::CanonicalName(name);
+}
+
+}  // namespace
+
 // 序列键的显示口径："t b" → "T B"。
 //
 // 【为什么不原样显示小写】小写是配置文件里的书写形式，不是用户看到的东西 ——
 // 菜单右列与组合键（"Ctrl+Shift+T"）并排，全大写才读得出"这是一串按键"。
 // 多字符 token（将来若有 "esc"）保持原样，只把单字符字母大写。
+//
+// 【为什么是公开的】快捷键管理器要把同一串序列画进键位芯片；两处各写一份
+// 大小写规则，深色下一处显示 "g g"、另一处显示 "G G"，用户会以为是两个键。
 std::wstring SequenceText(const std::wstring& seq) {
     std::wstring out;
     for (const std::wstring& t : SplitSequence(seq)) {
@@ -25,13 +35,6 @@ std::wstring SequenceText(const std::wstring& seq) {
     }
     return out;
 }
-
-// spec → 规范名。菜单写 `view.mode:3`、键位表写 `ViewMode:3`，两边只在规范名上相遇。
-std::wstring CanonName(const std::wstring& name) {
-    return cmdnaming::CanonicalName(name);
-}
-
-}  // namespace
 
 bool ActingWithoutArgs(const CommandDef& def, const std::wstring& inlineArg) {
     // 带内联参数 = 这个键自带参数，它做的就是这一行的事（"ViewMode:3" / "view.sort:1"）。

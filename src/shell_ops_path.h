@@ -23,9 +23,12 @@
 
 namespace shellops {
 
-bool RenamePath(HWND owner, const std::wstring& fullPath, const std::wstring& newName);
-bool MovePathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir);
-bool CopyPathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir);
-bool DeletePath(HWND owner, const std::wstring& fullPath);
+bool RenamePath(HWND owner, const std::wstring& fullPath, const std::wstring& newName,
+                std::wstring* why = nullptr);
+bool MovePathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir,
+                std::wstring* why = nullptr);
+bool CopyPathTo(HWND owner, const std::wstring& srcPath, const std::wstring& dstDir,
+                std::wstring* why = nullptr);
+bool DeletePath(HWND owner, const std::wstring& fullPath, std::wstring* why = nullptr);
 
 }  // namespace shellops

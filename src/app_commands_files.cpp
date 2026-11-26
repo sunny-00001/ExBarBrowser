@@ -4,6 +4,7 @@
 #include "app.h"
 
 #include "app_commands.h"
+#include "transfer_undo.h"
 #include "menu.h"           // 选择详细信息列的勾选菜单
 #include "prompt.h"         // PromptText —— 批量改名/按模式选择的交互式输入
 #include "search_url.h"     // searchurl::Trim —— 与导航栏搜索框共用同一套规范化
@@ -503,23 +504,12 @@ void App::RegisterFileCommands() {
         }
         // 撤销记录要在**搬走之前**取源路径（搬完之后原路径已不存在）。
         const std::vector<std::wstring> sel = shellops::SelectedPaths(view);
+        // 落点预探同样在转移之前（冲突与否的口径见 transfer_undo.h）。
+        const std::vector<bool> preExisted = transferundo::PrecheckDest(sel, target);
         const bool ok = shellops::TransferToFolder(view, hwnd_, target, move);
         if (ok) {
-            // 落点 = 目标目录 + 原文件名。冲突时 shell 会自动改名
-            //（FOF_RENAMEONCOLLISION），那种情况下算出来的落点并不存在 ——
-            // 不记（记一条指向不存在路径的撤销 = 给用户一个假的"能撤"承诺）。
-            std::vector<fileundo::Item> items;
-            for (const std::wstring& p : sel) {
-                const std::wstring leaf = nav::Leaf(p);
-                if (leaf.empty()) continue;
-                const std::wstring after = tf::Join(target, leaf);
-                if (!tf::Exists(after)) continue;
-                fileundo::Item item;
-                item.beforePath = p;
-                item.afterPath = after;
-                item.beforeName = leaf;
-                items.push_back(std::move(item));
-            }
+            std::vector<fileundo::Item> items =
+                transferundo::BuildItems(sel, target, preExisted);
             if (!items.empty())
                 NoteFileOp(move ? fileundo::Op::Move : fileundo::Op::Copy, std::move(items),
                            move ? L"移动到" : L"复制到");

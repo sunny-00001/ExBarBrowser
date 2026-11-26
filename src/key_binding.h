@@ -80,6 +80,10 @@ std::wstring TextForCmd(CmdId id, const std::wstring& arg, const Keymap& km,
 std::wstring TextForCmd(CmdId id, const std::wstring& arg, const Keymap& km,
                         const Overrides& overrides, bool allowSequences);
 
+// 序列键文本的显示口径（"t b" → "T B"）—— 菜单与快捷键管理器共用一份，
+// 否则两处大小写不一致，用户会以为显示的是两个不同的键。
+std::wstring SequenceText(const std::wstring& seq);
+
 // 命令规格 → 菜单右端要显示的键位文案。空串 = 这条命令当前没有可用快捷键。
 //
 // 匹配口径：spec 拆成 (名字, 内联参数) 后经 cmdnaming::CanonicalName 归一，

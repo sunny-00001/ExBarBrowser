@@ -291,7 +291,7 @@ namespace {
 
 // DeleteSelection 与 DeleteSelectionPermanently 的唯一差别是 FOF_ALLOWUNDO。
 // 抽成一份实现，避免"回收站版"和"永久版"日后在选中集/错误处理上分叉。
-bool DeleteSelectionImpl(IShellView* view, HWND owner, bool permanent) {
+bool DeleteSelectionImpl(IShellView* view, HWND owner, bool permanent, std::wstring* why) {
     ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
     ComPtr<IShellItemArray> sel;
@@ -300,32 +300,31 @@ bool DeleteSelectionImpl(IShellView* view, HWND owner, bool permanent) {
     sel->GetCount(&n);
     if (!n) return false;
 
-    ComPtr<IFileOperation> op;
-    if (FAILED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_IFileOperation,
-                                reinterpret_cast<void**>(&op))) ||
-        !op)
-        return false;
     DWORD flags = FOF_NOCONFIRMMKDIR | FOF_WANTNUKEWARNING;
     // 普通 Delete 进回收站，系统撤销栈能退；Shift+Delete 不带这一位。
     if (!permanent) flags |= FOF_ALLOWUNDO;
-    op->SetOperationFlags(flags);
-    op->SetOwnerWindow(owner);
+    shellopexec::Op op;
+    if (!op.Begin(owner, flags, why)) return false;
     for (DWORD i = 0; i < n; ++i) {
         ComPtr<IShellItem> item;
-        if (FAILED(sel->GetItemAt(i, &item)) || !item) continue;
-        op->DeleteItem(item.get(), nullptr);
+        if (FAILED(sel->GetItemAt(i, &item)) || !item) {
+            op.QueueDelete(nullptr, L"（选中项取不到）");   // 记一笔，参与"全失败"判定
+            continue;
+        }
+        op.QueueDelete(item.get());
     }
-    return shellopexec::Run(op.get());   // 同时查 GetAnyOperationsAborted
+    // Commit 同时查：PerformOperations / aborted / 逐项失败 / 一项都没排上。
+    return op.Commit(why);
 }
 
 }  // namespace
 
-bool DeleteSelection(IShellView* view, HWND owner) {
-    return DeleteSelectionImpl(view, owner, false);
+bool DeleteSelection(IShellView* view, HWND owner, std::wstring* why) {
+    return DeleteSelectionImpl(view, owner, false, why);
 }
 
-bool DeleteSelectionPermanently(IShellView* view, HWND owner) {
-    return DeleteSelectionImpl(view, owner, true);
+bool DeleteSelectionPermanently(IShellView* view, HWND owner, std::wstring* why) {
+    return DeleteSelectionImpl(view, owner, true, why);
 }
 
 bool InvokeSelectionVerb(IShellView* view, HWND owner, const char* verb) {
@@ -397,27 +396,26 @@ std::wstring LocalizedNewTextName() {
 
 }  // namespace
 
-bool NewFolder(IShellView* view, HWND owner) {
+bool NewFolder(IShellView* view, HWND owner, std::wstring* why) {
     ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
     ComPtr<IShellItem2> folder;
     if (FAILED(fv2->GetFolder(IID_IShellItem2, reinterpret_cast<void**>(&folder))) || !folder)
         return false;
-    ComPtr<IFileOperation> op;
-    if (FAILED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_IFileOperation,
-                                reinterpret_cast<void**>(&op))) ||
-        !op)
-        return false;
-    op->SetOwnerWindow(owner);
     // FOF_RENAMEONCOLLISION 是 explorer 的默认语义：重名时自动 "新建文件夹 (2)"，
     // 少了它会静默失败或弹冲突框（原来第二次新建文件夹必失败）。
-    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION);
+    shellopexec::Op op;
+    if (!op.Begin(owner, FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION, why))
+        return false;
     const std::wstring folderName = LocalizedNewFolderName();
-    op->NewItem(folder.get(), FILE_ATTRIBUTE_DIRECTORY, folderName.c_str(), nullptr, nullptr);
-    return shellopexec::Run(op.get());   // 同时查 GetAnyOperationsAborted
+    op.QueueNewItem(folder.get(), FILE_ATTRIBUTE_DIRECTORY, folderName.c_str());
+    // NewItem 的 HRESULT 由 QueueNewItem 记账；Commit 会在"一项都没排上"时判失败，
+    // 不再出现"目录只读导致 NewItem 失败、队列为空、PerformOperations 报成功"的假成功。
+    return op.Commit(why);
 }
 
-bool TransferToFolder(IShellView* view, HWND owner, const std::wstring& target, bool move) {
+bool TransferToFolder(IShellView* view, HWND owner, const std::wstring& target, bool move,
+                      std::wstring* why) {
     if (!view || target.empty()) return false;
     ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     if (!fv2) return false;
@@ -433,76 +431,81 @@ bool TransferToFolder(IShellView* view, HWND owner, const std::wstring& target, 
         !dest)
         return false;
 
-    ComPtr<IFileOperation> op;
-    if (FAILED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_IFileOperation,
-                                reinterpret_cast<void**>(&op))) ||
-        !op)
+    shellopexec::Op op;
+    if (!op.Begin(owner, FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION, why))
         return false;
-    op->SetOwnerWindow(owner);
-    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION);
-    HRESULT hr = move ? op->MoveItems(sel.get(), dest.get()) : op->CopyItems(sel.get(), dest.get());
-    if (FAILED(hr)) return false;
-    return shellopexec::Run(op.get());   // 同时查 GetAnyOperationsAborted
+    if (move)
+        op.QueueMoveAll(sel.get(), dest.get());
+    else
+        op.QueueCopyAll(sel.get(), dest.get());
+    return op.Commit(why);
 }
 
-bool NewTextFile(IShellView* view, HWND owner, std::wstring* created) {
+bool NewTextFile(IShellView* view, HWND owner, std::wstring* created, std::wstring* why) {
     std::wstring dir = ViewFolderPath(view);
     if (dir.empty()) return false;
 
     // 优先 IFileOperation::NewItem：与"新建文件夹"同一条链路，可以 Ctrl+Z 撤销、
     // 冲突由 shell 按 FOF_RENAMEONCOLLISION 处理。以前裸 CreateFileW 建出来的文件
     // 不在撤销栈里，用户误建只能自己删。
+    //
+    // 【回退的边界】只有"排队阶段就被拒"（NewItem 返回失败）才回退到 CreateFileW ——
+    // 那是"这个命名空间视图不支持 NewItem"的信号。**执行阶段失败（含用户取消）
+    // 一律不回退**：IFileOperation 可能已经把文件建出来了，再回退会造出
+    // "新建文本文档.txt" + "新建文本文档 (1).txt" 两份。
     ComPtr<IFolderView2> fv2 = detail::GetFv2(view);
     ComPtr<IShellItem2> folder;
     if (fv2 && SUCCEEDED(fv2->GetFolder(IID_IShellItem2, reinterpret_cast<void**>(&folder))) &&
         folder) {
-        ComPtr<IFileOperation> op;
-        if (SUCCEEDED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_IFileOperation,
-                                       reinterpret_cast<void**>(&op))) &&
-            op) {
-            op->SetOwnerWindow(owner);
-            op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION);
+        shellopexec::Op op;
+        if (op.Begin(owner, FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_RENAMEONCOLLISION, why)) {
             // 名字只算一次：LocalizedNewTextName 每次要读 2-3 次注册表，
             // 原来在这里调了 3 次（NewItem 一次、回填 created 两次）。
             const std::wstring baseName = LocalizedNewTextName();
-            if (SUCCEEDED(op->NewItem(folder.get(), FILE_ATTRIBUTE_NORMAL,
-                                      (baseName + L".txt").c_str(), nullptr, nullptr)) &&
-                shellopexec::Run(op.get())) {
-                // 【不能手拼 created】上面带了 FOF_RENAMEONCOLLISION，同目录已有同名
-                // 文件时实际创建的是"新建文本文档 (2).txt"，而手拼回的是不带后缀的
-                // 那份 —— 这个出参的契约是"告诉我建了哪个文件"，回错路径比不回更糟。
-                // 改成创建后按目录实际扫描：只认 baseName 与 shell 的冲突后缀
-                // "<base> (n).txt"；目录里别的新 .txt 不能被认成刚建的。
-                if (created) {
-                    // 先清空：回扫没命中时宁可交回空串，也不能把手拼的 baseName
-                    // 当成实际创建结果（那正是这条修复要消灭的错误）。
-                    created->clear();
-                    WIN32_FIND_DATAW fd{};
-                    FILETIME newest{};
-                    HANDLE hf = FindFirstFileW(tf::ToExtended(tf::Join(dir, L"*.txt")).c_str(), &fd);
-                    if (hf != INVALID_HANDLE_VALUE) {
-                        do {
-                            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-                            const std::wstring candName = fd.cFileName;
-                            if (!IsGeneratedTextName(candName, baseName)) continue;
-                            const std::wstring cand = tf::Join(dir, candName);
-                            if (CompareFileTime(&fd.ftLastWriteTime, &newest) > 0) {
-                                newest = fd.ftLastWriteTime;
-                                *created = cand;
-                            }
-                        } while (FindNextFileW(hf, &fd));
-                        FindClose(hf);
+            if (op.QueueNewItem(folder.get(), FILE_ATTRIBUTE_NORMAL,
+                                (baseName + L".txt").c_str())) {
+                if (op.Commit(why)) {
+                    // 【不能手拼 created】上面带了 FOF_RENAMEONCOLLISION，同目录已有同名
+                    // 文件时实际创建的是"新建文本文档 (2).txt"，而手拼回的是不带后缀的
+                    // 那份 —— 这个出参的契约是"告诉我建了哪个文件"，回错路径比不回更糟。
+                    // 改成创建后按目录实际扫描：只认 baseName 与 shell 的冲突后缀
+                    // "<base> (n).txt"；目录里别的新 .txt 不能被认成刚建的。
+                    if (created) {
+                        // 先清空：回扫没命中时宁可交回空串，也不能把手拼的 baseName
+                        // 当成实际创建结果（那正是这条修复要消灭的错误）。
+                        created->clear();
+                        WIN32_FIND_DATAW fd{};
+                        FILETIME newest{};
+                        HANDLE hf =
+                            FindFirstFileW(tf::ToExtended(tf::Join(dir, L"*.txt")).c_str(), &fd);
+                        if (hf != INVALID_HANDLE_VALUE) {
+                            do {
+                                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                                const std::wstring candName = fd.cFileName;
+                                if (!IsGeneratedTextName(candName, baseName)) continue;
+                                const std::wstring cand = tf::Join(dir, candName);
+                                if (CompareFileTime(&fd.ftLastWriteTime, &newest) > 0) {
+                                    newest = fd.ftLastWriteTime;
+                                    *created = cand;
+                                }
+                            } while (FindNextFileW(hf, &fd));
+                            FindClose(hf);
+                        }
                     }
+                    return true;
                 }
-                return true;
+                // 排上了但执行失败（取消/部分失败）：**不回退**，如实报错。
+                return false;
             }
+            // 到这里 = NewItem 排队被拒 → 这个视图不支持 NewItem，走回退。
         }
     }
 
     // 回退：某些命名空间视图不支持 NewItem，仍用 CreateFileW 保证功能可用。
+    const std::wstring baseName = LocalizedNewTextName();   // 循环外算一次，别每轮读注册表
     for (int i = 0; i < 1000; ++i) {
         // 原来缓冲只有 64 wchar：目录稍长就会被截断，文件建到剪断后的怪路径上。
-        std::wstring name = dir + L"\\" + LocalizedNewTextName();
+        std::wstring name = dir + L"\\" + baseName;
         if (i > 0) name += L" (" + std::to_wstring(i) + L")";
         name += L".txt";
         // ToExtended：新建的目标目录可能在深路径下（shell 的 NewItem 已处理，
@@ -514,7 +517,10 @@ bool NewTextFile(IShellView* view, HWND owner, std::wstring* created) {
             if (created) *created = name;
             return true;
         }
-        if (GetLastError() != ERROR_FILE_EXISTS) break;
+        if (GetLastError() != ERROR_FILE_EXISTS) {
+            if (why) *why = L"无法新建文件（错误码 " + std::to_wstring(GetLastError()) + L"）";
+            break;
+        }
     }
     return false;
 }
@@ -1047,29 +1053,19 @@ bool RenameTo(IShellView* view, HWND owner, const std::wstring& fullPath,
         return false;
     }
 
-    ComPtr<IFileOperation> op;
-    const HRESULT hrOp = CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL,
-                                          IID_IFileOperation, reinterpret_cast<void**>(&op));
-    if (FAILED(hrOp) || !op) {
-        if (why) *why = L"无法创建文件操作对象（HRESULT=0x" + shellopexec::HexHr(hrOp) + L"）";
-        return false;
-    }
-
     // 不要 UI：确定式操作遇到问题应当失败返回，而不是卡在一个没人看的对话框上。
     // FOF_ALLOWUNDO 让重命名可撤销（用户按 Ctrl+Z 能回去）。
-    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI);
-    op->SetOwnerWindow(owner);
-    const HRESULT hrRename = op->RenameItem(item.get(), newName.c_str(), nullptr);
-    if (FAILED(hrRename)) {
-        if (why) *why = L"重命名请求被拒（HRESULT=0x" + shellopexec::HexHr(hrRename) + L"）：" + newName;
-        LogDbg(L"[shellops] RenameTo：RenameItem 失败 hr=0x%08X new=%s",
-               static_cast<unsigned>(hrRename), newName.c_str());
+    shellopexec::Op sop;
+    if (!sop.Begin(owner, FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI, why))
+        return false;
+    if (!sop.QueueRename(item.get(), newName.c_str(), newName)) {
+        if (why) *why = L"重命名请求被拒（HRESULT=0x" + shellopexec::HexHr(sop.firstQueueFail()) +
+                        L"）：" + newName;
+        LogDbg(L"[shellops] RenameTo：RenameItem 排队失败 new=%s", newName.c_str());
         return false;
     }
-    std::wstring opWhy;
-    if (!shellopexec::Run(op.get(), &opWhy)) {
-        if (why) *why = opWhy;
-        LogDbg(L"[shellops] RenameTo：执行失败 %s", opWhy.c_str());
+    if (!sop.Commit(why)) {
+        LogDbg(L"[shellops] RenameTo：执行失败");
         return false;
     }
     return true;

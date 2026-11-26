@@ -239,6 +239,30 @@ const std::vector<Entry>& Table() {
                      L"关闭标签历史上限（" + RangeText(kClosedTabLimitMin, kClosedTabLimitMax) +
                          L"）：Ctrl+Shift+T 能连续回退几步",
                      L"bar_tab", {}, kClosedTabLimitMin, kClosedTabLimitMax});
+        // ---- 标签栏动效与拖出成窗 ----
+        // 这三项都是"上一轮 P0 做出来的交互"，做成设置而不是写死常量：
+        // 动效与拖出成窗都是**偏好**，不是正确性 —— 有人嫌动画是延迟、
+        // 有人嫌拖出成窗太容易误触。写死就只剩"改代码重编"一条路。
+        v.push_back({L"tabAnimMs", Kind::Int,
+                     [](const Settings& s) { return json::Value::MakeInt(s.tabAnimMs); },
+                     IntSet(&m.tabAnimMs, L"tabAnimMs", kTabAnimMsMin, kTabAnimMsMax),
+                     L"拖拽重排的让位动画时长（ms，" +
+                         RangeText(kTabAnimMsMin, kTabAnimMsMax) +
+                         L"）：0 = 关闭动画，直接换位；改完下一次拖拽生效",
+                     L"bar_tab", {}, kTabAnimMsMin, kTabAnimMsMax});
+        v.push_back({L"tabDragGhost", Kind::Bool,
+                     [](const Settings& s) { return json::Value::MakeBool(s.tabDragGhost); },
+                     BoolSet(&m.tabDragGhost, L"tabDragGhost"),
+                     L"拖动标签时画跟随光标的浮层（原位置留空）：关掉则只剩插入线",
+                     L"bar_tab"});
+        v.push_back({L"tabTearOffDy", Kind::Int,
+                     [](const Settings& s) { return json::Value::MakeInt(s.tabTearOffDy); },
+                     IntSet(&m.tabTearOffDy, L"tabTearOffDy", kTabTearOffDyMin,
+                            kTabTearOffDyMax),
+                     L"拖出成窗的垂直磁吸阈值（逻辑像素，" +
+                         RangeText(kTabTearOffDyMin, kTabTearOffDyMax) +
+                         L"）：0 = 关闭拖出成窗，只保留右键菜单里的「移到新窗口」",
+                     L"bar_tab", {}, kTabTearOffDyMin, kTabTearOffDyMax});
 
         // ---- 导航栏 ----
         v.push_back({L"nav", Kind::Bool,
@@ -311,6 +335,14 @@ const std::vector<Entry>& Table() {
                          RangeText(kBookmarkBarTooltipWidthMin, kBookmarkBarTooltipWidthMax) +
                          L"）：书签标题被截断时的悬浮提示最大宽度",
                      L"bar_bookmark", {}, kBookmarkBarTooltipWidthMin, kBookmarkBarTooltipWidthMax});
+        v.push_back({L"bookmarkWheelStepDp", Kind::Int,
+                     [](const Settings& s) { return json::Value::MakeInt(s.bookmarkWheelStepDp); },
+                     IntSet(&m.bookmarkWheelStepDp, L"bookmarkWheelStepDp",
+                            kBmkWheelStepDpMin, kBmkWheelStepDpMax),
+                     L"书签栏滚轮步进（逻辑像素，" + RangeText(kBmkWheelStepDpMin,
+                                                        kBmkWheelStepDpMax) +
+                         L"）：滚一格横向挪多远；48 约三个字宽（立即生效）",
+                     L"bar_bookmark", {}, kBmkWheelStepDpMin, kBmkWheelStepDpMax});
 
         // ---- 状态栏 ----
         v.push_back({L"statusbar", Kind::Bool,
@@ -566,6 +598,14 @@ const std::vector<Entry>& Table() {
                      L"面包屑树弹层行数（" + RangeText(kPopupMaxRowsMin, kPopupMaxRowsMax) +
                          L"）：文件夹树下拉一屏最多几行（其它菜单行数由调用点定）",
                      L"popup", {}, kPopupMaxRowsMin, kPopupMaxRowsMax});
+        v.push_back({L"popupDragThreshold", Kind::Int,
+                     [](const Settings& s) { return json::Value::MakeInt(s.popupDragThreshold); },
+                     IntSet(&m.popupDragThreshold, L"popupDragThreshold",
+                            kPopupDragThresholdMin, kPopupDragThresholdMax),
+                     L"弹层拖动阈值（逻辑像素，" + RangeText(kPopupDragThresholdMin,
+                                                       kPopupDragThresholdMax) +
+                         L"）：按住后移动超过它才算拖动；太小会把单击误判成拖动（立即生效）",
+                     L"popup", {}, kPopupDragThresholdMin, kPopupDragThresholdMax});
 
         // ---- AI 通道 ----
         // aiEnabled 支持热插拔：config.set 之后命令层会调 App::SyncAiChannel
@@ -599,8 +639,22 @@ const std::vector<Entry>& Table() {
                                                    kAiPumpIntervalMsMax) +
                          L"）：多久检查一次请求队列；下次启用 AI 通道生效",
                      L"ai", {}, kAiPumpIntervalMsMin, kAiPumpIntervalMsMax});
+        // 结果气泡自动弹出。关掉后 chip 仍显示未读计数与颜色，只是不再盖住视图。
+        v.push_back({L"aiPeekEnabled", Kind::Bool,
+                     [](const Settings& s) { return json::Value::MakeBool(s.aiPeekEnabled); },
+                     BoolSet(&m.aiPeekEnabled, L"aiPeekEnabled"),
+                     L"AI 跑完时自动弹出结果气泡：关闭后不再盖住视图，"
+                     L"状态栏 chip 仍显示未读数（立即生效）",
+                     L"ai"});
 
         // ---- 审计与作业 ----
+        // 总开关：放在 Write 内部收口，所有写入方自动生效。
+        v.push_back({L"auditEnabled", Kind::Bool,
+                     [](const Settings& s) { return json::Value::MakeBool(s.auditEnabled); },
+                     BoolSet(&m.auditEnabled, L"auditEnabled"),
+                     L"记录审计日志：关闭后命令不再留痕（立即生效；"
+                     L"已写入的日志不删除）",
+                     L"ops"});
         v.push_back({L"auditRotateKB", Kind::Int,
                      [](const Settings& s) { return json::Value::MakeInt(s.auditRotateKB); },
                      IntSet(&m.auditRotateKB, L"auditRotateKB", kAuditRotateKBMin,
@@ -664,10 +718,10 @@ const std::vector<Entry>& Table() {
                          L"）：数字框/下拉/字符串框同宽",
                      L"dialog", {}, kSettingsControlWidthMin, kSettingsControlWidthMax});
 
-        // ---- 键位（只读）----
+        // ---- 键位（只读）：写入走 hotkey.set / hotkey.clear / hotkey.reset ----
         v.push_back({L"hotkeys", Kind::Object,
                      [](const Settings& s) { return HotkeyValue(s.hotkeyOverrides); }, nullptr,
-                     L"快捷键覆盖（只读：改 data\\keymap.json，或用键位相关命令）", L"keys"});
+                     L"快捷键覆盖（只读：改 data\\keymap.json，或用 hotkey.set 等三条命令）", L"keys"});
 
         // ---- 窗口几何（只读）----
         // 直接改 window.x/y 而不改 window.valid，窗口会在下次启动落到奇怪位置；

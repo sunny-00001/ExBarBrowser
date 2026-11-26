@@ -72,6 +72,12 @@ void Queue::Interrupt() {
     cv_.notify_all();
 }
 
+void Queue::Reset() {
+    std::lock_guard<std::mutex> lk(mu_);
+    interrupted_ = false;
+    queue_.clear();
+}
+
 size_t Queue::Pending() const {
     std::lock_guard<std::mutex> lk(mu_);
     return queue_.size();

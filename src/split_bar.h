@@ -77,6 +77,19 @@ public:
 
     void SetVisible(bool visible);
 
+    // 右键回调（屏幕坐标）：宿主据此弹"双栏就地动作"菜单。
+    //
+    // 【为什么由宿主弹】控件不认命令（与"夹取区间由外部给"同一条边界）：
+    // 菜单里的每一项都是 CommandBus 的命令，内容组装属于 App。
+    // 只有双栏那条边界会接它；两条侧栏边界不接 = 右键无反应，符合预期。
+    using ContextFn = std::function<void(POINT screen)>;
+    void SetContextFn(ContextFn fn) { contextFn_ = std::move(fn); }
+
+    // 双击回调：双栏分割条上 = 比例归中（50%）。
+    // 与右键同理，控件只上报"双击了"，归到多少由宿主决定。
+    using DoubleClickFn = std::function<void()>;
+    void SetDoubleClickFn(DoubleClickFn fn) { dblClickFn_ = std::move(fn); }
+
     // 活动窗格指示（只有双栏那条分割条会用到）：side<0 = 无（侧栏边界不亮），
     // 0 = 分割线靠 pane0 那侧着 accent，1 = 靠 pane1 那侧。
     //
@@ -143,4 +156,6 @@ private:
     // 用户的手感和线位置对不上。记下偏移后，线的相对位置全程保持不变。
     int dragOffset_ = 0;
     DragFn dragFn_;
+    ContextFn contextFn_;
+    DoubleClickFn dblClickFn_;
 };

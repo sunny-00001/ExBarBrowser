@@ -23,6 +23,7 @@
 #include "split_bar.h"
 #include "side_layout.h"
 #include "settings_dialog.h"
+#include "hotkey_manager.h"
 #include "shell_view.h"
 #include "status_bar.h"
 #include "status_zoom_slider.h"
@@ -388,10 +389,9 @@ private:
     void InvokeFromPalette(const CommandDef& d);
     void ShowTabMenu(int index, int action);
     void ShowViewMenuAt();
-    // 设置对话框：表（settings_reg）驱动的可调项列表，改动走 config.set 命令。
-    // 为什么是独立窗口而不是弹出菜单、为什么非模态：见 src/settings_dialog.h
-    // 顶部的取舍说明（那份更全 —— 这里只留指针，避免同一段话抄两遍后走样）。
+    // 设置对话框 / 快捷键管理器：非模态独立窗口（取舍见 settings_dialog.h）。
     void ShowSettingsDialog();
+    void ShowHotkeyManager();
     // 把配置里的历史上限推到实际拥有它们的两个模型上：
     //   · recentLimit / searchLimit → Config 自己的两个 vector（超出的立刻裁掉）
     //   · closedTabLimit → core::TabSet（见 TabSet::SetClosedLimit）
@@ -463,12 +463,9 @@ private:
     void ApplyViewMode(int index);
     // 把视图里**真实**的图标像素回灌给滑块（读回而不是自己记一份 —— 见实现处注释）。
     void SyncZoomSlider();
-    // 状态栏「可撤销 N 步」chip 的文案（空栈时 chip 消失）。
-    void SyncUndoChip();
-    // F6 / Shift+F6 的焦点循环（见 app_commands_focus.cpp）。dir > 0 往后，< 0 往前。
-    void FocusCycle(int dir);
-    // 撤销历史弹层：列出每一步，点哪一行就撤到那一步（实现见 app_undo_history.cpp）。
-    void ShowUndoHistory();
+    void SyncUndoChip();             // 状态栏「可撤销 N 步」chip（空栈时消失）
+    void FocusCycle(int dir);        // F6 / Shift+F6 焦点循环（app_commands_focus.cpp）
+    void ShowUndoHistory();          // 撤销历史弹层（app_undo_history.cpp）
 
     // ---- 序列总览弹窗（复刻 mod 的 ExBarSeqOverlay）----
     // 取数与派发都在本层：弹窗只管 UI/键盘，App 用既有数据源填行、
@@ -495,6 +492,7 @@ private:
     // 设置对话框（成员而非全局：它需要一个 owner 窗口与一份主题，
     // 两者都在 App 里；做成全局就得多传参数或多存一份全局状态）。
     SettingsDialog settingsDialog_;
+    HotkeyManager hotkeyManager_;   // 快捷键管理器（成员理由同 settingsDialog_）
     // 全局导航窗格：窗口唯一一棵，固定在内容区最左侧（不属于任何窗格）。
     // 用的是 IExplorerBrowser 的原生 EP_NavPane（shell 自己绘制的树），
     // 见 src/nav_pane.h 顶部的取舍说明。

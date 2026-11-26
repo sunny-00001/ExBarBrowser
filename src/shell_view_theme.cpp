@@ -174,6 +174,24 @@ bool ShellView::RebuildBrowserForTheme(bool recreateContainer) {
         themePendingFvm_ = -1;
         themePendingIcon_ = 0;
         themeSuspended_ = false;
+        // 【必须给一条出路】doRecreate 路径先 DestroyWindow(container_)；若随后的
+        // CreateWindowEx 失败，container_ 已是 nullptr —— 此后 Resize / SetVisible /
+        // ApplyNavPaneWanted / Destroy 全部早退，界面是一块永不重绘的空白，
+        // 日志之外无人知晓。这里重建一个**最小容器**（不带 EBC，但能挂导航与重试），
+        // 并通知 App 走既有的失败通道（它可以提示/重建标签），不留无声空白。
+        if (!container_ && parent) {
+            container_ = CreateWindowExW(
+                0, kTabViewClass, L"", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                containerRect.left, containerRect.top, containerRect.right - containerRect.left,
+                containerRect.bottom - containerRect.top, parent, nullptr,
+                GetModuleHandleW(nullptr), nullptr);
+            if (container_) {
+                SetThis(container_, this);
+                AllowDarkForWindow(container_, theme_.dark);
+                LogDbg(L"[theme] 已用最小容器兜底（视图待下次导航重建）");
+            }
+        }
+        if (!container_ && failFn_) failFn_();   // 连容器都建不起来：交给 App 处理
     };
 
     if (!suspended) DestroyBrowser();
@@ -309,7 +327,10 @@ void ShellView::ApplyTheme() {
     if (themeSuspended_) {
         FinishThemeSwitch();
     } else if (changed && browser_ && !path_.empty()) {
-        RebuildBrowserForTheme(true);
+        // 返回值必须看：false = 重建失败（容器可能已被销毁）。fail() 内部已经
+        // 做了最小容器兜底 / 失败回调，这里再记一句，避免"界面空着但日志安静"。
+        if (!RebuildBrowserForTheme(true))
+            LogDbg(L"[theme] 主题重建失败：视图已降级，等待下次导航重试");
     }
 }
 
@@ -328,7 +349,10 @@ void ShellView::OnViewCreated(IShellView* view) {
         AllowDarkForWindow(h, theme_.dark);
         EnumChildWindows(h, ThemeScrollbarOnly, reinterpret_cast<LPARAM>(&theme_.dark));
         // Shell 视图每次导航都可能重建；把鼠标子类重新挂到新的 DefView/ListView 上。
-        shellinput::Install(h, container_, path_, mouseSink_);
+        // 返回值必须看：false = 一个窗口都没挂上（Win 版本层级变化），
+        // 此时鼠标规则会整体静默失效，只在日志里留下一句明确原因。
+        if (!shellinput::Install(h, container_, path_, mouseSink_))
+            LogDbg(L"[nav] 鼠标规则安装失败：视图层级与预期不符（版本变化？）");
     }
     // ExplorerBrowserControl 层：这是唯一应该设主题的地方
     ApplyShellTheme(container_, theme_.dark);

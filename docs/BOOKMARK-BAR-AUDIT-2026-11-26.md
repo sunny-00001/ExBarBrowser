@@ -36,14 +36,35 @@
 
 ## 三、执行记录
 
-- ✅ P1（E1+E2+E4）：`edge_autoscroll.h` 落地，TabStrip 委托，书签栏接入；
-  `ScrollBy` 统一收口滚动后重算（落点+hover）。
-- ✅ P2a（E3）：两条键盘到达路径补 `EnsureVisible`。
-- ✅ P2b（E5）：`tab_uia` Traits 化，`bookmark_bar_uia.cpp` 接入。
-- ✅ P3：`bookmark_bar_itemmenu.cpp` 拆分。
-- ✅ 验证：`bash build.sh` 全量编译 + `bash tests/run_all.sh` +
-  `check_components.py` + `check_ai_meta.py` 全绿；滚轮/拖拽手感属 R21 禁合成输入域，
-  交人工确认。
+- ✅ P1（E1+E2+E4）：
+  - 新增 `src/edge_autoscroll.h`——边缘自动滚动唯一实现（`edge::Update/Stop/TickGuard`）。
+    TabStrip 的 `UpdateAutoScroll/StopAutoScroll` 改为薄委托（行为零变化）；
+    书签栏接入同一组件（边缘带以 `viewRight_` 为准，周期共用 `tabDragScrollMs` 设置）。
+  - `BookmarkBar::ScrollBy` 收口为**唯一滚动入口**：滚轮/键盘跟随/自动滚动拍全走它，
+    并在滚动后统一重算拖拽落点（`DropSpotAtClient`，用缓存坐标）与悬停高亮
+    （`UpdateHover`）——根治"滚了但插入线/高亮指旧项"（E1/E4），任何新的滚动源自动继承。
+  - 停表收口：`DragFinish` / `HandoffDragToFolder` / `WM_CAPTURECHANGED` / `WM_MOUSELEAVE`
+    四处全部经 `edge::Stop`（滚着松手/被夺捕获/滑出栏外都不留表）。
+  - 悬停重算的坐标来源：拖拽中用 `dragMouseX_+dragStart_.y` 缓存，空闲悬停用
+    `GetCursorPos`（`WM_MOUSEMOVE` 顺带缓存 `dragMouseX_`）。
+- ✅ P2a（E3）：`WM_SETFOCUS` / `WM_CONTEXTMENU(-1,-1)` / `VK_RETURN|VK_SPACE` /
+  `VK_APPS|Shift+F10` 四条键盘到达路径全部先 `EnsureVisible` 再取锚点 ——
+  "键盘到达必可见"成为统一规则，与 `FocusBar` 一致。
+- ✅ P2b（E5）：`tab_uia.h/.cpp` 泛化——provider（463 行）本体只此一份，
+  差异面收敛为 `uia::Traits`（根名/控件类型/automationId 前缀/宿主指针）；
+  `TabTraitsFor`（tab_uia.cpp）与 `bmuia::TraitsFor`（bookmark_bar_uia.cpp）各给一份。
+  书签栏在 `Handle` 加 `WM_GETOBJECT` + `kMsgCount/kMsgItem/kMsgSelect` 分支
+  （kMsgSelect = 键盘走到该项 + EnsureVisible，不导航），析构 `uia::Release`。
+- ✅ P3：`bookmark_bar_popup.cpp`（484→205 行）拆出 `bookmark_bar_itemmenu.cpp`
+  （291 行，`ShowItemMenu` + `ShowMoveToMenu` + `CollectMoveTargets`）。
+- ✅ 验证（2026-11-26 22:49）：
+  - `bash build.sh` 主程序构建通过（`ExBarBrowser.exe` 22:48）。
+  - 全量单测 **73/73 通过**（此前后台跑挂的 keymap/shell_columns 均为并发会话
+    编辑窗口期的瞬态编译错，单跑与最终全量均复现通过；`app_panes_swap.cpp`
+    duplicate symbol 同为并发会话拆文件中间态）。
+  - `check_components.py`（33 唯一性 + 7 禁令 + R21）全绿；
+    `check_ai_meta.py` 全绿；`check_commands.py`（241 条三方一致）全绿。
+  - 滚轮/拖拽自动滚动手感属 R21 禁合成输入域，交人工确认。
 
 ## 四、业界对标结论（全网调研，2026-11-26）
 

@@ -14,8 +14,13 @@ void TabStrip::Paint(HWND h) {
         const int clipR = clipRight ? clipRight : rc.right;
 
         for (size_t i = 0; i < tabRects_.size(); ++i) {
-            const RECT& r = tabRects_[i];
+            // 让位动画：按 AnimDx 偏移一格；正在拖的那格在原槽留空，
+            // 由 DrawDragGhost 跟随光标画（见 tab_strip_anim.cpp）。
+            RECT r = tabRects_[i];
+            const int dx = AnimDx(static_cast<int>(i));
+            if (dx) OffsetRect(&r, dx, 0);
             if (r.right <= 0 || r.left >= clipR) continue;
+            if (dragging_ && static_cast<int>(i) == dragIdx_) continue;
             bool isActive = static_cast<int>(i) == active_;
             bool isHover = hoverKind_ == kTab && hoverIndex_ == static_cast<int>(i);
 
@@ -52,7 +57,8 @@ void TabStrip::Paint(HWND h) {
             }
 
             // 部分可见的标签（右缘在 » 之后）如果照画关闭钮，会把 X 画进溢出按钮区。
-            const RECT& crc = closeRects_[i];
+            RECT crc = closeRects_[i];
+            if (dx) OffsetRect(&crc, dx, 0);
             const bool closeInView = crc.right > 0 && crc.left < clipR;
             if (items_[i].pinned) {
                 // 固定标签没有关闭钮，用图钉图标占位（恒定可见，不靠悬停）。
@@ -85,13 +91,23 @@ void TabStrip::Paint(HWND h) {
             }
         }
 
-        // 拖拽插入指示：一条竖线，画在所有标签之后（不然会被后画的标签底色盖住）。
-        // 4dp 宽比 1px 分隔线粗，且用 accent 色 —— 拖拽时需要"一眼看出落点"，
-        // 而不是"隐约有个原子分隔线在那里"。
-        if (const int dropX = DropLineX(); dropX >= 0 && dropX < rc.right) {
-            const int half = theme_->S(2);
-            RECT dl{dropX - half, theme_->S(2), dropX + half, rc.bottom - theme_->S(2)};
-            ui::FillRectColor(mem, dl, theme_->accent);
+        // 拖拽插入指示：tear-off 已进入"移到新窗口"模式时不画（此时松手不重排）。
+        if (!tearOff_) {
+            if (const int dropX = DropLineX(); dropX >= 0 && dropX < rc.right) {
+                const int half = theme_->S(2);
+                RECT dl{dropX - half, theme_->S(2), dropX + half, rc.bottom - theme_->S(2)};
+                ui::FillRectColor(mem, dl, theme_->accent);
+            }
+        }
+        // 被拖标签跟手；tear-off 时改成整条提示（此时浮层没有意义，
+        // 而且整条换成 brHover 能明确告诉用户"松手是另一件事"）。
+        RECT viewClip{0, 0, clipR, rc.bottom};
+        if (tearOff_ && dragging_) {
+            FillRect(mem, &viewClip, theme_->brHover);
+            ui::DrawTextRow(mem, nullptr, L"松开：移到新窗口", viewClip, theme_->accent,
+                            DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
+        } else {
+            DrawDragGhost(mem, viewClip);
         }
 
         // 溢出按钮：用下箭头（ChevronDown）而不是 0xE76C（那是"更多/省略号"，

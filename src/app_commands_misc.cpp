@@ -100,7 +100,7 @@ void App::RegisterMiscCommands() {
     });
     reg(CmdId::CommandPalette, [this](const Args&) { ShowCommandPalette(); return true; });
     reg(CmdId::HotkeyManager, [this](const Args&) {
-        ShowHotkeyManager(hwnd_, theme_, input_);
+        ShowHotkeyManager();
         return true;
     });
     // ---- 键位改绑（hotkey.*：热键管理器窗口的机器等价）----
@@ -124,6 +124,8 @@ void App::RegisterMiscCommands() {
             CommandBus::Get().NoteFailure(L"命令不存在或不可绑键：" + cmd);
             return false;
         }
+        // 面板若开着，让它跟上：否则它继续显示旧键位，成为一块说谎的界面。
+        hotkeyManager_.OnKeymapChangedExternally();
         return true;
     });
     reg(CmdId::HotkeyClear, [this](const Args& args) {
@@ -134,10 +136,12 @@ void App::RegisterMiscCommands() {
             CommandBus::Get().NoteFailure(L"命令不存在或没有可解绑的键：" + cmd);
             return false;
         }
+        hotkeyManager_.OnKeymapChangedExternally();
         return true;
     });
     reg(CmdId::HotkeyReset, [this](const Args&) {
         input_.ResetDefaults();   // 清全部覆盖 + Save + Reload（唯一实现）
+        hotkeyManager_.OnKeymapChangedExternally();
         return true;
     });
     // 首选项面板本身早就存在，但只有一条入口：导航栏右键 →「设置…」。

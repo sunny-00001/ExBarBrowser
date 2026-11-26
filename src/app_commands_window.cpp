@@ -16,6 +16,7 @@
 
 #include "app_commands.h"
 #include "identity.h"   // kMainClass：窗口类名只允许从这里取（check_components 唯一性规则）
+#include "mcp_stdio.h"  // ConfirmExit 的 MCP 静默退出判据（Requested）
 
 namespace {
 
@@ -232,4 +233,28 @@ void App::DispatchAiPanelWindowAction(const std::wstring& action) {
     } else {
         LogDbg(L"[aiui] 忽略未知页面窗口动作：%s", action.c_str());
     }
+}
+
+// ---------------------------------------------------------------- 退出确认
+// 【从 app.cpp 搬来】它属于"窗口生命周期"而非输入域；app.cpp 在行数棘轮账面，
+// 按职责挪出。调用方不变：win.quit（app_commands_misc）、WM_CLOSE（app_wnd）、
+// 关闭最后一个标签（app_tabs）。
+bool App::ConfirmExit() {
+    // MCP 模式（--mcp-stdio）：这个进程是 MCP 客户端拉起来的服务器，
+    // 客户端断开即应静默退出 —— 弹框问"确定退出吗"会把客户端晾在原地。
+    if (mcpstdio::Requested()) return true;
+    // 只有多标签才问：最后一个标签关闭 = 正常结束，不该再拦一次。
+    // 默认按钮是"否"：误按 Enter 的常见场景（Alt+F4 后手还没离开键盘）
+    // 不该把整组标签关掉；会话虽能恢复，但用户此刻未必想退出。
+    if (!Config::Get().s().confirmCloseTabs) return true;
+    const int n = tabSet_.Count();
+    if (n <= 1) return true;
+    const std::wstring text =
+        L"当前打开了 " + std::to_wstring(n) + L" 个标签页。\n\n确定要退出吗？";
+    // 标题里的品牌串从 identity.h 拼接：手写 L"退出 ExBarBrowser" 会绕过
+    // check_components 的品牌串扫描（正则不命中带前缀的写法），规则就被
+    // "机械合规"骗过去了 —— 品牌串只能出现在 identity.h 一处。
+    const std::wstring title = std::wstring(L"退出 ") + id::kBrand;
+    return MessageBoxW(hwnd_, text.c_str(), title.c_str(),
+                       MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES;
 }

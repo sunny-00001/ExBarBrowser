@@ -40,6 +40,12 @@ bool ShellView::NavigatePid(PIDLIST_ABSOLUTE pidl) {
         // 用导航重放定时器退避重试（与字符串路径同一套路）。
         if (queuedPidl_) CoTaskMemFree(queuedPidl_);
         queuedPidl_ = ILCloneFull(pidl);
+        // 克隆失败 = 这个排队意图根本没法重放。**不能**静默 return true：
+        // 调用方会以为导航成功了，实际什么都没发生（L10）。
+        if (!queuedPidl_) {
+            LogDbg(L"[nav] pidl 克隆失败，排队意图已丢弃");
+            return false;
+        }
         if (container_) {
             static const UINT kDelay[] = {50, 100, 200, 500, 1000};
             UINT d = kDelay[replayTries_ < 5 ? replayTries_ : 4];
@@ -47,7 +53,16 @@ bool ShellView::NavigatePid(PIDLIST_ABSOLUTE pidl) {
         }
         return true;
     }
-    return FAILED(hr) ? false : true;
+    if (FAILED(hr)) return false;
+    // 本次导航已同步成功：作废排队意图（理由同 DoNavigate 的 H1 修复——
+    // 否则定时器触发时会把视图拉回排队期间用户点的另一个目标）。
+    if (queuedPidl_) {
+        CoTaskMemFree(queuedPidl_);
+        queuedPidl_ = nullptr;
+    }
+    replayTries_ = 0;
+    if (container_) KillTimer(container_, kNavReplayTimer);
+    return true;
 }
 
 // 搜索结果视图默认详细信息。
@@ -64,6 +79,19 @@ void ShellView::EnsureSearchDetailsView(PIDLIST_ABSOLUTE searchPidl) {
 }
 
 void ShellView::OnSearchViewTimer() {
+    // 计数提到入口：下面每条早退（视图没建好、取不到 folder）都必须消耗一拍，
+    // 否则"视图永远建不好"时 Tick 不涨 → 定时器永不退出 → 每 120ms 一次空转
+    // COM 调用直到进程结束（原实现的注释承诺"最多 ~3 秒"，实际上限不成立）。
+    if (++searchViewTicks_ > 25) {  // ~3 秒还没就位：放弃，别无限等
+        LogDbg(L"[search] 详情视图：等不到搜索结果视图，放弃");
+        KillTimer(container_, kSearchViewTimer);
+        if (searchPidl_) {
+            CoTaskMemFree(searchPidl_);
+            searchPidl_ = nullptr;
+        }
+        return;
+    }
+
     IShellView* view = CurrentView();
     ComPtr<IFolderView2> fv2 = shellops::FolderView2(view);
     if (view) view->Release();
@@ -97,15 +125,7 @@ void ShellView::OnSearchViewTimer() {
     }
 
     if (!isSearchView) {
-        if (++searchViewTicks_ > 25) {  // ~3 秒还没就位：放弃，别无限等
-            LogDbg(L"[search] 详情视图：等不到搜索结果视图，放弃");
-            KillTimer(container_, kSearchViewTimer);
-            if (searchPidl_) {
-                CoTaskMemFree(searchPidl_);
-                searchPidl_ = nullptr;
-            }
-        }
-        return;
+        return;   // 已到上限会在下一次入口处统一处理
     }
 
     KillTimer(container_, kSearchViewTimer);

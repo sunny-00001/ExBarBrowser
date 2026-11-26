@@ -46,6 +46,15 @@ bool IsRunning();
 // 没有订阅者时那份快照没有任何接收方，纯属浪费（多实例下尤其明显）。
 bool HasSubscribers();
 
+// 一次 tools/call 的软超时（毫秒）——**传输层的唯一真源**。
+//
+// tools/list 的 timeoutMs 必须报这个值，不能另写一个常量：
+// 客户端拿 timeoutMs 设定时器，而这个值决定管道实际等多久。两边不一致时，
+// 客户端会在"自己以为还没超时"的时刻收到 timeout，于是把"环境错误"与
+// "放弃等待"两类语义搞混（原来 tools/list 报 90s、实际 10s，差 9 倍）。
+// 取值来自配置项 aiTimeoutMs，可热改；ai_api 层直接调它，不再自己算。
+int UiTimeoutMs();
+
 // UI 线程调用：处理所有挂起的请求（命令 handler 只能在 UI 线程跑）。
 // 返回本次处理了几个；0 = 没活干。由 App 的定时器驱动即可，不需要更复杂的唤醒。
 int PumpRequests();

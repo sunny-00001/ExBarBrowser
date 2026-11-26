@@ -28,6 +28,9 @@ struct InputConfig {
 
     // ---- 写：由 App 转发到 Config（配置落盘的唯一路径）----
     virtual void SetHotkeyOverride(const std::wstring& setting, const std::wstring& key) = 0;
+    // 删掉一条覆盖项（"恢复此条为默认"）。与 SetHotkeyOverride(setting, L"") 的区别
+    // 见 InputRouter::ResetKeyForCommand —— 那个是"绑成空键"，这个是"没有覆盖"。
+    virtual void ClearHotkeyOverride(const std::wstring& setting) = 0;
     virtual void ClearAllHotkeyOverrides() = 0;
     virtual void Save() = 0;
 };

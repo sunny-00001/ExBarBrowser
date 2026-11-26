@@ -21,7 +21,8 @@ namespace edge {
 // 拖拽中每帧调用：x = 当前鼠标客户区 x；lo/hi = 自动滚动的触发带（客户区坐标，
 // x < lo 向左滚、x > hi 向右滚，夹在中间 = 停）；stepPx = 每拍位移（已过 S()）；
 // periodMs = 定时器周期；timerId = 宿主的定时器 id。
-// 方向没变时不动定时器（避免每帧 SetTimer）；step=0 = 停表。
+// step=0 时摘表；非 0 时每帧重设一次 SetTimer —— Win32 对同一个 timerId 重复
+// SetTimer 只改间隔、不叠加定时器，所以这里是幂等的，不需要额外比较方向。
 // 返回值：调用后 state.step 的镜像（宿主可直接据此判断"是否在滚"）。
 inline int Update(int* step, HWND hwnd, UINT timerId, int x, int lo, int hi, int stepPx,
                   UINT periodMs) {
@@ -39,11 +40,6 @@ inline int Update(int* step, HWND hwnd, UINT timerId, int x, int lo, int hi, int
 inline void Stop(int* step, HWND hwnd, UINT timerId) {
     *step = 0;
     if (hwnd) KillTimer(hwnd, timerId);
-}
-
-// 定时器到点的守卫：三条全真才值得滚（没在拖/没步进/没溢出就什么都不做）。
-inline bool TickGuard(bool dragging, int step, bool overflow) {
-    return dragging && step != 0 && overflow;
 }
 
 }  // namespace edge

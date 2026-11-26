@@ -85,6 +85,15 @@ constexpr Entry kEntries[] = {
     {IconId::History, L"history", 0xE81C},
     {IconId::Bolt, L"bolt", 0xE945},
     {IconId::Channel, L"channel", 0xE93E},
+    // 双栏协同。码位取自 MDL2 / Segoe Fluent Icons 共用区（与上面同一套口径）：
+    // E916 列视图（双栏姿态）、E81D/E81F 横/竖交换、E75F 右向箭头、
+    // E8C8 复制、E865 移动。
+    {IconId::Dual, L"dual", 0xE916},                 // 列视图：双栏
+    {IconId::SwapPane, L"swap_pane", 0xE81D},        // 左右交换：互换两栏
+    {IconId::PaneVertical, L"pane_vertical", 0xE81F},// 上下交换：切方向
+    {IconId::Mirror, L"mirror", 0xE75F},             // 右向箭头：对侧打开
+    {IconId::CopyToPane, L"copy_to_pane", 0xE8C8},   // 内容复制：复制到对侧
+    {IconId::MoveToPane, L"move_to_pane", 0xE865},   // 内容移动：移动到对侧
 };
 
 constexpr wchar_t kFallback = 0xE721;   // 放大镜：必然存在的字形

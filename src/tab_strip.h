@@ -18,6 +18,23 @@
 // 标签栏按 26 建、布局按 28 排这类 1px 错位，只有"同一个来源"才能从根上避免。
 constexpr int kTabBarHeightDp = Theme::barTab96;
 
+// 动效时长与磁吸阈值的**默认值**在 config.h 的 Settings 成员初始化器里（唯一出处），
+// 可被 settings.json 覆盖；这里不再写一份数字 —— 两份默认值迟早分叉，
+// 表现为"设置里写着 140，实际按 120 跑"。
+// 范围（含 0 = 关闭）的唯一出处是 settings_bounds.h 的 kTabAnimMs* / kTabTearOffDy*。
+
+// 让位动画的剩余偏移（**纯函数**，便于单测）。
+// t ∈ [0,1] 是归一化时间；返回值是"相对最终位置还要偏多少"：
+//   t=0 → dx（停在起点），t=1 → 0（已就位）。
+// 曲线是三次 ease-out（offset = dx·(1-t)³）：起步快、收尾稳。
+// 线性插值会让最后几帧"还在动却快到了"，观感反而更差。
+inline int TabAnimDx(int dx, double t) {
+    if (t <= 0.0) return dx;
+    if (t >= 1.0) return 0;
+    const double inv = 1.0 - t;
+    return static_cast<int>(dx * inv * inv * inv);
+}
+
 // 拖拽插入指示线画在哪个 x（客户区坐标）。-1 = 不画。**纯函数**，便于单测。
 //
 // drop 的语义来自 core::TabSet::Move：先删后插，所以它是"移动完成后所在的最终下标"。
@@ -112,6 +129,10 @@ public:
 private:
     // 行 = 一条标签的渲染数据，由 SetTabs 从 core::TabRef 生成；icon 归本类所有。
     struct TabStripItem {
+        // core::TabRef::id 的快照。**动画与浮层用 id 做身份，不用下标**：
+        // 重排后下标全体位移，按下标配对会把"旧位置"配给另一个标签，
+        // 动画看起来就是乱飞。路径也不行（允许同路径多标签）。
+        int id = 0;
         std::wstring title;
         std::wstring path;  // tooltip 用
         bool locked = false;
@@ -169,6 +190,17 @@ private:
     // **插在这一侧的边界上**。只把目标标签刷成悬停底色，读起来是"这个标签被选中了"
     // ——Chrome / Edge / VS Code / Opus 一律画竖线，就是因为整格高亮有歧义。
     int DropLineX() const;
+    // ---- 拖拽让位动画（实现见 tab_strip_anim.cpp）----
+    // 只在"同规模重排"（拖拽提交）时启动：增删标签各有既有路径（rapid close 还要
+    // 冻结宽度），把关闭/新建也做成滑动会打乱关闭钮的落点，得不偿失。
+    // oldOrder 是重排前的 id 序列，oldLeft 是 id -> 旧客户区 left。
+    void StartReorderAnim(const std::vector<int>& oldOrder, const std::map<int, int>& oldLeft);
+    void StopReorderAnim();
+    // 当前帧该下标相对最终位置的横向偏移（0 = 已就位）。
+    int AnimDx(int index) const;
+    // 被拖标签的浮层：跟随光标抬升绘制（实现见 tab_strip_anim.cpp）。
+    // 只画，不改命中/布局；clip 是标签可视区，浮层不越过 » 按钮。
+    void DrawDragGhost(HDC dc, const RECT& clip);
     void RebuildTooltip(HWND);
     // 滚动/宽度恢复时只移动热区，不重建整套工具（文本和 id 没变）。
     void UpdateTooltipRects();
@@ -229,6 +261,21 @@ private:
     static constexpr UINT_PTR kDragScrollTimer = 3;  // 主窗口已用 1/2
     int dragScrollStep_ = 0;    // 0=停；>0 向右看；<0 向左看
     int dragMouseX_ = 0;        // 定时器没有鼠标坐标，用最后一次 MOUSEMOVE 的 x
+    // 拖拽时的实时鼠标位置（浮层跟手用）与"已越过垂直磁吸阈值"标记。
+    // tearOff_ 为真时：不画插入线，松手走"移到新窗口"而不是重排。
+    POINT dragMouse_{};
+    // 按下时鼠标相对被拖标签左缘的偏移：浮层"粘手"用。**不能在绘制时现算** ——
+    // 拖到边缘自动滚动会改 tabRects_，现算会让浮层随滚动跳位。
+    int dragGrabDx_ = 0;
+    bool tearOff_ = false;
+    // Layout 缓存的客户区高度：WM_MOUSEMOVE 判垂直越界要看它。
+    int clientH_ = 0;
+    // 拖拽让位动画：animFrom_[i] = 该位动画起点的客户区 x；animating_ 时
+    // Paint 按 AnimDx(i) 偏移绘制。结束/取消一律走 StopReorderAnim。
+    std::vector<int> animFrom_;
+    ULONGLONG animStart_ = 0;
+    bool animating_ = false;
+    static constexpr UINT_PTR kAnimTimer = 4;   // 标签栏窗口内的定时器 id
     // 关闭按钮按下时锁定索引：up 必须用按下时的索引，否则按 A 松到 B 会关掉 B。
     int closeDownIdx_ = -1;
 

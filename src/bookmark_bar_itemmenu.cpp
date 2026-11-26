@@ -29,6 +29,10 @@ struct MoveTarget {
 // （BmkMove 会拒绝"移到自己子孙"，但菜单里就该先置灰/不列，别让用户点了才失败）。
 void CollectMoveTargets(const BookmarkList& list, const std::wstring& excludeId, int depth,
                         std::vector<MoveTarget>* out) {
+    // 深度上限：与 bookmark_category_popup 的下钻守卫同口径（32 层）。
+    // 书签树正常不会这么深，但数据被外部改坏成自引用环时，没有这道闸就是
+    // 递归到栈溢出（而崩点在"点右键 → 移到分类"这条路径上，很难联想到数据）。
+    if (depth > 32) return;
     for (const BookmarkNode& n : list) {
         if (!n.isFolder) continue;
         if (n.id != excludeId) {
@@ -102,7 +106,11 @@ void BookmarkBar::ShowMoveToMenu(const std::wstring& id, const std::wstring& lab
 
 void BookmarkBar::ShowItemMenu(int index, POINT screen) {
     if (index < 0 || index >= static_cast<int>(items_.size())) return;
-    const Item& it = items_[static_cast<size_t>(index)];
+    // 【值拷贝，不是引用】下面跨 menu.Show()（模态循环）与 PromptText() 使用
+    // it 的字段。模态期间 WM_TIMER 照常派发，AI 通道的 bmk.* 命令会走到
+    // BookmarkBar::Reload() → BuildItems()（clear + 重建）—— 引用当场悬空。
+    // Item 本身很小（含 HICON 借用），拷一份的代价可以忽略。
+    const Item it = items_[static_cast<size_t>(index)];
     BookmarkStore& store = BookmarkStore::Get();
     // 「打开」族的六条去处都走 CommandBus，参数 path 来自这一项本身。
     // disabled 判据用 it.path.empty() 而不是 it.folder：纯分类（只装子书签、无目录）
