@@ -12,6 +12,7 @@
 #include "app.h"
 
 #include "commands.h"    // CommandBus：界面侧的历史跳转/搜索提交转投命令总线
+#include "path_util.h"   // pathutil::IsUnder（锁后导航守卫的"真子路径"判定）
 #include "text_file.h"   // tf::Exists / tf::IsDirectory（区分"导航到目录"与"打开文件"）
 #include "icon_resolve.h"
 #include "search_folder.h"  // searchfolder::Create —— 原生搜索文件夹（系统搜索协议）
@@ -49,15 +50,21 @@ void ReportNavFailure(HWND owner, const std::wstring& path) {
 
 // 搜索结果视图的标题前缀。
 //
-// 【为什么它同时是"当前视图是不是搜索视图"的判据】原生搜索文件夹的解析名
-// 就是我们给的显示名（"搜索: <词>"）—— 实测状态快照里 activePath 就是这个串。
-// Windows 文件名里不能有冒号，命名空间路径也不会长这样，所以这个前缀不会
-// 和真实目录撞上，拿它判定是可靠的。
+// 【它是显示名，不是解析名】导航完成回调给 App 的 path 来自 PidlName，用的是
+// SIGDN_DESKTOPABSOLUTEPARSING —— 搜索文件夹在那一口径下是 "search-ms:..."，
+// **不是** "搜索: ..."。所以判"当前是不是搜索视图"必须两个前缀都认：
+//   · "搜索: "    —— 我们给的显示名（display / 标题 / 状态快照 activePath）
+//   · "search-ms:" —— shell 规范化后的解析名（完成回调给的 path）
+// 只认前者会让 !IsSearchTitle(path) 对搜索视图恒真 —— 进入搜索结果的第一条
+// 完成回调就把 searchFrom/searchQuery 清掉：快照里 searching 永远 false、
+// 上一级回不到来源目录、二次搜索拿 search-ms: 当范围报"不是磁盘目录"。
 constexpr wchar_t kSearchTitlePrefix[] = L"搜索: ";
+constexpr wchar_t kSearchParsingPrefix[] = L"search-ms:";
 
-// 路径是不是搜索结果视图的路径。
+// 路径是不是搜索结果视图的路径（两种口径都认，见上）。
 bool IsSearchTitle(const std::wstring& path) {
-    return path.rfind(kSearchTitlePrefix, 0) == 0;
+    return path.rfind(kSearchTitlePrefix, 0) == 0 ||
+           path.rfind(kSearchParsingPrefix, 0) == 0;
 }
 
 }  // namespace
@@ -99,7 +106,15 @@ bool App::NavigateInPane(Pane* p, const std::wstring& path, bool push) {
 
     if (!p->view || !p->view->Navigate(path)) {
         ReportNavFailure(hwnd_, path);
-        if (p->view) OnTabNavFailed(p->view.get());
+        // 【view 为空也必须回滚】上面的 Request 已经改了游标/压了条并置了 pending；
+        // 若不 Fail，历史里会留下"去了但没显示"的幽灵条目（canBack 与视图脱节），
+        // 而 pending 还挂着，下一次 Complete 可能把该条当成重定向就地覆盖。
+        // OnTabNavFailed 内部会调 Fail，但它的入参是 ShellView* —— 没有 view 时
+        // 只能直接走 nav.Fail()。
+        if (p->view)
+            OnTabNavFailed(p->view.get());
+        else
+            p->nav.Fail();
         return false;
     }
     return true;
@@ -127,8 +142,14 @@ void App::GotoHistory(int target) {
     Pane* p = ActivePane();
     if (!p) return;
     if (!p->nav.Goto(target)) return;  // 越界：静默忽略（按钮灰显已经挡过一层）
-    if (!p->view || !p->view->Navigate(p->nav.pending().path))
-        if (p->view) OnTabNavFailed(p->view.get());
+    if (!p->view || !p->view->Navigate(p->nav.pending().path)) {
+        // 同 NavigateInPane：Goto 已经移了游标，view 为空时也必须回滚，
+        // 否则历史游标停在"没显示出来"的那一条上。
+        if (p->view)
+            OnTabNavFailed(p->view.get());
+        else
+            p->nav.Fail();
+    }
 }
 
 void App::GoBack() {
@@ -320,6 +341,49 @@ int App::ClearHistory() {
 //
 // Shell 完成的回报。历史栈的就地收敛（重定向 / 规范化）全部由 History::Complete
 // 处理，这里只管"壳层"的事：标签标题、最近访问、状态栏计数。
+// 锁后导航守卫：锁定路径的标签内点子目录时，问用户"开新标签还是留在原地"。
+//
+// 为什么需要它：锁定（tab.lock）的语义是"这个标签钉在这个目录上，别把我带走"。
+// 但用户双击一个子目录时，shell 会直接导航 —— 锁定形同虚设，用户回来发现
+// 钉住的标签已经跑到别处。Explorer++ / Opus 的做法都是拦一下再问。
+//
+// 拦截点只能是 ShellView 的 OnNavigationPending：双击文件夹这类 shell 内部导航
+// 不走 ShellView::Navigate()，那里拦不到（见 shell_view_sink.cpp 的说明）。
+//
+// 返回 false = 拦下（视图停在原目录）。判据三条：
+//   ① 本标签锁定；② 目标在锁定路径**之下**（同级/上级不算 —— 那是"离开锁定目录"，
+//   属于用户的明确意图，锁只保护"别被顺手带走"）；③ 目标不是锁定路径本身。
+bool App::GuardLockedNav(ShellView* view, const std::wstring& target) {
+    Tab* t = nullptr;
+    int paneIndex = -1;
+    if (!FindPane(view, &t, &paneIndex) || !t) return true;
+    Pane* p = PaneAt(t, paneIndex);
+    if (!p) return true;
+    // 锁是按路径持久化的（Config::s().lockedPaths），标签上的 locked 标志是它的镜像。
+    // 两处都要看：镜像可能滞后（比如刚在另一个视图里解锁），路径表才是真相。
+    const std::wstring lockedAt = p->path();
+    if (lockedAt.empty()) return true;
+    const auto& locked = Config::Get().s().lockedPaths;
+    const bool isLocked =
+        std::find_if(locked.begin(), locked.end(), [&lockedAt](const std::wstring& x) {
+            return str::IEquals(x, lockedAt);
+        }) != locked.end();
+    if (!isLocked) return true;
+    // 只拦"往下走"：目标必须是锁定目录的真子目录。
+    if (str::IEquals(target, lockedAt)) return true;
+    if (!pathutil::IsUnder(target, lockedAt)) return true;
+
+    // 询问：留在原地（取消导航）/ 在新标签打开（放行后由 App 开新标签并拦下这次导航）。
+    // 用 Yes/No 而不是三选一 —— 第三个选项（"本次直接导航"）会让锁定变得可绕过，
+    // 而绕过锁定的正路是显式解锁（tab.lock / 右键菜单），不需要在弹框里留后门。
+    const std::wstring msg = L"标签已锁定在：\n" + lockedAt +
+                             L"\n\n要在此标签内打开子目录吗？\n"
+                             L"（选\"否\"留在原目录；要新标签请用中键/右键菜单打开）";
+    const int r = MessageBoxW(hwnd_, msg.c_str(), L"标签已锁定",
+                              MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
+    return r == IDYES;   // 是 → 放行；否/关闭 → 拦下
+}
+
 void App::OnTabNav(ShellView* view, const std::wstring& path, const std::wstring& display,
                    unsigned items) {
     Tab* t = nullptr;

@@ -66,4 +66,25 @@ std::vector<std::wstring> ToShellPaths(const std::vector<std::wstring>& paths) {
     return out;
 }
 
+bool IsUnder(const std::wstring& child, const std::wstring& parent) {
+    if (child.empty() || parent.empty()) return false;
+    // 尾部反斜杠先去掉：`C:\A\` 与 `C:\A` 是同一个目录。根 `C:\` 去掉后是 `C:`
+    // —— 那种情况下面拼分隔符时会补回来，不会误判。
+    std::wstring p = parent;
+    while (p.size() > 1 && (p.back() == L'\\' || p.back() == L'/')) p.pop_back();
+    std::wstring c = child;
+    while (c.size() > 1 && (c.back() == L'\\' || c.back() == L'/')) c.pop_back();
+    if (c.size() <= p.size()) return false;   // 等长或更短：不可能是真子路径
+    // 前缀比较要逐字符大小写不敏感（Windows 路径语义）。
+    for (size_t i = 0; i < p.size(); ++i) {
+        wchar_t a = c[i], b = p[i];
+        if (a >= L'A' && a <= L'Z') a = static_cast<wchar_t>(a - L'A' + L'a');
+        if (b >= L'A' && b <= L'Z') b = static_cast<wchar_t>(b - L'A' + L'a');
+        if (a != b) return false;
+    }
+    // 关键：下一字符必须是分隔符。否则 `C:\AB` 会被判成 `C:\A` 的子路径。
+    const wchar_t next = c[p.size()];
+    return next == L'\\' || next == L'/';
+}
+
 }  // namespace pathutil

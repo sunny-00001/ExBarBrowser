@@ -147,6 +147,31 @@ int main() {
         CHECK(fs == L"C:\\Windows", "文件系统路径经两步归一后仍是纯路径");
     }
 
+    // ---- IsUnder：真子路径判定（锁后导航守卫的判据）----
+    printf("\nIsUnder：真子路径（锁后导航只拦\"往下走\"）\n");
+    {
+        CHECK(pathutil::IsUnder(L"C:\\A\\B", L"C:\\A"), "直接子目录");
+        CHECK(pathutil::IsUnder(L"C:\\A\\B\\C", L"C:\\A"), "隔代子目录");
+        CHECK(pathutil::IsUnder(L"c:\\a\\b", L"C:\\A"), "大小写不敏感");
+        // 前缀陷阱：`C:\AB` 不是 `C:\A` 的子路径。这是本函数存在的核心理由 ——
+        // 只比字符串前缀的实现会把它判成子路径，于是锁定的 C:\A 会拦住 C:\AB。
+        CHECK(!pathutil::IsUnder(L"C:\\AB", L"C:\\A"), "前缀陷阱：C:\\AB 不是 C:\\A 的子路径");
+        CHECK(!pathutil::IsUnder(L"C:\\A", L"C:\\A"), "自身不算子路径");
+        CHECK(!pathutil::IsUnder(L"C:\\A\\", L"C:\\A"), "尾部反斜杠：同一个目录，不算子路径");
+        CHECK(!pathutil::IsUnder(L"C:\\A", L"C:\\A\\B"), "父不是子的子路径（方向反了）");
+        CHECK(!pathutil::IsUnder(L"D:\\X", L"C:\\A"), "不同盘：不是子路径");
+        // 尾部反斜杠归一：`C:\A\` 与 `C:\A` 当父时判据一致。
+        CHECK(pathutil::IsUnder(L"C:\\A\\B", L"C:\\A\\"), "父带尾斜杠：仍能判出子路径");
+        // 盘根作父：C:\ 去掉尾斜杠后是 C:，拼分隔符后仍能正确判。
+        CHECK(pathutil::IsUnder(L"C:\\Windows", L"C:\\"), "盘根作父：直接子目录");
+        CHECK(!pathutil::IsUnder(L"C:\\", L"C:\\"), "盘根自身不算自己的子路径");
+        // 空串：任何一侧为空都不成立（避免"空父路径匹配一切"）。
+        CHECK(!pathutil::IsUnder(L"", L"C:\\A"), "子为空：不成立");
+        CHECK(!pathutil::IsUnder(L"C:\\A\\B", L""), "父为空：不成立");
+        // 正斜杠也认（外部字符串可能带 /）。
+        CHECK(pathutil::IsUnder(L"C:/A/B", L"C:/A"), "正斜杠分隔");
+    }
+
     printf(fails ? "\nFAILED %d\n" : "\nPASS\n", fails);
     return fails ? 1 : 0;
 }

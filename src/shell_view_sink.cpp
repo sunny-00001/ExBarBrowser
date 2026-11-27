@@ -37,10 +37,17 @@ public:
         return r;
     }
 
-    HRESULT STDMETHODCALLTYPE OnNavigationPending(PCIDLIST_ABSOLUTE) override {
+    HRESULT STDMETHODCALLTYPE OnNavigationPending(PCIDLIST_ABSOLUTE pidl) override {
         // 双击文件夹等 shell 内部导航不会走 ShellView::Navigate()/DoNavigate()，
         // 必须在这里采样当前目录的真实状态，否则只能拿到上一次的旧意图。
         if (owner_) owner_->CapturePreviewPaneBeforeNavigation();
+        // 导航守卫：这是**唯一**能拦住 shell 内部导航的位置。
+        // 文档明确：OnNavigationPending 返回任意失败码即取消导航（含 E_NOTIMPL）。
+        // 典型用途：锁定路径的标签内点子目录 → 问用户"开新标签还是留在原地"，
+        // 选"留在原地"时这里返回 E_ABORT，视图就停在原目录。
+        // 用 E_ABORT 而不是 E_NOTIMPL：后者在日志里与"未实现"混在一起，
+        // 排查"为什么点了没反应"时会指向错误方向。
+        if (owner_ && owner_->ShouldBlockNavigation(pidl)) return E_ABORT;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnViewCreated(IShellView* view) override {
@@ -81,6 +88,17 @@ bool ShellView::AdviseBrowser() {
 
 void ShellView::DetachSink() {
     if (sink_) sink_->Detach();
+}
+
+bool ShellView::ShouldBlockNavigation(PCIDLIST_ABSOLUTE pidl) {
+    if (!navGuard_ || !pidl) return false;
+    // 目标路径要解析成与 path_ 同口径的显示路径（PidlName），否则
+    // "锁定路径 = 当前目录" 的字符串比较会因 `C:\A` vs `C:\A\` 这类形式差异落空。
+    std::wstring target = PidlName(pidl);
+    if (target.empty()) return false;
+    // 同一目录（刷新）不拦：那不会把视图带到别处，拦下来只会让 F5 失效。
+    if (target == path_) return false;
+    return !navGuard_(target);
 }
 
 void ShellView::OnNavigationFailed() {

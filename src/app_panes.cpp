@@ -148,6 +148,12 @@ void App::WirePaneCallbacks(Tab* tab, int paneIndex, ShellView* view) {
         OnTabNav(raw, p, d, n);
     });
     view->SetFailFn([this, raw] { OnTabNavFailed(raw); });
+    // 锁后导航守卫：锁定路径的标签内点子目录 → 问用户"留原地还是打开"。
+    // 拦的是 shell 内部导航（双击文件夹），那条路径不走 Navigate()，
+    // 只有 ShellView 的 OnNavigationPending 能截到（见 shell_view_sink.cpp）。
+    view->SetNavGuard([this, raw](const std::wstring& target) {
+        return GuardLockedNav(raw, target);
+    });
     // 焦点进入本视图时，把活动窗格改成本视图。这是"激活哪个视图就哪个响应"
     // 的触发点：点击/Tab 进入右视图即切换，命令与导航随之打到右视图。
     view->SetActivateFn([this, raw] { OnPaneActivated(raw); });

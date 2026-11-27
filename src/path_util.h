@@ -82,6 +82,13 @@ std::wstring ToParsingName(const std::wstring& raw);
 // 迟早有人漏掉其中一项（漏掉的那一项就是那个报 E_INVALIDARG 的）。
 std::vector<std::wstring> ToShellPaths(const std::vector<std::wstring>& paths);
 
+// child 是否是 parent 的**真子路径**（parent 本身不算）。纯函数，大小写不敏感。
+//
+// 判据的坑在分隔符：`C:\A` 是 `C:\AB` 的前缀，但不是它的父目录。
+// 所以比较完前缀还必须要求下一字符是分隔符（或 parent 自己以分隔符结尾）。
+// 尾部反斜杠先统一去掉再比 —— `C:\A\` 与 `C:\A` 是同一个目录。
+bool IsUnder(const std::wstring& child, const std::wstring& parent);
+
 }  // namespace pathutil
 
 #endif  // PATH_UTIL_H_

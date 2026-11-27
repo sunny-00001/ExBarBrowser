@@ -42,6 +42,7 @@
         "job_test.cpp",
         "json_bignum_test.cpp",
         "key_binding_test.cpp",
+        "key_preset_test.cpp",
         "keymap_test.cpp",
         "longpath_test.cpp",
         "menu_component_test.cpp",
@@ -154,6 +155,7 @@
     "tests/job_test.cpp": "cff1c584dddfef75dc0dbfbf4f10b79906264ef4f7866c3857006c9e49f4edcf",
     "tests/json_bignum_test.cpp": "6e81b16883e199bb7006f6b2afbaf5de5ec853d7d072a6f165236e3041b0f358",
     "tests/key_binding_test.cpp": "b14f62f9370f59dec08a7e97096556f4e702b6ed99d2cbd60159092ae52ac24e",
+    "tests/key_preset_test.cpp": "4a8966084833f82c2f216c1346636d67a1ba6653184d45d552245595d9a9ad77",
     "tests/keymap_test.cpp": "aa7aaf571d61da4b50efe092abb70492e9d345afe8ea906ce7118bce6ac04623",
     "tests/longpath_test.cpp": "aa765a97d01f2fe23fc68d19a2a51e65b605fc3770239acdf499f781e2c23de7",
     "tests/menu_component_test.cpp": "d78f7b220b9fd30ea5150eac3c3ccffd72661047c05cbd320072294205d690b3",
@@ -166,7 +168,7 @@
     "tests/nav_model_test.cpp": "86da64c5bcdc3a525bb2ce0be27a87dc6d6d80ca0f27efaf725a089c5888f969",
     "tests/nav_root_test.cpp": "c32531792fe1a89355f6490aaba164d98ed54b7c3a13fe91e6c7110429e03e79",
     "tests/pane_split_test.cpp": "222986374b58b1e4c8a75d226ed377712e7166bab7900acf3fd3f95cfa157b68",
-    "tests/path_util_test.cpp": "86f64277bd54c43c74a6f8670175c97b9fc92d91026a697107bbb0dcf81a84cd",
+    "tests/path_util_test.cpp": "e0fbbe622e3471f5daf02d8a804abc8085e282027ce4ac64c68ef90fd3a8b6bd",
     "tests/pipe_e2e_test.cpp": "acb8d30c45974f771fb87729a576afd998c9f7142fc389f0e31abb96a16161d0",
     "tests/popup_layout_test.cpp": "50cc547667f77706dd90542e6eabb314b3a007ae9ee43644c5e2e61c24bb04d3",
     "tests/popup_toggle_test.cpp": "42c5e34d2c9d5b769e39147aab5ba2a35bb28f92a46792c09d4f0a3907379a95",
@@ -218,8 +220,8 @@
     "tools/probe_toggle.py": "b2a86e569ab57464bbbf6a5aef1754e546a2274153592d152dd699e574c0e5c0",
     "tools/reclaim.py": "def016c0b1f7afbe7611c94cc533863c81cfa355a8adfc264530a38f03f2485c"
   },
-  "generatedAt": "2026-11-27T08:51:21+08:00",
+  "generatedAt": "2026-11-27T09:47:49+08:00",
   "note": "评估面清单：构建器/测试/校验器。改动这些文件后必须重新签发。",
-  "selfSeal": "1242e87526e7dd802fade3a58b4429819881eebb506cac2dfdb65d91d7c20153",
+  "selfSeal": "b864171f5a3b2f250bcb3893c5b385760be814b27fa2ab2fb4a4b46cf7501fd7",
   "version": 1
 }

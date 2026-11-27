@@ -127,6 +127,14 @@ public:
     const std::wstring& path() const { return path_; }
     const std::wstring& display() const { return display_; }
     void SetNavFn(NavFn fn) { navFn_ = std::move(fn); }
+    // 导航守卫：**在 shell 真正导航之前**问一次（含双击文件夹这类 shell 内部导航 ——
+    // 它们不走 ShellView::Navigate，只有 OnNavigationPending 能拦到）。
+    // 返回 false = 取消这次导航（文档明确：OnNavigationPending 返回任意失败码即取消）。
+    // 用途：锁定路径标签内点子目录 → 询问是否开新标签。设于 Create 之前。
+    // 参数是新目标路径（已解析成显示路径）；未设置时一律放行。
+    void SetNavGuard(std::function<bool(const std::wstring&)> fn) {
+        navGuard_ = std::move(fn);
+    }
     // 文件视图鼠标事件汇入 InputRouter。必须在 Create() 前设置，
     // 因为首次 IShellView 可能在 Create() 内部就创建完成。
     void SetMouseSink(MouseSink fn) { mouseSink_ = std::move(fn); }
@@ -212,6 +220,9 @@ private:
     void CapturePreviewPaneState(IShellView* view);
     void ApplyPreviewPaneState(IShellView* view);
     void CapturePreviewPaneBeforeNavigation();
+    // 导航守卫的实现（见 SetNavGuard 与 Sink::OnNavigationPending）。
+    // 返回 true = 拦下这次导航（视图停在原目录）。
+    bool ShouldBlockNavigation(PCIDLIST_ABSOLUTE pidl);
     void ApplyNavPaneWanted();
     // 是否已经从真实窗格窗口采样过状态（首次采样前不覆盖用户意图）。
     bool previewPaneWantedKnown_ = false;
@@ -236,6 +247,8 @@ private:
     NavFn navFn_;
     MouseSink mouseSink_;
     std::function<void()> failFn_;
+    // 导航守卫（见 SetNavGuard）。返回 false 取消本次导航。
+    std::function<bool(const std::wstring&)> navGuard_;
     ActivateFn activateFn_;
     PanePrefs panePrefs_;
 };

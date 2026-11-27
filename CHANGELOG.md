@@ -1,5 +1,63 @@
 ## [Unreleased]
 
+### 功能：快捷键管理器的四项改进（批量化 / 冲突分级 / 方案预设 / 尺寸可调，2026-11-27）
+
+**1. 改键批量化（P1）**：`InputRouter::BeginBatch` / `EndBatch` + RAII `BatchScope`。
+以前每次改键都是 `Save() + Reload()`，而 `Reload()` 要重读 keymap.json、重建 281 条
+绑定、重置序列状态机。导入 20 条 = 20 次写盘 + 20 轮重建，且**每轮都会打断用户
+正在输入的序列**（`seq_.Reset()` + `hint_.Hide()`）——那是可见故障，不只是慢。
+现在批次内只标脏，`EndBatch` 才落盘 + 重建一次。
+
+**2. 冲突检测分级（P2）**：以前"键位字符串相同"一律标红。但派发路径里确有一处
+按作用域过滤——`b.scope == L"标签栏" && !inTabStrip` 的裸键只在焦点位于标签栏时
+生效。现在区分：`conflictHard`（真冲突，按不出来）与 `softConflict`（同键但作用域
+不重叠，可共存）。右栏文案也随之分两级。`PeerOf`（录制时的预判）对齐同一规则，
+避免"提示冲突但实际能绑"。
+
+**3. 键位方案预设（P3）**：`data/keymap_presets.json` + `hotkey.preset.list` /
+`hotkey.preset.apply` + 工具栏「方案」按钮。五套方案（default / explorer / tc /
+dopus / vim）。设计要点：**只写与默认值的差异**（全量会随命令增长而过时）、按
+**命令 id** 匹配而非 `setting` 名、整批一次事务、与当前生效键相同的条目跳过不写。
+
+**4. 面板尺寸写入设置项（P4）**：`hkRowHeight` / `hkToolbarHeight` / `hkRailWidth` /
+`hkDetailWidth` / `hkWindowWidth` / `hkWindowHeight` 六项进 `settings_reg`（可写、
+可夹、可脚本读、界面可见），边界在 `settings_bounds.h`。以前它们是
+`hotkey_manager_layout.cpp` 里的 constexpr —— 用户看得见的界面却改不动。
+新增 `cfgapply::AffectsHotkeyPanel` 判据：几何项改完立即重排，窗口宽高只影响下次
+打开（去改一个已开着的窗口等于覆盖用户自己调的大小）。
+
+**顺带修的缺陷**：新增 `kToolPreset` 枚举时 `ToolEnabled` 没有对应分支，落到
+`default: return false` → 按钮画成禁用色 `#606060`，点上去什么都不发生。修法不是
+只补一个 case，而是**去掉 `default`** 让 `-Wswitch` 在下次漏加时报警。
+判据：逐按钮采样前景色（禁用 `#606060` → 可用 `#EEEEEE`）。
+
+**验收**：`key_preset_test`（新增 8 组断言，含"Alt+Left 与 Alt+← 是同一个键"、
+"写错键名必须被捕获"的负向验证）；`config_apply_test`（75 个可写键全部有落地归属）；
+`config_roundtrip_test`（109 项通过，新键自动被表驱动覆盖）；`keymap_test` /
+`key_binding_test` 全绿。深浅两套主题截图像素核对通过。
+
+### 功能：锁定标签的子目录导航拦截（复审第五梯队，2026-11-27）
+
+锁定的语义是"这个标签钉在这个目录上"，但用户双击子目录时 shell 会直接导航 ——
+锁定形同虚设。本批补上拦截。
+
+- **拦截点**：`IExplorerBrowser` 没有 BeforeNavigate，`ShellView::Navigate()` 只覆盖
+  程序发起的导航，**双击文件夹这类 shell 内部导航完全绕过它**。唯一能截住的位置是
+  `IExplorerBrowserEvents::OnNavigationPending`（微软文档：返回任意失败码即取消导航）。
+- `ShellView::SetNavGuard(fn)`：返回 false = 拦下。未设置时一律放行（不改既有行为）。
+  `ShouldBlockNavigation` 把 pidl 解析成与 `path_` 同口径的路径再判，
+  **同目录（刷新）不拦** —— 否则 F5 失效。拦下时返回 `E_ABORT` 而非 `E_NOTIMPL`
+  （后者在日志里与"未实现"混淆，排查会指错方向）。
+- `App::GuardLockedNav`：① 本窗格路径在 `lockedPaths` 里（查路径表而非标签镜像，
+  镜像可能滞后）；② 目标是锁定路径的**真子目录**；③ 不是锁定路径本身。
+  三条成立才弹 `MB_YESNO`（默认"否"）：是 = 放行，否 = 留在原地。
+  不留"本次直接导航"选项 —— 绕过锁定的正路是显式解锁，不在弹框里开后门。
+- 新增纯函数 `pathutil::IsUnder(child, parent)`：真子路径判定。核心坑是分隔符 ——
+  `C:\A` 是 `C:\AB` 的字符串前缀但不是父目录，比完前缀必须要求下一字符是分隔符。
+
+验证：新增 16 条 `IsUnder` 断言；**负向验证**把分隔符判据改坏后测试立即 FAIL
+（"前缀陷阱：C:\AB 不是 C:\A 的子路径"），证明判据非空；217 TU 构建通过。
+
 ### 功能：标签栏拖拽让位动画与拖出成窗（复审第五梯队，2026-11-27）
 
 复审报告 §3.2 的两项功能差距落地。关键发现：绘制层与动画算法（`tab_strip_anim.cpp`）

@@ -97,6 +97,7 @@ private:
     void RegisterStateProviders();
     // 命令注册按域分片（app_commands*.cpp），RegisterCommands 只做调度。
     void RegisterTabCommands();
+    void RegisterGoCommands();   // go.*/nav.*/path.*（app_commands_go.cpp）
     void RegisterFileCommands();
     // 文件视图的双栏：开关 / 切换活动窗格 / 比例。作用域是窗格，不是标签。
     void RegisterViewPaneCommands();
@@ -377,6 +378,7 @@ private:
     void OnTabNav(ShellView* view, const std::wstring& path, const std::wstring& display,
                   unsigned items);
     void OnTabNavFailed(ShellView* view);
+    bool GuardLockedNav(ShellView* view, const std::wstring& target);  // 锁后导航守卫
     int FindTab(ShellView* view) const;
 
     // 输入

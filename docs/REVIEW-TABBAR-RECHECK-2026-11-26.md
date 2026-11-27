@@ -65,7 +65,7 @@
 差距（按优先级）：
 1. ~~**拖拽让位无动画**~~ → **已落地（2026-11-27）**：Chromium 式 ideal bounds 起止快照 + 三次 ease-out（`TabAnimDx`，纯函数可单测）+ `kAnimTimer` 每帧重绘，时长 `tabAnimMs` 当帧读。实现见 `src/tab_strip_anim.cpp`；启动点在 `SetTabs`（按 `TabStripItem::id` 配对旧左缘，顺序真变了才起表）。
 2. ~~**拖出成窗缺磁吸判定**~~ → **已落地（2026-11-27）**：`TabIsTearOff(dy, height, threshold)` 纯函数实现 Chromium `kVerticalDetachMagnetism` 语义（垂直越栏底 + `tabTearOffDy` 才算脱离；阈值 0 = 关闭磁吸）。拖拽路径经 `WM_APP_TAB_TEAROFF` 转投 `tab.move.window`，与菜单/热键同一实现；脱离期间整条换成「松开：移到新窗口」提示。
-3. **锁后导航语义**（文件管理器特有，Explorer++/Opus 是规格来源）：锁路径标签内点子目录 → 询问开新标签。**未做**。
+3. ~~**锁后导航语义**~~ → **已落地（2026-11-27）**：锁定路径标签内点子目录会弹询问框（留在原地 / 在此标签打开），拦截点是 `IExplorerBrowserEvents::OnNavigationPending`（唯一能截住 shell 内部导航的位置，返回失败码即取消导航）。判据收进纯函数 `pathutil::IsUnder`。详见 §7.4。
 4. **极窄窗口兜底**：minW 之下建议收纳下拉（WT 式）或保证选中标签始终可见（EnsureVisible 已有并留 margin，激活变化路径已覆盖）。**部分**：EnsureVisible 已修，收纳下拉未做。
 
 ## 4. 修复优先级（复审后不变，附影响面修正）
@@ -76,7 +76,7 @@
 | 第二 | M3（两三行）→ M2（夹取后重算 rects） | 快速连续关闭下的错误命中（用户可感知）与一帧错位 |
 | 第三 | M1 定夺语义（建议改注释就 Chrome 语义，不动实现免破单测） | 契约矛盾会传染给后续维护者 |
 | 第四 | L2/L9/L1 等卫生项 + L6/L7/L8（UIA 精确性） | 择机清 |
-| 第五 | 功能差距（拖拽动画 ✅ → 拖出成窗 ✅ → 锁导航语义 ⬜ → 切换器 ✅） | 新特性，见 §3.2；两项已落地（2026-11-27），锁导航待做 |
+| 第五 | 功能差距（拖拽动画 ✅ → 拖出成窗 ✅ → 锁导航语义 ✅ → 切换器 ✅） | 四项全落地（2026-11-27）；仅剩「极窄窗口收纳下拉」未做 |
 
 ## 5. 证据链
 
@@ -192,9 +192,43 @@
 - 目视验收待人工：拖拽换位看滑动、拖出栏体看提示条与成窗、设置 `tabTearOffDy=0`
   看磁吸关闭、`tabAnimMs=0` 看动画关闭。
 
-### 7.4 仍未做（下一批候选）
+### 7.4 锁后导航语义（2026-11-27 第二批）
 
-- **锁后导航语义**：锁路径标签内点子目录 → 询问开新标签（Explorer++/Opus 规格）。
-  需要 `ShellView` 导航前拦截点 + 一个询问弹层，是独立一批的量。
+**问题**：锁定（`tab.lock`）的语义是"这个标签钉在这个目录上"。但用户双击子目录时
+shell 会直接导航 —— 锁定形同虚设，用户回来发现钉住的标签已经跑到别处。
+
+**关键发现（决定了实现位置）**：`IExplorerBrowser` 没有 BeforeNavigate 事件，
+`ShellView::Navigate()` / `DoNavigate()` 只覆盖程序发起的导航；**双击文件夹这类
+shell 内部导航完全绕过它们**。唯一能拦住的位置是 `IExplorerBrowserEvents::
+OnNavigationPending` —— 微软文档明确："Returning any failure code from this method,
+including E_NOTIMPL, will cancel the navigation."
+
+**实现**：
+- `ShellView::SetNavGuard(fn)`：`std::function<bool(const std::wstring&)>`，
+  返回 false = 拦下。未设置时一律放行（不改变既有行为）。
+- `ShellView::ShouldBlockNavigation(pidl)`：把 pidl 解析成 `PidlName`（与 `path_`
+  同口径，避免 `C:\A` vs `C:\A\` 形式差异导致字符串比较落空），**同目录（刷新）
+  不拦** —— 否则 F5 会失效。拦下时返回 `E_ABORT` 而非 `E_NOTIMPL`：后者在日志里
+  与"未实现"混在一起，排查"点了没反应"会指向错误方向。
+- `App::GuardLockedNav(view, target)`：判据三条 —— ① 本窗格路径在
+  `Config::s().lockedPaths` 里（查路径表而非标签镜像，镜像可能滞后）；
+  ② 目标是锁定路径的**真子目录**（`pathutil::IsUnder`）；
+  ③ 目标不是锁定路径本身。三条都成立才弹询问框。
+- 询问用 `MB_YESNO`（默认按钮为"否"）：是 = 放行，否/关闭 = 留在原地。
+  不留"本次直接导航"这第三个选项 —— 绕过锁定的正路是显式解锁，不在弹框里开后门。
+
+**新增纯函数 `pathutil::IsUnder(child, parent)`**：真子路径判定。
+核心坑是分隔符：`C:\A` 是 `C:\AB` 的字符串前缀，但不是它的父目录 ——
+比较完前缀必须要求下一字符是分隔符。尾部反斜杠先统一去掉（`C:\A\` 与 `C:\A`
+是同一个目录）。大小写不敏感。
+
+**验证**：
+- 新增 16 条 `IsUnder` 断言（含前缀陷阱、方向反、不同盘、盘根作父、空串、正斜杠）。
+- **负向验证**：把「下一字符必须是分隔符」判据改成 `return true`，
+  `path_util_test` 立即报 FAIL（"前缀陷阱：C:\AB 不是 C:\A 的子路径"）——
+  证明判据不是空的。还原后复跑 PASS。
+
+### 7.5 仍未做（下一批候选）
+
 - **极窄窗口收纳下拉**（WT 式）：`EnsureVisible` 已修（留 margin），但窗口窄到
   minW 之下时仍只能横向滚动。
