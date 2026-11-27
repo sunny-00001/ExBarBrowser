@@ -87,7 +87,9 @@ data/settings.json.tmp
 data/settings.json.bak
 data/bookmarks.html
 data/keymap.json
-data/mouse.json
+# mouse.json 是随程序分发的出厂规则表（用户可直接改），必须入库并进发布包；
+# 开发者本机对它的改动若不想提交，用 git update-index --skip-worktree 局部屏蔽。
+# data/mouse.json  ← 有意不忽略
 data/aichat.json
 data/aichat.json.bak-*
 data/models.json

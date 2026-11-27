@@ -160,18 +160,27 @@ void MouseRules::LoadDefaults() {
 }
 
 void MouseRules::Load(const std::wstring& path) {
-    LoadDefaults();
-
+    // mouse.json 存在且解析成功时，文件是**唯一真相源**：完整接管规则表，
+    // 不再叠加内置默认。这样"删掉一条规则"= 禁用该行为，所见即所得。
+    // 只有文件缺失/损坏/结构不对时才回退内置默认（下面三个分支）。
     std::wstring text;
-    if (!tf::ReadText(path, &text)) return;
+    if (!tf::ReadText(path, &text)) {
+        LoadDefaults();
+        return;
+    }
     json::Value root;
     std::wstring err;
     if (!json::Parse(text, root, &err)) {
-        LogDbg(L"[mouse] 解析失败（%s）：%s", path.c_str(), err.c_str());
+        LogDbg(L"[mouse] 解析失败（%s）：%s，回退内置默认", path.c_str(), err.c_str());
+        LoadDefaults();
         return;
     }
     const json::Value* list = root.IsArray() ? &root : root.Find(L"rules");
-    if (!list || !list->IsArray()) return;
+    if (!list || !list->IsArray()) {
+        LogDbg(L"[mouse] 缺少 rules 数组（%s），回退内置默认", path.c_str());
+        LoadDefaults();
+        return;
+    }
 
     std::vector<MouseRule> user;
     for (const auto& v : list->arr) {
@@ -194,8 +203,8 @@ void MouseRules::Load(const std::wstring& path) {
         }
         user.push_back(std::move(r));
     }
-    // 用户规则放在内置规则之后：Find 从后往前找，用户配置优先
-    rules_.insert(rules_.end(), user.begin(), user.end());
+    // 文件里的规则顺序即最终顺序：Find 从后往前找，写在后面的同组合规则优先。
+    rules_ = std::move(user);
 }
 
 bool MouseRules::HasPointerRules(int button) const {

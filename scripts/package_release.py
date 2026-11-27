@@ -213,7 +213,9 @@ def build_manifest(stage: Path, version: str, epoch: int, created_utc: str) -> d
             "node": ">=18，PATH 或 EXBAR_NODE；仅 AI 面板需要",
         },
         "notes": [
-            "data/ state/ logs/ cache/ runtime/ 首次启动自动生成，不携带开发者配置、书签或密钥。",
+            "data/mouse.json 是随包分发的完整鼠标规则表，可直接编辑，删一条即禁用该行为。",
+            "data/ 下除 mouse.json 外的用户配置（settings/bookmarks/keymap/models 等）不随包分发，首次启动自动生成。",
+            "state/ logs/ cache/ runtime/ 首次启动自动生成，不携带开发者配置、书签或密钥。",
             "aichat.json / models.json / mcp.json 由 AI 服务首次启动写入 data/。",
             "WebView2Loader.dll 必须与 ExBarBrowser.exe 同目录。",
             "exe 的 PE 时间戳已归一化为 commit time，便于复核构件来源。",
@@ -265,13 +267,18 @@ def main() -> int:
     copy_file(LOADER_DLL, stage / "WebView2Loader.dll")
     stage_aichat(stage)
 
-    # 键位方案预设是随程序分发的只读资源（不是用户私有数据），必须进发布包，
-    # 否则 hotkey.preset.list/apply 在发布版只剩"程序默认"一项。
-    copy_file(ROOT / "data" / "keymap_presets.json", stage / "data" / "keymap_presets.json")
-    write_text(stage / "data" / "README.md", """data/ — 配置目录（首次启动自动生成其余文件）
+    # mouse.json 是随程序分发的完整出厂规则表：用户拿来就能用、可直接改，
+    # 删一条即禁用该行为（Load 在文件有效时完全接管，不再叠加内置默认）。
+    # 不进包的话用户既看不到有哪些规则，也不知道怎么写 —— 这是可发现性缺口。
+    copy_file(ROOT / "data" / "mouse.json", stage / "data" / "mouse.json")
 
-发布包里本目录有 keymap_presets.json（随程序分发的只读预设）与这个说明文件；
-其余文件首次启动自动生成。profile 根下按职责分层：
+    write_text(stage / "data" / "README.md", """data/ — 配置目录（随程序分发 mouse.json，其余首次启动生成）
+
+随包带一份完整的 mouse.json（鼠标规则表），拿来就能用，可直接编辑；
+删掉某条规则即禁用该行为（文件有效时不再叠加内置默认，文件缺失/损坏才回退）。
+键位规则只有一处真相：keymap.json（hotkeys + sequences），可直接编辑，
+缺失时回落到编译期内置默认（由 data/keymap.json 经 gen_keymap.py 生成）。
+profile 根下按职责分层：
   data/       settings.json / bookmarks.html / keymap.json / mouse.json
               aichat.json（AI 行为）/ models.json（模型与密钥）/ mcp.json
   state/      会话、历史、标签、窗口状态
@@ -306,7 +313,7 @@ def main() -> int:
   ExBarBrowser.exe      主程序（资源里已嵌入版本号 {version}）
   WebView2Loader.dll    WebView2 加载器，必须与 exe 同目录
   aichat/               AI 面板的 Node 服务与 Web UI（无第三方 npm 依赖）
-  data/                 配置（首次启动生成，含模型与密钥）
+  data/                 配置（随包带 mouse.json；其余首次启动生成，含模型与密钥）
   state/                会话/历史/标签/窗口状态（首次启动生成）
   logs/                 审计与事件日志（首次启动生成）
   cache/                WebView2 用户数据（可整体删除）
