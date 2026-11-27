@@ -296,6 +296,13 @@ HICON Cached(const std::wstring& path, bool small) {
     if (it != cache.end()) return it->second;
     HICON icon = Resolve(path, small);
     if (!icon) return nullptr;
+    // 【为什么只增不减、不设上限】每个 HICON 都是一个 USER 对象（每进程默认
+    // 上限 1 万），但调用方对 Cached 返回的句柄是"只借不销毁"：nav_bar 的
+    // leadIcon_、status_bar/app_stats 的 pathIcon 都是**跨帧成员**，菜单/弹层
+    // 借用期就更长。任何形式的清池（整池清空 / LRU 淘汰）都会 DestroyIcon 掉
+    // 别人仍持有的句柄 —— 轻则画错图，重则 DrawIcon 悬空崩溃。modal::Depth 只挡
+    // 得住模态弹层，挡不住这些跨帧成员。上限保护不能靠销毁已有句柄实现。
+    // 代价是缓存随"访问过的不同路径"增长；这是借用契约的必要成本。
     cache.emplace(key, icon);
     return icon;
 }

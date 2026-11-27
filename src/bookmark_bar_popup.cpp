@@ -9,6 +9,7 @@
 #include "folder_tree.h"
 #include "icon_resolve.h"
 #include "menu.h"
+#include "mouse_rules.h"   // CurrentMods：溢出菜单打开时按下的修饰键（与栏上同一口径）
 #include "platform_win.h"
 #include "prompt.h"
 #include "str.h"
@@ -95,9 +96,12 @@ void BookmarkBar::ShowEmptyMenu(POINT screen) {
         CommandBus::Get().Invoke(CmdId::BmkUndo, Args::Empty(), Actor::Ui());
         break;
     case 9:
+        // 【E24】这里问的具体（说明了可撤销），总线不再问第二遍。
         if (MessageBoxW(hwnd_, L"确定清除全部书签？可在“撤销删除”中恢复。", id::kBrandShort,
-                        MB_YESNO | MB_ICONWARNING) == IDYES)
+                        MB_YESNO | MB_ICONWARNING) == IDYES) {
+            CommandBus::Get().MarkConfirmedForNextCall();
             CommandBus::Get().Invoke(CmdId::BmkClearAll, Args::Empty(), Actor::Ui());
+        }
         break;
     case 6: {
         json::Value r;
@@ -156,7 +160,12 @@ void BookmarkBar::ShowOverflowMenu(POINT screen) {
         // 已经不在栏上的坐标展开（否则菜单会浮在半空，与鼠标位置无关）。
         ShowFolderMenu(idx, screen);
     } else {
-        Navigate(idx);
+        // 【E12 修复】这里原先直接 Navigate(idx)，于是"栏上 Ctrl+点开新标签、
+        // » 菜单里 Ctrl+点还是当前标签"—— 同一个书签两种行为。
+        // 修饰键在菜单 Show 返回后现读：ui::Menu 是纯 UI 组件，不该为了
+        // "这一下按没按 Ctrl"去改它的返回契约。
+        const std::wstring path = items_[static_cast<size_t>(idx)].path;
+        if (!OpenPathWithMods(path, CurrentMods())) Navigate(idx);
     }
 }
 
@@ -183,8 +192,15 @@ void BookmarkBar::ShowChildTree(int index) {
         // 没有子目录：空目录直接进去（与 mod 的 ShowFsMenuForPath 同口径 ——
         // 弹一个空菜单等于点了没反应）。文件类书签保持原行为，不动作。
         const DWORD attr = GetFileAttributesW(tf::ToExtended(it.path).c_str());
-        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) && onNavigate_)
-            onNavigate_(it.path);
+        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            // 【E26 修复】原先直接 onNavigate_，绕过命令总线（无审计、AI 侧看不到）
+            // 与修饰键语义。与栏上左键、» 菜单、分类弹层、键盘 Enter 走同一个
+            // 收口点 —— 这是"打开一个书签路径"的第五个触发点。
+            if (!OpenPathWithMods(it.path, CurrentMods()) && onNavigate_) {
+                onNavigate_(it.path);
+                if (refocus_) refocus_();
+            }
+        }
         return;
     }
     // toggleKey 用书签 id（不是下标）：重排之后同一个书签的下标会变，用下标会让
@@ -196,8 +212,12 @@ void BookmarkBar::ShowChildTree(int index) {
     // 弹层是模态的，回来时"光标下高亮"已经不成立，清掉避免残留
     hoverIcon_ = -1;
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
-    if (!picked.empty() && onNavigate_) {
-        onNavigate_(picked);
-        if (refocus_) refocus_();   // 同 Navigate：打开目录后焦点必须回视图
+    if (!picked.empty()) {
+        // 【E26 修复】同上面的空目录分支：树里选中的路径也是"打开一个书签路径"，
+        // 必须过收口点（修饰键 + 命令总线），不能直连 onNavigate_。
+        if (!OpenPathWithMods(picked, CurrentMods()) && onNavigate_) {
+            onNavigate_(picked);
+            if (refocus_) refocus_();   // 同 Navigate：打开目录后焦点必须回视图
+        }
     }
 }

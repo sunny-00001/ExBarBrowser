@@ -120,7 +120,13 @@ void TabStrip::ShowTabMenu(int index, POINT screen) {
         return;
     }
 
-    PostMessageW(parent_, WM_APP_TAB_MENU, static_cast<WPARAM>(index),
+    // 【w 传标签 id，不传下标】菜单是模态的：Show 期间 AI 通道的定时器仍会派发
+    // 命令（tab.close / tab.move），集合一变下标就指向别的标签 —— 用户点了
+    // "关闭"，实际关的是旁边那个。lParam 的动作号与下标无关，照旧。
+    const int tabId = (index >= 0 && index < static_cast<int>(items_.size()))
+                          ? items_[static_cast<size_t>(index)].id
+                          : -1;
+    PostMessageW(parent_, WM_APP_TAB_MENU, static_cast<WPARAM>(tabId),
                  static_cast<LPARAM>(action));
 }
 

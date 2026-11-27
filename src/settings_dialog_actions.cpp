@@ -5,8 +5,7 @@
 // 审计、同一个"写后回读"。手写控件若直接赋值字段，就会出现"界面能改、
 // 命令改不动"，而且那种不一致没有任何检查会报。
 //
-// 【失败必须说清原因】"点了没反应"是设置里最贵的体验。写失败时把命令层给的
-// 原因原样报在状态栏上 —— 名字写错、类型不符、超范围，要做的下一步完全不同。
+// 【失败必须说清原因】"点了没反应"是设置里最贵的体验。写失败时把命令层给的原因原样报在状态栏上。
 #include "settings_dialog.h"
 
 #include <algorithm>
@@ -33,16 +32,12 @@ std::wstring ValueLiteral(const json::Value& v) {
     }
 }
 
-// 左栏滚轮切分类的阈值：累计到这么多才切一次。
-// 不设阈值的话，一格滚轮会连跳好几个分类（鼠标轮一格常常就是 3 行 delta）。
+// 左栏滚轮切分类的阈值：累计到这么多才切一次。不设阈值的话，一格滚轮会连跳好几个分类。
 constexpr int kWheelStep = 40;
 
 // 弹层锚点：客户区矩形的左下角 → 屏幕坐标。
-//
-// 【为什么必须换两个点】RECT 是 {left, top, right, bottom}，前两个字段才恰好构成
-// 一个 POINT。以前把 RECT 强转成 POINT* 只映射 1 个点，于是 left/top 换了坐标系，
-// bottom 还留在客户区 —— 弹层纵向飘到其他行。这里显式换两个角，坐标语义不再
-// 依赖结构体内存布局，也不再出现 half-mapped 的RECT。
+// 【为什么必须换两个点】RECT 是 {left, top, right, bottom}，前两个字段才恰好构成一个 POINT。
+// 以前强转 POINT* 只映射 1 个点，bottom 留在客户区致弹层飘位；这里显式换两个角。
 POINT PopupAnchor(HWND hwnd, const RECT& rc) {
     POINT topLeft{rc.left, rc.top};
     POINT bottomRight{rc.right, rc.bottom};
@@ -101,18 +96,18 @@ void SettingsDialog::SetStatus(const std::wstring& msg, bool error) {
 
 // ---------------------------------------------------------------- 写入
 
-bool SettingsDialog::WriteValue(const std::wstring& key, const json::Value& value) {
+bool SettingsDialog::WriteValue(const std::wstring& key, const json::Value& value,
+                                const wchar_t* doneLabel) {
     json::Value args = json::Value::MakeObject();
     args.Set(L"key", json::Value::MakeStr(key));
     args.Set(L"value", value);
     if (CommandBus::Get().Invoke(CmdId::ConfigSet, Args::FromJson(args), Actor::Settings())) {
         badKey_.clear();   // 写入成功即清掉上一次的拒绝红框
-        // 【告警必须说出来】命令成功、值也生效了，但可能没写盘（数据目录只读 /
-        // settings.json 上次解析失败）。这时若只报"已执行"，用户下次启动会发现
-        // 设置自己变回去了 —— 而那次追溯不了。所以把命令层的告警接在成功消息后面，
-        // 并按错误着色：它不是成功的样子。
+        // 【告警必须说出来】命令成功但可能没写盘（数据目录只读 / settings.json 解析失败）。
+        // 只报"已执行"的话，用户下次启动会发现设置变回去；把命令层告警接在成功消息后并按错误着色。
         const std::wstring& warn = CommandBus::Get().lastWarning();
-        const std::wstring done = L"已执行 config.set " + key + L" = " + ValueLiteral(value);
+        const std::wstring done = (doneLabel ? std::wstring(doneLabel) : L"已执行 config.set ") + key +
+                                  L" = " + ValueLiteral(value);
         SetStatus(warn.empty() ? done : (done + L"（" + warn + L"）"), !warn.empty());
         RefreshValues();
         InvalidateRect(hwnd_, nullptr, FALSE);
@@ -181,8 +176,8 @@ void SettingsDialog::RestoreDefault() {
         SetStatus(L"取不到默认值：" + row->entry->key, true);
         return;
     }
-    if (WriteValue(row->entry->key, def))
-        SetStatus(L"已恢复默认值：config.set " + row->entry->key + L" = " + ValueLiteral(def));
+    // 统一由 WriteValue 回显以保留"没写盘"告警（原来另 SetStatus 会吞掉它）。
+    WriteValue(row->entry->key, def, L"已恢复默认值：config.set ");
 }
 
 void SettingsDialog::CopyKeyName() {
@@ -344,9 +339,10 @@ void SettingsDialog::OnClick(int x, int y) {
             // 行高档位也是菜单（ui::Menu 组装）：与枚举下拉同一条路径，
             // 勾选列的画法自然一致。
             ui::Menu menu;
+            // 档位值是逻辑像素，显示时过 DPI 缩放（与密度按钮/状态栏同口径）。
             for (int v : kRowHeights)
-                menu.AddChecked(L"行高 " + std::to_wstring(v), v == kRowHeights[density_], v,
-                                ico::IconId::None);
+                menu.AddChecked(L"行高 " + std::to_wstring(theme_->S(v)),
+                                v == kRowHeights[density_], v, ico::IconId::None);
 
             const POINT at = PopupAnchor(hwnd_, rcDensity_);
 
@@ -361,7 +357,7 @@ void SettingsDialog::OnClick(int x, int y) {
                 if (kRowHeights[i] == picked) density_ = i;
             Layout();
             InvalidateRect(hwnd_, nullptr, FALSE);
-            SetStatus(L"行高已切到 " + std::to_wstring(kRowHeights[density_]) + L" 像素");
+            SetStatus(L"行高已切到 " + std::to_wstring(RowHeight()) + L" 像素");
             return;
         }
         case 2:

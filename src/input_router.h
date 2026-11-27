@@ -28,6 +28,11 @@ struct BindingRow {
     bool implemented = false;
     bool isSequence = false;
     bool conflict = false;
+    // 真冲突：同键的对方**必然**互斥（派发时先到先得，后一条永远按不出来）。
+    // conflict 是"键位相同"这个粗判据，conflictHard 是"真的会互相吃掉"。
+    // 二者不同的唯一情形：同键但其中一条是"标签栏作用域的裸键"—— 它只在
+    // 焦点位于标签栏时生效，焦点在别处时让位，所以两者可以共存。
+    bool conflictHard = false;
     bool reserved = false;
     // 「这一行的键是从哪来的」——快捷键管理器的"来源"列要它。
     // 只有 custom / unbound 两个派生位，不足以反推出"默认键"：默认值可能是
@@ -101,7 +106,7 @@ public:
     void OnTimer(UINT_PTR id);
     void Cancel();
 
-    // 管理器
+    // ---- 管理器 ----
     const std::vector<BindingRow>& Rows() const { return rows_; }
     bool SetKeyForCommand(const std::wstring& command, const std::wstring& key);
     // 把一条命令的键位**还原成默认**：删掉它的覆盖项，而不是写空串/哨兵。
@@ -111,6 +116,35 @@ public:
     // keymap.json 的默认值 / 系统原生键。
     bool ResetKeyForCommand(const std::wstring& command);
     void ResetDefaults();
+
+    // ---- 批量改键（事务式）----
+    //
+    // 【为什么需要】上面三个写操作原来是"改一条 = Save() + Reload()"。Reload()
+    // 要重读 keymap.json、重建全部绑定、重建序列状态机（seq_.Reset()）、
+    // 隐藏序列提示 —— 于是"导入 20 条"是 20 次写盘 + 20 轮重建，而且每一轮
+    // 都会打断用户正在输入的序列。批量接口让这一批只在末尾落盘 + 重建一次。
+    //
+    // 用法（必须配对）：
+    //     router_.BeginBatch();
+    //     ... 多次 SetKeyForCommand / ResetKeyForCommand ...
+    //     router_.EndBatch();
+    // 嵌套是允许的（计数）；漏掉 EndBatch 的后果是"改了但没生效也没存"，
+    // 所以调用方优先用下面的 BatchScope（RAII 保证配对）。
+    void BeginBatch();
+    void EndBatch();
+
+    // RAII 包装：作用域结束时自动 EndBatch，异常/早退也不会漏。
+    class BatchScope {
+    public:
+        explicit BatchScope(InputRouter& r) : r_(r) { r_.BeginBatch(); }
+        ~BatchScope() { r_.EndBatch(); }
+        BatchScope(const BatchScope&) = delete;
+        BatchScope& operator=(const BatchScope&) = delete;
+
+    private:
+        InputRouter& r_;
+    };
+
     std::wstring StatusText() const;
 
     // 菜单行右端的快捷键文案（唯一取数口，给 ui::Menu 的解析器用）。
@@ -179,6 +213,12 @@ private:
     SequenceOverlay overlay_;
     std::function<void(const std::wstring&)> modeOpener_;
     std::vector<BindingRow> rows_;
+
+    // ---- 批量改键的事务状态 ----
+    int batchDepth_ = 0;      // >0 = 正在批次内（只改内存，不落盘）
+    bool batchDirty_ = false; // 这一批有没有真正改动过（没改就不必重建）
+    // 落盘 + 重建的唯一出口：批次内只标脏，批次外立即执行。
+    void CommitWrite();
 
     PendingClick pending_;
     POINT downPt_{};

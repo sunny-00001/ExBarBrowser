@@ -226,8 +226,12 @@ public:
     HRESULT STDMETHODCALLTYPE get_SelectionContainer(IRawElementProviderSimple** pRetVal) override;
 
     // ---- IInvokeProvider ----
+    // 【E23 修复】原先与 Select() 逐字相同（都发 kMsgSelect），于是"激活"退化成
+    // "只把焦点移过去"。UIA 里 Invoke 是"执行默认动作"，与 Select 不同：
+    // 标签栏 = 切到这个标签，书签栏 = 打开这个书签。由两栏各自的 kMsgInvoke
+    // 分支决定具体做什么（provider 与栏类型无关，不在这里判）。
     HRESULT STDMETHODCALLTYPE Invoke() override {
-        SendMessageW(hwnd_, uia::kMsgSelect, static_cast<WPARAM>(index_), 0);
+        SendMessageW(hwnd_, uia::kMsgInvoke, static_cast<WPARAM>(index_), 0);
         return S_OK;
     }
 

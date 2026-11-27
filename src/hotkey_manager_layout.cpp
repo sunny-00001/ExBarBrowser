@@ -10,29 +10,41 @@
 
 #include <algorithm>
 
+#include "config.h"
+#include "settings_bounds.h"
 #include "ui_draw.h"
 
 namespace {
 
 // 三栏的基础宽度（96 DPI 逻辑值）。左栏只放筛选项与计数，够放下"系统对话框"
 // 四个字 + 图标 + 计数；右栏要放下一个键位芯片与三四行说明。
-constexpr int kRailW96 = 190;
-constexpr int kDetailW96 = 270;
+//
+// 【为什么这几个数现在从 Config 读】它们以前是这里的 constexpr —— 用户看得见的
+// 界面却改不动，而"行距太挤""左栏太窄"正是最常被提的两条。现在落进 settings.json
+// （hkRowHeight / hkRailWidth / ...），走 settings_reg 的夹取与命令入口。
+// 常量只剩"中栏最小宽"这类**不是偏好而是下限**的值。
 constexpr int kMidMinW96 = 420;
 // 中栏表格的列宽：状态列要放下"系统占用"，芯片列要放下 "Ctrl+Shift+PageDown"。
 constexpr int kStatusW96 = 88;
 constexpr int kChipW96 = 152;
 constexpr int kScopeW96 = 88;
-// 行高 28px（96 DPI 逻辑值）。全库统一这一个数：中栏行、左栏筛选项、表头行
-// 三者以前分别是 30 / 32 / 26，视觉上"三段节奏不齐"——同一屏里三种行距，
-// 眼睛扫下来会觉得列表是歪的。28 是能放下 16px 图标 + 12px 文字的最小偶数。
-constexpr int kRowH96 = 28;
-constexpr int kTableHeadH96 = 28;
-constexpr int kStatusBarH96 = 28;
 constexpr int kPad96 = 12;
-// 顶部工具栏高度。它现在要同时容纳动作按钮与搜索框，所以比单行条高一档。
-constexpr int kToolbarH96 = 40;
-constexpr int kToolBtnH96 = 28;
+
+// 从配置读尺寸，并**夹在合法区间**。
+//
+// 【为什么要夹】config_io 读盘时已经夹过一次，但这里是运行期每次重排都会走的路：
+// 用户用 config.set 改了、或者有人直接改了内存里的 Settings，界面不该因此画出
+// 一个 0 高的工具栏。夹取用 settings_bounds.h 的同一对边界 —— 与命令 schema、
+// 与读盘端是同一份数字（三个地方各写一遍就是"设置自己变回去"的来源）。
+int CfgRowHeight() {
+    return std::clamp(Config::Get().s().hkRowHeight, kHkRowHeightMin, kHkRowHeightMax);
+}
+int CfgRailWidth() {
+    return std::clamp(Config::Get().s().hkRailWidth, kHkRailWidthMin, kHkRailWidthMax);
+}
+int CfgDetailWidth() {
+    return std::clamp(Config::Get().s().hkDetailWidth, kHkDetailWidthMin, kHkDetailWidthMax);
+}
 
 }  // namespace
 
@@ -45,6 +57,10 @@ constexpr int kToolBtnH96 = 28;
 // 命名空间里编不过；做成成员函数既满足访问权限，又保证只有一份实例。
 const HotkeyManager::ToolButton* HotkeyManager::ToolbarItems(int* count) {
     static const ToolButton kItems[] = {
+        // 两张表的开关（并排两颗，当前那颗填强调色）。
+        {kToolTabChord, ico::IconId::Keyboard, L"组合键", L"可改键的组合键表（回车改键 / Delete 清除）"},
+        {kToolTabSeq, ico::IconId::Bolt, L"序列键", L"多键序列表（只读参考：改 keymap.json 的 sequences）"},
+        {kToolNone, ico::IconId::None, L"", L""},   // 分隔
         {kToolEdit, ico::IconId::Edit, L"改键", L"为选中的命令录制新组合键（回车 / 双击行）"},
         {kToolClear, ico::IconId::Close, L"清除", L"解绑选中的命令（Delete）"},
         {kToolReset, ico::IconId::Undo, L"还原", L"把选中的命令还原成默认键位（F2）"},
@@ -55,6 +71,8 @@ const HotkeyManager::ToolButton* HotkeyManager::ToolbarItems(int* count) {
         {kToolCopyId, ico::IconId::Copy, L"复制 id", L"复制选中命令的 id（Ctrl+C）"},
         {kToolExport, ico::IconId::Export, L"导出", L"把自定义键位导出到剪贴板（JSON）"},
         {kToolImport, ico::IconId::Import, L"导入", L"从剪贴板导入键位覆盖（JSON）"},
+        {kToolNone, ico::IconId::None, L"", L""},   // 分隔
+        {kToolPreset, ico::IconId::Settings, L"方案", L"套用一套键位方案（资源管理器 / TC / Opus / Vim）"},
     };
     if (count) *count = static_cast<int>(std::size(kItems));
     return kItems;
@@ -62,23 +80,30 @@ const HotkeyManager::ToolButton* HotkeyManager::ToolbarItems(int* count) {
 
 void HotkeyManager::MinClientSize(const Theme& theme, int* w, int* h) {
     // 最小宽度 = 三栏 + 两条内边距（栏与栏之间不重叠，所以只加 pad 不加边框）。
-    if (w) *w = theme.S(kRailW96) + theme.S(kMidMinW96) + theme.S(kDetailW96);
-    // 最小高度 = 工具栏 + 中栏头 + 表头 + 8 行 + 状态栏 + 上下留白。
+    if (w) *w = theme.S(CfgRailWidth()) + theme.S(kMidMinW96) + theme.S(CfgDetailWidth());
+    // 最小高度 = 工具栏 + 表头 + 8 行 + 状态栏 + 上下留白。前四项各占**一行**，
+    // 所以写成一个行高乘 11 —— 行高改了它自动跟着走。以前这里还多算了一条
+    // "34"（那是搜索框独占中栏顶部时的残留），工具栏与行高统一后那条已经不存在了。
     // 8 行不是随手定的：短于这个高度，列表就只剩两三行，"筛选"这个动作
     // 看不到结果，界面等于坏了。
-    if (h) *h = theme.S(kToolbarH96) + theme.S(34) + theme.S(kTableHeadH96) +
-                theme.S(kRowH96) * 8 + theme.S(kStatusBarH96) + theme.S(24);
+    if (h) *h = theme.S(CfgRowHeight()) * 11 + theme.S(24);
 }
 
-int HotkeyManager::RowHeight() const { return theme_->S(kRowH96); }
+int HotkeyManager::RowHeight() const { return theme_->S(CfgRowHeight()); }
 
 void HotkeyManager::Layout() {
     if (!hwnd_ || !theme_) return;
     RECT rc{};
     GetClientRect(hwnd_, &rc);
-    const int pad = theme_->S(kPad96);
-    const int statusH = theme_->S(kStatusBarH96);
-    const int toolH = theme_->S(kToolbarH96);
+    // 工具栏、表头、行、状态栏**同高**：它们都是"一行"，只是内容不同。
+    //
+    // 【工具栏为什么不再有自己的高度】它以前是独立设置项（默认 40），于是
+    // 顶栏比列表每一行都高，两套节奏叠在同一屏里 —— 看着就是"工具栏胖了"。
+    // 一个数管到底之后，"工具栏比行高"这种不一致从结构上不可能出现；
+    // 想让整体更疏就调 hkRowHeight，四处一起变。
+    const int rowH = theme_->S(CfgRowHeight());
+    const int statusH = rowH;
+    const int toolH = rowH;
 
     statusBar_ = {0, rc.bottom - statusH, rc.right, rc.bottom};
     toolbar_ = {0, 0, rc.right, toolH};
@@ -88,14 +113,13 @@ void HotkeyManager::Layout() {
     const int top = toolH;
     const int topH = rc.bottom - statusH;
 
-    colA_ = {0, top, theme_->S(kRailW96), topH};
-    colC_ = {rc.right - theme_->S(kDetailW96), top, rc.right, topH};
+    colA_ = {0, top, theme_->S(CfgRailWidth()), topH};
+    colC_ = {rc.right - theme_->S(CfgDetailWidth()), top, rc.right, topH};
     colB_ = {colA_.right, top, colC_.left, topH};
 
     LayoutToolbar();
 
     // ---- 左栏：标题 + 筛选项 + 页脚计数 ----
-    searchBox_ = {};   // 搜索框在中栏，左栏没有
     railList_ = {colA_.left + theme_->S(6), colA_.top + theme_->S(44), colA_.right - theme_->S(6),
                  colA_.bottom - theme_->S(36)};
     railFoot_ = {colA_.left, colA_.bottom - theme_->S(34), colA_.right, colA_.bottom};
@@ -105,12 +129,13 @@ void HotkeyManager::Layout() {
     // 【搜索框为什么搬去工具栏】它原来是中栏顶部的一条独立头带，占掉一整行
     // 高度（~34px），而那一行只放了一个输入框与一颗录制按钮。搬到工具栏右端后
     // 省下这一整行给列表，且"搜索"与"动作"落在同一条视觉带上 —— 它们本来
-    // 就是同一件事的两半（找到它 → 改它）。head_ 保留为退化矩形（全零），
-    // 免得残留的绘制代码画在错误位置。
-    head_ = {};
-    recordBtn_ = {};   // 录制按钮随之移到工具栏（见 ToolbarItems）
-
-    tableHead_ = {colB_.left, colB_.top, colB_.right, colB_.top + theme_->S(kTableHeadH96)};
+    // 就是同一件事的两半（找到它 → 改它）。
+    //
+    // 【这里以前还有两行清零】`searchBox_ = {}` / `recordBtn_ = {}` 是搬家的残留：
+    // 它们在 LayoutToolbar() **之后**执行，把刚算好的录制按钮矩形抹成零 ——
+    // 于是那颗按钮既画不出来也点不到（PtInRect 对零矩形恒假），而代码里看着
+    // 像"已经挪到工具栏了"。搬走的东西就不要再在原处清一遍。
+    tableHead_ = {colB_.left, colB_.top, colB_.right, colB_.top + rowH};
     body_ = {colB_.left, tableHead_.bottom, colB_.right, colB_.bottom - theme_->S(6)};
 
     // 真正的 EDIT 落在画出来的圆角框里。左右各缩 2px 让圆角露出来，否则
@@ -135,39 +160,34 @@ void HotkeyManager::LayoutToolbar() {
     toolRects_.clear();
     int n = 0;
     const ToolButton* items = ToolbarItems(&n);
-    const int btnH = theme_->S(kToolBtnH96);
-    const int y = toolbar_.top + (toolbar_.bottom - toolbar_.top - btnH) / 2;
+    // 按钮高度 = 栏高减上下各 2px。栏高现在跟行高走（见 Layout），所以这里
+    // **必须由栏高推出来**，不能再挂一个独立常量 —— 行高调到 22 时那个常量
+    // 会让按钮顶出栏外，而界面上只表现为"按钮压着分隔线"。
+    const int barH = toolbar_.bottom - toolbar_.top;
+    const int btnH = std::max(theme_->S(16), barH - theme_->S(4));
+    const int y = toolbar_.top + (barH - btnH) / 2;
     // 分组内边距与组间距：组间距明显大于组内，才有"这是两组"的读法。
     const int padIn = theme_->S(4);
     const int padGroup = theme_->S(14);
     const int iconPx = theme_->iconSmall();
     int x = toolbar_.left + theme_->S(10);
 
-    // ---- 右端先占位：搜索框 + 录制按钮 ----
-    //
-    // 【为什么从右往左排】搜索框宽度要随窗口伸缩（它是"能打字的框"，
-    // 太窄就没法用），而动作按钮的宽度是内容决定的。所以先给右侧定量、
-    // 左侧按钮吃剩下的空间；反过来会让窄窗口下搜索框被压成一条缝。
-    const int recW = theme_->S(32);
-    const int searchW = std::max(theme_->S(140), theme_->S(220));
-    searchField_ = {toolbar_.right - theme_->S(10) - searchW - theme_->S(6) - recW, y,
-                    toolbar_.right - theme_->S(10) - recW, y + btnH};
-    recordBtn_ = {toolbar_.right - theme_->S(10) - recW, y, toolbar_.right - theme_->S(10),
-                  y + btnH};
-    // 窄窗口兜底：搜索框与按钮重叠时把搜索框整个收掉（按钮永远优先 ——
-    // 看不见搜索框只是不方便，看不见按钮是功能缺失）。
-    const int available = searchField_.left - x;
-    if (available < theme_->S(120)) {
-        searchField_ = {};
-        recordBtn_ = {};
-    }
-    // 搜索框的绘制矩形（与 EDIT 同一个来源，绘制层直接用这一份）。
-    searchBox_ = searchField_;
-
     HDC dc = GetDC(hwnd_);
     for (int i = 0; i < n; ++i) {
         const ToolButton& b = items[i];
-        if (b.id == kToolNone) {   // 分隔符：只占横向空间，由绘制层画一条竖线
+        if (b.id == kToolNone) {
+            // 分隔符：位置在布局里就定下来（画的时候直接用这一份）。
+            //
+            // 【为什么不再"画的时候从相邻按钮反推中点"】那套算法依赖"分隔符前面
+            // 恰好有 i 颗按钮"这个巧合才能按下标取到正确的矩形；加一颗按钮、
+            // 或两个分隔符相邻，就会取到别的按钮上（甚至越界）。
+            // 现在它跟按钮一样是一条记录，只是 id = kToolNone（命中时天然等于
+            // "没命中"），于是"有几颗按钮、几条线"两处不再各算一遍。
+            const int sx = x + padGroup / 2;
+            ToolRect tr;
+            tr.id = kToolNone;
+            tr.rc = {sx, toolbar_.top + theme_->S(6), sx + 1, toolbar_.bottom - theme_->S(6)};
+            toolRects_.push_back(tr);
             x += padGroup;
             continue;
         }
@@ -184,11 +204,40 @@ void HotkeyManager::LayoutToolbar() {
         x += w + theme_->S(2);
     }
     ReleaseDC(hwnd_, dc);
+
+    // ---- 右端：搜索框 + 录制按钮，吃按钮剩下的空间 ----
+    //
+    // 【顺序是"先按钮、后搜索框"】按钮宽度由内容定死（文字不能截），搜索框
+    // 能屈能伸，所以后者吃剩余。这里必须等按钮排完才知道剩多少 —— 以前是
+    // 先按固定 220 摆好搜索框、再看左侧够不够，于是加两颗按钮（表开关）之后
+    // 它要么压住按钮、要么整块消失，两种都不对。
+    //
+    // 【先缩后收】剩余空间不足 220 时按剩余给，低到 140 以下才整块收掉：
+    // 从"能打字"到"没有"之间应该有一段"窄但能用"，否则窗口稍微窄一点搜索框
+    // 就凭空消失，用户会以为搜索功能坏了。
+    const int rightIn = toolbar_.right - theme_->S(10);
+    const int recW = theme_->S(32);
+    const int gap = theme_->S(6);
+    recordBtn_ = {rightIn - recW, y, rightIn, y + btnH};
+    const int avail = recordBtn_.left - gap - x;
+    const int searchW = std::min(theme_->S(220), avail);
+    if (searchW < theme_->S(140)) {
+        // 按钮永远优先 —— 看不见搜索框只是不方便，看不见按钮是功能缺失。
+        searchField_ = {};
+        recordBtn_ = {};
+    } else {
+        searchField_ = {recordBtn_.left - gap - searchW, y, recordBtn_.left - gap, y + btnH};
+    }
 }
 
 bool HotkeyManager::ToolEnabled(int id) const {
     const Row* row = Selected();
     switch (id) {
+    case kToolTabChord:
+    case kToolTabSeq:
+        // 表开关永远可点：点当前这张表是"没有变化"，不是"不允许"。
+        // 禁用它会让用户以为另一张表也坏了。
+        return true;
     case kToolEdit:
     case kToolClear:
     case kToolReset:
@@ -205,9 +254,21 @@ bool HotkeyManager::ToolEnabled(int id) const {
         return totalCustom_ > 0;
     case kToolImport:
         return true;   // 能不能导入要看剪贴板内容，点下去再判并说清原因
-    default:
+    case kToolPreset:
+        // 方案与选中行无关：套用是整表动作，任何时候都该能点。
+        //
+        // 【这条曾经漏过】新增枚举没写分支时落到 default 的 false —— 按钮画成
+        // 禁用色，点上去什么都不发生。而"能不能点"与"点了做什么"在两个文件里
+        // （layout / actions），编译期不会提示漏了哪一个。
+        return true;
+    case kToolNone:
+        // 分隔符不是按钮，永远不可点。显式列出它，是为了让上面每一个 ToolId
+        // 都出现在 case 里 —— 这样新增枚举项时 -Wswitch 会报"未处理"，
+        // 而不是静默落到 default。
         return false;
     }
+    // 走到这里说明枚举加了新值却没加 case。-Wswitch 已经会报，这里再兜一层。
+    return false;
 }
 
 int HotkeyManager::HitTool(int x, int y) const {
@@ -293,9 +354,9 @@ void HotkeyManager::LayoutRight() {
     y = detail_.cmd.bottom + theme_->S(14);
     detail_.keyLabel = {l, y, r, y + lineH};
     y = detail_.keyLabel.bottom + theme_->S(4);
-    // 键位芯片高度与列表行同高（kRowH96）：芯片是"一行里的那个东西"，
+    // 键位芯片高度与列表行同高：芯片是"一行里的那个东西"，
     // 它比行还高的话，右栏的芯片与中栏的芯片看起来就不是同一种控件。
-    detail_.keyChip = {l, y, r, y + theme_->S(kRowH96)};
+    detail_.keyChip = {l, y, r, y + theme_->S(CfgRowHeight())};
     y = detail_.keyChip.bottom + theme_->S(10);
     detail_.meta = {l, y, r, y + lineH};
     y = detail_.meta.bottom + theme_->S(2);

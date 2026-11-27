@@ -98,9 +98,15 @@ int SettingsDialog::GroupIndex(const std::wstring& key) const {
 // 搜索框的原始文字。
 std::wstring SettingsDialog::SearchRawText(HWND edit) {
     if (!edit) return std::wstring();
-    wchar_t buf[128] = L"";
-    GetWindowTextW(edit, buf, 128);
-    return std::wstring(buf);
+    // 两步：先取长度再取文本。固定长度缓冲区会静默截断 —— 搜索词一长，
+    // 实际参与匹配的只是前若干个字符，而界面上看起来是"搜不到"。
+    // 与 hotkey_manager 的 SearchRawText 同一条口径（单一实现的精神）。
+    const int len = GetWindowTextLengthW(edit);
+    if (len <= 0) return std::wstring();
+    std::wstring buf(static_cast<size_t>(len), L'\0');
+    const int got = GetWindowTextW(edit, buf.data(), len + 1);
+    buf.resize(got > 0 ? static_cast<size_t>(got) : 0u);
+    return buf;
 }
 
 // 从控件读一次搜索文字，存进缓存。

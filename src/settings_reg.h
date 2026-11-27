@@ -60,7 +60,7 @@ const char* KindName(Kind k);
 // 一个可选值（枚举项）。
 //
 // 【为什么显示名与取值要分开】界面显示中文，落盘与命令用稳定标识。
-// tabNewPos 显示"最右"，存的是 "right"；viewMode 显示"详细信息"，存的是 5。
+// tabNewPos 显示"最右"，存的是 "end"（旧 "right" 读入时归一）；viewMode 显示"详细信息"，存的是 5。
 // 合成一串（"right=最右"）会让取值本身变成中文，settings.json 的键名契约
 // 就被界面文案绑住了 —— 换个说法就得改数据。
 struct Option {

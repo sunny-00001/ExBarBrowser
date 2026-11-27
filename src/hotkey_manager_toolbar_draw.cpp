@@ -22,20 +22,14 @@ void HotkeyManager::PaintToolbar(HDC dc) {
     const int iconPx = theme_->iconSmall();
     const int radius = theme_->radiusBtn();
 
+    // 分隔符：矩形在布局里就算好了（id = kToolNone 的那几条），这里照画。
+    for (const ToolRect& tr : toolRects_) {
+        if (tr.id == kToolNone) ui::DrawSeparator(dc, tr.rc, true, theme_->line);
+    }
+
     for (int i = 0; i < n; ++i) {
         const ToolButton& b = items[i];
-        if (b.id == kToolNone) {
-            // 分隔：画一条竖线。位置取相邻两颗按钮之间的中点 ——
-            // 不在表里存坐标，于是加/删按钮时分隔线自动跟着走。
-            if (i > 0 && i + 1 < n) {
-                const RECT& prev = toolRects_[static_cast<size_t>(i - 1)].rc;
-                const RECT& next = toolRects_[static_cast<size_t>(i)].rc;
-                const int x = (prev.right + next.left) / 2;
-                RECT vs{x, toolbar_.top + theme_->S(8), x + 1, toolbar_.bottom - theme_->S(8)};
-                ui::DrawSeparator(dc, vs, true, theme_->line);
-            }
-            continue;
-        }
+        if (b.id == kToolNone) continue;   // 分隔符已在上面画过
         // 分隔符占了一个下标但不在 toolRects_ 里，所以按下标取矩形会错位 ——
         // 按 id 找。按钮数是个位数，线性找比维护映射表更不容易错。
         RECT rc{};
@@ -48,8 +42,27 @@ void HotkeyManager::PaintToolbar(HDC dc) {
         const bool enabled = ToolEnabled(b.id);
         const bool hot = hoverTool_ == b.id;
         const bool isPrimary = (b.id == kToolEdit);
+        // 表开关：当前这张表填强调色。
+        //
+        // 【为什么用"填色"而不是"按下态"】它表达的是**当前状态**（我在看哪张表），
+        // 与录制按钮开着时整颗转强调色是同一套读法。反过来用"凹陷/描边"表达，
+        // 用户得先知道"这两颗是互斥开关"才看得懂。
+        const bool isTab = (b.id == kToolTabChord || b.id == kToolTabSeq);
+        const bool on = (b.id == kToolTabChord && tableType_ == kTypeChord) ||
+                        (b.id == kToolTabSeq && tableType_ == kTypeSeq);
 
-        if (!enabled) {
+        if (isTab) {
+            if (on) {
+                ui::FillRound(dc, rc, theme_->accent, radius);
+            } else if (hot) {
+                ui::FillRound(dc, rc, theme_->hover, radius);
+            } else {
+                // 未选中的那颗也给一层底与描边：两颗并排时，只有一颗有形状会让
+                // 人以为另一颗是标签而不是按钮。
+                ui::FillRound(dc, rc, theme_->editBg, radius);
+                ui::FrameRectColor(dc, rc, theme_->editBorder);
+            }
+        } else if (!enabled) {
             // 禁用态不画底：一条灰字已经说明"现在不能用"，
             // 再给它一块底会让人以为可以点。
         } else if (hot) {
@@ -62,7 +75,8 @@ void HotkeyManager::PaintToolbar(HDC dc) {
         }
 
         COLORREF fg = theme_->text;
-        if (!enabled) fg = theme_->disabled;
+        if (isTab) fg = on ? theme_->selSolidFg : theme_->sub;
+        else if (!enabled) fg = theme_->disabled;
         else if (hot && isPrimary) fg = theme_->selSolidFg;
         else if (isPrimary) fg = theme_->accent;
 

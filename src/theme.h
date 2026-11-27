@@ -191,6 +191,10 @@ struct Theme {
     HBRUSH brSelSolid{};
     HBRUSH brAccent{};
     HBRUSH brViewBg{};   // 视图区容器窗口类的背景刷（比窗口活得久）
+    // 最近一次 ApplyToViewArea 的窗口。Shutdown 删 brViewBg 之前要把类背景刷
+    // 复位，否则类里留着一个已删除的句柄（Reload 期间是危险窗口）。
+    // 存 HWND 而不是每次 FindWindow：本函数在 UI 线程，窗口句柄稳定。
+    HWND viewArea_{};
 
     HFONT font{};
     HFONT fontBold{};

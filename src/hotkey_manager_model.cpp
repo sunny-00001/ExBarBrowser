@@ -74,7 +74,9 @@ void HotkeyManager::RebuildRows() {
             row.status = kUnimplemented;
         } else if (!r.isSequence && r.reserved) {
             row.status = kReserved;
-        } else if (!r.isSequence && r.conflict) {
+        } else if (!r.isSequence && r.conflictHard) {
+            // 只把"真会互斥"的算冲突。键位相同但可共存的不进这一档 ——
+            // 否则"有冲突"这一组里一半是误报，用户会开始忽略它。
             row.status = kConflict;
         } else {
             row.status = kOk;
@@ -87,6 +89,11 @@ void HotkeyManager::RebuildRows() {
     // 【为什么要给出名字而不是一个 bool】"冲突"这一列只说明"有问题"，
     // 用户接下来必然要问"跟谁冲"。让他自己去 281 行里找是这一列最没用的形态；
     // 右栏直接写"还与「关闭标签」共用"，才叫把信息给全。
+    //
+    // 【为什么分两级】"键位相同"不等于"真的会互相吃掉"：派发路径里唯一的作用域
+    // 过滤是"标签栏作用域的裸键只在焦点位于标签栏时生效"。所以同键但恰有一条
+    // 是标签栏裸键时，两者**可以共存**——把它标成红字"冲突"会让用户去修一个
+    // 根本不需要修的东西，而真正该修的（两条都带 Ctrl）淹没在一片红里。
     std::map<std::wstring, std::vector<int>> byChord;
     for (int i = 0; i < static_cast<int>(rows_.size()); ++i) {
         const Row& row = rows_[static_cast<size_t>(i)];
@@ -101,8 +108,18 @@ void HotkeyManager::RebuildRows() {
             Row& row = rows_[static_cast<size_t>(i)];
             for (int j : kv.second) {
                 if (j == i) continue;
-                if (!row.peers.empty()) row.peers += L" · ";
-                row.peers += rows_[static_cast<size_t>(j)].src.title;
+                const Row& peer = rows_[static_cast<size_t>(j)];
+                // 只把"真会互斥"的对方写进 peers。可共存的（标签栏裸键 vs 其它）
+                // 单独用 softPeers 说明，颜色也不同。
+                if (row.src.conflictHard && peer.src.conflictHard) {
+                    if (!row.peers.empty()) row.peers += L" · ";
+                    row.peers += peer.src.title;
+                } else if (!row.softPeers.empty()) {
+                    row.softPeers += L" · ";
+                    row.softPeers += peer.src.title;
+                } else {
+                    row.softPeers += peer.src.title;
+                }
             }
         }
     }
@@ -118,25 +135,26 @@ void HotkeyManager::RebuildRows() {
 
 void HotkeyManager::RebuildGroups() {
     groups_.clear();
-    // 前两组是**表切换**（组合键 / 序列键），不是筛选：点它们换的是整张表。
+    // 筛选项跟着**当前表**长，不再有"组合键 / 序列键"这两项 —— 切表是工具栏上
+    // 的两颗开关（SetTableType），左栏只负责"在当前表里筛"。
     //
-    // 【为什么摆在最前面且带图标】它们回答的是"我在看哪一类东西"这个最根本的
-    // 问题。放在筛选项中间（原来的做法）时，用户会以为"序列键"只是"全部命令"
-    // 的一个子集 —— 而实际上它是另一张表，行数比组合键还多。
-    int chordCount = 0;
-    int seqCount = 0;
-    for (const Row& r : rows_) {
-        if (r.sequence) ++seqCount;
-        else ++chordCount;
+    // 【为什么筛选项也要分表】"已自定义 / 有冲突"是覆盖表的概念，序列键整表只读、
+    // 没有覆盖项也没有冲突分级。以前这两项在序列表里恒为 0，点进去是一张空表 ——
+    // 那是把"这张表没有这个维度"错说成"这一类一条都没有"。
+    const bool seq = (tableType_ == kTypeSeq);
+    int tableTotal = 0;
+    for (const Row& r : rows_)
+        if (r.sequence == seq) ++tableTotal;
+    groups_.push_back({L"all", L"全部", ico::IconId::ListView, tableTotal, 0});
+    if (!seq) {
+        groups_.push_back({L"custom", L"已自定义", ico::IconId::Edit, totalCustom_, 0});
+        groups_.push_back({L"conflict", L"有冲突", ico::IconId::Lock, totalConflict_, 0});
     }
-    groups_.push_back({L"all", L"组合键", ico::IconId::Keyboard, chordCount, 0});
-    groups_.push_back({L"sequence", L"序列键", ico::IconId::Bolt, seqCount, 0});
-    groups_.push_back({L"custom", L"已自定义", ico::IconId::Edit, totalCustom_, 0});
-    groups_.push_back({L"conflict", L"有冲突", ico::IconId::Lock, totalConflict_, 0});
 
-    // 范围：按实际出现的值收集，再按固定顺序排。
+    // 范围：按**当前表**实际出现的值收集，再按固定顺序排。
     std::vector<std::wstring> names;
     for (const Row& r : rows_) {
+        if (r.sequence != seq) continue;
         if (std::find(names.begin(), names.end(), r.src.scope) == names.end())
             names.push_back(r.src.scope);
     }
@@ -147,8 +165,8 @@ void HotkeyManager::RebuildGroups() {
     for (const std::wstring& n : names) {
         int total = 0;
         for (const Row& r : rows_)
-            if (r.src.scope == n && !r.sequence) ++total;   // 范围组只数组合键
-        if (total == 0) continue;   // 序列表里没有的 scope 不进范围组（避免空组）
+            if (r.sequence == seq && r.src.scope == n) ++total;
+        if (total == 0) continue;   // 空组不进左栏（点进去什么都没有）
         groups_.push_back({L"scope:" + n, n, ScopeIcon(n), total, 0});
     }
 }
@@ -182,8 +200,6 @@ void HotkeyManager::Refilter() {
             inGroup = r.custom || r.unbound;
         } else if (group_ == L"conflict") {
             inGroup = r.status == kConflict;
-        } else if (group_ == L"sequence") {
-            inGroup = r.sequence;
         } else if (str::IStartsWith(group_, L"scope:")) {
             inGroup = r.src.scope == group_.substr(6);
         }
@@ -225,6 +241,9 @@ void HotkeyManager::Refilter() {
     for (Group& g : groups_) {
         int hits = 0;
         for (const Row& r : rows_) {
+            // 表过滤必须在最前：否则"全部"的命中数会把另一张表的行也算进来，
+            // 界面显示"命中 12"而列表只有 5 条 —— 用户会以为搜索漏了行。
+            if (r.sequence != (tableType_ == kTypeSeq)) continue;
             if (!Matches(r)) continue;
             bool inGroup = false;
             if (g.id == L"all") {
@@ -233,8 +252,6 @@ void HotkeyManager::Refilter() {
                 inGroup = r.custom || r.unbound;
             } else if (g.id == L"conflict") {
                 inGroup = r.status == kConflict;
-            } else if (g.id == L"sequence") {
-                inGroup = r.sequence;
             } else if (str::IStartsWith(g.id, L"scope:")) {
                 inGroup = r.src.scope == g.id.substr(6);
             }
@@ -300,23 +317,40 @@ void HotkeyManager::SetSort(SortKey key) {
 
 void HotkeyManager::SetGroup(const std::wstring& id) {
     if (group_ == id) return;
-    group_ = id;
-    // 表类型跟着筛选项走：点"组合键"/"序列键"就是切表。
+    // 只改筛选，**不改表**。表由 SetTableType 管（工具栏那两颗开关）。
     //
-    // 【为什么在这里收口】group_ 与 tableType_ 是两个必须一致的状态 ——
-    // 若某条路径只改了 group_（比如"序列键"组）而没改 tableType_，
-    // 第一道筛（按表类型）会把所有行滤掉，用户看到的是一张空表。
-    // 所以"改 group_" 只允许经过这一个函数。
-    if (id == L"sequence") {
-        tableType_ = kTypeSeq;
-    } else {
-        // 其余分组（组合键/已自定义/有冲突/各范围）都只在组合键表里生效。
-        // 序列表是整表只读的参考信息，没有"自定义/冲突"这两个维度。
-        tableType_ = kTypeChord;
+    // 【为什么要拆】以前这里兼任"点序列键就切表"，于是 group_ 与 tableType_
+    // 是同一次点击写下的两个状态，必须靠注释维持"两者一致"。现在切表只有一个
+    // 写入点，"改 group_ 忘了改 tableType_"这种空表故障从结构上不可能发生。
+    bool exists = false;
+    for (const Group& g : groups_) {
+        if (g.id == id) { exists = true; break; }
     }
+    if (!exists) return;   // 不认识的组（换表后残留的旧 id）一律忽略，别把列表清空
+    group_ = id;
     status_.clear();
     statusError_ = false;
     Refilter();
+    Layout();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void HotkeyManager::SetTableType(RowType t) {
+    if (tableType_ == t) return;
+    tableType_ = t;
+    // 换表要清三样东西，少一样就会留下一块"指向旧表"的状态：
+    //   · 筛选 —— 旧表的分组在新表里可能不存在（"已自定义"在序列表里没有），
+    //     留着它 Refilter 会滤出一张空表；
+    //   · 选中 —— 旧表的行不在新表里，右栏会显示一条"列表里找不到"的详情；
+    //   · 多选 —— 同上，而且后面的批量动作会作用到看不见的行上。
+    group_ = L"all";
+    selSetting_.clear();
+    multiSel_.clear();
+    anchorView_ = -1;
+    status_.clear();
+    statusError_ = false;
+    RebuildGroups();   // 筛选项的集合本身跟着表变
+    Refilter();        // 内部会把选中项跟到第一条可见行
     Layout();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }

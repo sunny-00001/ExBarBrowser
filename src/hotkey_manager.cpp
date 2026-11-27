@@ -9,7 +9,11 @@
 // "点键位芯片没反应、点下一行反而开始改键"，极难查。
 #include "hotkey_manager.h"
 
+#include <algorithm>
+
+#include "config.h"
 #include "platform_win.h"
+#include "settings_bounds.h"
 #include "str.h"
 #include "ui_draw.h"
 
@@ -26,8 +30,13 @@ bool HotkeyManager::Create(HWND owner, const Theme& theme, InputRouter& router) 
     // 当普通按下再发一次，双击就成了"选中两次"。
     if (!win::RegisterClassOnce(id::kHotkeysClass, WndProc, CS_DBLCLKS)) return false;
 
-    const int w = theme.S(1120);
-    const int h = theme.S(720);
+    // 初始尺寸从设置读（hkWindowWidth/Height）：这是"下次打开时多大"的偏好，
+    // 而不是运行期约束。夹取在这里也做一次 —— 手改过 settings.json 的人
+    // 不该得到一个 2400 宽的窗口跑到屏幕外。
+    const int w = theme.S(std::clamp(Config::Get().s().hkWindowWidth, kHkWinWidthMin,
+                                     kHkWinWidthMax));
+    const int h = theme.S(std::clamp(Config::Get().s().hkWindowHeight, kHkWinHeightMin,
+                                     kHkWinHeightMax));
     RECT orc{};
     if (owner) GetWindowRect(owner, &orc);
     if (orc.right - orc.left <= 0) {

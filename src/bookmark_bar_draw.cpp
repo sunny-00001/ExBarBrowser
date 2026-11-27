@@ -48,6 +48,14 @@ void BookmarkBar::Layout() {
     const int ovfRight = fullRight - ovfW - ovfGap;
     overflow_ = total > (fullRight - margin);
     viewRight_ = overflow_ ? ovfRight : fullRight;
+    // 【窄窗口夹取】viewRight_ 必须是"可视区右缘"，为负就没有可视区可言。
+    // 窗口最小宽 560 让常态够不着，但栏高/边距可配、多显示器 DPI 混用、
+    // 以及宿主在某些过渡态给的极小客户区都能构造出来。负值会往下游传成：
+    //   · IntersectClipRect(mem, 0, 0, -24, …) 传负右边界（GDI 行为未定义）；
+    //   · ovfRc_ 的 left > right（倒置矩形），HitOverflow 与绘制都失去意义。
+    // 夹到 0 之后所有下游判据自动成立（BmkInView 全 false、画不出东西），
+    // 不需要在每个消费点各加一次防御。
+    if (viewRight_ < 0) viewRight_ = 0;
 
     // 内容末端与滚动无关（= 左边距 + 内容宽），先算出来才能定滚动上限。
     const int contentEnd = margin + total;
@@ -67,9 +75,15 @@ void BookmarkBar::Layout() {
                                 items_[i].rc.left + padX + iconW, items_[i].rc.bottom};
         x += widths[i] + theme_->S(1);
     }
-    ovfRc_ = overflow_ ? RECT{rc.right - margin - ovfW, theme_->S(2), rc.right - margin,
-                              rc.bottom - theme_->S(2)}
+    // » 按钮矩形。窄窗口下 fullRight 可能小于 0（连边距都放不下），此时
+    // left > right 是倒置矩形：HitOverflow 会返回 false（正确），但绘制端
+    // FillRect/DrawGlyph 拿到倒置矩形属于未定义行为。夹成空矩形（left == right）
+    // 让"没有按钮"成为唯一解释。
+    ovfRc_ = overflow_ ? RECT{std::max<LONG>(0, rc.right - margin - ovfW), theme_->S(2),
+                              std::max<LONG>(0, rc.right - margin), rc.bottom - theme_->S(2)}
                        : RECT{};
+    if (ovfRc_.right < ovfRc_.left) ovfRc_.right = ovfRc_.left;
+    if (ovfRc_.bottom < ovfRc_.top) ovfRc_.bottom = ovfRc_.top;
 
     ReleaseDC(hwnd_, dc);
     RebuildTooltip(hwnd_);
@@ -155,8 +169,17 @@ void BookmarkBar::Paint(HWND h) {
         // 与资源管理器/Opus 的收藏栏一致：给一行浅色提示文本。
         if (items_.empty()) {
             RECT tr{theme_->S(10), 0, rc.right - theme_->S(10), rc.bottom};
-            ui::DrawTextRow(mem, theme_->font,
-                            L"书签栏（Ctrl+D 收藏当前目录，Ctrl+B 聚焦本栏）", tr, theme_->disabled,
+            // 【键名现查，不写死】原本文案固定写 "Ctrl+D 收藏 / Ctrl+B 聚焦"。
+            // 而这两个键都可在快捷键管理器里改（hotkeyAddBookmark /
+            // hotkeyFocusBookmarkBar）—— 改完之后提示指向的键按下去没反应，
+            // 是比不提示更糟的谎。这里向注入的取数口现问一次，没绑就不提。
+            const std::wstring kAdd = shortcutFor_ ? shortcutFor_(CmdId::BmkAddCurrent) : L"";
+            const std::wstring kFocus = shortcutFor_ ? shortcutFor_(CmdId::BmkFocus) : L"";
+            std::wstring hint = L"书签栏";
+            if (!kAdd.empty()) hint += L"（" + kAdd + L" 收藏当前目录";
+            if (!kFocus.empty()) hint += (kAdd.empty() ? L"（" : L"，") + kFocus + L" 聚焦本栏";
+            if (!kAdd.empty() || !kFocus.empty()) hint += L"）";
+            ui::DrawTextRow(mem, theme_->font, hint, tr, theme_->disabled,
                             DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
 
@@ -222,7 +245,7 @@ void BookmarkBar::Paint(HWND h) {
                 gx = b.left - theme_->S(1) / 2;
                 if (gx < a.right) gx = (a.right + b.left) / 2;  // 间隙被裁剪时取中线
             }
-            RECT bar{gx, theme_->S(3), gx + theme_->S(2), rc.bottom - 2};
+            RECT bar{gx, theme_->S(3), gx + theme_->S(2), rc.bottom - theme_->S(2)};
             ui::FillRectColor(mem, bar, theme_->accent);
         }
 

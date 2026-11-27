@@ -126,6 +126,15 @@ void App::RegisterConfigCommands() {
         // 两条栏的提示窗最大宽：tooltip 在 ReloadTheme 里按配置重建。
         if (key == L"bookmarkBarTooltipWidth") bookmarkBar_.ReloadTheme();
         if (key == L"statusBarTooltipWidth") statusBar_.ReloadTheme();
+        // 快捷键管理器面板尺寸（hkRowHeight / hkRailWidth / hkDetailWidth /
+        // hkWindowWidth / hkWindowHeight）。工具栏、表头、状态栏都吃 hkRowHeight。
+        //
+        // 【为什么必须在这里推一次】它的 Layout() 是**按配置现算**的，但没人叫它
+        // 就不会重排 —— 表现是"config.set hkRowHeight 32 返回 ok、界面还是 28"，
+        // 而这类"命令成功但没变化"最难排查（看起来像命令没生效）。
+        // 窗口宽高只影响下次打开的初始尺寸，不必动已开的窗口（用户的窗口大小
+        // 是他自己调的，被一次设置覆盖掉是越权）。
+        if (cfgapply::AffectsHotkeyPanel(key)) hotkeyManager_.ReloadTheme();
         if (cfgapply::AffectsActiveView(key)) {
             ApplyPersistedViewState(ActiveShellViewHost());
             ApplyPaneChrome();
@@ -270,7 +279,25 @@ void App::RegisterConfigCommands() {
         json::Value applied = json::Value::MakeArray();
         json::Value failed = json::Value::MakeArray();
         int total = 0;
-        for (const auto& kv : bag->obj) {
+        // 跨字段约束有先后：tabMinWidth 不得高于 tabMaxWidth，二者的校验都在
+        // 写入这一刻读对方的当前值。导出文件按表的顺序（min 在 max 前）排列，
+        // 逐项还原时会拿"还没还原的旧 max"去校验新的 min —— 合法的一对
+        // （300/420）在默认机器（112/230）上就会先拒掉 min，再设 max，
+        // 结果是 112/420 却报成功。这里把有依赖的两项排序：上限先行、下限后置，
+        // 其余保持文件里的原序（stable_sort 保证）。判据只在这一处，不碰校验本身。
+        std::vector<std::pair<std::wstring, json::Value>> ordered;
+        ordered.reserve(bag->obj.size());
+        for (const auto& kv : bag->obj) ordered.emplace_back(kv.first, kv.second);
+        auto importOrder = [](const std::wstring& key) {
+            if (key == L"tabMaxWidth") return 0;   // 上限先放宽
+            if (key == L"tabMinWidth") return 1;   // 下限后收紧
+            return 2;
+        };
+        std::stable_sort(ordered.begin(), ordered.end(),
+                         [&](const auto& a, const auto& b) {
+                             return importOrder(a.first) < importOrder(b.first);
+                         });
+        for (const auto& kv : ordered) {
             ++total;
             // key 不存在 / 只读：在这里就拒掉，别让 config.set 去报一个更绕的错。
             const settings_reg::Entry* e = settings_reg::Find(kv.first);

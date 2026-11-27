@@ -18,6 +18,7 @@
 #include "commands.h"
 #include "icon_resolve.h"
 #include "menu.h"
+#include "mouse_rules.h"   // CurrentMods：分类弹层打开时按下的修饰键（与栏上同一口径）
 #include "platform_win.h"
 #include "prompt.h"
 #include "str.h"
@@ -196,9 +197,18 @@ void BookmarkBar::ShowFolderContents(const std::wstring& folderId, POINT screen,
             current = ids[static_cast<size_t>(pick)];
             continue;
         }
-        if (!paths[static_cast<size_t>(pick)].empty() && onNavigate_) {
-            onNavigate_(paths[static_cast<size_t>(pick)]);
-            if (refocus_) refocus_();   // 同 Navigate：打开目录后焦点必须回视图
+        if (!paths[static_cast<size_t>(pick)].empty()) {
+            // 【E13 修复】这里原先直接 onNavigate_，于是"分类弹层里点书签"
+            // 既不认 Ctrl/Shift、也不进命令总线（无审计、AI 侧看不到这次导航）。
+            // 与栏上、» 菜单走同一个收口点后，三个入口的行为才一致。
+            //
+            // 修饰键在菜单 Show 返回后现读：ui::Menu 不为了"这一下按没按 Ctrl"
+            // 去改返回契约（同 ShowOverflowMenu 的理由）。
+            if (!OpenPathWithMods(paths[static_cast<size_t>(pick)], CurrentMods()) &&
+                onNavigate_) {
+                onNavigate_(paths[static_cast<size_t>(pick)]);
+                if (refocus_) refocus_();   // 同 Navigate：打开目录后焦点必须回视图
+            }
         }
         return;
     }
@@ -314,8 +324,9 @@ void BookmarkBar::ShowCategoryItemMenu(const std::wstring& folderId, int row, PO
         break;
     }
     case 8:
-        if (MessageBoxW(hwnd_, (L"删除书签“" + item.name + L"”？").c_str(), id::kBrandShort,
-                        MB_YESNO | MB_ICONQUESTION) == IDYES) {
+        // 删除单条书签不弹确认（用户明确要求）：bmk.remove 在白名单里，
+        // 误删可从「撤销删除」恢复。不需要 MessageBoxW / MarkConfirmedForNextCall。
+        {
             json::Value a = json::Value::MakeObject();
             a.Set(L"id", json::Value::MakeStr(item.id));
             CommandBus::Get().Invoke(CmdId::BmkRemove, Args::FromJson(a), Actor::Ui());
@@ -329,6 +340,7 @@ void BookmarkBar::ShowCategoryItemMenu(const std::wstring& folderId, int row, PO
                         id::kBrandShort, MB_YESNO | MB_ICONQUESTION) == IDYES) {
             json::Value a = json::Value::MakeObject();
             a.Set(L"id", json::Value::MakeStr(item.id));
+            CommandBus::Get().MarkConfirmedForNextCall();
             CommandBus::Get().Invoke(CmdId::BmkDissolve, Args::FromJson(a), Actor::Ui());
         }
         break;

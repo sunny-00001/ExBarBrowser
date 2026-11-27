@@ -168,18 +168,17 @@ void TabStrip::Layout() {
 //
 // 判定本体在 TabDropLineX（tab_strip.h 的纯函数），这里只负责把成员传进去 ——
 // 逻辑与"是否需要读取窗口状态"分开，那条规则才能被单测覆盖。
+// 拖拽插入位置：按**被拖标签左缘**算（Chromium GetInsertionIndexForDraggedBounds），
+// 不再按光标命中的标签下标 —— 后者会在光标同一格内抖动时反复换落点，插入线闪烁。
+// 判定本体是 tab_strip.h 的纯函数 TabDropTargetInView；这里只喂成员与滞后带。
 int TabStrip::DropTargetAt(int x, int y) const {
-    int target = HitTab(x, y);
-    if (target >= 0) return target;
-    // 落在标签之间（或边缘滚动后悬在任何标签外）：按 x 推断插入位置。
-    target = static_cast<int>(tabRects_.size()) - 1;
-    for (size_t i = 0; i < tabRects_.size(); ++i) {
-        if (x < (tabRects_[i].left + tabRects_[i].right) / 2) {
-            target = static_cast<int>(i);
-            break;
-        }
-    }
-    return target;
+    (void)y;   // 单行标签栏：落点只看横向；垂直越界由 tear-off 分支先行处理
+    if (dragIdx_ < 0 || dragIdx_ >= static_cast<int>(tabRects_.size())) return -1;
+    // 左缘 = 鼠标 x - 按下时定格的抓取偏移。不能现算：边缘滚动会改 tabRects_，
+    // 现算会让浮层与落点一起跳（与 DrawDragGhost 用同一个 dragGrabDx_）。
+    const int draggedLeft = x - dragGrabDx_;
+    // 4dp 滞后：中点附近 ±4dp 内的抖动不换落点；明确越过才更新。
+    return TabDropTargetInView(tabRects_, draggedLeft, dragIdx_, dropIdx_, theme_->S(4));
 }
 
 // 边缘带与起停判定已收口到 edge::Update（src/edge_autoscroll.h，与书签栏共用）；

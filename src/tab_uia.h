@@ -3,7 +3,8 @@
 // 自绘窗口默认对读屏软件是"一整块空白"：Narrator/检查器拿不到条目名、
 // 选中态，也没法用 UIA 选中某个条目。这里提供最小但完整的 provider：
 //   · 根：Tab 容器（ControlType=Tab），子项是各条目；
-//   · 项：Name/选中/边界/Invoke/SelectionItem，选中即走到该条目。
+//   · 项：Name/选中/边界/Invoke/SelectionItem。选中（Select）= 走到该条目，
+//     激活（Invoke）= 执行默认动作（标签栏=切换，书签栏=打开）。
 //
 // 只做"读 + 选中"，不暴露关闭/拖动等复合动作 —— 那些走命令与菜单，
 // 可访问性不该成为第二套操作模型。
@@ -23,10 +24,17 @@ namespace uia {
 
 // 跨线程查询用的消息（provider → UI 线程）。同一进程、SendMessage 同步，
 // 所以 ItemInfo 里的 std::wstring 在返回前一直有效。
-// 消息号是"窗口类私有语义"：两栏都用 0x51..0x53 没有冲突（不同 hwnd）。
+// 消息号是"窗口类私有语义"：两栏都用 0x51..0x54 没有冲突（不同 hwnd）。
 constexpr UINT kMsgCount = WM_APP + 0x51;   // 返回条目数
 constexpr UINT kMsgItem = WM_APP + 0x52;    // wParam=index, lParam=ItemInfo*
-constexpr UINT kMsgSelect = WM_APP + 0x53;  // wParam=index（UIA 选中）
+constexpr UINT kMsgSelect = WM_APP + 0x53;  // wParam=index（UIA 选中：只移焦点）
+// wParam=index（UIA 激活：真的打开/切换）。
+// 【为什么必须与 kMsgSelect 分开】UIA 规范里 SelectionItem.Select 与
+// Invoke.Invoke 是两个语义：前者"选中"（焦点过去），后者"激活"（执行默认动作）。
+// 两者发同一条消息时，读屏软件"激活一个书签"只会把焦点移过去、不打开 ——
+// 对键盘/读屏用户来说，那个入口是坏的。标签栏的"激活"就是切换标签，
+// 书签栏的"激活"就是打开（与鼠标左键同一条语义）。
+constexpr UINT kMsgInvoke = WM_APP + 0x54;
 
 struct ItemInfo {
     std::wstring name;

@@ -192,11 +192,15 @@ bool CommandBus::Dispatch(CmdId id, const Args& args, json::Value* result, Actor
     actor_ = actor;
     // 本次调用的"已确认"标记同样要还原：命令可能嵌套调用，
     // 内层确认过不该让外层（还没问用户的那次）跟着跳过确认。
+    // 入口处先把 UI 层预置的"已经问过了"消费进来 —— 这个标志一次性，
+    // 只对紧接着的这一次调用有效（见 MarkConfirmedForNextCall 的说明）。
+    const bool preConfirmed = confirmNext_;
+    confirmNext_ = false;
     struct ConfirmScope {
         bool* slot;
         bool prev;
         ~ConfirmScope() { *slot = prev; }
-    } confirmScope{&callConfirmed_, callConfirmed_};
+    } confirmScope{&callConfirmed_, callConfirmed_ || preConfirmed};
     const CommandDef* def = FindCommand(id);
     if (!def) return false;
 

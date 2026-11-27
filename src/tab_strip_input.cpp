@@ -28,13 +28,17 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
                                abs(y - dragStart_.y) > theme_->S(4))) {
                 dragging_ = true;
                 SetCapture(h);
+                // 拖动期间禁 tooltip：鼠标停在标签上时提示框会盖住插入线/浮层。
+                // 松手（HandleDragCommit）与取消（CancelDrag）都会重建恢复。
+                tooltip_.Clear();
             }
             if (dragging_) {
                 // 浮层跟手：坐标每帧更新（自动滚动时也照样跟，视觉上才对）。
                 dragMouse_ = {x, y};
-                // tear-off 判定（Chromium kVerticalDetachMagnetism）：垂直离开栏底
-                // 超过 tabTearOffDy 才算脱离。脱离期间不做插入位置计算 ——
-                // 松手是"移到新窗口"，此时算 dropIdx_ 只会让插入线闪一下。
+                // tear-off 判定（Chromium kVerticalDetachMagnetism）：垂直方向
+                // **上或下**离开栏体超过 tabTearOffDy 才算脱离。脱离期间不做
+                // 插入位置计算 —— 松手是"移到新窗口"，此时算 dropIdx_ 只会让
+                // 插入线闪一下。
                 const int dy = y;
                 const bool tear =
                     TabIsTearOff(dy, clientH_, theme_->S(Config::Get().s().tabTearOffDy));
@@ -74,6 +78,14 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
             InvalidateRect(h, nullptr, FALSE);
         }
         return 0;
+    case WM_SETCURSOR:
+        // 拖动中给四向箭头反馈：系统默认箭头看不出"已进入拖拽"。只改视觉，
+        // 不碰输入（R21 禁的是合成鼠标/键盘，光标外观不是输入）。
+        if (dragging_) {
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+            return TRUE;
+        }
+        break;
     case WM_LBUTTONDOWN: {
         int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
         // 上一次双击的尾随 UP 可能落到了窗口外（点空白时没有 capture），
@@ -88,24 +100,39 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         // UP 报 new_tab 却被 InputRouter 因为 claim 吞掉，于是单击毫无反应。
         int target = MouseTargetAt(x, y);
         closeDownIdx_ = -1;  // 每次按下先复位，避免上次残留索引影响本次判定
-        if (sink_ && sink_(target, m, MBTN_LEFT, CurrentMods(), pt)) return 0;
+        if (sink_ && sink_(target, m, MBTN_LEFT, CurrentMods(), pt)) {
+            // 规则接管了这次按下：显式复位拖拽瞬态。与 BookmarkBar::WM_LBUTTONDOWN
+            // 里 `dragArm_ = false` 是同一件事 —— 若上一次拖拽经异常路径残留
+            // （捕获被夺、Esc 没送达），下一次 MOUSEMOVE 会直接误入拖拽分支，
+            // 标签跟着光标乱跳。规则优先的语义不能牺牲状态卫生。
+            CancelDrag(h, false);
+            return 0;
+        }
 
         if (close >= 0) {
             closeDownIdx_ = close;  // 锁定按下时的关闭按钮，up 时只认这个索引
             return 0;               // 关闭在 up 时判定（避免按下即关）
         }
         if (tab >= 0) {
-            dragIdx_ = tab;
-            dragStart_ = {x, y};
-            dropIdx_ = tab;
-            tearOff_ = false;   // 每次新拖拽重新判：上一轮脱离状态不能残留
-            // 浮层"粘手"偏移：按下时鼠标在被拖标签内的横向位置。
-            // 必须在此刻定格 —— 拖到边缘自动滚动会改 tabRects_，
-            // 绘制时现算会让浮层随滚动跳位。
-            const RECT& grabRc = tabRects_[static_cast<size_t>(tab)];
-            dragGrabDx_ = x - grabRc.left;
-            dragMouse_ = {x, y};
-            SetCapture(h);
+            // 固定标签不参与重排（Chrome pinned tab 同语义）：按下只选中，不预备拖拽。
+            // locked 是"锁定子目录导航"，与位置无关，仍可正常重排 —— 两者别混。
+            if (!items_[static_cast<size_t>(tab)].pinned) {
+                dragIdx_ = tab;
+                // 【来源 id 在按下时定格】消息是 PostMessage 入队的，到被处理之间
+                // 集合可能已被别的消息改动，UP 时按下标反查会指错标签（见 common.h）。
+                dragId_ = items_[static_cast<size_t>(tab)].id;
+                dragStart_ = {x, y};
+                dropIdx_ = tab;
+                tearOff_ = false;   // 每次新拖拽重新判：上一轮脱离状态不能残留
+                // 浮层"粘手"偏移：按下时鼠标在被拖标签内的横向位置。
+                // 必须在此刻定格 —— 拖到边缘自动滚动会改 tabRects_，
+                // 绘制时现算会让浮层随滚动跳位。
+                const RECT& grabRc = tabRects_[static_cast<size_t>(tab)];
+                dragGrabDx_ = x - grabRc.left;
+                dragMouse_ = {x, y};
+                SetCapture(h);
+            }
+            // 焦点与选中对 pinned 同样成立，所以放在"可否拖动"判断之外。
             // 焦点留在标签栏：作用域为"标签栏"的裸键（Shift+←/→/Home/End）才收得到。
             // App::Activate 只在焦点原本位于视图区时才把焦点搬走。
             SetFocus(h);
@@ -113,6 +140,13 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
     }
+    case WM_CANCELMODE:
+        // 系统取消模式（弹出菜单、切窗口、Alt+Tab 等）：拖拽必须收手。
+        // 与 WM_CAPTURECHANGED 互补 —— 后者只在捕获**真被夺走**时来，这条是
+        // 系统明确要求取消当前交互，此刻捕获可能还在本窗口。只靠前者会漏：
+        // 弹层抢焦点但没抢捕获时，dragIdx_ 会一直挂着，下次进栏就乱跳。
+        CancelDrag(h, false);
+        return 0;
     case WM_CAPTURECHANGED:
         // 捕获被系统抢走（弹层弹出、切窗口、别的控件 SetCapture）：
         // 拖拽状态必须在这里复位，否则残留下次点击。
@@ -167,38 +201,20 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
             suppressDblUp_ = false;
             return 0;
         }
+        // 【先提交拖拽，再问鼠标规则】规则层没有理由在松手这一刻接管一个
+        // 明确的拖拽意图。提交语义与"为什么必须先放捕获再读值"见
+        // tab_strip_input_drag.cpp 的 HandleDragCommit。
+        if (dragIdx_ >= 0) {
+            HandleDragCommit(h);
+            return 0;
+        }
+        // 非拖拽的 UP 才走鼠标规则：规则命中则吞掉组件默认行为（选中/新建/关闭）。
+        // 拖拽已在上面提前 return，不会被这里的 claim 截断。
         const bool claimed = sink_ && sink_(MouseTargetAt(x, y), m, MBTN_LEFT, CurrentMods(), pt);
         if (claimed) return 0;
 
         int close = HitClose(x, y);
         int tab = HitTab(x, y);
-        if (dragIdx_ >= 0) {
-            // 顺序不能反：ReleaseCapture 会**同步**派发 WM_CAPTURECHANGED，
-            // 而那个分支（见上）会把 dragIdx_/dropIdx_ 清成 -1。先释放再读，
-            // 读到的永远是 -1 —— 拖拽排序从此静默失效，且没有任何报错。
-            // （BookmarkBar 早就踩过同一个坑，注释就写在那里。）
-            const int from = dragIdx_;
-            const int to = dropIdx_;
-            // tear-off：脱离栏体松手 = "移到新窗口"（走命令，与菜单/热键同一实现）。
-            // 判定用 tearOff_ 而不是现算坐标 —— 松手瞬间光标可能已回到栏内，
-            // 但用户看到的提示条还是"松开：移到新窗口"，行为必须与提示一致。
-            const bool tear = tearOff_ && dragging_;
-            const bool moved = dragging_ && to >= 0 && to != from;
-            StopAutoScroll();   // 拖到边缘滚着松手：先停表，再提交移动
-            dragIdx_ = -1;
-            dragging_ = false;
-            dropIdx_ = -1;
-            tearOff_ = false;
-            ReleaseCapture();
-            if (tear) {
-                PostMessageW(parent_, WM_APP_TAB_TEAROFF, static_cast<WPARAM>(from), 0);
-            } else if (moved) {
-                PostMessageW(parent_, WM_APP_TAB_MOVED, static_cast<WPARAM>(from),
-                             static_cast<LPARAM>(to));
-            }
-            InvalidateRect(h, nullptr, FALSE);
-            return 0;
-        }
         // 只认按下时锁定的那个关闭按钮：按 A 的关闭钮、松在 B 的关闭钮上不会误关 B。
         if (close >= 0 && close == closeDownIdx_) {
             closeDownIdx_ = -1;
@@ -363,6 +379,15 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         return TRUE;
     }
     case uia::kMsgSelect: {
+        const int i = static_cast<int>(w);
+        if (i >= 0 && i < static_cast<int>(items_.size())) NotifySelect(i);
+        return 0;
+    }
+    case uia::kMsgInvoke: {
+        // UIA 激活 = 执行默认动作。标签栏的默认动作就是"切到这个标签"，
+        // 与 Select 的落点相同（但语义不同，见 tab_uia.h 的说明）——
+        // 走同一条 NotifySelect 是因为在这个栏里两者恰好等价，
+        // 而不是因为它们是同一个东西。
         const int i = static_cast<int>(w);
         if (i >= 0 && i < static_cast<int>(items_.size())) NotifySelect(i);
         return 0;

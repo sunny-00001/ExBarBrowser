@@ -28,7 +28,7 @@
 
 namespace searchscope {
 
-// 范围档位。数值会写进 settings.json（searchRange），所以**只增不改**：
+// 范围档位。数值会写进 state\tabs.json（searchRange），所以**只增不改**：
 // 顺序即持久化格式，插在中间会让旧配置读到别的档位。
 enum Range {
     kCurrent = 0,  // 仅当前目录本层

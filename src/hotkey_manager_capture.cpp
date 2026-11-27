@@ -18,15 +18,34 @@ namespace {
 
 // 查找同键的另一条命令（不同 setting、不是序列、不是未绑定）。
 // 返回它的标题；空 = 没冲突。
+//
+// 【为什么要判"可共存"】派发路径里唯一的作用域过滤是"标签栏作用域的裸键只在
+// 焦点位于标签栏时生效"。所以同键但恰有一条是标签栏裸键时，两者**可以共存**——
+// 此时不该拦用户（拦了就是"明明能绑，程序却说要确认"）。判据必须与
+// InputRouter::BuildRows 的 conflictHard 同口径，否则录制时的提示与列表里的
+// 状态会各说各话。
 std::wstring PeerOf(const std::vector<BindingRow>& rows, const std::wstring& selfSetting,
                     const KeyChord& c) {
     const std::wstring want = chord::Format(c);
+    const bool selfTabBare = (c.mods == 0);   // 待绑的键本身是不是裸键
+    std::wstring selfScope;
+    for (const auto& r : rows) {
+        if (r.setting == selfSetting) {
+            selfScope = r.scope;
+            break;
+        }
+    }
     for (const auto& r : rows) {
         if (r.isSequence || r.unbound) continue;
         if (r.setting == selfSetting) continue;
         KeyChord other;
         if (!chord::Parse(r.key, &other)) continue;
-        if (chord::Format(other) == want) return r.title;
+        if (chord::Format(other) != want) continue;
+        // 恰有一条是"标签栏裸键" → 可共存，不算冲突，不拦。
+        const bool otherTabBare = (other.mods == 0 && r.scope == L"标签栏");
+        const bool selfTabBareHere = selfTabBare && selfScope == L"标签栏";
+        if (otherTabBare != selfTabBareHere) continue;
+        return r.title;
     }
     return std::wstring();
 }

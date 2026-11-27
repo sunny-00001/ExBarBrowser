@@ -47,6 +47,21 @@ constexpr int kSettingsGroupWidthMin = 160, kSettingsGroupWidthMax = 320;
 constexpr int kSettingsDetailWidthMin = 160, kSettingsDetailWidthMax = 360;
 constexpr int kSettingsControlWidthMin = 120, kSettingsControlWidthMax = 280;
 
+// ---- 快捷键管理器面板 ----
+// 窗口初始宽高：下限保证三栏都还放得下（190+420+270 = 880，加边框留 860 的余地
+// 是错的 —— 所以下限取 900），上限只是防手改写出一个屏幕外的窗口。
+constexpr int kHkWinWidthMin = 900, kHkWinWidthMax = 2400;
+constexpr int kHkWinHeightMin = 520, kHkWinHeightMax = 1600;
+// 行高：下限 22 是"12px 文字 + 上下各 5px"的极限（再小文字贴边），
+// 上限 44 是两倍行距（再大列表一屏看不了几条，筛选就失去意义）。
+// 这一个值同时决定中栏行、左栏筛选项、表头、工具栏、状态栏 —— 五处曾经各写
+// 一个数（30/32/26/40/28），同屏五种行距，看着像列表歪了、工具栏胖了。
+// 工具栏从此没有独立高度：它要"与列表等高"这件事靠结构保证，而不是靠默认值凑巧相等。
+constexpr int kHkRowHeightMin = 22, kHkRowHeightMax = 44;
+// 左右栏宽度。左栏放筛选项（图标+四个字+计数），右栏放一个键位芯片与三四行说明。
+constexpr int kHkRailWidthMin = 150, kHkRailWidthMax = 320;
+constexpr int kHkDetailWidthMin = 200, kHkDetailWidthMax = 420;
+
 // ---- 视图档位 ----
 // 下标的合法区间必须与 viewmode::kModes / 排序 / 分组的实际档数一致；
 // 越界值不会崩，但会让整块视图落到"未知档"分支上，表现是"视图全乱"。
@@ -119,6 +134,11 @@ constexpr int kSplitMarkThickMin = 1, kSplitMarkThickMax = 6;
 // 滚一格走多远（逻辑像素）。下限 16 约一个字宽（再小滚不动），上限 200 约两行书签
 // （再大一格就飞出视野）。默认 48 ≈ 三个字宽，与标签栏同一档。
 constexpr int kBmkWheelStepDpMin = 16, kBmkWheelStepDpMax = 200;
+
+// ---- 书签栏拖拽自动滚动周期 ----
+// 与标签栏的 kTabDragScrollMs 同域（10..200）：下限 10 快到每拍必见步进，
+// 上限 200 慢到"像没有"。默认 30 与标签栏原共用值一致 —— 老用户手感不变。
+constexpr int kBmkDragScrollMsMin = 10, kBmkDragScrollMsMax = 200;
 
 // ---- 标签栏动效与拖出成窗 ----
 // 让位动画时长。下限 0 = 关闭动画（有人明确不喜欢动效，必须给一条关掉的路）；

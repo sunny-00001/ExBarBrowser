@@ -154,8 +154,13 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         // 以前直调 Activate —— 点标签那条路没有审计也没有事件。
         // 注意命令语义是 0 起下标、只切换不关闭，与点击完全等价（TabStrip 只在
         // 真正的单击选中时发这条消息，快速关闭走 WM_APP_TAB_CLOSE）。
+        //
+        // 【w 是标签 id，不是下标】消息入队后集合可能已被别的消息改动（见
+        // TabStrip::NotifySelect 的注释），必须现查当前下标。
+        const int index = self.tabSet_.IndexOf(static_cast<int>(w));
+        if (index < 0) return 0;   // 该标签已被关掉：静默忽略，别去激活别人
         json::Value a = json::Value::MakeObject();
-        a.Set(L"index", json::Value::MakeInt(static_cast<int>(w)));
+        a.Set(L"index", json::Value::MakeInt(index));
         (void)CommandBus::Get().Invoke(CmdId::TabActivate, Args::FromJson(a), Actor::Ui());
         return 0;
     }
@@ -176,8 +181,12 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         }
         {
+            // 【w 是标签 id】见 TabStrip::NotifyClose 的注释：连续关两个相邻标签时
+            // 消息里的下标会失效，必须按 id 现查。
+            const int index = self.tabSet_.IndexOf(static_cast<int>(w));
+            if (index < 0) return 0;   // 已被前一条消息关掉：忽略
             json::Value a = json::Value::MakeObject();
-            a.Set(L"index", json::Value::MakeInt(static_cast<int>(w)));
+            a.Set(L"index", json::Value::MakeInt(index));
             (void)CommandBus::Get().Invoke(CmdId::TabClose, Args::FromJson(a), Actor::Ui());
         }
         return 0;
@@ -195,10 +204,16 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP_TAB_MOVED:
         // 拖拽重排 = tab.move.to：left/right/first/last 只能表达相对移动，
         // "把第 5 个拖到第 2 位"需要绝对落点，这条命令就是为它补的。
-        // index 是被拖的那一格（w），to 是落点（l），都是 0 起。
+        // w 是被拖的那一格的**标签 id**，l 是落点下标（0 起）。
+        //
+        // 【只有 from 需要 id】落点 `to` 是"松手时看到的位置"，它是空间语义，
+        // 不是身份语义 —— 即便期间集合变了，用户预期的也仍是"放到那个位置"。
+        // from 若用下标则会搬错标签（消息入队后集合可能已左移）。
         {
+            const int from = self.tabSet_.IndexOf(static_cast<int>(w));
+            if (from < 0) return 0;   // 被拖的标签已不存在：放弃这次重排
             json::Value a = json::Value::MakeObject();
-            a.Set(L"index", json::Value::MakeInt(static_cast<int>(w)));
+            a.Set(L"index", json::Value::MakeInt(from));
             a.Set(L"to", json::Value::MakeInt(static_cast<int>(l)));
             (void)CommandBus::Get().Invoke(CmdId::TabMoveTo, Args::FromJson(a), Actor::Ui());
         }
@@ -207,15 +222,19 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         // 拖出栏体松手 = 移到新窗口。转投命令而非直调 App 方法：
         // 菜单项/热键（t m）/拖拽三条入口因此共用同一份实现与同一条审计留痕。
         // 命令自己处理锁定/固定/空路径的拒绝并 NoteFailure，这里不再预判。
+        // w 是**标签 id**（同 WM_APP_TAB_MOVED 的理由：消息入队后下标会失效）。
         {
+            const int index = self.tabSet_.IndexOf(static_cast<int>(w));
+            if (index < 0) return 0;
             json::Value a = json::Value::MakeObject();
-            a.Set(L"index", json::Value::MakeInt(static_cast<int>(w)));
+            a.Set(L"index", json::Value::MakeInt(index));
             (void)CommandBus::Get().Invoke(CmdId::TabMoveNewWindow, Args::FromJson(a),
                                            Actor::Ui());
         }
         return 0;
     case WM_APP_TAB_MENU:
-        self.ShowTabMenu(static_cast<int>(w), static_cast<int>(l));
+        // w 是标签 id（见 TabStrip 侧的注释），l 是动作号。
+        self.ShowTabMenu(self.tabSet_.IndexOf(static_cast<int>(w)), static_cast<int>(l));
         return 0;
     // 状态栏右键不再经消息：statusBar_ 走了 SetContextFn 回调（见 app.cpp 的
     // SetContextFn → ShowStatusMenu），WM_APP_STATUS_MENU 已从 common.h 的枚举里

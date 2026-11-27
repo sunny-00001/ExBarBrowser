@@ -69,13 +69,18 @@ using id::kNavBarClass;
 using id::kStatusBarClass;
 
 // 子窗口 -> 主窗口的自定义消息（避免跨文件依赖 App 头）
+//
+// 【标签类消息一律传 id，不传下标】这些都是 PostMessage：入队后到被处理之间，
+// 队列里可能先执行了别的"关标签/重排"，集合一变下标就指错对象。标签 id 在
+// TabSet 里稳定，主窗口侧用 TabSet::IndexOf(id) 现查下标。
+// 例外是"落点"（WM_APP_TAB_MOVED 的 lParam）：那是空间语义，本来就该是下标。
 enum : UINT {
-    WM_APP_TAB_SELECT = WM_APP + 10,
-    WM_APP_TAB_CLOSE,
+    WM_APP_TAB_SELECT = WM_APP + 10,  // wParam=标签 id
+    WM_APP_TAB_CLOSE,                 // wParam=标签 id（-1 = 无效）
     WM_APP_TAB_NEW,
-    WM_APP_TAB_MENU,     // wParam=index, lParam=screen POINT 打包（LOWORD x / HIWORD y 不可靠，用 lParam 指针）
-    WM_APP_TAB_MOVED,    // wParam=from, lParam=to
-    WM_APP_TAB_TEAROFF,  // wParam=index：拖出栏体松手 → 移到新窗口（tab.move.window）
+    WM_APP_TAB_MENU,     // wParam=标签 id, lParam=动作号（菜单是模态的，期间集合可能被改）
+    WM_APP_TAB_MOVED,    // wParam=from 标签 id, lParam=to 落点下标
+    WM_APP_TAB_TEAROFF,  // wParam=标签 id：拖出栏体松手 → 移到新窗口（tab.move.window）
     WM_APP_CHROME_MENU,  // 通用：wParam=区域 id，lParam=POINT*
     WM_APP_STATUS_MENU,
     WM_APP_BMK_CHANGED,

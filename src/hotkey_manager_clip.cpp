@@ -152,38 +152,46 @@ void HotkeyManager::ImportFromClipboard() {
     }
     // 逐条写。未知 setting 跳过并计数 —— 静默丢弃最糟：
     // 用户会以为"导进去了"，实际什么都没发生。
+    //
+    // 【整批包在 BatchScope 里】导入 20 条若逐条 Save + Reload，就是 20 次写盘
+    // 加 20 轮"重读 keymap + 重建 281 条绑定 + 重置序列状态机"。最后那条尤其
+    // 难受：中间每一轮都会清掉用户正在输入的序列。批次内只改内存，出作用域
+    // 时统一落盘 + 重建一次。
     int applied = 0;
     int skipped = 0;
-    for (const auto& kv : root.obj) {
-        if (!kv.second.IsString() || kv.second.str.empty()) {
-            ++skipped;
-            continue;
+    {
+        InputRouter::BatchScope batch(*router_);
+        for (const auto& kv : root.obj) {
+            if (!kv.second.IsString() || kv.second.str.empty()) {
+                ++skipped;
+                continue;
+            }
+            std::wstring command;
+            std::wstring oldKey;
+            bool hadOverride = false;
+            for (const Row& r : rows_) {
+                if (r.src.setting != kv.first) continue;
+                command = r.src.command;
+                hadOverride = r.custom || r.unbound;
+                oldKey = r.custom ? r.src.key : (r.unbound ? std::wstring(kHotkeyDisabled)
+                                                           : std::wstring());
+                break;
+            }
+            if (command.empty()) {
+                ++skipped;
+                continue;
+            }
+            const bool ok = (kv.second.str == kHotkeyDisabled)
+                                ? router_->SetKeyForCommand(command, std::wstring())
+                                : router_->SetKeyForCommand(command, kv.second.str);
+            if (!ok) {
+                ++skipped;
+                continue;
+            }
+            PushUndo({kv.first, hadOverride ? oldKey : std::wstring(), kv.second.str});
+            ++applied;
         }
-        std::wstring command;
-        std::wstring oldKey;
-        bool hadOverride = false;
-        for (const Row& r : rows_) {
-            if (r.src.setting != kv.first) continue;
-            command = r.src.command;
-            hadOverride = r.custom || r.unbound;
-            oldKey = r.custom ? r.src.key : (r.unbound ? std::wstring(kHotkeyDisabled)
-                                                       : std::wstring());
-            break;
-        }
-        if (command.empty()) {
-            ++skipped;
-            continue;
-        }
-        const bool ok = (kv.second.str == kHotkeyDisabled)
-                            ? router_->SetKeyForCommand(command, std::wstring())
-                            : router_->SetKeyForCommand(command, kv.second.str);
-        if (!ok) {
-            ++skipped;
-            continue;
-        }
-        PushUndo({kv.first, hadOverride ? oldKey : std::wstring(), kv.second.str});
-        ++applied;
-    }
+    }   // BatchScope 析构 → 落盘 + Reload 一次
     RebuildRows();
     RebuildGroups();
     Refilter();

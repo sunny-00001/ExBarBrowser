@@ -39,12 +39,23 @@ bool AffectsHistoryLimits(const std::wstring& key) {
            key == L"historyDepth";
 }
 
+bool AffectsHotkeyPanel(const std::wstring& key) {
+    // 只列**几何**：行高（含工具栏/表头/状态栏，它们跟行高走）/ 左右栏宽。
+    // 它们的共同点是"改完面板要重排"。
+    // hkWindowWidth / hkWindowHeight 故意不在这里 —— 它们是"下次打开时多大"，
+    // 已经打开的窗口不该被一次设置改小（用户自己调过的尺寸优先级更高）。
+    return key == L"hkRowHeight" || key == L"hkRailWidth" || key == L"hkDetailWidth";
+}
+
 bool NeedsAnyApply(const std::wstring& key) {
     return AffectsLayout(key) || AffectsActiveView(key) || AffectsStatusBar(key) ||
-           AffectsTheme(key) || AffectsHistoryLimits(key) ||
+           AffectsTheme(key) || AffectsHistoryLimits(key) || AffectsHotkeyPanel(key) ||
            // 这些键的落地在别处（各有一条专门的分支），仍然属于"需要动作"。
            key == L"aiEnabled" || key == L"tabMinWidth" || key == L"tabMaxWidth" ||
            key == L"bookmarkBarTooltipWidth" || key == L"statusBarTooltipWidth" ||
+           // 快捷键管理器窗口初始尺寸：下一次打开时读，属于"下次生效"，
+           // 但仍然需要被承认（不是纯数据 —— 它确实有一个读取点）。
+           key == L"hkWindowWidth" || key == L"hkWindowHeight" ||
            // 设置窗口自己的三栏：落地在命令尾部的 OnConfigChangedExternally。
            key == L"settingsGroupWidth" || key == L"settingsDetailWidth" ||
            key == L"settingsControlWidth";
@@ -67,6 +78,8 @@ bool IsPureData(const std::wstring& key) {
     //   popupTypeAheadMs / popupMaxRows → 下一次打开任意弹层
     //   searchHistoryMenuRows → 下一次打开搜索历史下拉
     //   tabDragScrollMs → 下一次拖拽标签到边缘
+    //   bookmarkOpenInNewTab / bookmarkDragAutoscroll / bookmarkDragScrollMs →
+    //     下一次点击书签 / 下一次拖拽书签（BookmarkBar 的读取点现读配置）
     //   tabAnimMs / tabDragGhost / tabTearOffDy → 下一次拖拽标签（当帧读配置）
     //   sessionSaveDelayMs → 下一次标签/路径变更
     //   aiPumpIntervalMs → 下一次启用 AI 通道（重建泵定时器）
@@ -83,6 +96,8 @@ bool IsPureData(const std::wstring& key) {
            key == L"seqWheelRows" || key == L"seqPageRows" ||
            key == L"popupTypeAheadMs" || key == L"popupMaxRows" ||
            key == L"searchHistoryMenuRows" || key == L"tabDragScrollMs" ||
+           key == L"bookmarkOpenInNewTab" || key == L"bookmarkDragAutoscroll" ||
+           key == L"bookmarkDragScrollMs" ||
            key == L"tabAnimMs" || key == L"tabDragGhost" || key == L"tabTearOffDy" ||
            key == L"sessionSaveDelayMs" || key == L"aiPumpIntervalMs" ||
            key == L"auditRotateKB" || key == L"auditArgsTextLimit" ||

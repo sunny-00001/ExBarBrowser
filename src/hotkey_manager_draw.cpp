@@ -230,7 +230,14 @@ void HotkeyManager::PaintRow(HDC dc, int vi) {
     else if (row.status == kReserved) sc = theme_->accent;
     else if (row.status == kUnimplemented) sc = theme_->inert;
     else if (row.sequence) sc = theme_->inert;
-    ui::DrawTextRow(dc, theme_->font, StatusText(row.status, row.sequence), rl.status, sc,
+    // 可共存的同键：不标"冲突"（那是误报），改在"可用"后面加一个弱后缀。
+    // 让用户知道"这个键还有别人用"，但不逼他去修。
+    std::wstring statusText = StatusText(row.status, row.sequence);
+    if (row.status == kOk && row.peers.empty() && !row.softPeers.empty()) {
+        statusText += L"·同键";
+        sc = theme_->inert;
+    }
+    ui::DrawTextRow(dc, theme_->font, statusText, rl.status, sc,
                     DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
 
     // 序列行整体压暗一档：它们是**只读**的参考信息（要改得动 keymap.json 的状态机），
@@ -324,6 +331,10 @@ void HotkeyManager::PaintDetail(HDC dc) {
 
     // 冲突：说清"跟谁撞了、后果是什么"。只标一个"冲突"字样的界面等于把
     // 排查工作全丢回给用户（281 行里自己找同键的那一条）。
+    //
+    // 【两级分开说】真冲突（红）与"可共存"（弱色）必须用不同颜色与不同措辞，
+    // 否则用户看到一片红，分不清哪个必须修。可共存的典型是"标签栏裸键 vs
+    // 其它"：焦点在标签栏时前者生效，焦点在别处时让位。
     if (!row->peers.empty()) {
         const std::wstring msg = L"与「" + row->peers + L"」共用同一个键。按先到先得，"
                                  L"只有排在前面的那条会触发，后面的按不出来。";
@@ -335,6 +346,12 @@ void HotkeyManager::PaintDetail(HDC dc) {
     } else if (row->status == kUnimplemented) {
         ui::DrawTextRow(dc, theme_->font, L"该命令在当前版本未实现，绑了也不会生效。",
                         detail_.conflict, theme_->sub, DT_WORDBREAK | DT_NOPREFIX);
+    } else if (!row->softPeers.empty()) {
+        // 可共存：说清"什么时候谁生效"，而不是让用户以为键位坏了。
+        const std::wstring msg = L"与「" + row->softPeers + L"」同键，但作用域不同："
+                                 L"焦点在标签栏时它生效，在别处时让位。可以共存。";
+        ui::DrawTextRow(dc, theme_->font, msg, detail_.conflict, theme_->sub,
+                        DT_WORDBREAK | DT_NOPREFIX);
     }
 
     // 三个动作按钮。序列键不能在这儿改（要改序列得动 keymap.json 的状态机），

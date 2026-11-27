@@ -167,18 +167,33 @@ LRESULT CALLBACK TabStrip::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 void TabStrip::CancelDrag(HWND h, bool releaseCapture) {
     StopAutoScroll();
+    // 【无条件清全部瞬态】三条路都调这里：捕获丢失、Esc 取消、鼠标规则接管按下。
+    // 曾有早退判据 `if (!dragging_ && dragIdx_ < 0) return;`，会让"只剩 dropIdx_ /
+    // tearOff_ 残留"的那次漏清 —— 下一次 MOUSEMOVE 带着旧落点进拖拽分支，
+    // 表现就是"没在拖却画着插入线 / 松手搬错标签"。清是幂等的，早退才有害。
+    const bool had = dragging_ || dragIdx_ >= 0 || dropIdx_ >= 0 || tearOff_;
     closeDownIdx_ = -1;
-    if (!dragging_ && dragIdx_ < 0) return;
     dragIdx_ = -1;
+    dragId_ = -1;
     dragging_ = false;
     dropIdx_ = -1;
     tearOff_ = false;   // 取消即退出脱离态：否则下次进栏会带着"移到新窗口"的提示
     if (releaseCapture && GetCapture() == h) ReleaseCapture();
-    if (h) InvalidateRect(h, nullptr, FALSE);
+    if (h && had) {
+        InvalidateRect(h, nullptr, FALSE);
+        RebuildTooltip(h);   // 拖动开始时 Clear 过：Esc/CAPTURECHANGED 取消时恢复
+    }
 }
 
 void TabStrip::NotifySelect(int index) {
-    if (parent_) PostMessageW(parent_, WM_APP_TAB_SELECT, static_cast<WPARAM>(index), 0);
+    // 【传 id 不传下标】消息是 PostMessage 入队的，而鼠标输入消息先于它被处理：
+    // 队列里可能已经排着另一条"关掉某标签"，那条一旦先执行，集合就整体左移，
+    // 这条携带的下标就指向了**另一个**标签。id 是稳定身份，App 侧用
+    // TabSet::IndexOf(id) 现查下标，重排/关闭都不会错位。
+    if (!parent_) return;
+    if (index < 0 || index >= static_cast<int>(items_.size())) return;
+    const int id = items_[static_cast<size_t>(index)].id;
+    PostMessageW(parent_, WM_APP_TAB_SELECT, static_cast<WPARAM>(id), 0);
 }
 
 void TabStrip::CancelRapidClose() {
@@ -206,5 +221,14 @@ void TabStrip::NotifyClose(int index) {
         rapidWidths_ = lastWidths_;
         rapidCloseIndex_ = index;
     }
-    if (parent_) PostMessageW(parent_, WM_APP_TAB_CLOSE, static_cast<WPARAM>(index), 0);
+    if (parent_) {
+        // 【传 id 不传下标】同 NotifySelect：PostMessage 入队后下标可能已失效。
+        // 连续中键关两个相邻标签时，两条消息若都带"关闭前"的下标，第一条关掉后
+        // 集合左移，第二条就会关掉隔一个的那个标签。id 在 TabSet 里稳定，
+        // 反查下标即可。越界时取不到 id，用 -1 表示"无效"，App 侧直接忽略。
+        const int id = (index >= 0 && index < static_cast<int>(items_.size()))
+                           ? items_[static_cast<size_t>(index)].id
+                           : -1;
+        PostMessageW(parent_, WM_APP_TAB_CLOSE, static_cast<WPARAM>(id), 0);
+    }
 }

@@ -50,6 +50,44 @@ inline int TabDropLineX(const std::vector<RECT>& rects, int drag, int drop, bool
     return drop > drag ? static_cast<int>(r.right) : static_cast<int>(r.left);
 }
 
+// 拖拽落点（**纯函数**，便于单测）：被拖标签的**左缘**跨过多少个"其它标签"
+// 的中点，就落到第几个位置。返回值是 TabSet::Move「先删后插」的最终下标。
+//
+// 为什么按左缘而不是光标：用 HitTab(光标 x) 会让光标在同一格里的小抖动
+// 换来落点跳格 —— 插入线在相邻两格之间闪。Chromium 的
+// GetInsertionIndexForDraggedBounds 用的是被拖标签 bounds 的左缘，不是鼠标点。
+// draggedLeft = 鼠标 x - 按下时定格的抓取偏移（浮层粘手的那一点）。
+//
+// 方向记忆（滞后）：current 是当前落点，eps 是滞后带（dp，由调用方过 S()）。
+// 理想落点与 current 不同时，必须等左缘**明确越过**两者间的分界 ±eps 才采纳
+// —— 在中点附近 ±1px 抖动不会让插入线闪。eps=0 = 关闭滞后，每帧即时更新。
+inline int TabDropTargetInView(const std::vector<RECT>& rects, int draggedLeft, int drag,
+                               int current, int eps) {
+    const int n = static_cast<int>(rects.size());
+    if (n == 0 || drag < 0 || drag >= n) return -1;
+    // 去掉被拖标签后，其余标签的中点按序就是落点分界。
+    const auto midAt = [&](int k) {
+        for (int i = 0, seen = 0; i < n; ++i) {
+            if (i == drag) continue;
+            if (seen++ == k)
+                return static_cast<int>((rects[static_cast<size_t>(i)].left +
+                                         rects[static_cast<size_t>(i)].right) / 2);
+        }
+        return 0;   // k < m 由调用点保证，这里是到不了兜底
+    };
+    int m = 0;                      // 落点分界数 = n-1（去掉被拖的那一个）
+    for (int i = 0; i < n; ++i) if (i != drag) ++m;
+    int ideal = 0;
+    while (ideal < m && draggedLeft > midAt(ideal)) ++ideal;
+    if (ideal == current) return current;
+    if (eps > 0) {
+        const int boundary = ideal > current ? midAt(current) : midAt(ideal);
+        if (ideal > current && draggedLeft < boundary + eps) return current;
+        if (ideal < current && draggedLeft > boundary - eps) return current;
+    }
+    return ideal;
+}
+
 // x 是否落在"标签可视区"内（溢出处右侧属于 » 按钮，不属于任何标签）。**纯函数**。
 //
 // 判据必须按**点**判，不能只过滤标签自己的 rect：
@@ -83,17 +121,21 @@ inline int TabMouseTarget(bool onClose, bool onTab, bool onNew, bool onOverflow)
 
 // 拖拽是否已"脱离"标签栏（tear-off）。**纯函数**，便于单测。
 //
-// 语义来自 Chromium 的 kVerticalDetachMagnetism：垂直方向必须离开栏底超过阈值
-// 才算脱离 —— 横向挪出去不算。理由：拖拽重排时手会不自觉地上下抖，若按
-// "出栏即脱离"判，想换位置的人会频繁误触发"移到新窗口"（那条路径会关掉源标签，
-// 代价比误排序大得多）。
+// 语义来自 Chromium 的 kVerticalDetachMagnetism：垂直方向离开栏体（**上或下**
+// 两个方向）超过阈值才算脱离 —— 横向挪出去不算，小抖动也不算。理由：拖拽
+// 重排时手会不自觉地上下抖，若按"出栏即脱离"判，想换位置的人会频繁误触发
+// "移到新窗口"（那条路径会关掉源标签，代价比误排序大得多）。
+// Chromium 头文件原话是 "Amount above or below the tabstrip the user has to
+// drag before detaching" —— 上、下对称，本实现此前只认下方，漏了向上拖出
+// （拖到标题栏方向）那一路，用户会看到"拖出去了却还在原地重排"。
 //
-// dy：鼠标 y 相对标签栏客户区顶部的偏移（可超出，> height 即在栏下方）。
+// dy：鼠标 y 相对标签栏客户区顶部的偏移（可超出，> height 即在栏下方，
+//     < 0 即在栏上方 —— 客户区坐标允许负值）。
 // height：标签栏客户区高度。threshold：磁吸阈值（0 = 关闭磁吸，任何出栏都算脱离）。
 inline bool TabIsTearOff(int dy, int height, int threshold) {
     if (height <= 0) return false;              // 还没布局：不判
     if (threshold <= 0) return dy < 0 || dy >= height;   // 磁吸关闭：出栏即脱离
-    return dy >= height + threshold;            // 磁吸开启：要越过阈值
+    return dy <= -threshold || dy >= height + threshold; // 上下都要越过阈值
 }
 
 // 标签右键菜单动作（TabStrip -> App，走 WM_APP_TAB_MENU 的 lParam）
@@ -187,8 +229,8 @@ private:
     void ShowOverflowMenu(POINT screen);
     void ScrollBy(int dx);
     void EnsureVisible(int index);
-    // 拖拽时鼠标落在 (x,y) 应插到第几个位置。WM_MOUSEMOVE 与边缘滚动定时器共用，
-    // 两者算出的 dropIdx_ 必须是同一口径，否则滚一下插入线就跳到别处。
+    // 拖拽时鼠标落在 (x,y) 应插到第几个位置（按被拖标签左缘算，见纯函数
+    // TabDropTargetInView）。WM_MOUSEMOVE 与边缘滚动定时器共用同一口径。
     int DropTargetAt(int x, int y) const;
     // 拖拽靠近可视区边缘时启停自动滚动。x 是客户区横坐标（定时器里用缓存值）。
     // step>0 向右看（scrollX 增大），step<0 向左看；0 = 停。
@@ -198,6 +240,10 @@ private:
     // 是否重绘。捕获丢失（WM_CAPTURECHANGED）与 Esc 取消都走这里 —— 两处各写一份
     // 状态清理，迟早会出现"Esc 取消后残留 dropIdx_、下次点击 jumped"的分叉。
     void CancelDrag(HWND h, bool releaseCapture);
+    // 拖拽提交（松手那一刻）：停表 → 清瞬态 → 放捕获 → 按定格的 id 发消息。
+    // 单独成文件（tab_strip_input_drag.cpp）：本文件只做消息分发，提交是
+    // "落点 → 命令"的语义；同时避免 tab_strip_input.cpp 顶到 500 行硬上限。
+    bool HandleDragCommit(HWND h);
     // 拖拽插入位置的那条竖线画在哪：返回屏幕无关的客户区 x，-1 = 不画。
     //
     // 为什么需要它：dropIdx_ 只说"插到第几个"，而拖拽时用户需要看的是
@@ -270,6 +316,9 @@ private:
 
     bool dragging_ = false;
     int dragIdx_ = -1;
+    // 被拖标签的 id，在 LBUTTONDOWN 时定格。排序提交必须带 id 而非下标：
+    // 消息入队到被处理之间集合可能被别的消息改动，下标会指错标签（见 common.h）。
+    int dragId_ = -1;
     POINT dragStart_{};
     int dropIdx_ = -1;
     // 拖拽边缘自动滚动：定时器只在拖到可视区边缘时运行。

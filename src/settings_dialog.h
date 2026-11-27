@@ -234,7 +234,11 @@ private:
     void SelectGroup(const std::wstring& key);
     void SelectEntry(const std::wstring& key);
     void SetStatus(const std::wstring& msg, bool error = false);
-    bool WriteValue(const std::wstring& key, const json::Value& value);
+    // 写入并回显状态。doneLabel 用于成功消息的前缀：普通写入是
+    // "已执行 config.set"，恢复默认值传 "已恢复默认值"。告警拼接只有这一处 ——
+    // 调用方不要自己再 SetStatus("成功…")，那会吞掉这里的写盘告警与错误色。
+    bool WriteValue(const std::wstring& key, const json::Value& value,
+                    const wchar_t* doneLabel = nullptr);
     void ToggleBool(const Row& row);
     void OpenEnum(const Row& row, const RECT& ctrl);
     void RestoreDefault();
@@ -316,6 +320,9 @@ private:
     static constexpr int kRowHeights[3] = {32, kDefaultRowHeightPx, 24};
     static constexpr int kDefaultDensity = 1;
     static_assert(kRowHeights[kDefaultDensity] == kDefaultRowHeightPx);
+    // 数值与右侧单位之间的留白（96 DPI 逻辑像素）。布局用它算 EDIT/单位矩形，
+    // 绘制用它算文字内缩 —— 这份必须共用：差一个像素，进入编辑态文字就跳位。
+    static constexpr int kValueUnitGap = 6;
 
     int density_ = kDefaultDensity;       // kRowHeights 的下标
     // 编辑态与"刚被拒绝"都用**键名**定位，不用 rows_ 下标：RebuildModel 会

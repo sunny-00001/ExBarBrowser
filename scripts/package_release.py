@@ -265,9 +265,13 @@ def main() -> int:
     copy_file(LOADER_DLL, stage / "WebView2Loader.dll")
     stage_aichat(stage)
 
-    write_text(stage / "data" / "README.md", """data/ — 配置目录（首次启动自动生成）
+    # 键位方案预设是随程序分发的只读资源（不是用户私有数据），必须进发布包，
+    # 否则 hotkey.preset.list/apply 在发布版只剩"程序默认"一项。
+    copy_file(ROOT / "data" / "keymap_presets.json", stage / "data" / "keymap_presets.json")
+    write_text(stage / "data" / "README.md", """data/ — 配置目录（首次启动自动生成其余文件）
 
-发布包里本目录只有一个说明文件。profile 根下按职责分层：
+发布包里本目录有 keymap_presets.json（随程序分发的只读预设）与这个说明文件；
+其余文件首次启动自动生成。profile 根下按职责分层：
   data/       settings.json / bookmarks.html / keymap.json / mouse.json
               aichat.json（AI 行为）/ models.json（模型与密钥）/ mcp.json
   state/      会话、历史、标签、窗口状态

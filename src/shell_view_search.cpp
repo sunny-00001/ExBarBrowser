@@ -101,6 +101,12 @@ void ShellView::OnSearchViewTimer() {
     // 两条任一成立即可：
     //   · 解析名一致（我们的 PIDL 与视图当前目录指向同一项）
     //   · 解析名以 "search-ms:" 开头（shell 规范化后的搜索文件夹解析名）
+    //
+    // 【与 app_nav.cpp 的 IsSearchTitle 是同一件事，口径必须对齐】那边判
+    // "是不是搜索视图"用于清 searchFrom/searchQuery，这里判"视图建好了没"
+    // 用于切详细信息模式。两边都认 "search-ms:" 前缀 —— 但那边还要额外认
+    // "搜索: "（我们给的显示名，出现在快照/标题里）。任一处只认一种形式，
+    // 就会出现"视图明明是搜索结果，却被当成普通目录"的错判。
     bool isSearchView = false;
     ComPtr<IPersistFolder2> pf;
     if (SUCCEEDED(fv2->GetFolder(IID_IPersistFolder2, reinterpret_cast<void**>(&pf))) && pf) {

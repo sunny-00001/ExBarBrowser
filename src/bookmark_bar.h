@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "bookmarks.h"
+#include "commands_ids.h"   // CmdId：SetShortcutFn 的入参（头文件自足，不靠 PCH 间接给）
 #include "common.h"
 #include "tab_uia.h"
 #include "tooltip_host.h"
@@ -108,6 +109,12 @@ public:
     // 键盘退出本栏（Esc）时把焦点还给视图。与 nav_bar 的 SetRefocusFn 同一契约：
     // 焦点卡在栏上会让文件视图的 Delete / type-ahead 全部失效。
     void SetRefocusFn(std::function<void()> fn) { refocus_ = std::move(fn); }
+    // 取某条命令**当前生效**的快捷键文案（"Ctrl+D"），空串 = 现在按不出来。
+    // 空状态提示要显示"按什么键能收藏/能聚焦本栏"—— 键位是用户可改的，
+    // 文案里写死 Ctrl+D / Ctrl+B 会在用户改键后变成假提示（按下去没反应）。
+    // 注入而不是让本类自己读 keymap：覆盖表、保留键剔除、先到先得都在
+    // InputRouter 里算过，这里拿到的必须是那一份推导的结果（唯一真相）。
+    void SetShortcutFn(std::function<std::wstring(CmdId)> fn) { shortcutFor_ = std::move(fn); }
     void Reload();        // 用内存中的 store 重排
     void ReloadFromDisk();// 重新读文件
     void ReloadTheme();
@@ -187,6 +194,32 @@ private:
     void ShowChildTree(int index);   // 图标：列该路径的子目录，可就地逐级展开
     void ShowOverflowMenu(POINT screen);
     void Navigate(int index);
+    // ---- 打开语义（bookmark_bar_open.cpp；Chrome/Edge/Firefox 书签栏通用标准）----
+    // 中键按下：书签 → 新标签（后台）；分类 → 整组子项各开一个标签（浏览器
+    // 「打开全部」的中键路径，与 Vivaldi/Chrome 的 "Open all" 同语义）。
+    // 返回 true = 已消费（调用方不再走左键默认路径）。
+    bool OnMiddleDown(int x, int y);
+    // 叶子书签的修饰键覆盖（Ctrl / Shift / 「固定新标签」开关）。
+    // 返回 true = 已按语义打开，调用方直接返回；false = 走默认（当前标签导航）。
+    bool ConsumeLeafClickMods(const Item& it, int mods);
+    // 按路径打开，带修饰键语义 —— **打开动作的唯一收口点**。
+    // 栏上的点击、» 溢出菜单、分类弹层三个入口都调它（此前只接了第一个，
+    // 于是另外两个入口的 Ctrl/Shift 无效、且绕过命令总线）。
+    // 返回 true = 已打开（调用方不要再导航）；false = 无修饰覆盖，走默认。
+    bool OpenPathWithMods(const std::wstring& path, int mods);
+    // 把一个分类的全部可打开子项各开一个标签（「打开全部」）。
+    // background = true 时不打断当前视图（中键/菜单默认）；返回成功条数。
+    int OpenFolderChildrenInTabs(const std::wstring& folderId, bool background);
+    // UIA 的"激活"（IInvokeProvider::Invoke）：真的打开这一项。
+    // 与鼠标左键同一条语义（叶子走 OpenPathWithMods，分类弹分类菜单），
+    // 只是触发源不同 —— 无障碍入口不该是第二套操作模型。
+    // 【为什么不是 Select】UIA 里 Select = 选中（焦点过去），Invoke = 激活（执行）。
+    // 两者原先发同一条消息，导致读屏软件"激活书签"只移焦点、不打开（E23）。
+    void UiaInvoke(int index);
+    // 分类下可打开的叶子数（递归）。菜单文案「打开全部（N 项）」用它，
+    // 与 OpenFolderChildrenInTabs 必须同口径 —— 写的数字与实际开的标签数不符，
+    // 比不写数字更糟。
+    int CountOpenableChildren(const std::wstring& folderId) const;
     void RebuildTooltip(HWND);
     void DragUpdate(HWND h, int x, int y);   // 拖动中：算插入线 + 重绘
     void DragFinish(HWND h, bool commit);    // 松手提交 / 取消
@@ -256,5 +289,8 @@ private:
 
     std::function<void(const std::wstring&)> onNavigate_;
     std::function<void()> refocus_;
+    // 键位文案取数口（见 SetShortcutFn）。空 = 未注入，空状态提示退化成
+    // 不带键名的版本 —— 宁可少说一句，也不显示一个可能按不出来的键。
+    std::function<std::wstring(CmdId)> shortcutFor_;
     MouseSink sink_;
 };

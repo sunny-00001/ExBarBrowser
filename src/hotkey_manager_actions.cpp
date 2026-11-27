@@ -90,12 +90,12 @@ void HotkeyManager::OnClick(int x, int y) {
         break;
     }
 
-    // 3) 左栏筛选项（前两组是表切换：组合键 / 序列键）
+    // 3) 左栏筛选项（表切换在工具栏的两颗开关上，见 OnTool）
     const int gi = HitGroup(x, y);
     if (gi >= 0 && gi < static_cast<int>(groups_.size())) {
         if (recording_) StopRecording();
         if (capturing_) CancelCapture();
-        SetGroup(groups_[static_cast<size_t>(gi)].id);   // 内部同步 tableType_
+        SetGroup(groups_[static_cast<size_t>(gi)].id);
         return;
     }
 
@@ -305,6 +305,8 @@ void HotkeyManager::OnKeyDown(UINT vk) {
 
 void HotkeyManager::OnTool(int id) {
     switch (id) {
+    case kToolTabChord: SetTableType(kTypeChord); return;
+    case kToolTabSeq: SetTableType(kTypeSeq); return;
     case kToolEdit: BeginCapture(); return;
     case kToolClear: ClearSelected(); return;
     case kToolReset: ResetSelected(); return;
@@ -313,6 +315,7 @@ void HotkeyManager::OnTool(int id) {
     case kToolCopyId: CopySelectedIds(); return;
     case kToolExport: ExportToClipboard(); return;
     case kToolImport: ImportFromClipboard(); return;
+    case kToolPreset: OnPresetMenu(); return;
     default: break;
     }
 }

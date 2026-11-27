@@ -282,6 +282,19 @@ std::vector<CommandDef> UserCommandRows() {
      // 写 $unchanged 等于断言"这个命令不该改任何东西"，与它自己的语义相反 ——
      // AI 通道调用它时断言必然不成立。
      true, false, Requirements{}, nullptr, "hotkeyOverrides=$changed"},
+    // 键位方案预设。list 是只读查询（走 kExemptNoReadback：方案列表不在
+    // StateSnapshot 里，但"读得到东西"由 schema 保证）；apply 会改覆盖表，
+    // 断言与 hotkey.set 同口径。
+    //
+    // 【preset 用 id 而不是下标】下标会随文件增删而错位，写错一个数字就是
+    // "套用了别的方案"—— 那种错用户很难发现（键位确实变了，只是变的不是他点的那个）。
+    {CmdId::HotkeyPresetList, L"hotkey.preset.list", L"Window", L"键位", L"列出可用的键位方案", true,
+     Effects{1, 0, 1, 0, 0, Scope::App}, kNoArgs, true, false, Requirements{}, nullptr, nullptr,
+     kExemptNoReadback},
+    {CmdId::HotkeyPresetApply, L"hotkey.preset.apply", L"Window", L"键位", L"套用一套键位方案", true,
+     Effects{0, 0, 1, 0, 0, Scope::App},
+     "{\"type\":\"object\",\"properties\":{\"preset\":{\"type\":\"string\",\"minLength\":1,\"description\":\"方案 id（default / explorer / tc / dopus / vim），用 hotkey.preset.list 查\"}},\"required\":[\"preset\"],\"additionalProperties\":false}",
+     true, false, Requirements{}, nullptr, "hotkeyOverrides=$changed"},
     // 弹层入口命令化（2026-11-26 独立复审 B1/A5）："打开一个弹层"也是动作，
     // 也要有机器等价。弹层内的选中本来就走总线（file.undo.to / file.redo），
     // 这里补"把它打开"这一步。openWorld=0（不出进程）；无自断言（弹出与否

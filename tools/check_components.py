@@ -656,6 +656,168 @@ def guarded_sources(scope: str):
             yield p.relative_to(ROOT).as_posix(), p
 
 
+def check_bmk_open_guard(files):
+    """书签域：每一个 Navigate(/onNavigate_( 调用点，都必须受 OpenPathWithMods 保护。
+
+    【判据为什么是"逐调用点"而不是"逐函数"】
+    第一版按函数体判（"体内有 Navigate 就必须也有 OpenPathWithMods"），
+    负向验证立刻自证是假的：一个函数里只要有一处走了收口点，**同函数内
+    另一处直接 onNavigate_ 的旁路就被掩盖了** —— 实测注入 3 个破坏点只报出
+    1 个。判据的粒度必须与缺陷的粒度一致：缺陷是"某一个调用点绕过了收口点"，
+    所以判据也必须是逐调用点。
+
+    【什么叫"受保护"】该调用点所在的**语句**（到分号为止）里出现
+    OpenPathWithMods。合法写法就两种：
+        if (!OpenPathWithMods(...)) Navigate(idx);          // 单行回落
+        if (!OpenPathWithMods(...) && onNavigate_) {        // 跨行 if
+            onNavigate_(...);                               // ← 这条语句自身没有
+        }
+    第二种是跨行的，单看语句会误判。所以按"语句 + 它所属的 if 条件头"一起看：
+    往上找最近的 if 头，若那个头里有 OpenPathWithMods 也算受保护。
+
+    返回 [(rule_dict, [(文件名, 违规数)])] —— 与 FORBID 的 fails 形状一致。
+    """
+    BMK_FILES = ["bookmark_bar.cpp", "bookmark_bar_keys.cpp",
+                 "bookmark_bar_popup.cpp", "bookmark_bar_itemmenu.cpp",
+                 "bookmark_category_popup.cpp", "bookmark_bar_open.cpp",
+                 "bookmark_bar_drop.cpp", "bookmark_bar_drag.cpp"]
+    call_nav = re.compile(r"(?<![\w:])(?:Navigate|onNavigate_)\s*\(")
+    call_open = re.compile(r"\bOpenPathWithMods\s*\(")
+    # 函数定义行（用于跳过 Navigate 自己的定义体：它就是"打开"的最后一跳，
+    # 内部调 onNavigate_ 是它的职责，要求它调自己会变成无限递归的判据）。
+    definer = re.compile(r"^\s*(?:[\w:<>,*&]+\s+)+[\w:]*\bNavigate\s*\(", re.M)
+
+    hits = []
+    for name in BMK_FILES:
+        text = files.get(name)
+        if text is None:
+            continue
+        lines = text.splitlines()
+        # 标出 Navigate 定义体的行范围（从定义行到配平结束）。
+        skip = set()
+        for m in definer.finditer(text):
+            start_line = text.count("\n", 0, m.start())
+            # 从定义处向后配平大括号
+            j = text.find("{", m.end())
+            if j < 0:
+                continue
+            depth = 0
+            k = j
+            while k < len(text):
+                if text[k] == "{":
+                    depth += 1
+                elif text[k] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                k += 1
+            end_line = text.count("\n", 0, k)
+            skip.update(range(start_line, end_line + 1))
+
+        bad = 0
+        for i, line in enumerate(lines):
+            if i in skip:
+                continue
+            if not call_nav.search(line):
+                continue
+            # 该行自身（含同行 if 头）有收口点 → 受保护
+            if call_open.search(line):
+                continue
+            # 跨行 if：往上找最近的 if 条件头（最多回溯 6 行，防止跨函数误认）
+            protected = False
+            for back in range(1, 7):
+                if i - back < 0:
+                    break
+                prev = lines[i - back]
+                if call_open.search(prev):
+                    protected = True
+                    break
+                # 遇到上一条语句结束或另一个控制流起点就停止回溯
+                if ";" in prev or re.match(r"\s*(?:\}|case |default:)", prev):
+                    break
+            if not protected:
+                bad += 1
+        if bad:
+            hits.append((name, bad))
+    if not hits:
+        return []
+    return [(
+        dict(name="书签栏打开语义必须经 OpenPathWithMods（BMK_OPEN_GUARD）",
+             unit="处调用",
+             why="书签域里'打开一个书签路径'只能走 OpenPathWithMods"
+                 "（修饰键 + 命令总线审计的唯一收口点）。这里有一处 "
+                 "Navigate/onNavigate_ 调用没有受它保护 —— 它在自建一条旁路。"
+                 "详见 docs/BOOKMARK-BAR-AUDIT-2026-11-26.md §八"
+                 "（E12/E13/E22/E23/E26 是同一个根因的五次复发）"),
+        hits)]
+
+
+def check_bmk_delete_no_dialog(files):
+    """删除单条书签不得弹确认框（用户 2026-11-27 明确要求）。
+
+    两半都要成立，少一半就回归：
+      ① 命令层：bmk.remove 必须在 kNoConfirmDestructive 白名单里 —— 否则
+         命令面板/热键等不经过右键菜单的入口仍会弹总线的泛化确认框；
+      ② UI 层：三个删除入口（项右键 / 键盘 Delete / 分类弹层行内右键）
+         的语句块里不得再出现 MessageBoxW 或 MarkConfirmedForNextCall ——
+         否则用户点了删除还是会看到框。
+
+    【判据粒度】按"每个 BmkRemove 调用点所在的最小语句块"判，不按整个文件判：
+    同一个文件里「清全部书签」「解散分类」的确认框是合规的（user 只要求
+    删除书签免问），不能连坐把它们也判违规。块边界取最近的 case/ VK_DELETE
+    开头与最近的 break;/右花括号。
+    """
+    UI_FILES = ["bookmark_bar_itemmenu.cpp", "bookmark_bar_keys.cpp",
+                "bookmark_category_popup.cpp"]
+    forbidden = ("MessageBoxW", "MarkConfirmedForNextCall")
+    hits = []
+
+    # ① 命令层白名单
+    confirm_text = files.get("commands_confirm.cpp", "")
+    table = re.search(r"kNoConfirmDestructive\s*\[\]\s*=\s*\{(.*?)\}", confirm_text, re.S)
+    if not table or not re.search(r"\bCmdId::BmkRemove\b", table.group(1)):
+        hits.append(("commands_confirm.cpp", 1))
+
+    # ② UI 层：逐调用点判
+    for name in UI_FILES:
+        text = files.get(name)
+        if text is None:
+            continue
+        lines = text.splitlines()
+        bad = 0
+        for i, line in enumerate(lines):
+            if "CmdId::BmkRemove" not in line or ".Cmd(" in line:
+                continue   # 菜单项登记不是调用点
+            start = i
+            while start > 0:
+                prev = lines[start - 1]
+                if (re.match(r"\s*(?:case\s+\w+|default)\s*:", prev)
+                        or "VK_DELETE" in prev or re.match(r"\s*\}\s*$", prev)):
+                    break
+                start -= 1
+            end = i
+            while end + 1 < len(lines):
+                nxt = lines[end + 1]
+                if re.match(r"\s*break\s*;", nxt) or re.match(r"\s*\}\s*$", nxt):
+                    break
+                end += 1
+            block = "\n".join(lines[start:end + 1])
+            if any(tok in block for tok in forbidden):
+                bad += 1
+        if bad:
+            hits.append((name, bad))
+    if not hits:
+        return []
+    return [(
+        dict(name="删除单条书签不弹确认框（BMK_DELETE_NO_DIALOG）",
+             unit="处违规",
+             why="用户明确要求'删除书签不要弹窗'。bmk.remove 必须进 "
+                 "kNoConfirmDestructive，三个 UI 删除入口不得再弹 MessageBoxW "
+                 "或调 MarkConfirmedForNextCall。误删可从「撤销删除」恢复；"
+                 "清全部书签/解散分类不在本判据范围内，仍保留确认框。"),
+        hits)]
+
+
 def scan():
     files = {p.name: strip_comments(p.read_text(encoding="utf-8", errors="replace"))
              for p in sources()}
@@ -676,6 +838,33 @@ def scan():
         stray = [(n, c) for n, c in hits if n not in rule["allow"]]
         if stray:
             fails.append((rule, stray))
+
+    # ---- BMK_OPEN_GUARD：书签域"打开一个书签路径"必须经唯一收口点 ----
+    #
+    # 背景（2026-11-27 第四轮复审，E12/E13/E22/E23/E26）：打开语义在第二轮就
+    # 收口成 OpenPathWithMods，但当时只接了栏上左键一个入口。之后溢出菜单、
+    # 分类弹层、键盘 Enter、图标子目录树两处、UIA 激活陆续被发现各自绕过它 ——
+    # 同一个根因反复出现五次。
+    #
+    # 根因不是"漏改某一行"，而是**没有机械判据**：收口点的正确性不能靠
+    # "我改对了"证明，只能靠"再没有别的地方绕过它"证明。
+    #
+    # 【判据形态为什么不用一条正则】第一版写成"行里没有 OpenPathWithMods
+    # 却出现 Navigate(" —— 立刻自证是假的：它把 Navigate 的**定义体**
+    # （void BookmarkBar::Navigate(...)）和合法的跨行回落全判红了，
+    # 而真正的违规（E22 那种整段绕过）反而因为缩进/换行写法差异被漏掉。
+    # 现在改成"逐函数体看"：抽出每个函数的体，只要体内出现 Navigate( 或
+    # onNavigate_( 调用，体内就必须也出现 OpenPathWithMods —— 否则这个函数
+    # 就是在自己造一条打开路径。定义体（不含调用）自然豁免。
+    fails.extend(check_bmk_open_guard(files))
+
+    # ---- BMK_DELETE_NO_DIALOG：单条书签删除不弹确认框（2026-11-27 用户要求）----
+    # 以前 UI 层弹一句带书名的确认框、再用 MarkConfirmedForNextCall 压住总线的
+    # 泛化确认（E24）；用户明确要求单条删除完全不弹框后，正解是把 bmk.remove
+    # 加进 kNoConfirmDestructive —— 单一真相源，所有人工入口一起生效 ——
+    # 并删掉三处 UI 弹框与标记。两半缺一不可：只删 UI 框会换来总线的泛化框；
+    # 只加白名单则 UI 框照弹。
+    fails.extend(check_bmk_delete_no_dialog(files))
 
     # ---- 单文件行数上限（AGENTS.md §3）----
     # 走棘轮：历史超限文件按基线里的记账行数放行（涨过就报错，降下来自动收紧），

@@ -129,6 +129,12 @@ bool Set(const std::wstring& key, const json::Value& value, std::wstring* err) {
         if (err) *err = key + L" 是只读项（" + e->doc + L"）";
         return false;
     }
+    // 写入前留一份旧值：写后校验失败时必须回滚，否则命令报"失败"、内存却已变。
+    // 只可能有旧值——能走到写后回读的项一定有 get（否则下面 Get 就失败了），
+    // 所以这里取不到是理论情况，取不到就跳过回滚而已，不影响正确性。
+    json::Value old;
+    const bool hasOld = Get(key, &old);
+
     std::wstring why;
     if (!e->set(value, &why)) {
         if (err) {
@@ -137,9 +143,12 @@ bool Set(const std::wstring& key, const json::Value& value, std::wstring* err) {
         return false;
     }
 
-    // 写后回读（理由见文件头）。
+    // 写后回读（理由见文件头）。失败一律回滚到写入前的旧值 ——
+    // "没生效"必须等于"状态没变"，否则下一次 Save 会把半成品固化到盘上。
+    // 回滚走同一条 set 通道（同一份校验/归一），不用直接赋值字段。
     json::Value back;
     if (!Get(key, &back)) {
+        if (hasOld) e->set(old, nullptr);
         if (err) *err = key + L" 写入后读不回来（get 与 set 不在同一份状态上）";
         return false;
     }
@@ -148,6 +157,7 @@ bool Set(const std::wstring& key, const json::Value& value, std::wstring* err) {
     // 没声明 canon 的项一律严格比原文。
     const json::Value expect = e->canon ? e->canon(value) : value;
     if (!ValueEquals(back, expect)) {
+        if (hasOld) e->set(old, nullptr);
         if (err)
             *err = key + L" 写入后回读不一致：期望 " + json::Stringify(expect, 0) + L"，实际 " +
                    json::Stringify(back, 0);
@@ -167,8 +177,10 @@ json::Value DumpAll() {
         o.Set(L"writable", json::Value::MakeBool(static_cast<bool>(e.set)));
         if (e.get) o.Set(L"value", e.get(Config::Get().s()));
         // 范围只对 Int 有意义；未声明范围时不给 min/max，免得调用方以为
-        // "0..0" 是真实取值域。
-        if (e.kind == Kind::Int && e.maxValue > e.minValue) {
+        // "0..0" 是真实取值域。枚举项（有 options）也不给：它的精确取值域
+        // 是 options 列出的那几档，连续区间 0..3 会暗示中间那档（如 searchRange
+        // 的档位 2）合法 —— 那是写不进去的假选项。
+        if (e.kind == Kind::Int && e.maxValue > e.minValue && e.options.empty()) {
             o.Set(L"min", json::Value::MakeInt(e.minValue));
             o.Set(L"max", json::Value::MakeInt(e.maxValue));
         }

@@ -193,6 +193,20 @@ public:
     void SetConfirmFn(ConfirmFn fn) { confirmFn_ = std::move(fn); }
     // 本次调用是否已经确认过（handler 用它避免重复弹框：总线已问过就别再问）。
     bool IsCallConfirmed() const { return callConfirmed_; }
+    // 由 UI 层反向声明："这一次我已经问过用户了，得到的是同意"。
+    //
+    // 【为什么需要它】有些命令的确认必须由 UI 层做，因为只有 UI 知道**具体**
+    // 要问什么 —— "删除书签「xxx」？" 比泛化的"「删除书签」会覆盖现有内容"
+    // 信息量大得多（能看见名字，能发现自己点错了行）。但命令本身又是
+    // destructive，总线还会再问一遍 —— 同一次删除连问两次。
+    // 项目里已有正确写法（SessionDelete 用 IsCallConfirmed 判断），
+    // 本方法只是把"写入端"补齐，让那个判断真的能成立。
+    //
+    // 【为什么叫 NextCall 而不是直接置 callConfirmed_】必须由**紧接着的那一次**
+    // Dispatch 消费掉。直接置 callConfirmed_ 会被 Dispatch 的 ConfirmScope
+    // 当成"进入时的旧值"记下来、退出时还原成 true —— 之后所有命令都不再确认。
+    // 一次性标志在 Dispatch 入口被消费，作用域天然正确。
+    void MarkConfirmedForNextCall() { confirmNext_ = true; }
     // 这条命令执行前**是否需要人工确认**（破坏性 && 不可撤销 && 不在日常豁免表里）。
     bool NeedsConfirm(const CommandDef& def) const;
     // 确认收口：返回 false = 用户取消/通道未就绪，调用方必须中止本次执行。
@@ -313,6 +327,8 @@ private:
     Actor actor_;                  // 本次 Dispatch 的调用来源（handler 经 fromMachine 读）
     ConfirmFn confirmFn_;          // 破坏性命令的人工确认（App 注入）
     bool callConfirmed_ = false;   // 本次 Dispatch 内是否已确认过（handler 经 IsCallConfirmed 读）
+    // UI 层"我已经问过了"的一次性标志，由 Dispatch 在入口消费掉（见 MarkConfirmedForNextCall）。
+    bool confirmNext_ = false;
 };
 
 // 双入口命令的统一判据："这次是人点的吗"。

@@ -211,18 +211,23 @@ void App::ShowTabMenu(int index, int action) {
         return CommandBus::Get().Invoke(cmd, Args::FromJson(a), Actor::Ui());
     };
 
-    const int id = tabSet_.IdAt(index);
-    const core::TabRef* ref = tabSet_.Find(id);
-    if (!ref) return;
     // 关闭历史条目：与 tab.reopen 同一命令，序号决定重开第几条（命令 side 从
     // 关闭栈按序取，这里把序号转成 index 参数传给 handler 的历史序号口径）。
     // 先于 switch 处理，避免为 20 条历史各写一个 case。
+    //
+    // 【必须排在 ref 检查之前】重开不依赖任何存活标签 —— 菜单里的"最近关闭"
+    // 那一段，恰恰是在标签集合可能已变（菜单是模态的，期间 AI 命令能关标签）
+    // 时最该可用的动作。放在 `if (!ref) return;` 后面会让它被静默吞掉。
     if (action >= kTabMenuReopenBase) {
         json::Value a = json::Value::MakeObject();
         a.Set(L"index", json::Value::MakeInt(action - kTabMenuReopenBase));
         CommandBus::Get().Invoke(CmdId::TabReopenAt, Args::FromJson(a), Actor::Ui());
         return;
     }
+
+    const int id = tabSet_.IdAt(index);
+    const core::TabRef* ref = tabSet_.Find(id);
+    if (!ref) return;   // 下面每个动作都要作用在某个标签上；找不到就放弃
     switch (action) {
     // "新建标签页"与"+"按钮、tab.new 同义：开一个此电脑作为全新起点。
     // 以前它和 kTabMenuClone 一模一样（都复制当前路径），两个菜单项名不副实 ——

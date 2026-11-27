@@ -219,6 +219,11 @@ bool InputRouter::OnMouseDown(int target, int button, int mods, POINT screen, bo
             hasDouble = true;
             LogDbg(L"[mouse] 首击目标 unknown，保留匿名 pending 等待双击升级");
         } else {
+            // 本次 DOWN 没命中任何规则：清掉上一次双击窗口可能残留的 pending。
+            // 否则紧接着的 UP 会拿旧 pending 的 claim 吞掉本组件的默认行为 ——
+            // 真实案例：点过标签栏空白留下 MT_EMPTY 的 pending，再拖标签在空白处
+            // 松手，UP 的 claim 把拖拽提交整个吞掉（见 tab_strip_input.cpp 注释）。
+            pending_ = PendingClick{};
             return false;
         }
     }
@@ -318,7 +323,13 @@ bool InputRouter::OnMouseUp(int target, int button, int mods) {
     const bool mayUpgrade = pending_.target == MT_UNKNOWN &&
                             MouseRules::Get().HasTriggerRules(button, TR_DOUBLE);
     if (!mayUpgrade && !HasRule(upTarget, button, TR_DOUBLE, mods)) pending_ = PendingClick{};
-    return true;
+    // 【返回真实 claim，不恒 true】claim 只属于"配对 DOWN 确实命中规则"的那次点击。
+    // 这里原先无条件 return true：若 pending_ 是残留的（上一次双击窗口未清），
+    // 本次无规则 DOWN 的 UP 也会被判成 claimed，吞掉组件默认行为（拖拽提交、
+    // 按钮点击）。hadClaim 在入口已取过并清掉，是这次 DOWN 的真实 claim 状态。
+    // mayUpgrade 保留：冷启动 UIA 失败时的匿名 pending 仍需吞掉首击默认行为，
+    // 让双击的第二击能完整匹配（既有语义，不在此改变）。
+    return hadClaim || mayUpgrade;
 }
 
 bool InputRouter::OnWheel(int target, int mods, int delta, bool horizontal) {
@@ -395,6 +406,39 @@ std::wstring InputRouter::StatusText() const {
     return CommandBus::Get().lastCommand();
 }
 
+// ---------------------------------------------------------------- 改键（批量）
+
+// 【为什么要有批次】这三个写操作原来是"改一条 = Save() + Reload()"。
+// Reload() 的代价不是写一个字段：它要重读 keymap.json、重建 281 条绑定、
+// 重建序列状态机（seq_.Reset()）、隐藏序列提示（hint_.Hide()）。
+// 于是"导入 20 条" = 20 次写盘 + 20 轮重建，而且中间每一轮都会把用户
+// 正在输入的序列状态清掉 —— 那是可见的故障，不只是慢。
+//
+// 现在：BeginBatch() 之后的写入只改内存里的覆盖表，EndBatch() 才落盘 + 重建一次。
+// 用 RAII（BatchScope）保证异常/早退也会 EndBatch —— 漏掉 EndBatch 的后果是
+// "改了但没生效也没存"，那是最难查的一类。
+void InputRouter::BeginBatch() { ++batchDepth_; }
+
+void InputRouter::EndBatch() {
+    if (batchDepth_ <= 0) return;
+    --batchDepth_;
+    if (batchDepth_ > 0) return;   // 还有外层批次没结束
+    if (!batchDirty_) return;      // 这一批什么都没改，不必重建
+    batchDirty_ = false;
+    cfg_->Save();
+    Reload();
+}
+
+void InputRouter::CommitWrite() {
+    // 批次内只标脏，批次外立即落盘 + 重建（保持单条改键的即时生效语义）。
+    if (batchDepth_ > 0) {
+        batchDirty_ = true;
+        return;
+    }
+    cfg_->Save();
+    Reload();
+}
+
 bool InputRouter::SetKeyForCommand(const std::wstring& command, const std::wstring& key) {
     for (const auto& r : rows_) {
         if (r.isSequence || !str::IEquals(r.command, command)) continue;
@@ -405,8 +449,7 @@ bool InputRouter::SetKeyForCommand(const std::wstring& command, const std::wstri
         } else {
             cfg_->SetHotkeyOverride(r.setting, key);
         }
-        cfg_->Save();
-        Reload();
+        CommitWrite();
         return true;
     }
     return false;
@@ -414,16 +457,17 @@ bool InputRouter::SetKeyForCommand(const std::wstring& command, const std::wstri
 
 void InputRouter::ResetDefaults() {
     cfg_->ClearAllHotkeyOverrides();
-    cfg_->Save();
-    Reload();
+    // 全量清空必然有改动：批次内也要标脏，否则 EndBatch 会以为"什么都没改"
+    // 而跳过重建，界面继续显示旧的覆盖状态。
+    batchDirty_ = true;
+    CommitWrite();
 }
 
 bool InputRouter::ResetKeyForCommand(const std::wstring& command) {
     for (const auto& r : rows_) {
         if (r.isSequence || !str::IEquals(r.command, command)) continue;
         cfg_->ClearHotkeyOverride(r.setting);
-        cfg_->Save();
-        Reload();
+        CommitWrite();
         return true;
     }
     return false;

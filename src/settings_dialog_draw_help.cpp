@@ -9,6 +9,8 @@
 // "立即生效" / "只读：下次启动生效"。
 #include "settings_dialog.h"
 
+#include <algorithm>
+
 #include "ui_draw.h"
 
 namespace {
@@ -56,22 +58,28 @@ void SettingsDialog::PaintRight(HDC dc, const RECT& rc) {
                     DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
 
     // 键名芯片：等宽字体，让人能照着这个名字去写命令 / 跟 AI 说。
+    // 【夹到布局给的右边界】宽度只按文本算时，长键名（22 字符）在右栏最小宽
+    // 160 下会画到栏外被裁 —— 看起来像"芯片没有右边框"。夹到 right_.chip.right
+    // 再用省略号把"还有内容"显示出来，而不是悄悄丢掉。
     const int chipW = ui::MeasureText(dc, theme_->fontMono, row->entry->key) + theme_->S(12);
-    RECT chip{right_.chip.left, right_.chip.top, right_.chip.left + chipW, right_.chip.bottom};
+    const int chipRight = std::min(right_.chip.right, right_.chip.left + chipW);
+    RECT chip{right_.chip.left, right_.chip.top, chipRight, right_.chip.bottom};
     ui::FillRound(dc, chip, theme_->bg, theme_->S(3));
     ui::FrameRectColor(dc, chip, theme_->line);
     RECT chipText{chip.left + theme_->S(6), chip.top, chip.right - theme_->S(6), chip.bottom};
     ui::DrawTextRow(dc, theme_->fontMono, row->entry->key, chipText, theme_->sub,
-                    DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                    DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
 
     // 类型与取值域。
     std::wstring type = L"类型 ";
     type += str::FromUtf8(settings_reg::KindName(row->entry->kind));
-    if (row->entry->maxValue > row->entry->minValue)
+    // 枚举项优先显示"N 个可选值"：它有 options 给出的精确取值域，连续 min..max
+    // 会暗示中间那档（searchRange 的档位 2）合法，而那档其实写不进去。
+    if (!row->entry->options.empty())
+        type += L" · " + std::to_wstring(row->entry->options.size()) + L" 个可选值";
+    else if (row->entry->maxValue > row->entry->minValue)
         type += L" · 取值 " + std::to_wstring(row->entry->minValue) + L"–" +
                 std::to_wstring(row->entry->maxValue);
-    else if (!row->entry->options.empty())
-        type += L" · " + std::to_wstring(row->entry->options.size()) + L" 个可选值";
     ui::DrawTextRow(dc, theme_->font, type, right_.type, theme_->inert,
                     DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
 
@@ -128,7 +136,8 @@ void SettingsDialog::PaintStatus(HDC dc, const RECT& rc) {
     // 控件高由行高推导，所以这里显示的两个数必然自洽。
     int total = 0;
     for (const auto& gi : groups_) total += gi.total;
-    const std::wstring metrics = L"行高 " + std::to_wstring(kRowHeights[density_]) + L" · 控件 " +
+    // 行高读数和密度按钮/菜单同一口径：都是缩放后的实际像素（RowHeight/CtrlHeight）。
+    const std::wstring metrics = L"行高 " + std::to_wstring(RowHeight()) + L" · 控件 " +
                                  std::to_wstring(CtrlHeight()) + L" · 共 " +
                                  std::to_wstring(total) + L" 项";
     RECT mr{rc.right - theme_->S(260), rc.top, rc.right - theme_->S(12), rc.bottom};

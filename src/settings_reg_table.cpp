@@ -20,6 +20,8 @@
 #include "search_scope.h"         // searchscope::RangeLabel / kRangeCount（范围档位唯一来源）
 #include "settings_bounds.h"      // 整型设置的数值域（与 config_io 的读盘夹取同一份）
 #include "settings_reg_table.h"
+#include "settings_reg_table_hotkey.h"
+#include "settings_reg_table_bookmark.h"
 #include "settings_reg_table_readonly.h"   // detail::AppendReadonlyEntries（只读三组）
 #include "settings_reg_valid.h"   // BoolSet / IntSet / StrEnumSet / *Value
 #include "status_segs.h"          // Seg_Count：statusSegs 的取值上界（纯枚举，不拖 UI 依赖）
@@ -319,37 +321,8 @@ const std::vector<Entry>& Table() {
                          L"）：后退/前进最多几步；立即裁剪已有栈",
                      L"bar_nav", {}, kHistoryDepthMin, kHistoryDepthMax});
 
-        // ---- 书签栏 ----
-        v.push_back({L"bookmark", Kind::Bool,
-                     [](const Settings& s) { return json::Value::MakeBool(s.showBookmark); },
-                     BoolSet(&m.showBookmark, L"bookmark"),
-                     L"显示书签栏：与 bmk.show / bmk.hide 命令是同一条状态", L"bar_bookmark"});
-        v.push_back({L"bookmarkBarHeight", Kind::Int,
-                     [](const Settings& s) { return json::Value::MakeInt(s.bookmarkBarHeight); },
-                     IntSet(&m.bookmarkBarHeight, L"bookmarkBarHeight", kBookmarkBarHeightMin,
-                            kBookmarkBarHeightMax),
-                     L"书签栏高度（逻辑像素，" +
-                         RangeText(kBookmarkBarHeightMin, kBookmarkBarHeightMax) +
-                         L"）：立即重排整窗",
-                     L"bar_bookmark", {}, kBookmarkBarHeightMin, kBookmarkBarHeightMax});
-        v.push_back({L"bookmarkBarTooltipWidth", Kind::Int,
-                     [](const Settings& s) {
-                         return json::Value::MakeInt(s.bookmarkBarTooltipWidth);
-                     },
-                     IntSet(&m.bookmarkBarTooltipWidth, L"bookmarkBarTooltipWidth",
-                            kBookmarkBarTooltipWidthMin, kBookmarkBarTooltipWidthMax),
-                     L"书签提示窗最大宽（逻辑像素，" +
-                         RangeText(kBookmarkBarTooltipWidthMin, kBookmarkBarTooltipWidthMax) +
-                         L"）：书签标题被截断时的悬浮提示最大宽度",
-                     L"bar_bookmark", {}, kBookmarkBarTooltipWidthMin, kBookmarkBarTooltipWidthMax});
-        v.push_back({L"bookmarkWheelStepDp", Kind::Int,
-                     [](const Settings& s) { return json::Value::MakeInt(s.bookmarkWheelStepDp); },
-                     IntSet(&m.bookmarkWheelStepDp, L"bookmarkWheelStepDp",
-                            kBmkWheelStepDpMin, kBmkWheelStepDpMax),
-                     L"书签栏滚轮步进（逻辑像素，" + RangeText(kBmkWheelStepDpMin,
-                                                        kBmkWheelStepDpMax) +
-                         L"）：滚一格横向挪多远；48 约三个字宽（立即生效）",
-                     L"bar_bookmark", {}, kBmkWheelStepDpMin, kBmkWheelStepDpMax});
+        // 书签栏七项在 settings_reg_table_bookmark.cpp（分段理由见其头文件）。
+        detail::AppendBookmarkBarEntries(v, m);
 
         // ---- 状态栏 ----
         v.push_back({L"statusbar", Kind::Bool,
@@ -503,6 +476,11 @@ const std::vector<Entry>& Table() {
         const std::vector<Option> searchRangeOptions = [] {
             std::vector<Option> out;
             for (int i = 0; i < searchscope::kRangeCount; ++i) {
+                // 本宿主搜不出来的档（此电脑）不进清单：否则下拉里摆着一个
+                // 点了必失败、config.list 报作合法域的假选项。判据与写入端
+                // 的 RangeSupported 是同一个，三处（下拉 / config.list / AI）
+                // 从同一份 options 派生，自动一致，无需各自记一遍。
+                if (!searchscope::RangeSupported(i)) continue;
                 Option o;
                 o.label = searchscope::RangeLabel(i);
                 o.value = json::Value::MakeInt(i);
@@ -521,7 +499,10 @@ const std::vector<Entry>& Table() {
                                    [](int n) { return searchscope::RangeSupported(n); },
                                    L"这一档在本宿主搜不出来（整机搜索要 Explorer 进程内的 "
                                    L"search-ms 宿主，本宿主只能以单个索引目录建搜索文件夹）"),
-                     L"搜索范围档位：0 当前目录本层 1 含子目录 2 此电脑 3 自定义路径",
+                     L"搜索范围档位：0 当前目录本层 1 含子目录 3 自定义路径（2 此电脑本宿主不支持，不可选）",
+                     // min/max 仍是 set 校验用的真实数值域（SelfCheck 要求可写 Int
+                     // 声明范围）；对外展示时 DumpAll 会为枚举项省略它，只给 options，
+                     // 免得 0..3 暗示档位 2 合法。
                      L"search", searchRangeOptions, 0, searchscope::kRangeCount - 1});
         // 存的必须是**规范形式**：这个值会被直接拿去当目录用（IsDirectory /
         // 索引作用域）。归一化收在 spec 里（写在唯一入口处），而不是让每个调用点
@@ -738,6 +719,7 @@ const std::vector<Entry>& Table() {
         // ---- 只读观测面（键位 / 窗口几何 / 会话状态）----
         // 这三组的 set 一律为空（config.set 拒绝）。与可写偏好分开，是因为
         // "改了不生效"必须一眼看得出来；内容见 settings_reg_table_readonly.cpp。
+        detail::AppendHotkeyPanelEntries(v, m);
         detail::AppendReadonlyEntries(v);
         return v;
     }();

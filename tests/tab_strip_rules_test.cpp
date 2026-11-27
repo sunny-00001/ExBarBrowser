@@ -118,8 +118,8 @@ int main() {
         Check(monotonic, "10%..90% 区间剩余偏移单调收窄");
     }
 
-    // ---- tear-off 磁吸判定：垂直越过栏底 + 阈值才算脱离 ----
-    // 栏高 26、磁吸 18 → 脱离线在 y=44。
+    // ---- tear-off 磁吸判定：垂直越过栏体（上或下）+ 阈值才算脱离 ----
+    // 栏高 26、磁吸 18 → 下方脱离线 y=44，上方脱离线 y=-18。
     {
         const int h = 26, th = 18;
         Check(!TabIsTearOff(0, h, th), "栏内顶部：不脱离");
@@ -128,15 +128,44 @@ int main() {
         Check(!TabIsTearOff(43, h, th), "阈值内（43 < 26+18）：仍被磁吸拉住");
         Check(TabIsTearOff(44, h, th), "恰在阈值上：脱离（>= 即算）");
         Check(TabIsTearOff(200, h, th), "远远拖到下方：脱离");
-        // 负 dy（拖到栏上方）：磁吸开启时不脱离 —— 横向/上抖不该触发成窗。
-        Check(!TabIsTearOff(-10, h, th), "磁吸开启：拖到栏上方不算脱离（只认下方）");
+        // 负 dy（栏上方）：Chromium 的 above-or-below 语义 —— 向上也要越过阈值。
+        // 阈值内的上抖仍被磁吸拉住，所以不会把"想重排却抖了一下"误判成成窗。
+        Check(!TabIsTearOff(-10, h, th), "向上 10dp（阈值内）：仍拉住");
+        Check(!TabIsTearOff(-17, h, th), "向上 17dp（阈值内）：仍拉住");
+        Check(TabIsTearOff(-18, h, th), "向上恰在阈值：脱离（<= 即算）");
+        Check(TabIsTearOff(-60, h, th), "向上拖到标题栏：脱离");
         // 磁吸关闭（threshold<=0）：任何出栏都算脱离，上方也算。
         Check(TabIsTearOff(-1, h, 0), "磁吸关闭：拖到栏上方即脱离");
         Check(TabIsTearOff(26, h, 0), "磁吸关闭：刚出栏底即脱离");
         Check(!TabIsTearOff(25, h, 0), "磁吸关闭：栏内仍不脱离");
         // 未布局（height<=0）：不判，避免拖拽在 Layout 之前误触发成窗。
         Check(!TabIsTearOff(100, 0, th), "未布局（height=0）：一律不脱离");
+        Check(!TabIsTearOff(-100, 0, th), "未布局 + 向上：一律不脱离");
         Check(!TabIsTearOff(100, -5, th), "高度为负：一律不脱离");
+    }
+
+    // ---- 拖拽落点：被拖标签左缘 + 方向记忆 ----
+    // drag=1（标签 B），其余 A(50)/C(250)/D(350) 的中点就是落点分界。
+    {
+        CheckEq(TabDropTargetInView(r, 50, 1, 1, 0), 0, "左缘在 A 中点：插到最前");
+        CheckEq(TabDropTargetInView(r, 100, 1, 1, 0), 1, "左缘在 B 原位：原地不动");
+        CheckEq(TabDropTargetInView(r, 250, 1, 1, 0), 1, "恰在 C 中点：尚未跨过");
+        CheckEq(TabDropTargetInView(r, 251, 1, 1, 0), 2, "刚过 C 中点：插到 C 后");
+        CheckEq(TabDropTargetInView(r, 400, 1, 1, 0), 3, "左缘拖到末位右侧：插到最后");
+        // 方向记忆：current=1，越过 250 但只到 255（<250+10）→ 不换。
+        CheckEq(TabDropTargetInView(r, 255, 1, 1, 10), 1, "滞后带内：不换落点");
+        CheckEq(TabDropTargetInView(r, 265, 1, 1, 10), 2, "明确越过分界+eps：更新落点");
+        // 反向：B 已落到位置 2（current=2），退回 245（>250-10）不换；235 才换回。
+        CheckEq(TabDropTargetInView(r, 245, 1, 2, 10), 2, "反向滞后：不换回");
+        CheckEq(TabDropTargetInView(r, 235, 1, 2, 10), 1, "反向明确越界：换回");
+        // eps=0 关闭滞后：越过 1px 立即更新。
+        CheckEq(TabDropTargetInView(r, 251, 1, 1, 0), 2, "eps=0：越过即更新");
+        // 初始一致性：末位标签停在原位（current=3）时不能自己跳格。
+        CheckEq(TabDropTargetInView(r, 350, 3, 3, 4), 3, "末位标签停原位：不跳");
+        // 越界：宁可返回 -1，也不猜一个落点。
+        CheckEq(TabDropTargetInView(r, 100, -1, 0, 0), -1, "drag 未初始化：-1");
+        CheckEq(TabDropTargetInView(r, 100, 4, 0, 0), -1, "drag 越界：-1");
+        CheckEq(TabDropTargetInView({}, 100, 0, 0, 0), -1, "空几何：-1");
     }
 
     std::printf(g_fail ? "\n有 %d 项失败\n" : "\n全部通过\n", g_fail);

@@ -57,6 +57,19 @@ int main() {
     Check(cfgapply::AffectsHistoryLimits(L"recentLimit"), "最近访问上限要推给持有者");
     Check(cfgapply::AffectsHistoryLimits(L"closedTabLimit"), "关闭历史上限要推给 TabSet");
 
+    // ③b 快捷键管理器面板：几何项必须让面板重排，窗口尺寸只影响下次打开。
+    //
+    // 【为什么这几条值得单独钉】这四项的共同失败态是"命令 ok、界面没变" ——
+    // 面板的 Layout() 按配置现算，但没人叫它就不会重跑。而窗口宽高**不该**
+    // 走这条：用户的窗口大小是他自己调的，被一次设置改掉是越权。
+    for (const wchar_t* k : {L"hkRowHeight", L"hkRailWidth", L"hkDetailWidth"}) {
+        Check(cfgapply::AffectsHotkeyPanel(k), "面板几何项触发表格重排");
+    }
+    Check(!cfgapply::AffectsHotkeyPanel(L"hkWindowWidth"), "窗口宽只影响下次打开");
+    Check(!cfgapply::AffectsHotkeyPanel(L"hkWindowHeight"), "窗口高只影响下次打开");
+    // 面板尺寸不能被误判成"整窗布局"：它只重排自己那个窗口。
+    Check(!cfgapply::AffectsLayout(L"hkRowHeight"), "面板行高不触发主窗口布局");
+
     // ④ **全覆盖**：表里每个可写键都必须有归属。
     // 这是本文件存在的理由 —— 新增一个键却忘了写落地，这一条会红。
     size_t writable = 0;

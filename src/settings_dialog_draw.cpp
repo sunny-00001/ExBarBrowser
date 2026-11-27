@@ -118,12 +118,16 @@ void SettingsDialog::PaintLeft(HDC dc, const RECT& rc) {
     const std::wstring left = L"共 " + std::to_wstring(totalAll_) + L" 项";
     const std::wstring right = std::to_wstring(totalWritable_) + L" 可改 · " +
                                std::to_wstring(totalAll_ - totalWritable_) + L" 只读";
-    RECT lr{foot_.left + theme_->S(14), foot_.top, foot_.left + theme_->S(120), foot_.bottom};
-    RECT rr{foot_.right - theme_->S(120), foot_.top, foot_.right - theme_->S(14), foot_.bottom};
+    // 两段各占页脚一半，中间留 S(8)。早先各写死 S(120)，左栏最小宽 160 时
+    // 两段重叠 80px、右段向左压住左段 —— 按 foot_ 实际宽度分半就没这个问题。
+    const int pad = theme_->S(14);
+    const int half = (foot_.right - foot_.left) / 2;
+    RECT lr{foot_.left + pad, foot_.top, foot_.left + half - theme_->S(4), foot_.bottom};
+    RECT rr{foot_.left + half + theme_->S(4), foot_.top, foot_.right - pad, foot_.bottom};
     ui::DrawTextRow(dc, theme_->font, left, lr, theme_->sub,
-                    DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                    DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
     ui::DrawTextRow(dc, theme_->fontBold, right, rr, theme_->sub,
-                    DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_RIGHT);
+                    DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_RIGHT | DT_END_ELLIPSIS);
 }
 
 // ---------------------------------------------------------------- 中栏
@@ -145,22 +149,34 @@ void SettingsDialog::PaintMiddle(HDC dc, const RECT& rc) {
         crumb2 = row ? row->name : std::wstring();
     }
     const int hx = head_.left + theme_->S(24);
-    RECT cr1{hx, head_.top, head_.right, head_.bottom};
+    // 面包屑整体止于密度按钮之前，不占按钮区。第二段（结果数 / 当前项名）右对齐到
+    // 这里，第一段用剩余宽度并省略 —— 早先按完整 MeasureText 宽度定位第二段，
+    // 长搜索词时它被推出 head_，整段消失或压住密度按钮。
+    const int crumbRight = std::max(hx, static_cast<int>(rcDensity_.left) - theme_->S(8));
+    const bool hasCrumb2 = !crumb2.empty();
+    const int w2 = hasCrumb2 ? ui::MeasureText(dc, theme_->fontBold, crumb2) : 0;
+    const int cr2left = hasCrumb2 ? std::max(hx, crumbRight - w2) : crumbRight;
+    // 第一段止于分隔符之前（给分隔符留 kCrumbGap），空间不足时它自己省略。
+    const int kCrumbGap = theme_->S(16);
+    RECT cr1{hx, head_.top, std::max(hx, cr2left - kCrumbGap), head_.bottom};
     ui::DrawTextRow(dc, theme_->fontBold, crumb1, cr1, theme_->text,
                     DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
-    const int w1 = ui::MeasureText(dc, theme_->fontBold, crumb1);
-    if (!crumb2.empty()) {
-        RECT sr{hx + w1 + theme_->S(8), head_.top, hx + w1 + theme_->S(24), head_.bottom};
-        ui::DrawTextRow(dc, theme_->font, kCrumbSep, sr, theme_->sub,
-                        DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
-        RECT cr2{hx + w1 + theme_->S(24), head_.top, head_.right, head_.bottom};
+    if (hasCrumb2) {
+        RECT sr{cr2left - kCrumbGap, head_.top, cr2left - theme_->S(4), head_.bottom};
+        if (sr.right > hx)
+            ui::DrawTextRow(dc, theme_->font, kCrumbSep, sr, theme_->sub,
+                            DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+        RECT cr2{cr2left, head_.top, crumbRight, head_.bottom};
         ui::DrawTextRow(dc, theme_->fontBold, crumb2, cr2, theme_->accent,
                         DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
     }
 
     // 密度按钮：一个小框，写着当前行高。
     ui::FrameRectColor(dc, rcDensity_, theme_->editBorder);
-    const std::wstring densityText = L"行高 " + std::to_wstring(kRowHeights[density_]);
+    // 行高读数显示实际像素（RowHeight 已过 DPI 缩放）—— 早先显示逻辑值
+    // kRowHeights[density_]，150% DPI 下写着"32"实际占 48 像素，读数与眼睛看到的
+    // 对不上。密度菜单/状态消息/状态栏用的是同一个缩放口径。
+    const std::wstring densityText = L"行高 " + std::to_wstring(RowHeight());
     ui::DrawTextRow(dc, theme_->font, densityText, rcDensity_, theme_->text,
                     DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
 
@@ -323,15 +339,20 @@ void SettingsDialog::PaintNumber(HDC dc, const RECT& rc, const RECT& line,
     const int radius = theme_->S(3);
     ui::FillRound(dc, rc, dim ? theme_->rowHover : theme_->editBg, radius);
     ui::FrameRectColor(dc, rc, bad ? theme_->danger : theme_->editBorder);
-    RECT tr{rc.left + theme_->S(4), line.top, rc.right - theme_->S(6), line.bottom};
+    // 【与 rl.edit 同界】EDIT 定位在 box.left..box.right（有单位时右边界收到
+    // unit.left - gap），左右都不额外内缩。早先绘制写死 S(4)/S(6)，与 EDIT 差
+    // 几个像素，点进编辑态文字就往左跳一截。现在数值文字矩形取 EDIT 的原边界，
+    // 单位矩形取 layout 的 rl.unit 原边界 —— 两处都用共享的 kValueUnitGap。
+    const int ugap = theme_->S(kValueUnitGap);
+    RECT tr{rc.left, line.top, rc.right, line.bottom};
     // 单位住在框内右侧，数值右对齐到它左边。这样数字框与下拉/字符串框一样宽，
     // 一排值控件的左右边缘才会严格对齐（编辑时 EDIT 也只覆盖数值那一截）。
     if (unit && *unit) {
         const int unitW = ui::MeasureText(dc, theme_->font, unit);
-        RECT ur{rc.right - theme_->S(6) - unitW, line.top, rc.right - theme_->S(6), line.bottom};
+        RECT ur{rc.right - ugap - unitW, line.top, rc.right - ugap, line.bottom};
         ui::DrawTextRow(dc, theme_->font, unit, ur, theme_->sub,
                         DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_RIGHT);
-        tr.right = std::min(tr.right, ur.left - theme_->S(4));
+        tr.right = std::min(tr.right, ur.left - ugap);
     }
     ui::DrawTextRow(dc, theme_->font, text, tr, dim ? theme_->disabled : theme_->text,
                     DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS | DT_RIGHT);
@@ -342,7 +363,8 @@ void SettingsDialog::PaintTextField(HDC dc, const RECT& rc, const RECT& line,
     const int radius = theme_->S(3);
     ui::FillRound(dc, rc, dim ? theme_->rowHover : theme_->editBg, radius);
     ui::FrameRectColor(dc, rc, theme_->editBorder);
-    RECT tr{rc.left + theme_->S(6), line.top, rc.right - theme_->S(6), line.bottom};
+    // 与 rl.edit 同界（EDIT 铺满整个 box，无内缩），进入编辑态不跳位。
+    RECT tr{rc.left, line.top, rc.right, line.bottom};
     // 【右对齐 + 路径省略】与行内编辑框（EDIT 的 ES_RIGHT）保持同一种对齐 ——
     // 编辑时文字不能跳位置。而路径的**尾部**才是"要搜哪个目录"，所以省略号
     // 放在前面（DT_PATH_ELLIPSIS）："\a\b\c" 变成 "…\b\c" 比 "\a\b…" 有用。

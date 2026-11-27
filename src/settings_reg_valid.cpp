@@ -4,6 +4,8 @@
 // 两者是两种职责：这里是"一个值能不能进这个字段"的唯一实现。
 #include "settings_reg_valid.h"
 
+#include <cmath>   // std::floor / std::trunc：拒绝带小数的数字，不做静默截断
+
 #include "str.h"   // str::IEquals（枚举值比较，大小写不敏感）
 
 namespace settings_reg {
@@ -24,6 +26,10 @@ bool AsInt(const json::Value& v, int* out) {
     if (!v.IsNumber()) return false;
     // json 用 double 存数字：超出 int 范围就报类型错，而不是静默截成垃圾值。
     if (v.num < -2147483648.0 || v.num > 2147483647.0) return false;
+    // 带小数的数字必须拒绝：静默截断（1.5 → 1）会让 setter 先写入截断值，
+    // 而 Set 的写后回读拿原文比必然不一致 —— 于是命令报失败、内存却已被污染。
+    // "取整"意图应显式表达，不应藏在这里。
+    if (std::trunc(v.num) != v.num) return false;
     *out = static_cast<int>(v.num);
     return true;
 }
@@ -59,7 +65,7 @@ bool AsIntArray(const json::Value& v, std::vector<int>* out) {
 
 // ---------------------------------------------------------------- 写构造器
 //
-// 18 个可写项如果各写一个 lambda，"某处忘了查范围"就会成为常态，而那种错误的
+// 77 个可写项如果各写一个 lambda，"某处忘了查范围"就会成为常态，而那种错误的
 // 表现是"越界值被静默接受"。这里把校验收成唯一实现：类型不符 / 超范围都在
 // 同一处报同一种话。
 

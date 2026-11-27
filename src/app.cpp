@@ -343,6 +343,8 @@ void App::OnCreate() {
     BookmarkStore::Get().SetSaveNotifyFn([this](bool ok) { NotifyBookmarkSave(ok); });
     // 书签栏的键盘态按 Esc 退出后要把焦点还给视图，否则 Delete / type-ahead 全哑。
     bookmarkBar_.SetRefocusFn([this] { FocusActiveView(); });
+    // 空状态提示的键名现查：键位用户可改，写死的 Ctrl+D / Ctrl+B 改键后就是假提示。
+    bookmarkBar_.SetShortcutFn([this](CmdId id) { return input_.ShortcutText(id); });
     // 导航栏搜索框提交：用 shell 自己的 search-ms 协议在当前目录里搜。
     //
     // 为什么不自建扫描：那要么阻塞 UI（大目录几十万项），要么起线程/helper

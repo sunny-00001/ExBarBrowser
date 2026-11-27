@@ -45,6 +45,28 @@ void CollectMoveTargets(const BookmarkList& list, const std::wstring& excludeId,
 
 }  // namespace
 
+// 一个分类下**可打开**的叶子数（递归，跳过纯分类与空 path）。
+// 「打开全部（N 项）」的数字必须与实际会开的标签数一致 —— 菜单里写 N、
+// 实际开 M 个，是比不写数字更糟的反馈（用户会以为漏了）。
+int BookmarkBar::CountOpenableChildren(const std::wstring& folderId) const {
+    const BookmarkNode* node = BookmarkStore::Get().Find(folderId);
+    if (!node || !node->isFolder) return 0;
+    struct Walk {
+        static int Run(const BookmarkList& list, int depth) {
+            if (depth > 32) return 0;   // 与 CollectMoveTargets / ShowFolderContents 同口径
+            int n = 0;
+            for (const BookmarkNode& e : list) {
+                if (e.isFolder)
+                    n += Run(e.children, depth + 1);
+                else if (!e.path.empty())
+                    ++n;
+            }
+            return n;
+        }
+    };
+    return Walk::Run(node->children, 0);
+}
+
 // 与"打开分类"下钻一致的既有形态（见本文件 ShowFolderContents / 分类 popup）。
 void BookmarkBar::ShowMoveToMenu(const std::wstring& id, const std::wstring& label, POINT screen) {
     BookmarkStore& store = BookmarkStore::Get();
@@ -144,6 +166,15 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
     //
     // 叶子没有这两项 —— 叶子不是分类，没有壳可解散。
     if (it.folder) {
+        // 「打开全部」：浏览器书签夹的标配（Chrome/Edge 的 Open all、Firefox 的
+        // Open All in Tabs、Vivaldi 的 Open in New Tab）。本项目的分类是"一组
+        // 常用目录"，没有这一条时想开整组只能逐个点 —— 分类的意义就少了一半。
+        //
+        // 放在"打开"族**之后、重组族之前**：它属于打开语义（一次开很多个），
+        // 不是结构改动。中键点分类是同一个动作（见 bookmark_bar_open.cpp）。
+        const int childCount = CountOpenableChildren(it.id);
+        menu.Add(L"打开全部（" + std::to_wstring(childCount) + L" 项）", 21, ico::IconId::Folder,
+                 childCount == 0);
         menu.Add(L"解散分类", 12, ico::IconId::Export).Cmd(CmdId::BmkDissolve)
             .Add(L"排序本分类", 13, ico::IconId::Sort).Cmd(CmdId::BmkSort)
             .Separator();
@@ -237,14 +268,16 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
         CommandBus::Get().Invoke(CmdId::BmkEdit, Args::FromJson(a), Actor::Ui());
         break;
     }
-    case 4:
-        if (MessageBoxW(hwnd_, (L"删除书签“" + it.label + L"”？").c_str(), id::kBrandShort,
-                        MB_YESNO | MB_ICONQUESTION) == IDYES) {
-            json::Value a = json::Value::MakeObject();
-            a.Set(L"id", json::Value::MakeStr(it.id));
-            CommandBus::Get().Invoke(CmdId::BmkRemove, Args::FromJson(a), Actor::Ui());
-        }
+    case 4: {
+        // 删除单条书签不弹确认（用户明确要求）：高频操作，误删可从「撤销删除」
+        // 恢复。bmk.remove 已在 kNoConfirmDestructive 白名单里，所以这里既不需要
+        // MessageBoxW，也不需要 MarkConfirmedForNextCall；命令仍走总线，
+        // 审计与撤销栈一步不少。清全部/解散分类不在白名单，仍保留各自确认框。
+        json::Value a = json::Value::MakeObject();
+        a.Set(L"id", json::Value::MakeStr(it.id));
+        CommandBus::Get().Invoke(CmdId::BmkRemove, Args::FromJson(a), Actor::Ui());
         break;
+    }
     case 5: {
         std::wstring name;
         if (PromptText(hwnd_, *theme_, L"新建分类", L"分类名称", L"新建分类", &name)) {
@@ -261,9 +294,12 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
         CommandBus::Get().Invoke(CmdId::BmkUndo, Args::Empty(), Actor::Ui());
         break;
     case 8:  // 清除全部书签：可撤销（ReplaceAll 已入快照栈）
+        // 同 case 4：这里问过了，总线不再问（E24）。
         if (MessageBoxW(hwnd_, L"确定清除全部书签？可在“撤销删除”中恢复。", id::kBrandShort,
-                        MB_YESNO | MB_ICONWARNING) == IDYES)
+                        MB_YESNO | MB_ICONWARNING) == IDYES) {
+            CommandBus::Get().MarkConfirmedForNextCall();
             CommandBus::Get().Invoke(CmdId::BmkClearAll, Args::Empty(), Actor::Ui());
+        }
         break;
     case 9: {  // 复制书签（分类连子树）：与 bmk.copy 同一命令，AI/面板可达同一动作
         json::Value a = json::Value::MakeObject();
@@ -280,6 +316,7 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
                         id::kBrandShort, MB_YESNO | MB_ICONQUESTION) == IDYES) {
             json::Value a = json::Value::MakeObject();
             a.Set(L"id", json::Value::MakeStr(it.id));
+            CommandBus::Get().MarkConfirmedForNextCall();
             CommandBus::Get().Invoke(CmdId::BmkDissolve, Args::FromJson(a), Actor::Ui());
         }
         break;
@@ -292,6 +329,10 @@ void BookmarkBar::ShowItemMenu(int index, POINT screen) {
     }
     case 20:  // 移到分类…：二层菜单列出目标，走 bmk.move（与拖拽/AI 同源）
         ShowMoveToMenu(it.id, it.label, screen);
+        break;
+    case 21:  // 打开全部：整组子项各开一个**前台**标签（用户显式点菜单要的，
+              // 与中键的"后台"相反 —— 中键的价值是不打断，菜单是明确要求）
+        OpenFolderChildrenInTabs(it.id, /*background=*/false);
         break;
     default:
         break;

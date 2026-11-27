@@ -26,6 +26,7 @@
 #include "common.h"
 #include "icon_glyph.h"
 #include "input_router.h"
+#include "key_preset.h"
 #include "theme.h"
 
 class HotkeyManager {
@@ -44,6 +45,13 @@ public:
     // 只重读数据，不改筛选：外部改键不会改变"有哪些命令"。
     void OnKeymapChangedExternally();
     bool Visible() const;
+
+    // 套用一套键位方案（data/keymap_presets.json）。返回真正写入的条数。
+    //
+    // 【为什么是公开的】命令总线上的 hotkey.preset.apply 也走它 —— 界面点击与
+    // 命令走同一个入口，两处各写一份必然出现"点得动、命令没反应"。
+    // 整套写入在一个事务里（一次 Save + Reload），不是逐条。
+    int ApplyPreset(const keypreset::Preset& preset);
 
 private:
     // 一行的状态档。文案与颜色由 StatusText/StatusColor 一处给
@@ -68,9 +76,17 @@ private:
     enum RowType { kTypeChord = 0, kTypeSeq };
 
     // 工具栏按钮 id。0 保留为"没命中"，所以从 1 起。
+    //
+    // 【前两颗不是"动作"，是"表开关"】组合键与序列键是两张性质不同的表
+    // （可编辑 vs 整表只读的参考信息）。把它们做成工具栏上的两个开关，而不是
+    // 左栏筛选项的头两项，是因为"我在看哪一类"是**模式**，"我要做什么"是**命令**：
+    // 混在筛选列表里时，点"序列键"看起来只是筛了一下，实际整张表都换了 ——
+    // 用户会以为自己筛错了。模式开关归工具栏，筛选归左栏，各归各位。
     enum ToolId {
         kToolNone = 0,
-        kToolEdit = 1,     // 改键（等同回车）
+        kToolTabChord = 1,   // 表开关：组合键
+        kToolTabSeq,         // 表开关：序列键
+        kToolEdit,           // 改键（等同回车）
         kToolClear,        // 清除键位（写解绑哨兵）
         kToolReset,        // 还原此项默认（删覆盖项）
         kToolUndo,         // 撤销
@@ -78,6 +94,7 @@ private:
         kToolCopyId,       // 复制命令 id
         kToolExport,       // 导出覆盖表到剪贴板
         kToolImport,       // 从剪贴板导入覆盖表
+        kToolPreset,       // 键位方案预设（弹出可选方案）
     };
 
     // 一次可撤销的改动。
@@ -99,7 +116,10 @@ private:
     struct Row {
         BindingRow src;
         std::wstring keyText;   // 单元格文本："Ctrl+W" / "（未绑定）" / "g g"
-        std::wstring peers;     // 同键的其它命令名（" · " 分隔；空 = 没冲突）
+        std::wstring peers;     // 真冲突的对方命令名（" · " 分隔；空 = 没真冲突）
+        // 可共存的同键者：同键但对方是"标签栏作用域的裸键"（或自己是），
+        // 焦点不在标签栏时一方让位，所以不算错。用弱色提示，不标红。
+        std::wstring softPeers;
         int status = kOk;
         bool sequence = false;
         bool custom = false;    // 用户改过（键位芯片前画实心点）
@@ -193,8 +213,16 @@ private:
     void SelectViewIndex(int vi);
     // 排序：设键 + 方向（同列再点反向）。改完要 Refilter（view_ 的顺序就是显示顺序）。
     void SetSort(SortKey key);
-    // 切换筛选项/表。group_ 与 tableType_ 必须一致，所以只允许经过这里改。
+    // 切换筛选项（只在当前表内筛）。表由 SetTableType 管，不经过这里。
     void SetGroup(const std::wstring& id);
+    // 切换表（组合键 / 序列键）。**tableType_ 只允许经过这里改**。
+    //
+    // 【为什么把"切表"与"筛选"拆成两个入口】它们以前合在 SetGroup 里：
+    // 点左栏的"序列键"既是切表又是筛选，于是 group_ 与 tableType_ 必须
+    // 手工保持一致（代码里得写一段"若 id == sequence 则 tableType_ = ..."）。
+    // 现在切表走工具栏开关、筛选走左栏，两者各有一个写入点，就不需要
+    // "保持一致"这种靠注释维持的约定了。
+    void SetTableType(RowType t);
     bool IsSelectedSetting(const std::wstring& setting) const;
     void SelectAllVisible();
     void ClearMultiSelection();
@@ -247,6 +275,9 @@ private:
     void OnKeyDown(UINT vk);
     void OnTimer(UINT_PTR id);
     void OnTool(int id);
+    // 弹出"键位方案"菜单并套用选中项。放 preset.cpp（与 ApplyPreset 同处）：
+    // 菜单只是它的入口，逻辑在 ApplyPreset 里。
+    void OnPresetMenu();
     void ToggleRecording();
     void StopRecording();
     void BeginCapture();
@@ -277,7 +308,7 @@ private:
     std::vector<int> view_;      // 可见行（rows_ 下标）
     std::vector<RowLayout> rowLayout_;   // 与 view_ 同序
 
-    // 分表：组合键 / 序列键。左栏点这两组就切表（见 Refilter）。
+    // 分表：组合键 / 序列键。工具栏最左两颗开关切换（见 SetTableType）。
     //
     // 【为什么用"当前表"而不是"两张表各滚各的"】同一时刻只有一个滚动位置、
     // 一个选中项、一个详情面板。两张表各自独立滚动听起来更"完整"，但用户
@@ -348,12 +379,13 @@ private:
     RECT colB_{};
     RECT colC_{};
     RECT statusBar_{};
-    RECT searchBox_{};
-    RECT searchField_{};     // 工具栏上的搜索框（EDIT 落在里面）
+    // 工具栏上的搜索框：绘制、EDIT 落位、点击放行三处共用这一份。
+    // 以前还有一个 searchBox_（搬家前的"绘制用矩形"），只写不读 —— 已删：
+    // 两个矩形表达同一个东西，迟早有一处画的是旧值。
+    RECT searchField_{};
     RECT railList_{};
     RECT railFoot_{};
-    RECT recordBtn_{};
-    RECT head_{};
+    RECT recordBtn_{};       // 录制按钮（工具栏右端，搜索框右边）
     RECT tableHead_{};
     std::vector<Column> columns_;   // 表头列（排序命中与绘制共用）
     RECT body_{};

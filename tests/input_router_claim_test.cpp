@@ -74,6 +74,21 @@ int main() {
         Check(r.OnMouseUp(MT_UNKNOWN, MBTN_LEFT, 0), "unknown 抬起：沿用 pending 目标");
     }
 
+    // 【回归：残留 pending 不能吞掉下一次无规则点击】
+    // 内置 MT_EMPTY+left+double=NavUp 命中后，UP 会刻意保留 pending 等第二击。
+    // 若紧接着来一次无规则 DOWN（标签拖动）再在空白处 UP，旧版 OnMouseUp 会拿
+    // 旧 pending 的 claim 把这次 UP 判成 claimed —— 拖拽提交被整个吞掉。
+    {
+        Reset();
+        InputRouter r;
+        r.OnMouseDown(MT_EMPTY, MBTN_LEFT, 0, POINT{10, 10});
+        r.OnMouseUp(MT_EMPTY, MBTN_LEFT, 0);   // 同目标 UP：pending 保留
+        const bool down2 = r.OnMouseDown(MT_TAB, MBTN_LEFT, 0, POINT{200, 10});
+        const bool up2 = r.OnMouseUp(MT_EMPTY, MBTN_LEFT, 0);
+        Check(!down2, "残留 pending 后无规则 DOWN：不接管");
+        Check(!up2, "残留 pending 后无规则 UP：不能吞掉组件提交");
+    }
+
     std::printf(g_fail ? "\n有 %d 项失败\n" : "\n全部通过\n", g_fail);
     return g_fail ? 1 : 0;
 }

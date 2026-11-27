@@ -262,4 +262,10 @@ enum class CmdId : int {
     // 缺的只是"把它打开"这一步的入口。
     WinUndoHistory,    // 无参：打开撤销历史弹层（点行 = file.undo.to / file.redo）
     WinAiPeek,         // 无参：翻转 AI peek 面板（状态栏 AI chip 同义）
+    // ---- 键位方案预设（2026-11-27；只允许追加在末尾）----
+    // 把"某一派用户的习惯键位"做成可一键套用的数据。迁移成本几乎全在键位上 ——
+    // 从 TC / Opus / 资源管理器过来的人第一件事是找 F5 是不是刷新、Delete 是不是
+    // 删除，让他逐条改 112 条不现实，而"你自己改吧"等于说这软件不适合他。
+    HotkeyPresetList,  // 无参：列出可用方案（只读）
+    HotkeyPresetApply, // {preset}：套用一套方案（整批一次事务）
 };

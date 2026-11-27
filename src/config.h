@@ -106,6 +106,21 @@ struct Settings {
     // 书签栏滚轮一格走多远（逻辑像素）。以前写死 48（≈三个字宽）：
     // 书签条目宽窄差异大，"一格跳过一条"与"一格挪一点点"都有人要。
     int bookmarkWheelStepDp = 48;      // 书签栏滚轮步进（16..200）
+
+    // 书签栏点击打开语义（Chrome/Edge/Firefox 书签栏的通用标准，见
+    // docs/BOOKMARK-BAR-AUDIT-2026-11-26.md §五）：
+    //   中键 = 新标签打开、Ctrl+左键 = 新标签、Shift+左键 = 新窗口 —— 三家一致，
+    //   属于肌肉记忆，本项目此前全部缺失（点哪都只进当前标签）。
+    // openInNewTab 是 Edge 110+ 的「固定打开新标签页」：习惯固定不改浏览器的人
+    // 不该被迫每次按 Ctrl。修饰键永远反向覆盖它（开了开关 Ctrl 反而回当前标签），
+    // 否则开关一开，想偶尔原地打开的人就没有退路了。
+    bool bookmarkOpenInNewTab = false; // 书签固定在新标签打开（false = 进当前标签）
+    // 拖拽到栏边缘自动滚动：书签栏与标签栏此前共用 tabDragScrollMs 一个周期
+    // 旋钮，想"标签滚快点、书签滚慢点"做不到；且没有总开关（有人只想要滚轮）。
+    // 开关是书签栏独立的 —— 标签栏从来没有开关需求，不陪绑。
+    bool bookmarkDragAutoscroll = true; // 书签栏拖拽边缘自动滚动总开关
+    int bookmarkDragScrollMs = 30;      // 书签栏拖拽自动滚动周期 ms（10..200）
+
     int statusBarTooltipWidth = 520;   // 状态栏提示窗最大宽
     int navPaneItemHeight = 30;        // 左侧导航树行高
     int navPaneIndent = 30;            // 左侧导航树图标缩进
@@ -116,6 +131,24 @@ struct Settings {
     int settingsGroupWidth = 200;
     int settingsDetailWidth = 204;
     int settingsControlWidth = 192;
+
+    // 快捷键管理器面板的尺寸。这几项以前是 hotkey_manager_layout.cpp 里的
+    // constexpr —— 用户能看到的界面却调不动，是"设置项该有却没有"的典型。
+    // 逻辑像素（96 DPI），实际绘制走 Theme::S() 换算。
+    //
+    // 【为什么行高只有一项】中栏行、左栏筛选项、表头、工具栏、状态栏**五处**
+    // 共用一个值。以前是 30/32/26 三个数各写一遍，同一屏里三种行距 —— 眼睛扫
+    // 下来觉得列表歪了，而代码里毫无异常。要"行距不齐"这类缺陷从根上不可能
+    // 发生，就得让它只有一个数可改。
+    //
+    // 工具栏曾经有自己的高度（hkToolbarHeight，默认 40），结果是顶栏比列表每
+    // 一行都高，两套节奏叠在同一屏里 —— 看着就是"工具栏胖了"。现在它也吃这一
+    // 个数：想让整体更疏就调 hkRowHeight，五处一起变。
+    int hkWindowWidth = 1120;
+    int hkWindowHeight = 720;
+    int hkRowHeight = 28;
+    int hkRailWidth = 190;
+    int hkDetailWidth = 270;
 
     // 深浅色：system = 跟随系统（默认）、dark / light = 强制。
     //
@@ -161,7 +194,7 @@ struct Settings {
     int closedTabLimit = 20;   // 关闭标签历史上限（1..100，= Ctrl+Shift+T 能回退几步）
     // 每窗格导航历史栈深度（后退/前进最多几步）。此前写死在 nav_history.h 的
     // kDefaultMaxEntries=512，与 closedTabLimit（可重开几步）是两回事。栈会整份写进
-    // settings.json 的 sessionHistory，深度也决定配置体积。
+    // state\session.json 的 sessionHistory，深度也决定配置体积。
     int historyDepth = 512;    // 每窗格后退栈深度（50..2000）
     // 搜索历史下拉一屏列几条。与 searchLimit（存几条）刻意分开：存 20 但只列 15，
     // 用户常疑惑"明明存了 20 条却只看到 15 条"——现在这个数也可调。

@@ -187,6 +187,7 @@ void Theme::Init(HWND hwnd, int dpiOverride, bool skipFonts) {
 
 void Theme::ApplyToViewArea(HWND area) {
     if (!area) return;
+    viewArea_ = area;   // 记住它：Shutdown 删 brViewBg 前要先摘掉类背景刷
     SetClassLongPtrW(area, GCLP_HBRBACKGROUND, reinterpret_cast<LONG_PTR>(brViewBg));
 }
 
@@ -202,7 +203,17 @@ void Theme::Shutdown(bool keepFonts) {
     if (brListSel) DeleteObject(brListSel);
     if (brSelSolid) DeleteObject(brSelSolid);
     if (brAccent) DeleteObject(brAccent);
-    if (brViewBg) DeleteObject(brViewBg);
+    // 【删 brViewBg 之前必须把窗口类的背景刷摘掉】ApplyToViewArea 把它挂到了
+    // kViewAreaClass 的 GCLP_HBRBACKGROUND 上。类里的句柄比 Theme 对象活得久：
+    // 这里删完、ApplyToViewArea 还没被重新调用之前，任何 WM_ERASEBKGND 走到
+    // DefWindowProc 都会拿一个已删除（可能已被复用）的 HBRUSH 去填充。
+    // Reload 的顺序是 Shutdown → Init → 调用方 ApplyToViewArea，中间这段就是
+    // 危险窗口。复位成 NULL 后类背景刷变成"无"，DefWindowProc 只是不擦背景。
+    if (brViewBg) {
+        if (viewArea_ && IsWindow(viewArea_))
+            SetClassLongPtrW(viewArea_, GCLP_HBRBACKGROUND, 0);
+        DeleteObject(brViewBg);
+    }
     if (!keepFonts) {
         if (font) DeleteObject(font);
         if (fontBold) DeleteObject(fontBold);

@@ -188,6 +188,10 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
     }
+    case uia::kMsgInvoke:
+        // UIA 激活 = 真的打开（实现见 bookmark_bar_open.cpp：与鼠标左键同一语义）。
+        UiaInvoke(static_cast<int>(w));
+        return 0;
     case WM_KEYDOWN:
         return HandleKeyDown(h, w, l);
     case WM_CONTEXTMENU: {
@@ -224,6 +228,21 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
                               : (HitOverflow(x, y) ? MT_OVERFLOW : MT_BOOKMARK_EMPTY);
         int button = (m == WM_LBUTTONDBLCLK) ? MBTN_LEFT : MBTN_RIGHT;
         if (sink_ && sink_(target, m, button, CurrentMods(), pt)) return 0;
+        return 0;
+    }
+    case WM_MBUTTONDOWN: {
+        // 中键：书签 → 后台新标签；分类 → 整组子项各开一个标签。
+        // 先问鼠标规则（用户可能把"书签栏中键"绑成别的动作），规则没接管才走
+        // 默认语义 —— 与滚轮、左键的同一条纪律：默认行为永远让位给显式配置。
+        const int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
+        POINT pt{x, y};
+        ClientToScreen(h, &pt);
+        const int idx = HitItem(x, y);
+        const int target = idx >= 0 ? (items_[static_cast<size_t>(idx)].folder ? MT_BOOKMARK_FOLDER
+                                                                             : MT_BOOKMARK)
+                                   : (HitOverflow(x, y) ? MT_OVERFLOW : MT_BOOKMARK_EMPTY);
+        if (sink_ && sink_(target, m, MBTN_MIDDLE, CurrentMods(), pt)) return 0;
+        OnMiddleDown(x, y);
         return 0;
     }
     case WM_XBUTTONDOWN:
@@ -361,10 +380,19 @@ LRESULT BookmarkBar::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         }
         if (idx >= 0) {
-            if (items_[static_cast<size_t>(idx)].folder)
+            const Item& it = items_[static_cast<size_t>(idx)];
+            if (it.folder) {
                 ShowFolderMenu(idx, pt);
-            else
-                Navigate(idx);
+            } else {
+                // 修饰键 / 「固定新标签」开关：Ctrl=新标签、Shift=新窗口，
+                // 开关开着时 Ctrl 反向回当前标签。走 OpenPathWithMods 这个
+                // 唯一收口点（» 溢出菜单、分类弹层、键盘 Enter、图标树、
+                // UIA 激活都调它，全部入口行为一致）。
+                // 【回落必须写在同一行】"打开语义只经收口点"这条纪律由
+                // check_components 的 BMK_OPEN_GUARD 机械守门：它要求本域的
+                // Navigate( 调用与 OpenPathWithMods 同行 —— 拆成两行会被判违规。
+                if (!OpenPathWithMods(it.path, CurrentMods())) Navigate(idx);
+            }
             return 0;
         }
         if (HitOverflow(x, y)) ShowOverflowMenu(pt);

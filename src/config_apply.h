@@ -33,6 +33,12 @@ bool AffectsTheme(const std::wstring& key);
 // 需要把历史上限推到"真正持有历史的那两个模型"上（并顺手裁剪已有条目）。
 bool AffectsHistoryLimits(const std::wstring& key);
 
+// 会影响**快捷键管理器面板的几何**（行高 / 工具栏高 / 左右栏宽）。
+// 这一类改完必须让它重排（ReloadTheme → Layout），否则"config.set 返回 ok、
+// 界面还是原样"。窗口宽高不在其中：那只影响下次打开的初始尺寸，
+// 去改一个已经打开的窗口等于覆盖用户自己调的大小。
+bool AffectsHotkeyPanel(const std::wstring& key);
+
 // 这一项在改完之后是否需要**任何**落地动作（布局/视图/主题/历史/状态栏）。
 // 表驱动用例用它做"全覆盖"判定：可写项若有 false 且不是纯数据项，就是漏了。
 bool NeedsAnyApply(const std::wstring& key);

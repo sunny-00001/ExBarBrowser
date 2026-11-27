@@ -54,6 +54,11 @@ void Config::Load() {
         parseFailed_ = true;
         LogDbg(L"[config] settings.json 解析失败：%s（已禁止覆盖写，修好或删除该文件后重启）",
                err.c_str());
+        // 偏好文件坏了不代表状态文件也坏了：会话 / 历史 / 标签 / 窗口几何
+        // 在独立的状态文件里，坏一份只影响它自己（见 config_state_io 文件头）。
+        // 这里若不读，用户手改 settings.json 打错一个逗号就会连带丢掉整个会话。
+        // 与上面"读不到"分支保持一致。
+        LoadStateFiles();
         return;
     }
 
@@ -83,6 +88,13 @@ void Config::Load() {
     s_.bookmarkWheelStepDp =
         configio::ClampInt(root.GetInt(L"bookmarkWheelStepDp", s_.bookmarkWheelStepDp),
                            kBmkWheelStepDpMin, kBmkWheelStepDpMax);
+    s_.bookmarkOpenInNewTab =
+        root.GetBool(L"bookmarkOpenInNewTab", s_.bookmarkOpenInNewTab);
+    s_.bookmarkDragAutoscroll =
+        root.GetBool(L"bookmarkDragAutoscroll", s_.bookmarkDragAutoscroll);
+    s_.bookmarkDragScrollMs =
+        configio::ClampInt(root.GetInt(L"bookmarkDragScrollMs", s_.bookmarkDragScrollMs),
+                           kBmkDragScrollMsMin, kBmkDragScrollMsMax);
     s_.statusBarTooltipWidth =
         configio::ClampInt(root.GetInt(L"statusBarTooltipWidth", s_.statusBarTooltipWidth),
                            kStatusBarTooltipWidthMin, kStatusBarTooltipWidthMax);
@@ -97,6 +109,16 @@ void Config::Load() {
     s_.settingsControlWidth =
         configio::ClampInt(root.GetInt(L"settingsControlWidth", s_.settingsControlWidth),
                            kSettingsControlWidthMin, kSettingsControlWidthMax);
+    s_.hkWindowWidth = configio::ClampInt(root.GetInt(L"hkWindowWidth", s_.hkWindowWidth),
+                                          kHkWinWidthMin, kHkWinWidthMax);
+    s_.hkWindowHeight = configio::ClampInt(root.GetInt(L"hkWindowHeight", s_.hkWindowHeight),
+                                           kHkWinHeightMin, kHkWinHeightMax);
+    s_.hkRowHeight = configio::ClampInt(root.GetInt(L"hkRowHeight", s_.hkRowHeight),
+                                        kHkRowHeightMin, kHkRowHeightMax);
+    s_.hkRailWidth = configio::ClampInt(root.GetInt(L"hkRailWidth", s_.hkRailWidth),
+                                        kHkRailWidthMin, kHkRailWidthMax);
+    s_.hkDetailWidth = configio::ClampInt(root.GetInt(L"hkDetailWidth", s_.hkDetailWidth),
+                                          kHkDetailWidthMin, kHkDetailWidthMax);
 
     s_.seqEnabled = root.GetBool(L"seqEnabled", s_.seqEnabled);
     s_.seqTimeoutMs = root.GetInt(L"seqTimeoutMs", s_.seqTimeoutMs);
@@ -224,12 +246,20 @@ bool Config::Save() {
     root.Set(L"navBarAddressMinWidth", json::Value::MakeInt(s_.navBarAddressMinWidth));
     root.Set(L"bookmarkBarTooltipWidth", json::Value::MakeInt(s_.bookmarkBarTooltipWidth));
     root.Set(L"bookmarkWheelStepDp", json::Value::MakeInt(s_.bookmarkWheelStepDp));
+    root.Set(L"bookmarkOpenInNewTab", json::Value::MakeBool(s_.bookmarkOpenInNewTab));
+    root.Set(L"bookmarkDragAutoscroll", json::Value::MakeBool(s_.bookmarkDragAutoscroll));
+    root.Set(L"bookmarkDragScrollMs", json::Value::MakeInt(s_.bookmarkDragScrollMs));
     root.Set(L"statusBarTooltipWidth", json::Value::MakeInt(s_.statusBarTooltipWidth));
     root.Set(L"navPaneItemHeight", json::Value::MakeInt(s_.navPaneItemHeight));
     root.Set(L"navPaneIndent", json::Value::MakeInt(s_.navPaneIndent));
     root.Set(L"settingsGroupWidth", json::Value::MakeInt(s_.settingsGroupWidth));
     root.Set(L"settingsDetailWidth", json::Value::MakeInt(s_.settingsDetailWidth));
     root.Set(L"settingsControlWidth", json::Value::MakeInt(s_.settingsControlWidth));
+    root.Set(L"hkWindowWidth", json::Value::MakeInt(s_.hkWindowWidth));
+    root.Set(L"hkWindowHeight", json::Value::MakeInt(s_.hkWindowHeight));
+    root.Set(L"hkRowHeight", json::Value::MakeInt(s_.hkRowHeight));
+    root.Set(L"hkRailWidth", json::Value::MakeInt(s_.hkRailWidth));
+    root.Set(L"hkDetailWidth", json::Value::MakeInt(s_.hkDetailWidth));
 
     root.Set(L"seqEnabled", json::Value::MakeBool(s_.seqEnabled));
     root.Set(L"seqTimeoutMs", json::Value::MakeInt(s_.seqTimeoutMs));

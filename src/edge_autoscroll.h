@@ -9,7 +9,10 @@
 //   · 定时器到点后宿主做的事（ScrollBy + 重算落点）在两栏不同，留在宿主侧。
 //
 // 【谁在用】tab_strip_* 与 bookmark_bar_*（见各自 WM_MOUSEMOVE / WM_TIMER 分支）。
-// 周期共用设置 tabDragScrollMs（一个旋钮管两条栏，不新增第二份滚动周期配置）。
+// 周期**各用各的设置**：标签栏 tabDragScrollMs、书签栏 bookmarkDragScrollMs。
+// 曾经共用一个旋钮，但两栏内容密度不同（书签项更窄，一拍能扫过更多），
+// 调快标签栏必然把书签栏一起调快 —— 总有一边不合手。周期由宿主作为参数传入，
+// 本组件不读配置，也就不会在"谁该用哪个键"上出现第二份约定。
 #pragma once
 
 #include "common.h"

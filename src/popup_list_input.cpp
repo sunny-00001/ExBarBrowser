@@ -60,9 +60,15 @@ LRESULT CALLBACK ListSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWOR
         return false;
     };
 
+    // 【统一判空，别在每个分支各写一遍】ref 由 SetWindowSubclass 带进来，理论上
+    // 恒为有效 &st；但子类数据一旦被复用/窗口在销毁途中仍收到消息，解引用就是
+    // 崩溃。以前只有 WM_CHAR 判了，其余分支（MOUSEMOVE/CAPTURECHANGED/KEYDOWN/
+    // LBUTTONUP）直接解引用 —— 防御口径不一致，等于只有一条路有保护。
+    // 放在 switch 之前：漏消息比崩掉好（DefWindowProc 会兜住）。
+    if (!st) return DefSubclassProc(h, m, w, l);
+
     switch (m) {
     case WM_CHAR: {
-        if (!st) break;
         // 只吃可打印字符。控制字符（Ctrl 组合键产生的 1..26）交给下面，
         // 它们属于快捷键而不是"定位文本"。
         if (w < L' ' || w == 0x7F) break;

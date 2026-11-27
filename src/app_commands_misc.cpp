@@ -6,6 +6,7 @@
 #include "app_commands.h"
 #include "config_apply.h"   // 设置项 -> 落地动作的判据表（纯函数，可单测）
 #include "hotkey_manager.h"
+#include "key_preset.h"
 #include "bookmarks.h"
 #include "icon_resolve.h"
 #include "prompt.h"      // PromptText：命名会话保存时要人名（人侧无参调用）
@@ -141,6 +142,56 @@ void App::RegisterMiscCommands() {
     });
     reg(CmdId::HotkeyReset, [this](const Args&) {
         input_.ResetDefaults();   // 清全部覆盖 + Save + Reload（唯一实现）
+        hotkeyManager_.OnKeymapChangedExternally();
+        return true;
+    });
+    // ---- 键位方案预设 ----
+    //
+    // 【list 是只读查询】返回 [{id,name,desc,count}]。AI 要先查 id 才能 apply ——
+    // 让它猜 id 是最坏的设计（猜错就套用了别的方案，而键位确实变了，
+    // 用户很难发现变的不是他点的那个）。
+    regR(CmdId::HotkeyPresetList, [](const Args&, json::Value* out) {
+        if (!out) return false;
+        const auto all = keypreset::LoadFromRoot(Config::Get().RootDir());
+        json::Value arr = json::Value::MakeArray();
+        for (const auto& p : all) {
+            json::Value one = json::Value::MakeObject();
+            one.Set(L"id", json::Value::MakeStr(p.id));
+            one.Set(L"name", json::Value::MakeStr(p.name));
+            one.Set(L"desc", json::Value::MakeStr(p.desc));
+            // entries = 这个方案改几条。0 有意义（"程序默认"就是 0 条）。
+            one.Set(L"entries", json::Value::MakeInt(static_cast<int>(p.hotkeys.size())));
+            arr.arr.push_back(std::move(one));
+        }
+        out->Set(L"presets", arr);
+        out->Set(L"count", json::Value::MakeInt(static_cast<int>(all.size())));
+        return true;
+    });
+    reg(CmdId::HotkeyPresetApply, [this](const Args& args) {
+        const std::wstring id = args.Str(L"preset");
+        if (id.empty()) return false;
+        const auto all = keypreset::LoadFromRoot(Config::Get().RootDir());
+        const keypreset::Preset* p = keypreset::Find(all, id);
+        if (!p) {
+            // 报出可用的 id：只说"方案不存在"等于让调用方自己猜。
+            std::wstring ids;
+            for (const auto& e : all) {
+                if (!ids.empty()) ids += L" / ";
+                ids += e.id;
+            }
+            CommandBus::Get().NoteFailure(L"未知的键位方案：" + id + L"（可用：" + ids + L"）");
+            return false;
+        }
+        // "程序默认" = 清空全部覆盖。逐条写入会把每条默认键都写成覆盖项，
+        // 界面全变"已自定义"而值与默认一模一样 —— 那是纯粹的噪音。
+        if (p->id == L"default") {
+            input_.ResetDefaults();
+        } else {
+            const int n = hotkeyManager_.ApplyPreset(*p);
+            // 0 条不是失败：方案与当前键位本来就一致。用 NoteWarning 说一句，
+            // 而不是 NoteFailure —— 后者会让调用方以为没生效并去重试。
+            if (n == 0) CommandBus::Get().NoteWarning(L"方案与当前键位一致，无需改动");
+        }
         hotkeyManager_.OnKeymapChangedExternally();
         return true;
     });

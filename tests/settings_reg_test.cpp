@@ -96,6 +96,23 @@ int main() {
         Expect(after.num == before.num, "被拒绝的写入没有改动原值");
     }
 
+    // ⑤b 小数写入 Int 项：必须拒绝，且失败不能污染内存值（B1 回归）。
+    // 曾经的 bug：AsInt 把 1.5 静默截成 1 写进字段，回读拿原文比失败返回 false，
+    // 但字段已被改成 1 —— 命令报失败、状态却变了，下次 Save 固化错值。
+    {
+        json::Value before;
+        settings_reg::Get(L"viewMode", &before);
+        json::Value frac;
+        frac.type = json::Value::kNumber;
+        frac.num = before.num + 0.5;   // 一个带小数、且落在 0..7 范围内的值
+        std::wstring err;
+        Expect(!TrySet(L"viewMode", frac, &err), "小数写入 Int 项被拒绝");
+        Expect(!err.empty(), "小数写入被拒时给出原因");
+        json::Value after;
+        settings_reg::Get(L"viewMode", &after);
+        Expect(after.num == before.num, "小数写入被拒后原值未变（失败不污染内存）");
+    }
+
     // ⑥ 枚举：tabNewPos 只认三个值；大小写不敏感。
     {
         std::wstring err;
@@ -293,6 +310,16 @@ int main() {
         settings_reg::Get(L"searchRange", &prev);
         Expect(TrySet(L"searchRange", json::Value::MakeInt(0), &err), "searchRange 接受可用档位");
         settings_reg::Set(L"searchRange", prev, &err);
+
+        // 下拉/AI 域必须与写入判据一致：options 里不该出现必然被拒的档位 2。
+        // 否则面板摆着一个点了就失败的假选项，config.list 也把它报作合法域。
+        const settings_reg::Entry* e = settings_reg::Find(L"searchRange");
+        Expect(e && !e->options.empty(), "searchRange 声明了 options");
+        if (e)
+            for (const auto& o : e->options) {
+                Expect(o.value.IsNumber(), "options 项携带数值");
+                Expect(o.value.num != 2, "searchRange 的 options 不含不可用档位 2");
+            }
     }
 
     // ⑱ 此前"在 settings.json 里但 config.list 看不见"的项现在都登记了。

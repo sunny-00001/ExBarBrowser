@@ -169,6 +169,8 @@ ExBarBrowser_Popup                   WS_POPUP | WS_EX_TOOLWINDOW | CS_DROPSHADOW
 | `hotkey_manager_capture.cpp` | 改键捕获与按键录制状态机（捕获 / 冲突待确认 / 录制三态 + 冲突对方查询） | 分派 | `chord.h` |
 | `hotkey_manager_menu.cpp` | 行右键菜单（改键 / 清除 / 还原 / 复制 id / 打开命令面板 / 撤销重做） | 业务逻辑 | `str.h` |
 | `hotkey_manager_clip.cpp` | 撤销/重做栈 + 剪贴板（复制 id / 导出 / 导入，格式与 `settings.json` 的 `hotkeys` 段同构） | 分派 | `clipboard.h`、`json.h` |
+| `hotkey_manager_preset.cpp` | 套用键位方案：命令 id → setting 反查、键位文本归一化比较、整批事务；以及「方案」菜单 | 分派 | `key_preset.h`、`chord.h` |
+| `key_preset.h/.cpp` | 方案文件解析（`data/keymap_presets.json`）与兜底（文件坏了仍返回「程序默认」） | 无（纯数据） | `json.h`、`text_file.h` |
 | `prompt.h/.cpp` | 文本输入对话框（书签重命名/新建分类） | 业务 | `theme.h` |
 | `config.h/.cpp` | 设置/会话/最近访问/键位覆盖；`<exe>\data` 路径 | UI | `json.h`、`text_file.h` |
 | `json.h/.cpp` | 极简 JSON（读 keymap/settings/mouse） | 流式/注释 | 标准库 |

@@ -11,11 +11,14 @@
 // 键名口径与旧的 settings.json 逐字相同，所以迁移只是"把同一批键搬到新文件"。
 #include "config.h"
 
+#include <cmath>
+
 #include "config_io_internal.h"
 #include "common.h"          // LogDbg
 #include "layout_limits.h"
-#include "search_scope.h"    // searchscope::kRangeCount（唯一真源）
+#include "search_scope.h"    // searchscope::kRangeCount / kDefaultRange / RangeSupported（唯一真源）
 #include "settings_bounds.h"
+#include "status_segs.h"     // Seg_Count：statusSegs 的元素上界（与写入端同一口径）
 #include "str.h"
 #include "text_file.h"
 
@@ -91,12 +94,28 @@ void Config::LoadStateFiles() {
         s_.tabMeta = configio::ReadTabMeta(r);
         if (const json::Value* segs = r.Find(L"statusSegs"); segs && segs->IsArray()) {
             s_.statusSegs.clear();
-            for (const auto& v : segs->arr)
-                if (v.type == json::Value::kNumber) s_.statusSegs.push_back(static_cast<int>(v.num));
+            for (const auto& v : segs->arr) {
+                // 手改的状态文件可能带越界段号：写入端按 [0, Seg_Count-1] 校验，
+                // 读盘端却只做类型筛选 —— 同一批数据在两个方向上口径不同。
+                // 越界元素直接丢弃（状态栏排版会自己滤，但读进来的值不该违反表声明）。
+                if (v.type != json::Value::kNumber) continue;
+                // 先按 double 判边界（避免浮点与 enum 直接比较的告警），再存整数。
+                // 小数直接丢弃而不是静默截断：写入端 AsInt 用 std::trunc 拒收
+                // 1.5 这类值，读盘端若把 1.5 截成 1，同一份 json 写进去读出来
+                // 就变了值 —— 两处口径必须一致。
+                if (v.num >= 0.0 && v.num < static_cast<double>(Seg_Count) &&
+                    std::trunc(v.num) == v.num)
+                    s_.statusSegs.push_back(static_cast<int>(v.num));
+            }
             NormalizeStatusSegs(s_.statusSegs);
         }
-        s_.searchRange = configio::ClampInt(r.GetInt(L"searchRange", s_.searchRange), 0,
-                                            searchscope::kRangeCount - 1);
+        {
+            const int r96 = configio::ClampInt(r.GetInt(L"searchRange", s_.searchRange), 0,
+                                               searchscope::kRangeCount - 1);
+            // 手改成"此电脑"(2) 时读进来会显示已选、搜索却永远不可用。
+            // 与写入端共用 RangeSupported：不可用档回退默认值，而不是带病启动。
+            s_.searchRange = searchscope::RangeSupported(r96) ? r96 : searchscope::kDefaultRange;
+        }
         s_.searchRangePath = r.GetStr(L"searchRangePath");
         if (const json::Value* hk = r.Find(L"hotkeys"); hk && hk->IsObject()) {
             s_.hotkeyOverrides.clear();

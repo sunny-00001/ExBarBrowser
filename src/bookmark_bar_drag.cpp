@@ -5,8 +5,9 @@
 // 命令口径（bmk.move），两处各写一份必然分叉。拆开才读得动。
 //
 // 【边缘自动滚动】拖到栏左/右边缘带内按拍滚动（edge::Update 共享实现，
-// 周期共用 tabDragScrollMs 设置）；滚动经 ScrollBy 收口，落点由 ScrollBy
-// 里的统一重算刷新 —— 本文件不单独改 dropIdx_，避免两条路各写一份重算。
+// 周期读书签栏自己的 bookmarkDragScrollMs，总开关 bookmarkDragAutoscroll）；
+// 滚动经 ScrollBy 收口，落点由 ScrollBy 里的统一重算刷新 —— 本文件不单独改
+// dropIdx_，避免两条路各写一份重算。
 #include "bookmark_bar.h"
 
 #include "commands.h"
@@ -23,7 +24,15 @@ constexpr UINT kFolderOpenHoverMs = 600;
 void BookmarkBar::EdgeAutoScroll(int clientX, int clientY) {
     dragMouseX_ = clientX;
     dragMouseY_ = clientY;
-    if (!overflow_) {
+    // 总开关关掉 = 连表都不挂（不是"挂表但不滚"）：后者每次 mousemove 都要
+    // 走一遍 SetTimer/KillTimer，且状态里留着一个永不为 0 的 step，排障时
+    // 会以为"自动滚动在跑但没效果"。
+    //
+    // 周期读**书签栏自己的** bookmarkDragScrollMs，不再共用 tabDragScrollMs：
+    // 标签栏与书签栏的内容密度不同（书签项更窄、一次能扫过更多），共用一个
+    // 旋钮意味着"调快标签栏"必然把书签栏也调快，两边总有一边不合手。
+    const Settings& st = Config::Get().s();
+    if (!overflow_ || !st.bookmarkDragAutoscroll) {
         edge::Stop(&dragScrollStep_, hwnd_, kDragScrollTimer);
         return;
     }
@@ -31,7 +40,7 @@ void BookmarkBar::EdgeAutoScroll(int clientX, int clientY) {
     const int lo = theme_->S(6) + edge;
     const int hi = viewRight_ - edge;
     edge::Update(&dragScrollStep_, hwnd_, kDragScrollTimer, clientX, lo, hi,
-                 theme_->S(24), static_cast<UINT>(Config::Get().s().tabDragScrollMs));
+                 theme_->S(24), static_cast<UINT>(st.bookmarkDragScrollMs));
 }
 
 void BookmarkBar::DragUpdate(HWND h, int x, int y) {

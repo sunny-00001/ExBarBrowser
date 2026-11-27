@@ -246,6 +246,7 @@ int App::ViewModeIndexFor(int fvm, int iconPx) {
 
 void App::RegisterCommands() {
     RegisterTabCommands();
+    RegisterGoCommands();
     RegisterFileCommands();
     RegisterViewPaneCommands();
     RegisterScanCommands();

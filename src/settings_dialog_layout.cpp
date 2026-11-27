@@ -32,7 +32,8 @@ constexpr int kDescGap = 18;       // 说明列与控件列之间的空隙
 constexpr int kDescMinCol = 96;    // 中栏说明列的最小宽（再窄就归零 = 说明静默消失）
 constexpr int kChkSize = 16;       // 复选框边长
 // 所有"值控件"（下拉、数字、自由字符串）共用 settingsControlWidth：
-constexpr int kValueUnitGap = 6;   // 数值与右侧单位之间的留白
+// 数值与单位之间的留白 kValueUnitGap 现在是 SettingsDialog 的类常量（见头文件），
+// 绘制与布局共用同一份，避免两边各写一个 6 漂移。
 // ---- 右栏 ----
 // 右栏没有滚动条，所以"排不下"只有一种后果：下面那几节直接不存在。
 // 因此块高与块间距必须**只有一份**，最小窗口高度由它反推（见 MinClientSize）。
