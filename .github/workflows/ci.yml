@@ -62,6 +62,11 @@ jobs:
       - name: 键位表生成物未过期
         run: python tools/gen_keymap.py --check
 
+      - name: 出厂配置与源码默认值同步（settings.json 不漂移）
+        # 以 config_io.cpp 的 Save 键清单 + config.h 的 Settings 默认值为真相源，
+        # 校验 package_release.py 的 FACTORY_SETTINGS 逐字段一致。
+        run: python tools/check_factory_settings.py
+
   # 第 2 层：原生编译 + 全量单测。需要带 Windhawk clang 20.x 的自托管 runner。
   # 没有 self-hosted 时此 job 保持 pending（不是绿），如实反映"编译门未覆盖"。
   native-build:

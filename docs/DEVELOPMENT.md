@@ -570,6 +570,7 @@ Get-Content "$env:TEMP\ExBarBrowser.log" -Tail 20 -Encoding Unicode
 
 - [ ] `bash build.sh` 零警告
 - [ ] 三个静态检查全绿：`check_commands.py` / `check_ai_meta.py` / `check_components.py`
+- [ ] 出厂配置未漂移：`python tools/check_factory_settings.py`（`config.h` 默认值改了却没同步 `package_release.py` 的 `FACTORY_SETTINGS` 会拦）
 - [ ] 冷启动 → 默认目录可浏览
 - [ ] 5 个标签连续开关 20 次，无残留、无崩溃
 - [ ] 深/浅色各截图一张（`scripts/shot.py`），视觉无明显错位
