@@ -135,11 +135,6 @@ const DEFAULTS = {
   // rather than silently looping.
   maxSteps: 12,
 
-  // --- Opus bridge (reuses the existing dopus-mcp file IPC channel) --------
-  bridgeDir: "D:\\dopus-mcp\\bridge",
-  dopusRt: "D:\\dopus\\dopusrt.exe",
-  opusTimeoutMs: 20000,
-
   // --- safety --------------------------------------------------------------
   // 命令名黑名单（点分名，如 fs.delete / fs.* 前缀族）。执行点在 guard.js，
   // 由 tools-exbar.dispatch 调用 —— 那里是两条 agent 循环调工具的唯一出口。
@@ -592,8 +587,6 @@ function envOverride(cfg) {
   if (E.AGENTCHAT_BASE_URL) out.baseUrl = E.AGENTCHAT_BASE_URL;
   if (E.AGENTCHAT_API_KEY) out.apiKey = E.AGENTCHAT_API_KEY;
   if (E.AGENTCHAT_MODEL) out.model = E.AGENTCHAT_MODEL;
-  if (E.AGENTCHAT_BRIDGE_DIR) out.bridgeDir = E.AGENTCHAT_BRIDGE_DIR;
-  if (E.AGENTCHAT_DOPUS_RT) out.dopusRt = E.AGENTCHAT_DOPUS_RT;
   if (E.AGENTCHAT_DRY_RUN) out.dryRun = E.AGENTCHAT_DRY_RUN === "1";
   if (E.AGENTCHAT_VERBOSE) out.verbose = E.AGENTCHAT_VERBOSE === "1";
   // Semicolon-separated, because a comma is legal inside a Windows path and a

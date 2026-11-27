@@ -48,7 +48,11 @@ REQUIRED = (
     "aichat/node/LICENSE.txt",
     "data/keymap.json",
     "data/mouse.json",
-    "data/models.json",           # 无密钥模板，用户填 key 后写入真实配置
+    "data/models.json",           # 空骨架，必须用户填写
+    "data/settings.json",         # 出厂默认值，拿来能用可改
+    "data/aichat.json",           # 出厂行为配置，能正常跑
+    "data/mcp.json",              # 空 server 清单
+    "data/bookmarks.html",        # 空书签
     "RELEASE-MANIFEST.json",
     "START-HERE.txt",
     "data/README.md",
@@ -253,17 +257,68 @@ def run(zip_path: Path) -> int:
         c.expect(not secret_hits, "无真实密钥 / token",
                  "干净" if not secret_hits else ", ".join(secret_hits[:8]))
 
-        # 4b. models.json 模板：必须是完整 v2 结构（providers + default），且不含任何 apiKey。
+        # 4b. data/ 出厂配置分两类：出厂自带能用可改 + 必须用户填写（models 空骨架）。
+        # 关键是绝不携带开发机真实数据（provider 地址 / 密钥 / 书签 / 窗口位置）。
+        def load_json(name):
+            return json.loads((root / "data" / name).read_text(encoding="utf-8"))
+
         try:
-            models = json.loads((root / "data" / "models.json").read_text(encoding="utf-8"))
-            providers = models.get("providers", {})
-            has_key = any("apiKey" in p for p in providers.values())
-            well_formed = (models.get("version") == 2 and bool(providers)
-                           and bool(models.get("default")) and not has_key)
-            c.expect(well_formed, "models.json 模板结构完整且无密钥",
-                     f"{len(providers)} providers, default={models.get('default')}")
+            models = load_json("models.json")
+            providers = models.get("providers")
+            empty = (models.get("version") == 2 and models.get("default") == ""
+                     and providers == {})
+            c.expect(empty, "models.json 是空骨架（providers/default 全空）",
+                     f"version={models.get('version')}, providers={len(providers) if isinstance(providers, dict) else '非字典'}, default={models.get('default')!r}")
         except Exception as e:                              # noqa: BLE001
-            c.fail("models.json 模板是合法 JSON", str(e))
+            c.fail("models.json 是合法 JSON", str(e))
+
+        try:
+            settings = load_json("settings.json")
+            defaults_ok = (settings.get("aiAllowDanger") is False
+                           and settings.get("viewMode") == 3
+                           and settings.get("statusBarHeight") == 24
+                           and settings.get("navPaneIndent") == 30
+                           and settings.get("confirmCloseTabs") is True
+                           and settings.get("navPaneWidth") == 220
+                           and settings.get("aiPanelWidth") == 420)
+            c.expect(defaults_ok, "settings.json 是源码出厂默认值（非本机值）",
+                     f"aiAllowDanger={settings.get('aiAllowDanger')}, viewMode={settings.get('viewMode')}")
+        except Exception as e:                              # noqa: BLE001
+            c.fail("settings.json 是合法 JSON", str(e))
+
+        try:
+            aichat = load_json("aichat.json")
+            no_dopus = not any(k in aichat for k in ("bridgeDir", "dopusRt", "opusTimeoutMs"))
+            runnable = (aichat.get("host") == "127.0.0.1" and aichat.get("port") == 8792
+                        and aichat.get("denyCommands") == [] and aichat.get("allowedRoots") == [])
+            c.expect(no_dopus and runnable, "aichat.json 出厂可跑且无 dopus 遗留参数",
+                     f"host={aichat.get('host')}, port={aichat.get('port')}, dopus={not no_dopus}")
+        except Exception as e:                              # noqa: BLE001
+            c.fail("aichat.json 是合法 JSON", str(e))
+
+        try:
+            mcp = load_json("mcp.json")
+            c.expect(mcp == {"mcpServers": {}}, "mcp.json 是空 server 清单", str(mcp)[:80])
+        except Exception as e:                              # noqa: BLE001
+            c.fail("mcp.json 是合法 JSON", str(e))
+
+        try:
+            bookmarks = (root / "data" / "bookmarks.html").read_text(encoding="utf-8")
+            empty_bm = ("NETSCAPE-Bookmark-file-1" in bookmarks
+                        and "<DT><A" not in bookmarks and "<DT><H3" not in bookmarks)
+            c.expect(empty_bm, "bookmarks.html 是空书签", f"{len(bookmarks)} 字节")
+        except Exception as e:                              # noqa: BLE001
+            c.fail("bookmarks.html 可读", str(e))
+
+        # 4c. 整包不得出现开发机真实 provider 地址 / 密钥（无论写在哪个文件里）。
+        leak_hits = []
+        for name in ("models.json", "aichat.json", "settings.json"):
+            text = (root / "data" / name).read_text(encoding="utf-8")
+            for token in ("sunnyzt.site", "agent2api", "magpie", "deepseek.com", "sk-"):
+                if token in text:
+                    leak_hits.append(f"{name}:{token}")
+        c.expect(not leak_hits, "出厂配置无真实 provider / 地址 / 密钥",
+                 "干净" if not leak_hits else ", ".join(leak_hits))
 
         # 5. Node 依赖闭合
         verify_node_requires(root / "aichat" / "service", c)
