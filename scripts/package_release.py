@@ -71,7 +71,8 @@ https://nodejs.org/en/about/licenses/
 """
 
 # 只复制 AI 面板真正会跑到的文件：测试、临时脚本一律不进包。
-# 配置模板已取消 —— aichat.json / models.json / mcp.json 由服务首次启动生成。
+# aichat.json / models.json 是用户私钥文件不进包（models 随包的是无密钥模板）；
+# mcp.json 由服务首次启动生成。
 SERVICE_EXTRA = ("exbar-bridge.ps1",)
 
 
@@ -270,9 +271,10 @@ def build_manifest(stage: Path, version: str, epoch: int, created_utc: str) -> d
         },
         "notes": [
             "data/keymap.json 与 data/mouse.json 是随包分发的完整出厂规则表，可直接编辑，文件有效时程序完全接管（删一条即禁用）。",
-            "data/ 下除 keymap.json / mouse.json 外的用户配置（settings/bookmarks/models 等）不随包分发，首次启动自动生成。",
+            "data/models.json 是无密钥模板（providers/baseUrl/模型清单/default 已配好），首次启动不自动生成，用户填 apiKey 保存后写入真实密钥。",
+            "data/ 下除 keymap.json / mouse.json / models.json 外的用户配置（settings/bookmarks/aichat 等）不随包分发，首次启动或首次保存时生成。",
             "state/ logs/ cache/ runtime/ 首次启动自动生成，不携带开发者配置、书签或密钥。",
-            "aichat.json / models.json / mcp.json 由 AI 服务首次启动写入 data/。",
+            "mcp.json 由 AI 服务首次启动写入空清单；aichat.json 在用户首次保存行为配置时才生成。",
             "WebView2Loader.dll 必须与 ExBarBrowser.exe 同目录。",
             "aichat/node/node.exe 为随包 Node 运行时（MIT，见同目录 LICENSE.txt），新电脑无需另装 Node.js。",
             "exe 的 PE 时间戳已归一化为 commit time，便于复核构件来源。",
@@ -329,21 +331,29 @@ def main() -> int:
     # 不进包的话用户既看不到有哪些键位/鼠标规则，也不知道怎么写。
     copy_file(ROOT / "data" / "keymap.json", stage / "data" / "keymap.json")
     copy_file(ROOT / "data" / "mouse.json", stage / "data" / "mouse.json")
+    # models.json 用户私钥文件绝不进包；随包的是一份**无密钥模板**：providers /
+    # baseUrl / 模型清单 / default 已配好，apiKey 字段刻意不写。用户填一次 key
+    # 保存即生成真实 models.json。此前文档声称"首次启动自动生成"与实测不符。
+    copy_file(ROOT / "data" / "models.template.json", stage / "data" / "models.json")
 
-    write_text(stage / "data" / "README.md", """data/ — 配置目录（随程序分发 keymap.json / mouse.json，其余首次启动生成）
+    write_text(stage / "data" / "README.md", """data/ — 配置目录（随程序分发 keymap.json / mouse.json / models.json 模板）
 
-随包带两份完整的出厂规则表，拿来就能用、可直接编辑：
+随包带两份完整的出厂规则表 + 一份无密钥模型模板，拿来就能用、可直接编辑：
   keymap.json  键位（hotkeys + sequences），文件有效时程序完全接管，缺失才回退编译期内置表；
-  mouse.json   鼠标规则，文件有效时程序完全接管，删一条即禁用该行为。
+  mouse.json   鼠标规则，文件有效时程序完全接管，删一条即禁用该行为；
+  models.json  模型目录：providers / baseUrl / 模型清单 / default 已配好，apiKey 留空。
+               首次启动**不会**自动生成它——包内这份就是模板；打开 AI 面板在
+               模型设置里填好 apiKey 并保存，才会写入你的真实密钥。若删除，
+               服务会退回内置默认（只有一个占位端点，无可用 provider）。
 profile 根下按职责分层：
-  data/       settings.json / bookmarks.html / keymap.json / mouse.json
-              aichat.json（AI 行为）/ models.json（模型与密钥）/ mcp.json
+  data/       settings.json / bookmarks.html / keymap.json / mouse.json / models.json
+              aichat.json（AI 行为，首次保存时生成）/ mcp.json（首次启动生成）
   state/      会话、历史、标签、窗口状态
   logs/       审计与事件日志（audit.jsonl / events.jsonl）
   cache/      WebView2 用户数据
   runtime/    AI 通道发现文件（进程退出即删）
 
-这里放的是**用户私有数据**，所以发布包不带开发机的真实内容。
+这里放的是**用户私有数据**，所以发布包不带开发机的真实内容（密钥、书签、设置）。
 可以用命令 `GoConfigPath` 直接打开配置目录。
 """)
 
@@ -361,17 +371,18 @@ profile 根下按职责分层：
     如需改用系统 Node，设环境变量 EXBAR_NODE 指向 node.exe 再启动程序。
 
 【首次使用 AI 面板】
-  1. 首次启动后 AI 服务会在 data/ 下自动生成 aichat.json（行为配置）、
-     models.json（模型目录）与 mcp.json（空 server 清单）；在设置里填好自己的
-     baseUrl / apiKey / 模型 id。
-  2. 填好密钥的 data/models.json 是私密文件，不要连同日志一起发出去。
-  不填也能启动主浏览器；AI 面板会因为没有模型配置而无法调用。
+  1. 包内 data/models.json 是**无密钥模板**：providers / baseUrl / 模型清单 / default
+     已按常用配置填好，apiKey 留空。首次启动只会自动生成 mcp.json（空 server 清单）；
+     models.json 不会重新生成——包里这份就是给你改的。
+  2. 打开 AI 面板 → 模型设置里选好端点、填入自己的 apiKey 并保存，即可调用。
+     未填 key 时主浏览器照常用，AI 面板会提示 "no API key configured"。
+  3. 填好密钥的 data/models.json 是私密文件，不要连同日志一起发出去。
 
 【目录说明】
   ExBarBrowser.exe      主程序（资源里已嵌入版本号 {version}）
   WebView2Loader.dll    WebView2 加载器，必须与 exe 同目录
   aichat/               AI 面板的 Node 服务、Web UI 与随包 node.exe（无第三方 npm 依赖）
-  data/                 配置（随包带 keymap.json / mouse.json；其余首次启动生成，含模型与密钥）
+  data/                 配置（随包带 keymap.json / mouse.json 与 models.json 无密钥模板；其余首次启动生成）
   state/                会话/历史/标签/窗口状态（首次启动生成）
   logs/                 审计与事件日志（首次启动生成）
   cache/                WebView2 用户数据（可整体删除）

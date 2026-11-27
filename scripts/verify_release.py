@@ -46,6 +46,9 @@ REQUIRED = (
     "aichat/ui/app.js",
     "aichat/node/node.exe",       # 随包 Node，新电脑无需另装
     "aichat/node/LICENSE.txt",
+    "data/keymap.json",
+    "data/mouse.json",
+    "data/models.json",           # 无密钥模板，用户填 key 后写入真实配置
     "RELEASE-MANIFEST.json",
     "START-HERE.txt",
     "data/README.md",
@@ -249,6 +252,18 @@ def run(zip_path: Path) -> int:
                 secret_hits.append(f"{p.name}:token")
         c.expect(not secret_hits, "无真实密钥 / token",
                  "干净" if not secret_hits else ", ".join(secret_hits[:8]))
+
+        # 4b. models.json 模板：必须是完整 v2 结构（providers + default），且不含任何 apiKey。
+        try:
+            models = json.loads((root / "data" / "models.json").read_text(encoding="utf-8"))
+            providers = models.get("providers", {})
+            has_key = any("apiKey" in p for p in providers.values())
+            well_formed = (models.get("version") == 2 and bool(providers)
+                           and bool(models.get("default")) and not has_key)
+            c.expect(well_formed, "models.json 模板结构完整且无密钥",
+                     f"{len(providers)} providers, default={models.get('default')}")
+        except Exception as e:                              # noqa: BLE001
+            c.fail("models.json 模板是合法 JSON", str(e))
 
         # 5. Node 依赖闭合
         verify_node_requires(root / "aichat" / "service", c)
