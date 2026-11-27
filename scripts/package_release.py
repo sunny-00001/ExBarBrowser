@@ -213,8 +213,8 @@ def build_manifest(stage: Path, version: str, epoch: int, created_utc: str) -> d
             "node": ">=18，PATH 或 EXBAR_NODE；仅 AI 面板需要",
         },
         "notes": [
-            "data/mouse.json 是随包分发的完整鼠标规则表，可直接编辑，删一条即禁用该行为。",
-            "data/ 下除 mouse.json 外的用户配置（settings/bookmarks/keymap/models 等）不随包分发，首次启动自动生成。",
+            "data/keymap.json 与 data/mouse.json 是随包分发的完整出厂规则表，可直接编辑，文件有效时程序完全接管（删一条即禁用）。",
+            "data/ 下除 keymap.json / mouse.json 外的用户配置（settings/bookmarks/models 等）不随包分发，首次启动自动生成。",
             "state/ logs/ cache/ runtime/ 首次启动自动生成，不携带开发者配置、书签或密钥。",
             "aichat.json / models.json / mcp.json 由 AI 服务首次启动写入 data/。",
             "WebView2Loader.dll 必须与 ExBarBrowser.exe 同目录。",
@@ -267,17 +267,17 @@ def main() -> int:
     copy_file(LOADER_DLL, stage / "WebView2Loader.dll")
     stage_aichat(stage)
 
-    # mouse.json 是随程序分发的完整出厂规则表：用户拿来就能用、可直接改，
-    # 删一条即禁用该行为（Load 在文件有效时完全接管，不再叠加内置默认）。
-    # 不进包的话用户既看不到有哪些规则，也不知道怎么写 —— 这是可发现性缺口。
+    # keymap.json / mouse.json 是随程序分发的完整出厂规则表：用户拿来就能用、
+    # 可直接改；文件有效时程序完全接管（不再叠加内置默认），删一条即禁用。
+    # 不进包的话用户既看不到有哪些键位/鼠标规则，也不知道怎么写。
+    copy_file(ROOT / "data" / "keymap.json", stage / "data" / "keymap.json")
     copy_file(ROOT / "data" / "mouse.json", stage / "data" / "mouse.json")
 
-    write_text(stage / "data" / "README.md", """data/ — 配置目录（随程序分发 mouse.json，其余首次启动生成）
+    write_text(stage / "data" / "README.md", """data/ — 配置目录（随程序分发 keymap.json / mouse.json，其余首次启动生成）
 
-随包带一份完整的 mouse.json（鼠标规则表），拿来就能用，可直接编辑；
-删掉某条规则即禁用该行为（文件有效时不再叠加内置默认，文件缺失/损坏才回退）。
-键位规则只有一处真相：keymap.json（hotkeys + sequences），可直接编辑，
-缺失时回落到编译期内置默认（由 data/keymap.json 经 gen_keymap.py 生成）。
+随包带两份完整的出厂规则表，拿来就能用、可直接编辑：
+  keymap.json  键位（hotkeys + sequences），文件有效时程序完全接管，缺失才回退编译期内置表；
+  mouse.json   鼠标规则，文件有效时程序完全接管，删一条即禁用该行为。
 profile 根下按职责分层：
   data/       settings.json / bookmarks.html / keymap.json / mouse.json
               aichat.json（AI 行为）/ models.json（模型与密钥）/ mcp.json
@@ -313,7 +313,7 @@ profile 根下按职责分层：
   ExBarBrowser.exe      主程序（资源里已嵌入版本号 {version}）
   WebView2Loader.dll    WebView2 加载器，必须与 exe 同目录
   aichat/               AI 面板的 Node 服务与 Web UI（无第三方 npm 依赖）
-  data/                 配置（随包带 mouse.json；其余首次启动生成，含模型与密钥）
+  data/                 配置（随包带 keymap.json / mouse.json；其余首次启动生成，含模型与密钥）
   state/                会话/历史/标签/窗口状态（首次启动生成）
   logs/                 审计与事件日志（首次启动生成）
   cache/                WebView2 用户数据（可整体删除）

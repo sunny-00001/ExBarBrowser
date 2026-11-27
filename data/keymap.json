@@ -1,0 +1,1243 @@
+{
+  "version": 1,
+  "hotkeys": [
+    {
+      "setting": "hotkeyOpenFolderOptions",
+      "command": "FolderOptions",
+      "key": "Alt+O"
+    },
+    {
+      "setting": "hotkeyMapNetworkDrive",
+      "command": "MapDrive",
+      "key": "Ctrl+Shift+I"
+    },
+    {
+      "setting": "hotkeyDisconnectNetworkDrive",
+      "command": "UnmapDrive",
+      "key": "Ctrl+Alt+I"
+    },
+    {
+      "setting": "hotkeyOpenWith",
+      "command": "CmdOpenWith",
+      "key": "Ctrl+O"
+    },
+    {
+      "setting": "hotkeyCopyPath",
+      "command": "PathCopy",
+      "key": "Ctrl+Shift+C"
+    },
+    {
+      "setting": "hotkeyCopyFilename",
+      "command": "PathCopyName",
+      "key": "Ctrl+Alt+C"
+    },
+    {
+      "setting": "hotkeyCopyCurrentDirPath",
+      "command": "PathCopyDir",
+      "key": "Ctrl+Alt+Shift+C"
+    },
+    {
+      "setting": "hotkeyOpenTerminal",
+      "command": "OpenTerminal",
+      "key": "Ctrl+M"
+    },
+    {
+      "setting": "hotkeyOpenTerminalAdmin",
+      "command": "OpenTerminalAdmin",
+      "key": "Ctrl+Shift+M"
+    },
+    {
+      "setting": "hotkeyNewTextFile",
+      "command": "CmdNewTextFile",
+      "key": "Ctrl+Alt+N"
+    },
+    {
+      "setting": "hotkeyCloneTab",
+      "command": "TabClone",
+      "key": "Ctrl+K"
+    },
+    {
+      "setting": "hotkeyTabSwitcher",
+      "command": "TabSwitcher",
+      "key": "Ctrl+Shift+G"
+    },
+    {
+      "setting": "hotkeyReopenClosedTab",
+      "command": "TabReopenClosed",
+      "key": "Ctrl+Shift+T"
+    },
+    {
+      "setting": "hotkeyNewWindow",
+      "command": "NewWindow",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyCloseLeftTabs",
+      "command": "TabCloseLeft",
+      "key": "Ctrl+Shift+Left"
+    },
+    {
+      "setting": "hotkeyCloseRightTabs",
+      "command": "TabCloseRight",
+      "key": "Ctrl+Shift+Right"
+    },
+    {
+      "setting": "hotkeyQuitExplorer",
+      "command": "win.quit",
+      "key": "Ctrl+Q"
+    },
+    {
+      "setting": "hotkeyCloseOtherTabs",
+      "command": "TabCloseOther",
+      "key": "Ctrl+Shift+W"
+    },
+    {
+      "setting": "hotkeyToggleHidden",
+      "command": "ToggleHidden",
+      "key": "Ctrl+H"
+    },
+    {
+      "setting": "hotkeyToggleSystemFiles",
+      "command": "ToggleSystemFiles",
+      "key": "Ctrl+Shift+H"
+    },
+    {
+      "setting": "hotkeyToggleExtensions",
+      "command": "ToggleExtensions",
+      "key": "Ctrl+Alt+E"
+    },
+    {
+      "setting": "hotkeyTogglePreviewPane",
+      "command": "TogglePreviewPane",
+      "key": "Alt+P"
+    },
+    {
+      "setting": "hotkeyToggleDualPane",
+      "command": "view.dualpane.toggle",
+      "key": "Ctrl+F6"
+    },
+    {
+      "setting": "hotkeyNextPane",
+      "command": "view.pane.next",
+      "key": "Alt+F6"
+    },
+    {
+      "setting": "hotkeyCopyToPane",
+      "command": "file.copy.pane",
+      "key": "F7"
+    },
+    {
+      "setting": "hotkeyMoveToPane",
+      "command": "file.move.pane",
+      "key": "F8"
+    },
+    {
+      "setting": "hotkeyFocusNextElement",
+      "command": "win.focus.next",
+      "key": "F6"
+    },
+    {
+      "setting": "hotkeyFocusPrevElement",
+      "command": "win.focus.prev",
+      "key": "Shift+F6"
+    },
+    {
+      "setting": "hotkeyTogglePaneVertical",
+      "command": "view.pane.vertical",
+      "key": "Ctrl+Shift+F6"
+    },
+    {
+      "setting": "hotkeyToggleNavPane",
+      "command": "ToggleNavPane",
+      "key": "Ctrl+Shift+L"
+    },
+    {
+      "setting": "hotkeyNavTreeExpandAll",
+      "command": "NavTreeExpandAll",
+      "key": "Ctrl+Shift+E"
+    },
+    {
+      "setting": "hotkeyOpenDownloads",
+      "command": "GoDownloads",
+      "key": "Ctrl+Shift+J"
+    },
+    {
+      "setting": "hotkeyOpenDesktop",
+      "command": "GoDesktop",
+      "key": "Ctrl+Shift+D"
+    },
+    {
+      "setting": "hotkeyOpenDocuments",
+      "command": "GoDocuments",
+      "key": "Ctrl+Shift+O"
+    },
+    {
+      "setting": "hotkeyAddBookmark",
+      "command": "BmkAddCurrent",
+      "key": "Ctrl+D"
+    },
+    {
+      "setting": "hotkeyToggleBookmarkBar",
+      "command": "BmkToggleBar",
+      "key": "Ctrl+Shift+B"
+    },
+    {
+      "setting": "hotkeyFocusBookmarkBar",
+      "command": "BmkFocus",
+      "key": "Ctrl+B"
+    },
+    {
+      "setting": "hotkeySelectInvert",
+      "command": "SelectInvert",
+      "key": "Ctrl+I"
+    },
+    {
+      "setting": "hotkeySelectFiles",
+      "command": "SelectFiles",
+      "key": "Ctrl+Shift+F"
+    },
+    {
+      "setting": "hotkeySelectFolders",
+      "command": "SelectFolders",
+      "key": "Ctrl+Alt+D"
+    },
+    {
+      "setting": "hotkeyCopyToFolder",
+      "command": "CopyToFolder",
+      "key": "Ctrl+Shift+A"
+    },
+    {
+      "setting": "hotkeyMoveToFolder",
+      "command": "MoveToFolder",
+      "key": "Ctrl+Shift+X"
+    },
+    {
+      "setting": "hotkeyBatchRename",
+      "command": "BatchRename",
+      "key": "Ctrl+Shift+R"
+    },
+    {
+      "setting": "hotkeySelectByPattern",
+      "command": "SelectByPattern",
+      "key": "Ctrl+Shift+K"
+    },
+    {
+      "setting": "hotkeyNavBack",
+      "command": "NavBack",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyNavForward",
+      "command": "NavForward",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyNavUp",
+      "command": "NavUp",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyNavUpBackspace",
+      "command": "NavUp",
+      "key": "Backspace"
+    },
+    {
+      "setting": "hotkeyNavRefresh",
+      "command": "NavRefresh",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyGoHome",
+      "command": "GoHome",
+      "key": "Alt+Home"
+    },
+    {
+      "setting": "hotkeyTabNew",
+      "command": "TabNew",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyTabClose",
+      "command": "TabClose",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyTabNext",
+      "command": "TabNext",
+      "key": "-"
+    },
+    {
+      "setting": "hotkeyTabPrev",
+      "command": "TabPrev",
+      "key": "-"
+    },
+    {
+      "setting": "hotkeyTabCycleNext",
+      "command": "TabCycleNext",
+      "key": "Ctrl+Tab"
+    },
+    {
+      "setting": "hotkeyTabCyclePrev",
+      "command": "TabCyclePrev",
+      "key": "Ctrl+Shift+Tab"
+    },
+    {
+      "setting": "hotkeyTabMoveLeft",
+      "command": "TabMoveLeft",
+      "key": "Shift+Left"
+    },
+    {
+      "setting": "hotkeyTabMoveRight",
+      "command": "TabMoveRight",
+      "key": "Shift+Right"
+    },
+    {
+      "setting": "hotkeyTabMoveFirst",
+      "command": "TabMoveFirst",
+      "key": "Shift+Home"
+    },
+    {
+      "setting": "hotkeyTabMoveLast",
+      "command": "TabMoveLast",
+      "key": "Shift+End"
+    },
+    {
+      "setting": "hotkeyCmdCopy",
+      "command": "CmdCopy",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyCmdCut",
+      "command": "CmdCut",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyCmdPaste",
+      "command": "CmdPaste",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyCmdDelete",
+      "command": "CmdDelete",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyCmdDeletePermanent",
+      "command": "CmdDeletePermanent",
+      "key": "Shift+Delete"
+    },
+    {
+      "setting": "hotkeyCmdUndo",
+      "command": "CmdUndo",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyCmdRedo",
+      "command": "CmdRedo",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyCmdSelectAll",
+      "command": "CmdSelectAll",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyCmdNewFolder",
+      "command": "CmdNewFolder",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyViewNext",
+      "command": "ViewNext",
+      "key": "Ctrl+Shift+Down"
+    },
+    {
+      "setting": "hotkeyViewPrev",
+      "command": "ViewPrev",
+      "key": "Ctrl+Shift+Up"
+    },
+    {
+      "setting": "hotkeyBmkHideBar",
+      "command": "BmkHideBar",
+      "key": "Ctrl+Alt+B"
+    },
+    {
+      "setting": "hotkeyBmkShowBar",
+      "command": "BmkShowBar",
+      "key": "Ctrl+Alt+S"
+    },
+    {
+      "setting": "hotkeyCommandPalette",
+      "command": "CommandPalette",
+      "key": "Ctrl+Shift+P"
+    },
+    {
+      "setting": "hotkeyHotkeyManager",
+      "command": "HotkeyManager",
+      "key": "Alt+K"
+    },
+    {
+      "setting": "hotkeyFocusAddress",
+      "command": "FocusAddress",
+      "key": "F4"
+    },
+    {
+      "setting": "hotkeyFocusSearch",
+      "command": "FocusSearch",
+      "key": "Ctrl+F"
+    },
+    {
+      "setting": "hotkeyDupFinder",
+      "command": "DupFinder",
+      "key": "Ctrl+Shift+Y"
+    },
+    {
+      "setting": "hotkeyFileHash",
+      "command": "FileHash",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyFolderCompare",
+      "command": "FolderCompare",
+      "key": ""
+    },
+    {
+      "setting": "hotkeySessionSave",
+      "command": "SessionSave",
+      "key": ""
+    },
+    {
+      "setting": "hotkeySessionRestore",
+      "command": "SessionRestore",
+      "key": ""
+    },
+    {
+      "setting": "hotkeyGoTab1",
+      "command": "GoTab1",
+      "key": "Ctrl+1"
+    },
+    {
+      "setting": "hotkeyGoTab2",
+      "command": "GoTab2",
+      "key": "Ctrl+2"
+    },
+    {
+      "setting": "hotkeyGoTab3",
+      "command": "GoTab3",
+      "key": "Ctrl+3"
+    },
+    {
+      "setting": "hotkeyGoTab4",
+      "command": "GoTab4",
+      "key": "Ctrl+4"
+    },
+    {
+      "setting": "hotkeyGoTab5",
+      "command": "GoTab5",
+      "key": "Ctrl+5"
+    },
+    {
+      "setting": "hotkeyGoTab6",
+      "command": "GoTab6",
+      "key": "Ctrl+6"
+    },
+    {
+      "setting": "hotkeyGoTab7",
+      "command": "GoTab7",
+      "key": "Ctrl+7"
+    },
+    {
+      "setting": "hotkeyGoTab8",
+      "command": "GoTab8",
+      "key": "Ctrl+8"
+    },
+    {
+      "setting": "hotkeyGoTab9",
+      "command": "GoTab9",
+      "key": "Ctrl+9"
+    },
+    {
+      "setting": "hotkeyGoTabLast",
+      "command": "TabLast",
+      "key": "Ctrl+0"
+    },
+    {
+      "setting": "hotkeyTabMoveLeftGlobal",
+      "command": "TabMoveLeft",
+      "key": "Ctrl+Shift+PageUp"
+    },
+    {
+      "setting": "hotkeyTabMoveRightGlobal",
+      "command": "TabMoveRight",
+      "key": "Ctrl+Shift+PageDown"
+    },
+    {
+      "setting": "hotkeyTabPrevPage",
+      "command": "TabPrev",
+      "key": "Ctrl+PageUp"
+    },
+    {
+      "setting": "hotkeyTabNextPage",
+      "command": "TabNext",
+      "key": "Ctrl+PageDown"
+    },
+    {
+      "setting": "hotkeyProperties",
+      "command": "CmdProps",
+      "key": "Alt+Enter"
+    },
+    {
+      "setting": "hotkeyFocusSearchAlt",
+      "command": "FocusSearch",
+      "key": "Ctrl+E"
+    },
+    {
+      "setting": "hotkeyFocusAddressAlt",
+      "command": "FocusAddress",
+      "key": "Alt+D"
+    },
+    {
+      "setting": "hotkeyFocusAddressCtrlL",
+      "command": "FocusAddress",
+      "key": "Ctrl+L"
+    },
+    {
+      "setting": "hotkeyRename",
+      "command": "CmdRename",
+      "key": "F2"
+    },
+    {
+      "setting": "hotkeyViewMode1",
+      "command": "ViewMode:0",
+      "key": "Ctrl+Shift+1"
+    },
+    {
+      "setting": "hotkeyViewMode2",
+      "command": "ViewMode:1",
+      "key": "Ctrl+Shift+2"
+    },
+    {
+      "setting": "hotkeyViewMode3",
+      "command": "ViewMode:2",
+      "key": "Ctrl+Shift+3"
+    },
+    {
+      "setting": "hotkeyViewMode4",
+      "command": "ViewMode:3",
+      "key": "Ctrl+Shift+4"
+    },
+    {
+      "setting": "hotkeyViewMode5",
+      "command": "ViewMode:4",
+      "key": "Ctrl+Shift+5"
+    },
+    {
+      "setting": "hotkeyViewMode6",
+      "command": "ViewMode:5",
+      "key": "Ctrl+Shift+6"
+    },
+    {
+      "setting": "hotkeyViewMode7",
+      "command": "ViewMode:6",
+      "key": "Ctrl+Shift+7"
+    },
+    {
+      "setting": "hotkeyViewMode8",
+      "command": "ViewMode:7",
+      "key": "Ctrl+Shift+8"
+    },
+    {
+      "setting": "hotkeyAiPanel",
+      "command": "AiPanelToggle",
+      "key": "Ctrl+J"
+    },
+    {
+      "setting": "hotkeyAiPanelWeb",
+      "command": "AiPanelWeb",
+      "key": "Ctrl+Alt+J"
+    },
+    {
+      "setting": "hotkeyFileContextMenu",
+      "command": "file.context.menu",
+      "key": "Shift+F10"
+    }
+  ],
+  "sequences": [
+    {
+      "seq": "g g",
+      "command": "FileFocusTop"
+    },
+    {
+      "seq": "g l",
+      "command": "GoLocalAppData"
+    },
+    {
+      "seq": "g u",
+      "command": "NavUp"
+    },
+    {
+      "seq": "g b",
+      "command": "TabPrevTab"
+    },
+    {
+      "seq": "g f",
+      "command": "NavForward"
+    },
+    {
+      "seq": "g h",
+      "command": "GoTab1"
+    },
+    {
+      "seq": "g q",
+      "command": "GoHome"
+    },
+    {
+      "seq": "g r",
+      "command": "GoStartFolder"
+    },
+    {
+      "seq": "g t",
+      "command": "TabNew"
+    },
+    {
+      "seq": "g c",
+      "command": "OpenTerminal"
+    },
+    {
+      "seq": "g d",
+      "command": "GoDownloads"
+    },
+    {
+      "seq": "g x",
+      "command": "GoDownloads"
+    },
+    {
+      "seq": "g e",
+      "command": "TabLast"
+    },
+    {
+      "seq": "g k",
+      "command": "HotkeyManager"
+    },
+    {
+      "seq": "g p",
+      "command": "CommandPalette"
+    },
+    {
+      "seq": "g i",
+      "command": "GoConfigPath"
+    },
+    {
+      "seq": "g m",
+      "command": "GoControlPanel"
+    },
+    {
+      "seq": "g s",
+      "command": "GoPowerShell"
+    },
+    {
+      "seq": "g 1",
+      "command": "GoTab1"
+    },
+    {
+      "seq": "g 2",
+      "command": "GoTab2"
+    },
+    {
+      "seq": "g 3",
+      "command": "GoTab3"
+    },
+    {
+      "seq": "g 4",
+      "command": "GoTab4"
+    },
+    {
+      "seq": "g 5",
+      "command": "GoTab5"
+    },
+    {
+      "seq": "g 6",
+      "command": "GoTab6"
+    },
+    {
+      "seq": "g 7",
+      "command": "GoTab7"
+    },
+    {
+      "seq": "g 8",
+      "command": "GoTab8"
+    },
+    {
+      "seq": "g 9",
+      "command": "GoTab9"
+    },
+    {
+      "seq": "x l",
+      "command": "CloseLeftOne"
+    },
+    {
+      "seq": "x l a",
+      "command": "TabCloseLeft"
+    },
+    {
+      "seq": "x r",
+      "command": "CloseRightOne"
+    },
+    {
+      "seq": "x r a",
+      "command": "TabCloseRight"
+    },
+    {
+      "seq": "x x",
+      "command": "TabCloseOther"
+    },
+    {
+      "seq": "y c",
+      "command": "PathCopyUnc"
+    },
+    {
+      "seq": "y e",
+      "command": "PathCopyExt"
+    },
+    {
+      "seq": "y f",
+      "command": "CmdCopy"
+    },
+    {
+      "seq": "y n",
+      "command": "PathCopyName"
+    },
+    {
+      "seq": "y p",
+      "command": "PathCopy"
+    },
+    {
+      "seq": "y t",
+      "command": "PathCopyTab"
+    },
+    {
+      "seq": "b a",
+      "command": "bmk.add.current"
+    },
+    {
+      "seq": "b d",
+      "command": "bmk.dedupe"
+    },
+    {
+      "seq": "b f",
+      "command": "bmk.focus"
+    },
+    {
+      "seq": "b g",
+      "command": "bmk.toggle"
+    },
+    {
+      "seq": "b h",
+      "command": "bmk.hide"
+    },
+    {
+      "seq": "b l",
+      "command": "bmk.list"
+    },
+    {
+      "seq": "b n",
+      "command": "bmk.newfolder"
+    },
+    {
+      "seq": "b r",
+      "command": "bmk.reload"
+    },
+    {
+      "seq": "b s",
+      "command": "bmk.sort"
+    },
+    {
+      "seq": "b t",
+      "command": "bmk.add.tabs"
+    },
+    {
+      "seq": "b u",
+      "command": "bmk.undo"
+    },
+    {
+      "seq": "b w",
+      "command": "bmk.show"
+    },
+    {
+      "seq": "b x",
+      "command": "bmk.clear"
+    },
+    {
+      "seq": "b y",
+      "command": "bmk.add.selection"
+    },
+    {
+      "seq": "c l",
+      "command": "config.list"
+    },
+    {
+      "seq": "d b",
+      "command": "dev.build"
+    },
+    {
+      "seq": "d d",
+      "command": "dev.diff"
+    },
+    {
+      "seq": "d l",
+      "command": "dev.archive.list"
+    },
+    {
+      "seq": "d s",
+      "command": "dev.snapshot"
+    },
+    {
+      "seq": "d t",
+      "command": "dev.test"
+    },
+    {
+      "seq": "e a",
+      "command": "ext.terminal.admin"
+    },
+    {
+      "seq": "f 1",
+      "command": "fs.move"
+    },
+    {
+      "seq": "f 2",
+      "command": "file.focus.bottom"
+    },
+    {
+      "seq": "f 3",
+      "command": "fs.open"
+    },
+    {
+      "seq": "f 4",
+      "command": "fs.open.tab"
+    },
+    {
+      "seq": "f 5",
+      "command": "fs.open.window"
+    },
+    {
+      "seq": "f 6",
+      "command": "fs.copy.toclip"
+    },
+    {
+      "seq": "f 7",
+      "command": "fs.cut.toclip"
+    },
+    {
+      "seq": "f 8",
+      "command": "fs.properties"
+    },
+    {
+      "seq": "f a",
+      "command": "file.select.all"
+    },
+    {
+      "seq": "f b",
+      "command": "file.open"
+    },
+    {
+      "seq": "f d",
+      "command": "file.delete"
+    },
+    {
+      "seq": "f e",
+      "command": "file.refresh"
+    },
+    {
+      "seq": "f f",
+      "command": "file.new.folder"
+    },
+    {
+      "seq": "f g",
+      "command": "file.select.pattern"
+    },
+    {
+      "seq": "f h",
+      "command": "fs.rename"
+    },
+    {
+      "seq": "f i",
+      "command": "file.open.window"
+    },
+    {
+      "seq": "f j",
+      "command": "fs.delete"
+    },
+    {
+      "seq": "f k",
+      "command": "file.copy.to"
+    },
+    {
+      "seq": "f l",
+      "command": "file.select.folders"
+    },
+    {
+      "seq": "f m",
+      "command": "file.move.to"
+    },
+    {
+      "seq": "f n",
+      "command": "file.open.tab"
+    },
+    {
+      "seq": "f o",
+      "command": "file.properties"
+    },
+    {
+      "seq": "f p",
+      "command": "file.paste"
+    },
+    {
+      "seq": "f q",
+      "command": "fs.copy"
+    },
+    {
+      "seq": "f r",
+      "command": "file.rename"
+    },
+    {
+      "seq": "f s",
+      "command": "file.select.files"
+    },
+    {
+      "seq": "f t",
+      "command": "file.new.text"
+    },
+    {
+      "seq": "f u",
+      "command": "file.cut"
+    },
+    {
+      "seq": "f v",
+      "command": "file.select.invert"
+    },
+    {
+      "seq": "f w",
+      "command": "file.open.with"
+    },
+    {
+      "seq": "f x",
+      "command": "file.delete.permanent"
+    },
+    {
+      "seq": "f y",
+      "command": "file.select.type"
+    },
+    {
+      "seq": "f z",
+      "command": "file.undo"
+    },
+    {
+      "seq": "g 0",
+      "command": "go.desktop"
+    },
+    {
+      "seq": "g a",
+      "command": "go.documents"
+    },
+    {
+      "seq": "g j",
+      "command": "go.thispc"
+    },
+    {
+      "seq": "n b",
+      "command": "nav.back"
+    },
+    {
+      "seq": "n e",
+      "command": "nav.recent.list"
+    },
+    {
+      "seq": "n h",
+      "command": "nav.home"
+    },
+    {
+      "seq": "n l",
+      "command": "nav.history.list"
+    },
+    {
+      "seq": "n r",
+      "command": "nav.refresh"
+    },
+    {
+      "seq": "n v",
+      "command": "nav.viewmenu"
+    },
+    {
+      "seq": "n x",
+      "command": "nav.history.clear"
+    },
+    {
+      "seq": "p c",
+      "command": "clipboard.copy"
+    },
+    {
+      "seq": "p d",
+      "command": "path.copy.dir"
+    },
+    {
+      "seq": "q f",
+      "command": "win.focus.search"
+    },
+    {
+      "seq": "q h",
+      "command": "search.history.list"
+    },
+    {
+      "seq": "q l",
+      "command": "search.scope.list"
+    },
+    {
+      "seq": "q x",
+      "command": "search.history.clear"
+    },
+    {
+      "seq": "s d",
+      "command": "session.delete"
+    },
+    {
+      "seq": "s l",
+      "command": "session.list"
+    },
+    {
+      "seq": "s m",
+      "command": "session.named.list"
+    },
+    {
+      "seq": "s r",
+      "command": "session.restore"
+    },
+    {
+      "seq": "s s",
+      "command": "session.save"
+    },
+    {
+      "seq": "t b",
+      "command": "tab.lock"
+    },
+    {
+      "seq": "t c",
+      "command": "tab.close"
+    },
+    {
+      "seq": "t d",
+      "command": "tab.copy.title"
+    },
+    {
+      "seq": "t e",
+      "command": "tab.move.last"
+    },
+    {
+      "seq": "t f",
+      "command": "tab.move.first"
+    },
+    {
+      "seq": "t h",
+      "command": "tab.move.left"
+    },
+    {
+      "seq": "t i",
+      "command": "tab.pin"
+    },
+    {
+      "seq": "t j",
+      "command": "tab.move.right"
+    },
+    {
+      "seq": "t k",
+      "command": "tab.clone"
+    },
+    {
+      "seq": "t l",
+      "command": "tab.closed.list"
+    },
+    {
+      "seq": "t m",
+      "command": "tab.move.window"
+    },
+    {
+      "seq": "t p",
+      "command": "tab.reopen"
+    },
+    {
+      "seq": "t s",
+      "command": "tab.switcher"
+    },
+    {
+      "seq": "t u",
+      "command": "tab.close.duplicates"
+    },
+    {
+      "seq": "t v",
+      "command": "tab.cycle.next"
+    },
+    {
+      "seq": "t w",
+      "command": "tab.cycle.prev"
+    },
+    {
+      "seq": "t x",
+      "command": "tab.next"
+    },
+    {
+      "seq": "t y",
+      "command": "tab.prev"
+    },
+    {
+      "seq": "v a",
+      "command": "view.toggle.system"
+    },
+    {
+      "seq": "v c",
+      "command": "view.cycle.hidden"
+    },
+    {
+      "seq": "v e",
+      "command": "view.toggle.extensions"
+    },
+    {
+      "seq": "v f",
+      "command": "view.zoom.choose"
+    },
+    {
+      "seq": "v h",
+      "command": "view.toggle.hidden"
+    },
+    {
+      "seq": "v i",
+      "command": "view.prev"
+    },
+    {
+      "seq": "v j",
+      "command": "view.dualpane.toggle"
+    },
+    {
+      "seq": "v k",
+      "command": "view.columns.choose"
+    },
+    {
+      "seq": "v l",
+      "command": "view.columns.list"
+    },
+    {
+      "seq": "v n",
+      "command": "view.toggle.nav"
+    },
+    {
+      "seq": "v p",
+      "command": "view.props.list"
+    },
+    {
+      "seq": "v q",
+      "command": "view.pane.next"
+    },
+    {
+      "seq": "v t",
+      "command": "nav.tree.expand.all"
+    },
+    {
+      "seq": "v v",
+      "command": "view.toggle.preview"
+    },
+    {
+      "seq": "v x",
+      "command": "view.next"
+    },
+    {
+      "seq": "w a",
+      "command": "win.focus.address"
+    },
+    {
+      "seq": "w c",
+      "command": "win.center"
+    },
+    {
+      "seq": "w d",
+      "command": "win.cascade"
+    },
+    {
+      "seq": "w e",
+      "command": "win.preferences"
+    },
+    {
+      "seq": "w i",
+      "command": "win.minimize"
+    },
+    {
+      "seq": "w l",
+      "command": "win.list"
+    },
+    {
+      "seq": "w m",
+      "command": "win.mapdrive"
+    },
+    {
+      "seq": "w n",
+      "command": "win.new"
+    },
+    {
+      "seq": "w o",
+      "command": "win.folderoptions"
+    },
+    {
+      "seq": "w q",
+      "command": "win.quit"
+    },
+    {
+      "seq": "w r",
+      "command": "win.restore"
+    },
+    {
+      "seq": "w s",
+      "command": "win.focus.search"
+    },
+    {
+      "seq": "w t",
+      "command": "win.topmost"
+    },
+    {
+      "seq": "w u",
+      "command": "win.unmapdrive"
+    },
+    {
+      "seq": "w v",
+      "command": "win.activate"
+    },
+    {
+      "seq": "w x",
+      "command": "win.maximize"
+    },
+    {
+      "seq": "w y",
+      "command": "win.tile"
+    },
+    {
+      "seq": "z b",
+      "command": "tool.job.list"
+    },
+    {
+      "seq": "z d",
+      "command": "tool.dupfinder"
+    },
+    {
+      "seq": "z h",
+      "command": "tool.hash"
+    },
+    {
+      "seq": "z l",
+      "command": "tool.list"
+    },
+    {
+      "seq": "z t",
+      "command": "tool.topn"
+    },
+    {
+      "seq": "z u",
+      "command": "tool.diskusage"
+    }
+  ]
+}
