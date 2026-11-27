@@ -212,7 +212,6 @@ bool Config::Save() {
         return false;
     }
     json::Value root = json::Value::MakeObject();
-    root.Set(L"version", json::Value::MakeInt(1));
     root.Set(L"tab", json::Value::MakeBool(s_.showTab));
     root.Set(L"nav", json::Value::MakeBool(s_.showNav));
     root.Set(L"bookmark", json::Value::MakeBool(s_.showBookmark));

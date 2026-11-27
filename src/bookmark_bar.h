@@ -1,6 +1,6 @@
 // 自绘书签栏：图标 + 名称 + 分类下拉 + 溢出 » + 右键菜单 + 拖入文件夹添加。
 //
-// 数据来自 BookmarkStore（%APPDATA%\ExBar\bookmarks.html，与 mod 共用）；
+// 数据来自 BookmarkStore（便携模式：<exe>\data\bookmarks.html，不再与 mod 共用）；
 // 本类只读展示 + 发导航/命令，增删改由 App 的 Bmk* 命令完成。
 #pragma once
 #include <string>

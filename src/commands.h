@@ -95,14 +95,6 @@ struct CommandDef {
     // 客户端于是知道"这条命令的成败信号不可回读验证"，
     // 而不会把 ok=true 当成"效果确实达成"。
     const char* assertionExempt = nullptr;
-
-
-    // 旧字段的兼容视图：把 effects 映射回三档。仅用于既有代码/AI 白名单的
-    // 粗粒度判断，新代码请直接读 effects。
-    Risk LegacyRisk() const {
-        if (effects.destructive) return Risk::Danger;
-        return effects.readOnly ? Risk::Read : Risk::Write;
-    }
 };
 
 const std::vector<CommandDef>& CommandTable();

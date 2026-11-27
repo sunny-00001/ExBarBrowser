@@ -1,5 +1,32 @@
 ## [Unreleased]
 
+### 清理：旧配置与兼容代码残留（2026-11-27）
+
+排查"是否还有旧配置文件与兼容性代码残留"后清掉四项。判据都是"零调用/零读取"，
+不是"看起来像兼容"：
+
+- **删 `CommandDef::LegacyRisk()`**（`src/commands.h`）：全库零调用。它是
+  `Effects` 三分量落地前"三档 Risk"的兼容视图，现在风险名统一走
+  `ai::RiskName(effects)`，这个映射函数只剩误导——它把 `effects` 压回三档，
+  丢掉了 `external` 那一维。`enum class Risk` 本身保留：它是协议层的对外
+  词汇（`ai_api.h` 的注释与 `config.h` 的 `aiAllowDanger` 都按它说事）。
+- **删 `settings.json` 的 `"version": 1`**（`src/config_io.cpp`）：只写不读。
+  全库没有任何地方读这个键（`eval-surface.json` 的同名键是另一份文件的
+  格式版本，无关）。留一个"看起来像有版本协商"的字段比没有更糟——
+  它会让下一个改格式的人以为可以靠它做兼容分支。
+- **修 `bookmark_bar.h` 的过时注释**：原写"`%APPDATA%\ExBar\bookmarks.html`，
+  与 mod 共用"，与实现完全相反（实为 `<exe>\data\bookmarks.html`，且刻意
+  不与 mod 共用）。这类注释会把下一个人引到错误路径上排查。
+- **修 `docs/ROADMAP.md` 的未兑现承诺**：原写"首次运行若检测到旧的
+  `%APPDATA%\ExBar` 里有本工程的文件，会一次性拷贝过来"，代码里没有任何
+  迁移逻辑（全库只有 `nav_pane_root_watch.cpp` 读 RoamingAppData 做别的事）。
+  改为如实写"不做旧目录迁移"，并说明理由：那个目录属于 ExBar mod。
+
+**有意保留（不是残留）**：废弃 `CmdId`（规则 C1 强制保留）、
+`legacyName` / `AliasOf` / `InvokeLegacy`（规则 C2 旧名永不删）、
+`audit.log` 文本镜像、`ai-pipe.<pid>.txt`（跨进程投递的约定文件名）、
+`backup/` 与 `*.opus.bak`（gitignore 的本地资产）。
+
 ### 调整：快捷键管理器 搜索框入工具栏 / 行高统一 28 / 序列键独立成表（2026-11-27）
 
 - **搜索框搬到工具栏右端**：原占中栏顶部一整行（~34px）只放一个输入框。
