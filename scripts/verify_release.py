@@ -44,6 +44,8 @@ REQUIRED = (
     "aichat/service/config.js",
     "aichat/ui/index.html",
     "aichat/ui/app.js",
+    "aichat/node/node.exe",       # 随包 Node，新电脑无需另装
+    "aichat/node/LICENSE.txt",
     "RELEASE-MANIFEST.json",
     "START-HERE.txt",
     "data/README.md",

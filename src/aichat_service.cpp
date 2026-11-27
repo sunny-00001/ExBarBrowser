@@ -76,15 +76,23 @@ unsigned PickFreePort() {
     return port;
 }
 
-// 从注册表/常见位置找 node.exe。找不到就用 PATH 上的 "node"。
-std::wstring FindNode() {
-    // 1) 显式覆盖（测试/便携部署用）
+// 找 node.exe，优先级：随包自带 > EXBAR_NODE > PATH。
+// 随包那份由 package_release.py 放在 <exeDir>/aichat/node/node.exe；
+// 这样新电脑不必另装 Node.js，AI 面板就能启动服务。
+std::wstring FindNode(const std::wstring& exeDir) {
+    if (!exeDir.empty()) {
+        const std::wstring bundled = tf::Join(exeDir, L"aichat\\node\\node.exe");
+        const DWORD attr = GetFileAttributesW(tf::ToExtended(bundled).c_str());
+        if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            return bundled;
+        }
+    }
+    // 显式覆盖（测试/便携部署用）
     wchar_t buf[MAX_PATH * 2] = L"";
     if (GetEnvironmentVariableW(L"EXBAR_NODE", buf, _countof(buf)) > 0 && buf[0]) {
         return buf;
     }
-    // 2) 项目自带（aichat/ 下的 node 目录，若有）
-    // 3) 交给 CreateProcess 按 PATH 解析 —— 传 L"node.exe" 即可。
+    // 交给 CreateProcess 按 PATH 解析 —— 传 L"node.exe" 即可。
     return L"node.exe";
 }
 
@@ -197,7 +205,7 @@ bool Start(const std::wstring& scriptPath, const std::wstring& exeDir,
         return false;
     }
 
-    const std::wstring node = FindNode();
+    const std::wstring node = FindNode(exeDir);
     const std::wstring cmd = QuoteArg(node) + L" " + QuoteArg(scriptPath);
 
     // 环境变量：把"该连哪个窗口"直接告诉服务（见 aichat_service.h 的说明）。

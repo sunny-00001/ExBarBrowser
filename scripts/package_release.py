@@ -7,7 +7,8 @@ ExBarBrowser 发布打包器（可移植版）
 
 为什么要单独做这一步：
   主程序不是完全零依赖 —— AI 面板运行时需要 WebView2Loader.dll（与 exe 同目录）、
-  aichat/ 下的 Node 服务与 Web UI；而 data/ 是首次启动自动生成的**用户私有配置**，
+  aichat/ 下的 Node 服务与 Web UI，以及随包自带的 node.exe（aichat/node/，新电脑
+  无需另装 Node.js）；而 data/ 是首次启动自动生成的**用户私有配置**，
   state/、logs/、cache/、runtime/ 则分别是状态、日志、缓存与运行期文件。
   绝不能把开发机上的 settings.json / 书签 / API key 打进去。
   发布一个光秃秃的 exe 会把这些约束全部丢给用户，正是这次要修的问题。
@@ -25,6 +26,7 @@ ExBarBrowser 发布打包器（可移植版）
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -39,6 +41,34 @@ DEFAULT_EXE = ROOT / "ExBarBrowser.release.exe"
 LOADER_DLL = ROOT / "WebView2Loader.dll"
 AICHAT = ROOT / "aichat"
 OUT_DIR = ROOT / "dist"
+
+# node.exe 随包分发的许可声明（Node.js 核心为 MIT；第三方组件见官方完整声明）。
+NODE_LICENSE = """Node.js is licensed under the MIT License.
+
+Copyright (c) Node.js contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+This binary bundles third-party components (V8, libuv, c-ares, OpenSSL, etc.)
+under their own licenses. The complete license notice is published at:
+https://nodejs.org/en/about/licenses/
+"""
 
 # 只复制 AI 面板真正会跑到的文件：测试、临时脚本一律不进包。
 # 配置模板已取消 —— aichat.json / models.json / mcp.json 由服务首次启动生成。
@@ -138,8 +168,25 @@ def copy_file(src: Path, dst: Path) -> None:
     shutil.copy2(src, dst)
 
 
+def find_node_exe() -> Path:
+    """定位打包机上的 node.exe：EXBAR_NODE 显式覆盖优先，其次 PATH。"""
+    override = os.environ.get("EXBAR_NODE", "").strip()
+    if override:
+        p = Path(override)
+        if not p.is_file():
+            raise RuntimeError(f"EXBAR_NODE 指向的 node.exe 不存在：{p}")
+        return p.resolve()
+    found = shutil.which("node")
+    if not found:
+        raise RuntimeError(
+            "找不到 node.exe：请先安装 Node.js >=18 并加入 PATH，"
+            "或设置 EXBAR_NODE 指向 node.exe"
+        )
+    return Path(found).resolve()
+
+
 def stage_aichat(stage: Path) -> None:
-    """AI 面板运行时：Node 服务 + Web UI（不携带任何示例配置）。"""
+    """AI 面板运行时：Node 服务 + Web UI + 随包 node.exe（不携带示例配置）。"""
     service_src = AICHAT / "service"
     service_dst = stage / "aichat" / "service"
     if not service_src.is_dir():
@@ -160,6 +207,13 @@ def stage_aichat(stage: Path) -> None:
     copy_file(AICHAT / "README.md", stage / "aichat" / "README.md")
     copy_file(AICHAT / "package.json", stage / "aichat" / "package.json")
 
+    # 随包自带 Node 运行时：新电脑不必另装 Node.js，AI 面板开箱即用。
+    # C++ 侧 FindNode() 优先用这一份；EXBAR_NODE 仍可显式覆盖。
+    node_src = find_node_exe()
+    copy_file(node_src, stage / "aichat" / "node" / "node.exe")
+    write_text(stage / "aichat" / "node" / "LICENSE.txt", NODE_LICENSE)
+    print(f"[打包] 随包 Node：{node_src}（{node_src.stat().st_size:,} bytes）")
+
 
 def assert_no_secrets(stage: Path) -> None:
     """发布包里不能出现真实密钥或凭据 token。
@@ -169,6 +223,8 @@ def assert_no_secrets(stage: Path) -> None:
     """
     for p in sorted(stage.rglob("*")):
         if not p.is_file():
+            continue
+        if p.suffix.lower() in (".exe", ".dll"):   # 二进制跳过，不把 91MB 的 node.exe 读成文本
             continue
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
@@ -210,7 +266,7 @@ def build_manifest(stage: Path, version: str, epoch: int, created_utc: str) -> d
         "runtime_requirements": {
             "os": "Windows 10 1809+ / Windows 11",
             "webview2": "WebView2 Runtime（Evergreen）；仅 AI 面板需要",
-            "node": ">=18，PATH 或 EXBAR_NODE；仅 AI 面板需要",
+            "node": "随包自带（aichat/node/node.exe，>=18）；新电脑无需另装，EXBAR_NODE 可覆盖",
         },
         "notes": [
             "data/keymap.json 与 data/mouse.json 是随包分发的完整出厂规则表，可直接编辑，文件有效时程序完全接管（删一条即禁用）。",
@@ -218,6 +274,7 @@ def build_manifest(stage: Path, version: str, epoch: int, created_utc: str) -> d
             "state/ logs/ cache/ runtime/ 首次启动自动生成，不携带开发者配置、书签或密钥。",
             "aichat.json / models.json / mcp.json 由 AI 服务首次启动写入 data/。",
             "WebView2Loader.dll 必须与 ExBarBrowser.exe 同目录。",
+            "aichat/node/node.exe 为随包 Node 运行时（MIT，见同目录 LICENSE.txt），新电脑无需另装 Node.js。",
             "exe 的 PE 时间戳已归一化为 commit time，便于复核构件来源。",
         ],
         "files": files,
@@ -300,7 +357,8 @@ profile 根下按职责分层：
   - Windows 10 1809+ / Windows 11
   - WebView2 Runtime（Evergreen）：仅 AI 面板需要。WebView2Loader.dll 已随包提供，
     但运行时本身由系统安装；没有 Runtime 时主浏览器仍可用，只是 AI 面板打不开。
-  - Node.js >= 18：仅 AI 面板需要。可在 PATH 中，或用环境变量 EXBAR_NODE 指向 node.exe。
+  - Node.js：已随包放在 aichat/node/node.exe，新电脑无需另装。
+    如需改用系统 Node，设环境变量 EXBAR_NODE 指向 node.exe 再启动程序。
 
 【首次使用 AI 面板】
   1. 首次启动后 AI 服务会在 data/ 下自动生成 aichat.json（行为配置）、
@@ -312,7 +370,7 @@ profile 根下按职责分层：
 【目录说明】
   ExBarBrowser.exe      主程序（资源里已嵌入版本号 {version}）
   WebView2Loader.dll    WebView2 加载器，必须与 exe 同目录
-  aichat/               AI 面板的 Node 服务与 Web UI（无第三方 npm 依赖）
+  aichat/               AI 面板的 Node 服务、Web UI 与随包 node.exe（无第三方 npm 依赖）
   data/                 配置（随包带 keymap.json / mouse.json；其余首次启动生成，含模型与密钥）
   state/                会话/历史/标签/窗口状态（首次启动生成）
   logs/                 审计与事件日志（首次启动生成）
