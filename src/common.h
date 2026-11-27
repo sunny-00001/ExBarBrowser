@@ -75,6 +75,7 @@ enum : UINT {
     WM_APP_TAB_NEW,
     WM_APP_TAB_MENU,     // wParam=index, lParam=screen POINT 打包（LOWORD x / HIWORD y 不可靠，用 lParam 指针）
     WM_APP_TAB_MOVED,    // wParam=from, lParam=to
+    WM_APP_TAB_TEAROFF,  // wParam=index：拖出栏体松手 → 移到新窗口（tab.move.window）
     WM_APP_CHROME_MENU,  // 通用：wParam=区域 id，lParam=POINT*
     WM_APP_STATUS_MENU,
     WM_APP_BMK_CHANGED,

@@ -63,10 +63,10 @@
 已做对（无需动）：WM_CAPTURECHANGED 拖拽复位、Esc 取消拖拽、SetCapture 前的 4dp 死区、WM_CONTEXTMENU 键盘路径、双缓冲经 ui::PaintBuffered、DPI 单一 Metrics 派生、纯函数（TabDropLineX/TabHitInView/TabNewButtonX/TabMouseTarget）可单测。
 
 差距（按优先级）：
-1. **拖拽让位无动画**：Chromium 用 ideal bounds 起止快照 + QPC 插值（ease-out、时长恒定）；本项目是跳变。改法：记录 start/target 两份布局，WM_TIMER 每帧 lerp + `InvalidateRect(FALSE)`。
-2. **拖出成窗缺磁吸判定**：垂直脱离磁吸（Chromium `kVerticalDetachMagnetism`≈15dp）+ 拖出透明度渐变反馈；`tab.move.window` 已有命令底座，只缺拖拽路径。
-3. **锁后导航语义**（文件管理器特有，Explorer++/Opus 是规格来源）：锁路径标签内点子目录 → 询问开新标签。
-4. **极窄窗口兜底**：minW 之下建议收纳下拉（WT 式）或保证选中标签始终可见（EnsureVisible 已有，激活变化路径需覆盖）。
+1. ~~**拖拽让位无动画**~~ → **已落地（2026-11-27）**：Chromium 式 ideal bounds 起止快照 + 三次 ease-out（`TabAnimDx`，纯函数可单测）+ `kAnimTimer` 每帧重绘，时长 `tabAnimMs` 当帧读。实现见 `src/tab_strip_anim.cpp`；启动点在 `SetTabs`（按 `TabStripItem::id` 配对旧左缘，顺序真变了才起表）。
+2. ~~**拖出成窗缺磁吸判定**~~ → **已落地（2026-11-27）**：`TabIsTearOff(dy, height, threshold)` 纯函数实现 Chromium `kVerticalDetachMagnetism` 语义（垂直越栏底 + `tabTearOffDy` 才算脱离；阈值 0 = 关闭磁吸）。拖拽路径经 `WM_APP_TAB_TEAROFF` 转投 `tab.move.window`，与菜单/热键同一实现；脱离期间整条换成「松开：移到新窗口」提示。
+3. **锁后导航语义**（文件管理器特有，Explorer++/Opus 是规格来源）：锁路径标签内点子目录 → 询问开新标签。**未做**。
+4. **极窄窗口兜底**：minW 之下建议收纳下拉（WT 式）或保证选中标签始终可见（EnsureVisible 已有并留 margin，激活变化路径已覆盖）。**部分**：EnsureVisible 已修，收纳下拉未做。
 
 ## 4. 修复优先级（复审后不变，附影响面修正）
 
@@ -76,7 +76,7 @@
 | 第二 | M3（两三行）→ M2（夹取后重算 rects） | 快速连续关闭下的错误命中（用户可感知）与一帧错位 |
 | 第三 | M1 定夺语义（建议改注释就 Chrome 语义，不动实现免破单测） | 契约矛盾会传染给后续维护者 |
 | 第四 | L2/L9/L1 等卫生项 + L6/L7/L8（UIA 精确性） | 择机清 |
-| 第五 | 功能差距（拖拽动画 → 拖出成窗 → 锁导航语义 → 切换器） | 新特性，见 §3.2 |
+| 第五 | 功能差距（拖拽动画 ✅ → 拖出成窗 ✅ → 锁导航语义 ⬜ → 切换器 ✅） | 新特性，见 §3.2；两项已落地（2026-11-27），锁导航待做 |
 
 ## 5. 证据链
 
@@ -128,3 +128,73 @@
 > 教训（写给后续批次）：**修复完成后必须立即提交**，多会话并行时未提交的工作区
 > 改动随时会被对方会话的 `git checkout`/大提交吞掉。本文件的 §1 总表在二次恢复
 > 后不再反映当前状态 —— 当前状态以本节与 CHANGELOG 为准。
+
+## 7. 第五梯队落地记录（2026-11-27）
+
+### 7.1 落地前的真实状态（关键发现）
+
+并行会话已写好**绘制层与动画算法**（`tab_strip_anim.cpp` 的 `StartReorderAnim` /
+`AnimDx` / `DrawDragGhost`，`tab_strip_paint.cpp` 的 tear-off 提示条），但**输入层
+完全没接线**，表现为三个"画了但永远不触发"的死代码：
+
+| 成员/函数 | 落地前状态 |
+|---|---|
+| `dragMouse_` / `dragGrabDx_` | 只被 `DrawDragGhost` 读，**从未赋值** → 浮层恒在 (0,0) |
+| `tearOff_` | 只被 paint 读，**从未赋值** → 提示条永不出现 |
+| `clientH_` | 只声明，**从未赋值** → 无法判"栏底在哪" |
+| `StartReorderAnim` | **零调用点** → 让位动画永不启动 |
+| `kAnimTimer` | 无 `WM_TIMER` 分支 → 即使起表也不会推进/收尾 |
+| `TabStripItem::id` | 字段已加但 `SetTabs` **没赋值** → 动画按 id 配对会全部落空 |
+
+结论：这批功能的"下半截"（算法+绘制）在并行会话里，"上半截"（输入接线）是空的。
+本次补的就是上半截。
+
+### 7.2 接线内容
+
+**拖拽浮层坐标（`tab_strip_input.cpp` / `tab_strip.cpp`）**
+- `WM_LBUTTONDOWN` 命中标签时定格 `dragGrabDx_ = x - tabRects_[tab].left` 与
+  `dragMouse_`。必须在按下时算：拖到边缘自动滚动会改 `tabRects_`，绘制时现算会跳位。
+- `WM_MOUSEMOVE` 拖拽分支每帧更新 `dragMouse_`（自动滚动期间也跟手）。
+
+**tear-off 磁吸判定（新增纯函数 `TabIsTearOff`）**
+- 语义取 Chromium `kVerticalDetachMagnetism`：**垂直**越栏底 + 阈值才算脱离，
+  横向挪出去不算。理由写进函数注释：拖拽重排时手会上下抖，按"出栏即脱离"判会让
+  想换位置的人频繁误触发"移到新窗口"（那条路径会关掉源标签，代价远大于误排序）。
+- `threshold <= 0` = 关闭磁吸（任何出栏都算脱离，含上方）；`height <= 0`（未布局）
+  一律不脱离。
+- `Layout()` 设 `clientH_`（拖拽期间不再每帧 `GetClientRect`）。
+
+**tear-off 提交路径**
+- 新增 `WM_APP_TAB_TEAROFF`（wParam=index）；`app_wnd.cpp` 转投
+  `CmdId::TabMoveNewWindow`（`Actor::Ui()`）。与菜单项、热键 `t m` 共用同一份实现
+  与同一条审计留痕 —— 不直调 `App` 方法。
+- 判定用 `tearOff_` 而非松手瞬间现算坐标：用户看到的提示条是"松开：移到新窗口"，
+  行为必须与提示一致（松手时光标可能已滑回栏内）。
+- `CancelDrag` 清 `tearOff_`，避免取消后残留"移到新窗口"提示。
+
+**让位动画启动**
+- `SetTabs` 在覆盖 `items_`/`tabRects_` **之前**取旧快照（id 序 + id→left），
+  仅在"规模没变"时取（增删各有既有路径，rapid close 还要冻结宽度）。
+- `Layout()` 之后调 `StartReorderAnim(oldOrder, oldLeft)`；它内部再核对 id 顺序
+  真的变了才起表（切标签/改色/改名都走 SetTabs，那些是纯噪声）。
+- `WM_TIMER` 加 `kAnimTimer` 分支：到时长 `StopReorderAnim()`，否则
+  `InvalidateRect(FALSE)` 推下一帧。结束判定放在定时器而非绘制里 —— 窗口被遮挡时
+  Paint 不跑，只靠绘制自检会让定时器永远活着。
+- `SetTabs` 补 `it.id = ref.id`（并行会话漏填，动画配对的唯一身份键）。
+
+### 7.3 验证
+
+- 新增 12 条 `TabIsTearOff` 断言（栏内/出栏/阈值边界/磁吸关闭/上方/未布局）。
+- `tests/run_all.sh tab`：2/2 PASS。
+- 全量构建 214 TU + 链接通过；`check_commands` 三方一致（243 条）；
+  `check_ai_meta` 全绿；`check_components` 仅剩两项非本批问题
+  （`settings_reg_table.cpp` 826>786 是并行会话的棘轮欠账；评估面重签已提交）。
+- 目视验收待人工：拖拽换位看滑动、拖出栏体看提示条与成窗、设置 `tabTearOffDy=0`
+  看磁吸关闭、`tabAnimMs=0` 看动画关闭。
+
+### 7.4 仍未做（下一批候选）
+
+- **锁后导航语义**：锁路径标签内点子目录 → 询问开新标签（Explorer++/Opus 规格）。
+  需要 `ShellView` 导航前拦截点 + 一个询问弹层，是独立一批的量。
+- **极窄窗口收纳下拉**（WT 式）：`EnsureVisible` 已修（留 margin），但窗口窄到
+  minW 之下时仍只能横向滚动。

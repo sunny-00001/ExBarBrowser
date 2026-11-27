@@ -81,9 +81,23 @@ inline int TabMouseTarget(bool onClose, bool onTab, bool onNew, bool onOverflow)
     return MT_EMPTY;
 }
 
+// 拖拽是否已"脱离"标签栏（tear-off）。**纯函数**，便于单测。
+//
+// 语义来自 Chromium 的 kVerticalDetachMagnetism：垂直方向必须离开栏底超过阈值
+// 才算脱离 —— 横向挪出去不算。理由：拖拽重排时手会不自觉地上下抖，若按
+// "出栏即脱离"判，想换位置的人会频繁误触发"移到新窗口"（那条路径会关掉源标签，
+// 代价比误排序大得多）。
+//
+// dy：鼠标 y 相对标签栏客户区顶部的偏移（可超出，> height 即在栏下方）。
+// height：标签栏客户区高度。threshold：磁吸阈值（0 = 关闭磁吸，任何出栏都算脱离）。
+inline bool TabIsTearOff(int dy, int height, int threshold) {
+    if (height <= 0) return false;              // 还没布局：不判
+    if (threshold <= 0) return dy < 0 || dy >= height;   // 磁吸关闭：出栏即脱离
+    return dy >= height + threshold;            // 磁吸开启：要越过阈值
+}
+
 // 标签右键菜单动作（TabStrip -> App，走 WM_APP_TAB_MENU 的 lParam）
-enum TabMenuAction {
-    kTabMenuNew = 1,
+enum TabMenuAction {    kTabMenuNew = 1,
     kTabMenuSwitcher,   // 打开标签切换器（全局动作，但挂在标签菜单里便于发现）
     kTabMenuClose,
     kTabMenuCloseOther,

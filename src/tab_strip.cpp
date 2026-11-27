@@ -68,6 +68,18 @@ void TabStrip::SetTabs(const std::vector<core::TabRef>& refs, int active, bool c
         PruneIcons(refs);
         iconCacheGrew_ = false;
     }
+    // 让位动画的起点快照：必须在 items_/tabRects_ 被覆盖**之前**取。
+    // 只有"规模没变"才可能是一次重排（增删标签各有既有路径，rapid close 还要
+    // 冻结宽度）；StartReorderAnim 内部还会再核对 id 顺序真的变了才起表。
+    std::vector<int> oldOrder;
+    std::map<int, int> oldLeft;
+    if (!items_.empty() && items_.size() == tabRects_.size()) {
+        oldOrder.reserve(items_.size());
+        for (size_t i = 0; i < items_.size(); ++i) {
+            oldOrder.push_back(items_[i].id);
+            oldLeft[items_[i].id] = static_cast<int>(tabRects_[i].left);
+        }
+    }
     items_.clear();
     items_.reserve(refs.size());
     // 路径集先摊平一次：重复判定是 O(n²) 的两两比较，但 n 是标签数（几十），
@@ -78,6 +90,9 @@ void TabStrip::SetTabs(const std::vector<core::TabRef>& refs, int active, bool c
     for (size_t i = 0; i < refs.size(); ++i) {
         const core::TabRef& ref = refs[i];
         TabStripItem it;
+        // id 是动画与浮层的身份键（见 TabStripItem::id 的说明）：重排后下标全体
+        // 位移，只有 id 能稳定配对"这一格原来在哪"。
+        it.id = ref.id;
         // 显示名唯一口径在 core::DisplayTitle（改名 > Shell 名 > 路径末级）。
         it.title = core::DisplayTitle(ref);
         if (it.title.empty()) it.title = L"新标签";
@@ -100,6 +115,9 @@ void TabStrip::SetTabs(const std::vector<core::TabRef>& refs, int active, bool c
     // 不重置 scrollX_：切标签/新建标签时保持横向位置，避免溢出条每次跳回最左
     Layout();
     EnsureVisible(active_);
+    // 让位动画：此刻 tabRects_ 已是最终位置，oldLeft 是重排前的位置，
+    // StartReorderAnim 按 id 配对算每格要"从哪滑过来"。顺序没变时它自己返回。
+    StartReorderAnim(oldOrder, oldLeft);
     // hover 重建必须在 Layout() **之后**：UpdateHover 的命中测试读 tabRects_，
     // 先重建等于拿旧矩形命中。也不按下标夹取 —— 布局重算后矩形全体位移，
     // 旧 hoverIndex_ 指的可能是另一个标签；按当前光标重新命中才是对的
@@ -154,6 +172,7 @@ void TabStrip::CancelDrag(HWND h, bool releaseCapture) {
     dragIdx_ = -1;
     dragging_ = false;
     dropIdx_ = -1;
+    tearOff_ = false;   // 取消即退出脱离态：否则下次进栏会带着"移到新窗口"的提示
     if (releaseCapture && GetCapture() == h) ReleaseCapture();
     if (h) InvalidateRect(h, nullptr, FALSE);
 }

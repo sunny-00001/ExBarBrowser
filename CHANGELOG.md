@@ -1,5 +1,34 @@
 ## [Unreleased]
 
+### 功能：标签栏拖拽让位动画与拖出成窗（复审第五梯队，2026-11-27）
+
+复审报告 §3.2 的两项功能差距落地。关键发现：绘制层与动画算法（`tab_strip_anim.cpp`）
+已在上一批写好，但**输入层完全没接线** —— `dragMouse_`/`dragGrabDx_`/`tearOff_`/
+`clientH_` 四个成员从未赋值、`StartReorderAnim` 零调用点、`kAnimTimer` 无 WM_TIMER
+分支、`TabStripItem::id` 加了字段却没赋值。本批补的就是这半截。
+
+- **让位动画**（Chromium ideal bounds 模式）：`SetTabs` 在覆盖几何前取旧快照
+  （按 `TabStripItem::id` 配对，不用下标 —— 重排后下标全体位移会配错格），
+  `Layout()` 后启动；三次 ease-out 缓动 + 每帧 `InvalidateRect(FALSE)`，
+  时长 `tabAnimMs` 当帧读。顺序没变时自动不起表（切标签/改色/改名都走 SetTabs）。
+  结束判定放在 `WM_TIMER` 而非绘制里 —— 窗口被遮挡时 Paint 不跑，只靠绘制自检
+  会让定时器永远活着。
+- **拖出成窗磁吸**：新增纯函数 `TabIsTearOff(dy, height, threshold)`，语义取
+  Chromium `kVerticalDetachMagnetism` —— **垂直**越栏底 + `tabTearOffDy` 才算脱离，
+  横向挪出去不算（拖拽重排时手会上下抖，按"出栏即脱离"判会让想换位置的人频繁
+  误触发成窗，而那条路径会关掉源标签）。阈值 0 = 关闭磁吸。
+- **成窗提交路径**：新增 `WM_APP_TAB_TEAROFF`，`app_wnd.cpp` 转投
+  `tab.move.window` 命令（`Actor::Ui()`）—— 与菜单项、热键 `t m` 共用同一实现与
+  同一条审计留痕。判定用 `tearOff_` 而非松手瞬间现算：提示条写着"松开：移到新窗口"，
+  行为必须与提示一致。
+- **拖拽浮层坐标**：`WM_LBUTTONDOWN` 定格 `dragGrabDx_`（自动滚动会改 tabRects_，
+  绘制时现算会让浮层随滚动跳位）；`WM_MOUSEMOVE` 每帧更新 `dragMouse_`。
+- `Layout()` 设 `clientH_`；`CancelDrag` 清 `tearOff_`。
+
+验证：新增 12 条 `TabIsTearOff` 断言；tab 域 2/2 PASS；214 TU 构建通过；
+`check_commands` / `check_ai_meta` 全绿。目视验收（拖拽滑动、提示条、磁吸关闭）
+需人工一次操作。
+
 ### 清理：旧配置与兼容代码残留（2026-11-27）
 
 排查"是否还有旧配置文件与兼容性代码残留"后清掉六项。判据都是"零调用/零读取/

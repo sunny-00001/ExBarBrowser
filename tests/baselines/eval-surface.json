@@ -133,7 +133,7 @@
     "tests/cmd_actor_test.cpp": "fd0eea69b69c48b7eb94f82ca51644869c7b3c3e8108d342c5f53623da2d7540",
     "tests/commands_confirm_test.cpp": "19e04628dd5ca4f784f00b427ee58e808a78ebef9fd360b7340e1a4f7f25a9e4",
     "tests/commands_test.cpp": "d1e595a604142105436436b948873d671ad489821c72d8322755d14339e03803",
-    "tests/config_apply_test.cpp": "f33f656babaf74c83aada962e22b463197835d5793d64d7315caa325edaa1334",
+    "tests/config_apply_test.cpp": "9b0e2350091f7d26b6f133f85bf4df95a25e8a6d91e0767e591ebcc662c7aae0",
     "tests/config_roundtrip_test.cpp": "fb208bce040e2b8bc97753653fd8ea290428a22b6816d6710320efe100229ff8",
     "tests/dev_archive_test.cpp": "2a121f5b67599ae73a1f1ee4c1751cd73ae94d3cb91421678e997787779182b7",
     "tests/dev_diff_test.cpp": "2d2a65f1e0989e2cb4f361dca2a06de8608e153944b3806c243145b6ca34531e",
@@ -183,7 +183,7 @@
     "tests/side_layout_test.cpp": "6e654e6f1bd3820dc3e1035223a1499e1071f8d8a18e13c909c3d0331dcdb885",
     "tests/status_bar_test.cpp": "61b5f7fb557b5a63853af85ba4d9ef82a4ed991b69ae55852f8a3f53d96e21eb",
     "tests/tab_set_test.cpp": "daa57be6df51fd343a630b629891786b821a031bfdf003507e3291f77eac6a40",
-    "tests/tab_strip_rules_test.cpp": "3b4ddcf45950c7e24eaafa73c698bb96ac3851fbc13570c5c989eed883df2d97",
+    "tests/tab_strip_rules_test.cpp": "f8d07d660ce9daf914d88a76d20841217f469819eac693e9296634cdadeb3dd4",
     "tests/test_store.cpp": "7e03dfe146a2391f75f1c053551d718ec1d7823851b04581810fc128a51ede43",
     "tests/theme_mode_test.cpp": "071fb44d2fc40249f7099315f4085059bc27ac4d5242fe208e4244a435d15e95",
     "tests/transfer_undo_test.cpp": "d2d429260d2713a959da72a93c3f7ef15c235a23518079c440c0a96be19b8df1",
@@ -218,8 +218,8 @@
     "tools/probe_toggle.py": "b2a86e569ab57464bbbf6a5aef1754e546a2274153592d152dd699e574c0e5c0",
     "tools/reclaim.py": "def016c0b1f7afbe7611c94cc533863c81cfa355a8adfc264530a38f03f2485c"
   },
-  "generatedAt": "2026-11-27T07:01:12+08:00",
+  "generatedAt": "2026-11-27T08:51:21+08:00",
   "note": "评估面清单：构建器/测试/校验器。改动这些文件后必须重新签发。",
-  "selfSeal": "48486779eaa263dafb32a76a3e700ed0d5419222d598d1eeb16db1cd420e63d1",
+  "selfSeal": "1242e87526e7dd802fade3a58b4429819881eebb506cac2dfdb65d91d7c20153",
   "version": 1
 }

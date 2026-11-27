@@ -118,6 +118,27 @@ int main() {
         Check(monotonic, "10%..90% 区间剩余偏移单调收窄");
     }
 
+    // ---- tear-off 磁吸判定：垂直越过栏底 + 阈值才算脱离 ----
+    // 栏高 26、磁吸 18 → 脱离线在 y=44。
+    {
+        const int h = 26, th = 18;
+        Check(!TabIsTearOff(0, h, th), "栏内顶部：不脱离");
+        Check(!TabIsTearOff(25, h, th), "栏内底部（未出栏）：不脱离");
+        Check(!TabIsTearOff(26, h, th), "刚出栏底：仍算栏内（磁吸拉住）");
+        Check(!TabIsTearOff(43, h, th), "阈值内（43 < 26+18）：仍被磁吸拉住");
+        Check(TabIsTearOff(44, h, th), "恰在阈值上：脱离（>= 即算）");
+        Check(TabIsTearOff(200, h, th), "远远拖到下方：脱离");
+        // 负 dy（拖到栏上方）：磁吸开启时不脱离 —— 横向/上抖不该触发成窗。
+        Check(!TabIsTearOff(-10, h, th), "磁吸开启：拖到栏上方不算脱离（只认下方）");
+        // 磁吸关闭（threshold<=0）：任何出栏都算脱离，上方也算。
+        Check(TabIsTearOff(-1, h, 0), "磁吸关闭：拖到栏上方即脱离");
+        Check(TabIsTearOff(26, h, 0), "磁吸关闭：刚出栏底即脱离");
+        Check(!TabIsTearOff(25, h, 0), "磁吸关闭：栏内仍不脱离");
+        // 未布局（height<=0）：不判，避免拖拽在 Layout 之前误触发成窗。
+        Check(!TabIsTearOff(100, 0, th), "未布局（height=0）：一律不脱离");
+        Check(!TabIsTearOff(100, -5, th), "高度为负：一律不脱离");
+    }
+
     std::printf(g_fail ? "\n有 %d 项失败\n" : "\n全部通过\n", g_fail);
     return g_fail ? 1 : 0;
 }

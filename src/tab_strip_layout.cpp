@@ -37,6 +37,9 @@ void TabStrip::Layout() {
     RECT rc;
     GetClientRect(hwnd_, &rc);
     if (rc.right <= 0 || rc.bottom <= 0) return;
+    // 缓存客户区高度：WM_MOUSEMOVE 判 tear-off 要看"栏底在哪"，
+    // 拖拽期间不能再 GetClientRect（每帧一次系统调用，且拿到的可能已是新尺寸）。
+    clientH_ = rc.bottom;
 
     // 量字走唯一原语（ui::MeasureText 内部选字体并还原）
     HDC dc = GetDC(hwnd_);

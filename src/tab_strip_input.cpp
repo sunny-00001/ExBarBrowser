@@ -5,6 +5,7 @@
 
 #include "tab_uia.h"
 
+#include "config.h"      // tabTearOffDy / tabAnimMs（当帧读，改完即生效）
 #include "ui_draw.h"
 #include "mouse_rules.h"
 
@@ -29,6 +30,24 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
                 SetCapture(h);
             }
             if (dragging_) {
+                // 浮层跟手：坐标每帧更新（自动滚动时也照样跟，视觉上才对）。
+                dragMouse_ = {x, y};
+                // tear-off 判定（Chromium kVerticalDetachMagnetism）：垂直离开栏底
+                // 超过 tabTearOffDy 才算脱离。脱离期间不做插入位置计算 ——
+                // 松手是"移到新窗口"，此时算 dropIdx_ 只会让插入线闪一下。
+                const int dy = y;
+                const bool tear =
+                    TabIsTearOff(dy, clientH_, theme_->S(Config::Get().s().tabTearOffDy));
+                if (tear != tearOff_) {
+                    tearOff_ = tear;
+                    // 脱离瞬间收掉边缘滚动：继续滚会让浮层与目标窗口位置脱节。
+                    if (tear) StopAutoScroll();
+                    InvalidateRect(h, nullptr, FALSE);
+                }
+                if (tearOff_) {
+                    UpdateHover(h, x, y);
+                    return 0;
+                }
                 const int target = DropTargetAt(x, y);
                 if (target != dropIdx_) {
                     dropIdx_ = target;
@@ -79,6 +98,13 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
             dragIdx_ = tab;
             dragStart_ = {x, y};
             dropIdx_ = tab;
+            tearOff_ = false;   // 每次新拖拽重新判：上一轮脱离状态不能残留
+            // 浮层"粘手"偏移：按下时鼠标在被拖标签内的横向位置。
+            // 必须在此刻定格 —— 拖到边缘自动滚动会改 tabRects_，
+            // 绘制时现算会让浮层随滚动跳位。
+            const RECT& grabRc = tabRects_[static_cast<size_t>(tab)];
+            dragGrabDx_ = x - grabRc.left;
+            dragMouse_ = {x, y};
             SetCapture(h);
             // 焦点留在标签栏：作用域为"标签栏"的裸键（Shift+←/→/Home/End）才收得到。
             // App::Activate 只在焦点原本位于视图区时才把焦点搬走。
@@ -99,6 +125,19 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
         CancelDrag(h, false);
         return 0;
     case WM_TIMER:
+        if (w == kAnimTimer) {
+            // 让位动画每帧：时间到就停表收尾，否则持续重绘。
+            // 结束判定放在这里而不是绘制里 —— Paint 可能因其它原因不跑
+            // （窗口被遮挡、最小化），只靠绘制自检会让定时器永远活着。
+            const int durMs = Config::Get().s().tabAnimMs;
+            if (!animating_ || durMs <= 0 ||
+                GetTickCount64() - animStart_ >= static_cast<ULONGLONG>(durMs)) {
+                StopReorderAnim();
+            } else {
+                InvalidateRect(h, nullptr, FALSE);
+            }
+            return 0;
+        }
         if (w == kDragScrollTimer && dragging_ && dragScrollStep_ != 0 && overflow_) {
             // 缓存鼠标 x 没有配对的 y：边缘滚动只改横向位置，y 用拖拽起点即可
             // （DropTargetAt 的 y 只用于 HitTab 判断落在哪一行，标签栏是单行）。
@@ -140,14 +179,23 @@ LRESULT TabStrip::Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
             // （BookmarkBar 早就踩过同一个坑，注释就写在那里。）
             const int from = dragIdx_;
             const int to = dropIdx_;
+            // tear-off：脱离栏体松手 = "移到新窗口"（走命令，与菜单/热键同一实现）。
+            // 判定用 tearOff_ 而不是现算坐标 —— 松手瞬间光标可能已回到栏内，
+            // 但用户看到的提示条还是"松开：移到新窗口"，行为必须与提示一致。
+            const bool tear = tearOff_ && dragging_;
             const bool moved = dragging_ && to >= 0 && to != from;
             StopAutoScroll();   // 拖到边缘滚着松手：先停表，再提交移动
             dragIdx_ = -1;
             dragging_ = false;
             dropIdx_ = -1;
+            tearOff_ = false;
             ReleaseCapture();
-            if (moved) PostMessageW(parent_, WM_APP_TAB_MOVED, static_cast<WPARAM>(from),
-                                    static_cast<LPARAM>(to));
+            if (tear) {
+                PostMessageW(parent_, WM_APP_TAB_TEAROFF, static_cast<WPARAM>(from), 0);
+            } else if (moved) {
+                PostMessageW(parent_, WM_APP_TAB_MOVED, static_cast<WPARAM>(from),
+                             static_cast<LPARAM>(to));
+            }
             InvalidateRect(h, nullptr, FALSE);
             return 0;
         }

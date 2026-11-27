@@ -203,6 +203,17 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             (void)CommandBus::Get().Invoke(CmdId::TabMoveTo, Args::FromJson(a), Actor::Ui());
         }
         return 0;
+    case WM_APP_TAB_TEAROFF:
+        // 拖出栏体松手 = 移到新窗口。转投命令而非直调 App 方法：
+        // 菜单项/热键（t m）/拖拽三条入口因此共用同一份实现与同一条审计留痕。
+        // 命令自己处理锁定/固定/空路径的拒绝并 NoteFailure，这里不再预判。
+        {
+            json::Value a = json::Value::MakeObject();
+            a.Set(L"index", json::Value::MakeInt(static_cast<int>(w)));
+            (void)CommandBus::Get().Invoke(CmdId::TabMoveNewWindow, Args::FromJson(a),
+                                           Actor::Ui());
+        }
+        return 0;
     case WM_APP_TAB_MENU:
         self.ShowTabMenu(static_cast<int>(w), static_cast<int>(l));
         return 0;
