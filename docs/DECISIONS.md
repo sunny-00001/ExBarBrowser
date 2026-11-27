@@ -16,7 +16,7 @@ baseline: 2026-11-22 20:25
 | D2 | 用 `IExplorerBrowser` 托管真实 Shell 视图 | accepted |
 | D3 | chrome 用 GDI 自绘，暂不上 WebView2 | accepted（2026-11-22 收窄 WebView2 适用范围：只承载富文本/流式；同日补第三路"原生富文本"） |
 | D4 | 多实例 + 激活优先（原单实例，2026-11-21 修订） | accepted |
-| D5 | P1 不做配置持久化 | provisional（P2 取代） |
+| D5 | P1 不做配置持久化 | **superseded（2026-11-27，P2-0 便携模式落地）** |
 | D6 | 与 ExBar mod 共享设计令牌与数据格式，不共享代码 | accepted |
 | D7 | 不引入构建系统 | accepted |
 | D8 | 从 Windhawk 主仓独立为自包含仓库 | accepted |
@@ -263,7 +263,7 @@ document/DOM 模型给不了这个保证（进程被杀、渲染线程卡住、�
 
 ---
 
-## D5 P1 不做配置持久化（provisional）
+## D5 P1 不做配置持久化（superseded，2026-11-27 复核）
 
 **背景**：P1 的目标是验证"独立进程 + 托管视图"这条路能走通。配置体系（Schema、原子写、跨进程一致、
 与 mod 共用目录）本身是一个独立工程。
@@ -281,10 +281,9 @@ document/DOM 模型给不了这个保证（进程被杀、渲染线程卡住、�
 - 每次启动从零开始：窗口几何、标签组、视图设置都不记忆。
 - 无法做"用户可改的快捷键"，`HotkeyManager` 与 `Preferences` 被阻塞。
 
-**为什么是 provisional**：P2-0 会用 `%APPDATA%\ExBar` 的同一套 Schema 取代它。
-保留这条记录是为了说明：**"现在没有配置"是刻意的，不是忘了**；同时约束 P2 不要另起一套目录格式。
-
-**复检条件**：P2-0 落地时把本条标记为 `superseded`。
+**取代情况（2026-11-27 复核）**：P2-0 已落地并**没有**照原计划用 `%APPDATA%\ExBar` 的 Schema，
+而是选了便携模式 `<exe>\data`（理由见 `docs/ROADMAP.md` §3.1"现状"：程序目录可整体拷走、
+不与 ExBar mod 共写同一份 bookmarks.html）。本条按当时的"复检条件"标记 `superseded`。
 
 ---
 

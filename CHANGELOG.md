@@ -2,8 +2,8 @@
 
 ### 清理：旧配置与兼容代码残留（2026-11-27）
 
-排查"是否还有旧配置文件与兼容性代码残留"后清掉四项。判据都是"零调用/零读取"，
-不是"看起来像兼容"：
+排查"是否还有旧配置文件与兼容性代码残留"后清掉六项。判据都是"零调用/零读取/
+与实现相反"，不是"看起来像兼容"：
 
 - **删 `CommandDef::LegacyRisk()`**（`src/commands.h`）：全库零调用。它是
   `Effects` 三分量落地前"三档 Risk"的兼容视图，现在风险名统一走
@@ -21,6 +21,12 @@
   `%APPDATA%\ExBar` 里有本工程的文件，会一次性拷贝过来"，代码里没有任何
   迁移逻辑（全库只有 `nav_pane_root_watch.cpp` 读 RoamingAppData 做别的事）。
   改为如实写"不做旧目录迁移"，并说明理由：那个目录属于 ExBar mod。
+  同节 §3.5 会话存储也还写着 `%LOCALAPPDATA%\ExBar\state\sessions.txt`，
+  实际是 `state\session.json`（`config_state_io.cpp` 的 `SessionPath()`），一并改。
+- **`docs/DECISIONS.md` D5 标记 `superseded`**：该条自己的"复检条件"就是
+  "P2-0 落地时标 superseded"，P2-0 早已落地却一直挂着 `provisional`。
+  同时记下"P2-0 并未照原计划用 `%APPDATA%\ExBar` 的 Schema，而是选了便携模式"
+  —— 原文那句"会用 `%APPDATA%\ExBar` 的同一套 Schema 取代它"已不成立。
 
 **有意保留（不是残留）**：废弃 `CmdId`（规则 C1 强制保留）、
 `legacyName` / `AliasOf` / `InvokeLegacy`（规则 C2 旧名永不删）、

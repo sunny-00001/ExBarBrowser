@@ -174,7 +174,7 @@ P4  差异化            AI 面板 → chrome Web 化 → 与 mod 的 UI 资产�
 
 | 项 | 内容 |
 |---|---|
-| 存储 | `%LOCALAPPDATA%\ExBar\state\sessions.txt`（与 mod 同格式：一行一组，组名 + 制表符 + 路径列表） |
+| 存储 | `state\session.json`（实际落地：`sessionPaths` / `sessionPane2Paths` / `sessionHistory` 等字段；原规划的 `sessions.txt` 纯文本未采用） |
 | 命令 | 保存当前全部标签为命名组、恢复、删除、列出（对应 `Session*` 4 条） |
 | UI | 先做命令 + 一个简单输入框；完整的会话管理器放 P3（与命令面板一起） |
 | 验收 | 保存 5 个标签 → 关闭程序 → 重开 → 恢复，标签顺序与路径完全一致 |
